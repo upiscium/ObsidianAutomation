@@ -12,6 +12,7 @@ include = [
   ".obsidian/graph.json",
   ".obsidian/hotkeys.json",
   ".obsidian/types.json",
+  ".obsidian/text-generator.json",
   ".obsidian/snippets/**",
 ]
 
