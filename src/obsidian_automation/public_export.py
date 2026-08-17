@@ -18,7 +18,7 @@ class ExportError(RuntimeError):
     """Raised when an export request violates the configured safety policy."""
 
 
-_ALWAYS_REPOSITORY_OWNED = (".git", ".git/**")
+_ALWAYS_REPOSITORY_OWNED = (".git", ".git/**", "**/.git", "**/.git/**")
 
 
 @dataclass(frozen=True)
@@ -187,8 +187,17 @@ def _collect_destination_files(destination: Path, config: ExportConfig) -> dict[
         directory_path = Path(directory)
 
         # Git metadata is never part of the managed projection, even if the
-        # caller forgets to list it in repository_owned.
-        dirnames[:] = [name for name in dirnames if name != ".git"]
+        # caller forgets to list it in repository_owned. Symlink directories
+        # are rejected rather than silently preserved as unmanaged content.
+        safe_dirnames: list[str] = []
+        for name in dirnames:
+            path = directory_path / name
+            if name == ".git":
+                continue
+            if path.is_symlink():
+                raise ExportError(f"symlink is not allowed in managed path: {path}")
+            safe_dirnames.append(name)
+        dirnames[:] = safe_dirnames
 
         for filename in filenames:
             path = directory_path / filename
