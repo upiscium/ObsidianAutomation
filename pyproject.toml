@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "obsidian-automation"
+version = "0.1.0"
+description = "Deterministic automation tools for safely maintaining and publishing Obsidian Vaults."
+requires-python = ">=3.11"
+
+[project.scripts]
+obsidian-public-export = "obsidian_automation.public_export:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
