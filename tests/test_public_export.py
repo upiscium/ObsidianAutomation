@@ -134,3 +134,18 @@ def test_never_manages_git_metadata(tmp_path: Path) -> None:
     assert (destination / ".git/HEAD").exists()
     assert (destination / ".git/objects/object").exists()
     assert all(not item.path.startswith(".git") for item in changes)
+
+
+def test_rejects_symlink_directory_in_destination(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    destination = tmp_path / "public"
+    outside = tmp_path / "outside"
+    (vault / "98-System").mkdir(parents=True)
+    (vault / "98-System/view.js").write_text("view")
+    destination.mkdir()
+    outside.mkdir()
+    (outside / "file.md").write_text("outside")
+    (destination / "legacy").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ExportError, match="symlink"):
+        build_plan(vault, destination, _config("98-System/**"))
