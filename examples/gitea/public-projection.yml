@@ -1,0 +1,73 @@
+name: Publish ObsidianCore projection
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    # Register the instance-level runner with a dedicated
+    # `obsidian-publisher:host` label and require it here.
+    runs-on: obsidian-publisher
+
+    steps:
+      - name: Checkout private Vault
+        uses: actions/checkout@v4
+
+      - name: Build, validate, and publish projection
+        env:
+          AUTOMATION_REF: ${{ vars.OBSIDIAN_AUTOMATION_REF }}
+          CORE_DEPLOY_KEY: ${{ secrets.OBSIDIAN_CORE_DEPLOY_KEY }}
+          CORE_KNOWN_HOSTS: ${{ secrets.OBSIDIAN_CORE_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${AUTOMATION_REF:-}" ]; then
+            echo "OBSIDIAN_AUTOMATION_REF must pin a tag or commit" >&2
+            exit 2
+          fi
+          if [ -z "${CORE_DEPLOY_KEY:-}" ] || [ -z "${CORE_KNOWN_HOSTS:-}" ]; then
+            echo "ObsidianCore deploy SSH secrets are not configured" >&2
+            exit 2
+          fi
+
+          vault_dir="${GITEA_WORKSPACE:-${GITHUB_WORKSPACE}}"
+          work_dir="${RUNNER_TEMP}/obsidian-publication"
+          automation_dir="${work_dir}/ObsidianAutomation"
+          core_dir="${work_dir}/ObsidianCore"
+          ssh_dir="${work_dir}/ssh"
+
+          rm -rf "$work_dir"
+          install -m 700 -d "$ssh_dir"
+          printf '%s\n' "$CORE_DEPLOY_KEY" > "$ssh_dir/id_ed25519"
+          chmod 600 "$ssh_dir/id_ed25519"
+          printf '%s\n' "$CORE_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
+          chmod 600 "$ssh_dir/known_hosts"
+
+          export GIT_SSH_COMMAND="ssh -i $ssh_dir/id_ed25519 -o IdentitiesOnly=yes -o UserKnownHostsFile=$ssh_dir/known_hosts -o StrictHostKeyChecking=yes"
+
+          git clone https://github.com/upiscium/ObsidianAutomation.git "$automation_dir"
+          git -C "$automation_dir" checkout --detach "$AUTOMATION_REF"
+
+          git clone git@github.com:upiscium/ObsidianCore.git "$core_dir"
+          before="$(git -C "$core_dir" rev-parse HEAD)"
+
+          (
+            cd "$automation_dir"
+            nix develop --command obsidian-public-publish \
+              --source "$vault_dir" \
+              --destination "$core_dir" \
+              --config configs/public-export.example.toml
+          )
+
+          after="$(git -C "$core_dir" rev-parse HEAD)"
+          if [ "$before" = "$after" ]; then
+            echo "Public projection is already up to date."
+            exit 0
+          fi
+
+          git -C "$core_dir" push origin HEAD:main
