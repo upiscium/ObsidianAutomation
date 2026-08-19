@@ -10,38 +10,21 @@ This repository may contain reusable automation code, schemas, tests, prompts, a
 
 The Public Exporter is deterministic and does not use an LLM. The private Vault is the source of projection content; public-repository-owned files are preserved separately.
 
-## Development environment
+## Nix development environment
 
-### NixOS / Nix
-
-The repository provides a flake-based development shell for Linux.
-
-With direnv:
-
-```bash
-direnv allow
-```
-
-`.envrc` activates the default flake devShell with `use flake`.
-
-Without direnv:
+On NixOS or another system with flakes enabled, enter the development environment with:
 
 ```bash
 nix develop
 ```
 
-The devShell provides Python 3.11, pytest, Git, and the `obsidian-public-export` development wrapper. The wrapper runs the current working-tree source directly, so an editable pip install is not required for normal development and testing.
+With direnv installed, the repository also provides `.envrc`:
 
 ```bash
-pytest -q
-obsidian-public-export --help
+direnv allow
 ```
 
-### Generic Python
-
-```bash
-python -m pip install -e '.[dev]'
-```
+The development shell provides Python 3.11, pytest, Git, and `obsidian-public-export` from the current working tree.
 
 ## Public Exporter v0
 
