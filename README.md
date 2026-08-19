@@ -24,7 +24,9 @@ With direnv installed, the repository also provides `.envrc`:
 direnv allow
 ```
 
-The development shell provides Python 3.11, pytest, Git, and `obsidian-public-export` from the current working tree.
+The development shell provides Python, pytest, Git, Node.js, `obsidian-public-export`, and `obsidian-public-publish` from the current working tree.
+
+Nix is for development and manual verification only. The production Gitea Runner is expected to run independently in a dedicated Debian environment and does not require Nix.
 
 ## Public Exporter v0
 
@@ -62,6 +64,12 @@ obsidian-public-export \
 
 v0 rejects path traversal, symlinks in managed paths, missing required allowlist entries, and collisions with repository-owned paths.
 
+## Public Publisher v0
+
+`obsidian-public-publish` is the transaction helper intended for a trusted Gitea Runner. It requires a clean `ObsidianCore` checkout, applies the projection, runs repository validation/tests, and creates one local commit only after validation succeeds. It intentionally never runs `git push`.
+
+The production design and example Gitea workflow are documented in `docs/gitea-publication.md` and `examples/gitea/public-projection.yml`.
+
 ## Current scope
 
-The exporter only creates the local public working-tree projection. Automated pushes to `ObsidianCore`, Gitea runner integration, secret scanning, and AI/LLM workflows are intentionally out of scope for v0.
+Automated public projection publishing is being added before any AI/LLM workflow or canonical Vault write path. AI proposal, evaluation, and execution remain out of scope for this stage.
