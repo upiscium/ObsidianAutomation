@@ -16,9 +16,29 @@ LAN-only Gitea instance.
   users are ever introduced to the Gitea instance, reduce runner scope or isolate jobs
   before continuing to use a host runner.
 
+The production runner is intentionally separated from the NixOS development host.
+For v0 it runs in a dedicated **Debian 13 unprivileged LXC**. The LXC itself is the
+runtime isolation boundary; no Proxmox host directories are bind-mounted into it.
+The runner executes jobs in host mode inside that LXC and does not require Docker or
+Nix.
+
 The publication helper never pushes. It applies the allowlisted projection, validates
 `ObsidianCore`, and creates a local commit. The Gitea workflow only pushes if the
 helper created a new commit.
+
+## Required runner software
+
+The Debian runner environment needs:
+
+- Gitea Runner
+- Git
+- Python 3.11 or newer
+- Node.js 20 or newer
+- OpenSSH client
+- CA certificates
+
+The example workflow installs `ObsidianAutomation` into an isolated Python virtual
+environment for each publication job. Production does not call `nix develop`.
 
 ## Required Gitea configuration
 
@@ -50,69 +70,26 @@ job.
 The example workflow is `examples/gitea/public-projection.yml`. Copy it into the
 private Vault as `.gitea/workflows/public-projection.yml`.
 
-## Production runner
+## Instance-level runner registration
 
-Use a dedicated Linux VM for the production runner rather than the NixOS development
-host. The intended v0 deployment is a small Debian 13 VM running `act_runner` in host
-mode. The VM itself is the isolation boundary.
+Register the dedicated Debian LXC as an instance-level Gitea Runner using the label:
 
-Gitea generally recommends containerized jobs because host mode provides no job-level
-encapsulation. In this deployment, host mode is accepted because the Gitea instance is
-LAN-only/trusted and the VM exists only to run CI jobs. If this trust assumption
-changes, switch the runner to Docker/DinD or otherwise isolate each job.
-
-Do not place the runner on the same machine as the Gitea server if a separate VM is
-available.
-
-### Required host software
-
-The publication workflow requires:
-
-- `bash`
-- `git`
-- `python3` >= 3.11
-- `node` >= 20
-- `ssh`
-- CA certificates
-- standard core utilities
-
-Debian 13 provides a sufficiently new Python and Node.js from the normal repositories.
-For example:
-
-```bash
-sudo apt update
-sudo apt install -y \
-  ca-certificates \
-  curl \
-  git \
-  nodejs \
-  openssh-client \
-  python3
+```text
+obsidian-publisher:host
 ```
 
-No Nix installation is required on the production runner. `flake.nix` remains a
-development and manual-verification environment only.
+The workflow requests the routing label as:
 
-### Runner registration
-
-Create an unprivileged `act_runner` service account and install a stable `act_runner`
-binary according to the Gitea documentation. Obtain the **instance-level** registration
-token from the Gitea admin Actions runner settings, then register the runner with the
-dedicated host label:
-
-```bash
-act_runner register \
-  --no-interactive \
-  --instance https://gitea.example.lan/ \
-  --token '<instance-registration-token>' \
-  --name obsidian-publisher \
-  --labels 'obsidian-publisher:host'
+```yaml
+runs-on: obsidian-publisher
 ```
 
-Do not commit the registration token or runner registration state. Run `act_runner`
-as the unprivileged service user with `/var/lib/act_runner` as its working directory.
-The runner can then be managed by systemd using the service pattern documented by
-Gitea.
+Use the Gitea instance LAN address when registering the runner; do not use `localhost`
+or `127.0.0.1` unless Gitea itself runs inside the same LXC.
+
+The runner process should run as an unprivileged Linux user and be managed by systemd.
+The runner registration state and working directory should be kept under a dedicated
+path such as `/var/lib/gitea-runner`.
 
 ## Publication transaction
 
@@ -120,9 +97,8 @@ On each push to `ObsidianVault/main`:
 
 1. Gitea checks out the private Vault.
 2. The workflow clones `ObsidianAutomation` and checks out the pinned revision.
-3. The workflow clones `ObsidianCore` using the repository-scoped deploy key.
-4. Python directly invokes `obsidian_automation.public_publish`; production does not
-   enter a Nix development shell.
+3. The workflow creates a Python virtual environment and installs that revision.
+4. The workflow clones `ObsidianCore` using the repository-scoped deploy key.
 5. `obsidian-public-publish` applies the allowlist-only projection.
 6. The helper runs:
    - `git diff --check`
