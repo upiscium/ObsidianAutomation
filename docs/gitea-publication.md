@@ -50,51 +50,69 @@ job.
 The example workflow is `examples/gitea/public-projection.yml`. Copy it into the
 private Vault as `.gitea/workflows/public-projection.yml`.
 
-## Instance-level runner on NixOS
+## Production runner
 
-NixOS provides the `services.gitea-actions-runner` module. A minimal host-mode runner
-for this workflow can be configured as follows:
+Use a dedicated Linux VM for the production runner rather than the NixOS development
+host. The intended v0 deployment is a small Debian 13 VM running `act_runner` in host
+mode. The VM itself is the isolation boundary.
 
-```nix
-{ pkgs, ... }:
-{
-  services.gitea-actions-runner.instances.obsidian-publisher = {
-    enable = true;
-    name = "obsidian-publisher";
-    url = "https://gitea.example.lan/";
+Gitea generally recommends containerized jobs because host mode provides no job-level
+encapsulation. In this deployment, host mode is accepted because the Gitea instance is
+LAN-only/trusted and the VM exists only to run CI jobs. If this trust assumption
+changes, switch the runner to Docker/DinD or otherwise isolate each job.
 
-    # Environment file containing:
-    # TOKEN=<instance-level-runner-registration-token>
-    tokenFile = "/run/secrets/gitea-actions-runner-token";
+Do not place the runner on the same machine as the Gitea server if a separate VM is
+available.
 
-    labels = [
-      "obsidian-publisher:host"
-    ];
+### Required host software
 
-    hostPackages = with pkgs; [
-      bash
-      coreutils
-      curl
-      gawk
-      git
-      gnused
-      nodejs_22
-      openssh
-      wget
-      nix
-      cacert
-    ];
-  };
-}
+The publication workflow requires:
+
+- `bash`
+- `git`
+- `python3` >= 3.11
+- `node` >= 20
+- `ssh`
+- CA certificates
+- standard core utilities
+
+Debian 13 provides a sufficiently new Python and Node.js from the normal repositories.
+For example:
+
+```bash
+sudo apt update
+sudo apt install -y \
+  ca-certificates \
+  curl \
+  git \
+  nodejs \
+  openssh-client \
+  python3
 ```
 
-Obtain the instance-level registration token from the Gitea admin Actions runner
-settings. Keep the token file outside the Nix store and restrict its filesystem
-permissions.
+No Nix installation is required on the production runner. `flake.nix` remains a
+development and manual-verification environment only.
 
-The host runner executes workflow commands directly on the NixOS host. This is an
-intentional v0 choice because the Gitea instance is LAN-only and trusted. It should
-not be treated as sandboxing.
+### Runner registration
+
+Create an unprivileged `act_runner` service account and install a stable `act_runner`
+binary according to the Gitea documentation. Obtain the **instance-level** registration
+token from the Gitea admin Actions runner settings, then register the runner with the
+dedicated host label:
+
+```bash
+act_runner register \
+  --no-interactive \
+  --instance https://gitea.example.lan/ \
+  --token '<instance-registration-token>' \
+  --name obsidian-publisher \
+  --labels 'obsidian-publisher:host'
+```
+
+Do not commit the registration token or runner registration state. Run `act_runner`
+as the unprivileged service user with `/var/lib/act_runner` as its working directory.
+The runner can then be managed by systemd using the service pattern documented by
+Gitea.
 
 ## Publication transaction
 
@@ -103,15 +121,17 @@ On each push to `ObsidianVault/main`:
 1. Gitea checks out the private Vault.
 2. The workflow clones `ObsidianAutomation` and checks out the pinned revision.
 3. The workflow clones `ObsidianCore` using the repository-scoped deploy key.
-4. `obsidian-public-publish` applies the allowlist-only projection.
-5. The helper runs:
+4. Python directly invokes `obsidian_automation.public_publish`; production does not
+   enter a Nix development shell.
+5. `obsidian-public-publish` applies the allowlist-only projection.
+6. The helper runs:
    - `git diff --check`
    - `node 98-System/99-dev/validate-repo.mjs`
    - `node --test 98-System/99-dev/test/*.test.mjs`
-6. If validation fails, no commit is created and no push is attempted.
-7. If the projection is unchanged, no commit is created and no push is attempted.
-8. If validation succeeds and content changed, the helper creates one local commit.
-9. The workflow pushes that commit to `ObsidianCore/main`.
+7. If validation fails, no commit is created and no push is attempted.
+8. If the projection is unchanged, no commit is created and no push is attempted.
+9. If validation succeeds and content changed, the helper creates one local commit.
+10. The workflow pushes that commit to `ObsidianCore/main`.
 
 The existing GitHub Actions validation on `ObsidianCore` remains a second independent
 post-push check.
