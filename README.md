@@ -24,9 +24,9 @@ With direnv installed, the repository also provides `.envrc`:
 direnv allow
 ```
 
-The development shell provides Python, pytest, Git, Node.js, `obsidian-public-export`, and `obsidian-public-publish` from the current working tree.
+The development shell provides Python, pytest, Git, Node.js, `obsidian-public-export`, `obsidian-public-publish`, and `obsidian-vault-snapshot` from the current working tree.
 
-Nix is for development and manual verification only. The production Gitea Runner is expected to run independently in a dedicated Debian environment and does not require Nix.
+Nix is for development and manual verification only. Production automation is expected to run independently in dedicated Linux containers and does not require Nix.
 
 ## Public Exporter v0
 
@@ -70,6 +70,14 @@ v0 rejects path traversal, symlinks in managed paths, missing required allowlist
 
 The production design and example Gitea workflow are documented in `docs/gitea-publication.md` and `examples/gitea/public-projection.yml`.
 
+## Live Vault Snapshot v0
+
+`obsidian-vault-snapshot` turns a stable local mirror of the Live Vault into one private Git snapshot commit. The helper itself has no network access and never pushes.
+
+The recommended production topology uses a dedicated unprivileged Linux container. That container pulls the Vault directly from Nextcloud over WebDAV into a local mirror, verifies the pull, runs the snapshot helper, and pushes only the resulting private Gitea commit. The Proxmox host does not need to mount or authenticate to Nextcloud.
+
+The design is documented in `docs/live-vault-snapshot.md`; the example policy is `configs/vault-snapshot.example.toml`.
+
 ## Current scope
 
-Automated public projection publishing is being added before any AI/LLM workflow or canonical Vault write path. AI proposal, evaluation, and execution remain out of scope for this stage.
+Git-backed deterministic synchronization and publication are being completed before any AI/LLM workflow or canonical Vault write path. AI proposal, evaluation, and execution remain out of scope for this stage.

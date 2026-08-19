@@ -1,0 +1,28 @@
+version = 1
+
+# Require two identical content manifests separated by this delay.
+# If the Vault keeps changing, retry up to stability_attempts comparisons.
+settle_seconds = 5.0
+stability_attempts = 3
+
+# Live-only/transient or sensitive content that must not enter the private Git snapshot.
+# Excluded source files are also removed from the managed destination tree.
+exclude = [
+  ".obsidian/workspace*",
+  ".obsidian/themes/**",
+  ".obsidian/plugins/*/main.js",
+  ".obsidian/plugins/*/styles.css",
+  ".obsidian/plugins/*/style.css",
+  ".obsidian/plugins/various-complements/histories.json",
+  ".obsidian/plugins/remotely-save/data.json",
+  ".trash/**",
+]
+
+# Files owned by the private repository/deployment rather than the Live Vault.
+# Git metadata is always repository-owned even when omitted here.
+repository_owned = [
+  ".git",
+  ".git/**",
+  ".gitea/**",
+  ".gitignore",
+]

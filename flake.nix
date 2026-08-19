@@ -41,6 +41,9 @@
           publicPublisher = mkWorkingTreeCli
             "obsidian-public-publish"
             "obsidian_automation.public_publish";
+          vaultSnapshot = mkWorkingTreeCli
+            "obsidian-vault-snapshot"
+            "obsidian_automation.vault_snapshot";
         in
         {
           default = pkgs.mkShellNoCC {
@@ -50,6 +53,7 @@
               pythonEnv
               publicExporter
               publicPublisher
+              vaultSnapshot
             ];
 
             shellHook = ''
