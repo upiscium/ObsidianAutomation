@@ -5,7 +5,7 @@ version = 1
 settle_seconds = 5.0
 stability_attempts = 3
 
-# Live-only/transient content that must not enter the private Git snapshot.
+# Live-only/transient or sensitive content that must not enter the private Git snapshot.
 # Excluded source files are also removed from the managed destination tree.
 exclude = [
   ".obsidian/workspace*",
@@ -14,6 +14,7 @@ exclude = [
   ".obsidian/plugins/*/styles.css",
   ".obsidian/plugins/*/style.css",
   ".obsidian/plugins/various-complements/histories.json",
+  ".obsidian/plugins/remotely-save/data.json",
   ".trash/**",
 ]
 
