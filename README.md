@@ -10,6 +10,22 @@ This repository may contain reusable automation code, schemas, tests, prompts, a
 
 The Public Exporter is deterministic and does not use an LLM. The private Vault is the source of projection content; public-repository-owned files are preserved separately.
 
+## Nix development environment
+
+On NixOS or another system with flakes enabled, enter the development environment with:
+
+```bash
+nix develop
+```
+
+With direnv installed, the repository also provides `.envrc`:
+
+```bash
+direnv allow
+```
+
+The development shell provides Python 3.11, pytest, Git, and `obsidian-public-export` from the current working tree.
+
 ## Public Exporter v0
 
 The exporter treats the destination repository as two trust domains:
@@ -20,12 +36,6 @@ The exporter treats the destination repository as two trust domains:
 Git metadata (`.git` and `.git/**`) is always protected even if it is omitted from the configuration.
 
 The example policy is in `configs/public-export.example.toml`.
-
-### Install for development
-
-```bash
-python -m pip install -e '.[dev]'
-```
 
 ### Preview a projection
 
