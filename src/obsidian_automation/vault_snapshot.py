@@ -410,7 +410,8 @@ def snapshot_vault(
         applied = apply_plan(staging, destination, config)
 
     _run(["git", "add", "-A"], cwd=destination)
-    _run(["git", "diff", "--cached", "--check"], cwd=destination)
+    # A snapshot is an archival mirror, not a formatting gate. Preserve the
+    # canonical Vault bytes even when Git would report whitespace warnings.
     staged = _run(["git", "diff", "--cached", "--name-only"], cwd=destination)
     if not staged:
         return SnapshotResult(
