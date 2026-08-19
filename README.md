@@ -2,13 +2,13 @@
 
 Reusable automation software for maintaining and publishing an Obsidian Vault while keeping private Vault data and production deployment details outside this public repository.
 
-The current deterministic pipeline covers both stable snapshots of a synchronized Live Vault into private Git and allowlist-only publication from the private Vault into `ObsidianCore`.
+The first implementation target is a deterministic Public Exporter that generates the public `ObsidianCore` projection from an explicitly allowlisted subset of a private Vault.
 
 ## Trust boundary
 
 This repository may contain reusable automation code, schemas, tests, prompts, and container definitions. It must not contain production credentials, private Vault contents, internal endpoints, runner registration data, or environment-specific secrets.
 
-The snapshot and publication tools are deterministic and do not use an LLM. The Live Vault is read-only to snapshot automation, the private Vault is the source of public projection content, and repository-owned files are preserved separately.
+The Public Exporter is deterministic and does not use an LLM. The private Vault is the source of projection content; public-repository-owned files are preserved separately.
 
 ## Nix development environment
 
@@ -24,27 +24,9 @@ With direnv installed, the repository also provides `.envrc`:
 direnv allow
 ```
 
-The development shell provides Python, pytest, Git, Node.js, `obsidian-vault-snapshot`, `obsidian-public-export`, and `obsidian-public-publish` from the current working tree.
+The development shell provides Python, pytest, Git, Node.js, `obsidian-public-export`, `obsidian-public-publish`, and `obsidian-vault-snapshot` from the current working tree.
 
-Nix is for development and manual verification only. Production snapshot/publisher hosts are expected to run independently and do not require Nix.
-
-## Live Vault Snapshot v0
-
-`obsidian-vault-snapshot` turns a locally synchronized Live Vault into one stable local Git snapshot commit without ever writing to the Live Vault or pushing to a remote.
-
-The source and destination must be separate, non-nested roots. Before touching the private Git worktree, the helper requires repeated matching content manifests, copies the source into a temporary staging tree, and verifies the source/staging manifests again. If synchronization is still changing files, the run fails before destination mutation.
-
-The example policy is in `configs/vault-snapshot.example.toml`.
-
-```bash
-obsidian-vault-snapshot \
-  --source /path/to/live-vault \
-  --destination /path/to/private-ObsidianVault-checkout \
-  --config configs/vault-snapshot.example.toml \
-  --dry-run
-```
-
-A changed real snapshot creates one local commit with a `Source-Manifest-SHA256` provenance trailer. No-op snapshots create no commit. The recommended private deployment uses a bare cache plus a disposable worktree for each scheduled run; see `docs/live-vault-snapshot.md`.
+Nix is for development and manual verification only. Production automation is expected to run independently in dedicated Linux containers and does not require Nix.
 
 ## Public Exporter v0
 
@@ -88,6 +70,14 @@ v0 rejects path traversal, symlinks in managed paths, missing required allowlist
 
 The production design and example Gitea workflow are documented in `docs/gitea-publication.md` and `examples/gitea/public-projection.yml`.
 
+## Live Vault Snapshot v0
+
+`obsidian-vault-snapshot` turns a stable local mirror of the Live Vault into one private Git snapshot commit. The helper itself has no network access and never pushes.
+
+The recommended production topology uses a dedicated unprivileged Linux container. That container pulls the Vault directly from Nextcloud over WebDAV into a local mirror, verifies the pull, runs the snapshot helper, and pushes only the resulting private Gitea commit. The Proxmox host does not need to mount or authenticate to Nextcloud.
+
+The design is documented in `docs/live-vault-snapshot.md`; the example policy is `configs/vault-snapshot.example.toml`.
+
 ## Current scope
 
-The deterministic Git-backed path is being completed before any AI/LLM workflow or canonical Vault write path. AI proposal, evaluation, and execution remain out of scope for this stage.
+Git-backed deterministic synchronization and publication are being completed before any AI/LLM workflow or canonical Vault write path. AI proposal, evaluation, and execution remain out of scope for this stage.
