@@ -35,14 +35,16 @@ jobs:
             exit 2
           fi
 
-          vault_dir="${GITEA_WORKSPACE:-${GITHUB_WORKSPACE}}"
-          work_dir="${RUNNER_TEMP}/obsidian-publication"
+          vault_dir="${GITHUB_WORKSPACE:?GITHUB_WORKSPACE is not set}"
+          work_dir="${RUNNER_TEMP:-/tmp}/obsidian-publication-${GITHUB_RUN_ID:-$$}"
           automation_dir="${work_dir}/ObsidianAutomation"
           core_dir="${work_dir}/ObsidianCore"
           ssh_dir="${work_dir}/ssh"
 
           rm -rf "$work_dir"
           install -m 700 -d "$ssh_dir"
+          trap 'rm -rf "$work_dir"' EXIT
+
           printf '%s\n' "$CORE_DEPLOY_KEY" > "$ssh_dir/id_ed25519"
           chmod 600 "$ssh_dir/id_ed25519"
           printf '%s\n' "$CORE_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
@@ -58,7 +60,8 @@ jobs:
 
           (
             cd "$automation_dir"
-            nix develop --command obsidian-public-publish \
+            export PYTHONPATH="$automation_dir/src${PYTHONPATH:+:$PYTHONPATH}"
+            python3 -m obsidian_automation.public_publish \
               --source "$vault_dir" \
               --destination "$core_dir" \
               --config configs/public-export.example.toml
