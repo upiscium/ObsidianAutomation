@@ -22,25 +22,34 @@
             ps.pytest
             ps.setuptools
           ]);
-          publicExporter = pkgs.writeShellApplication {
-            name = "obsidian-public-export";
+          mkWorkingTreeCli = name: module: pkgs.writeShellApplication {
+            inherit name;
             runtimeInputs = [
               pkgs.git
+              pkgs.nodejs_22
               pythonEnv
             ];
             text = ''
               repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
               export PYTHONPATH="$repo_root/src''${PYTHONPATH:+:$PYTHONPATH}"
-              exec python -m obsidian_automation.public_export "$@"
+              exec python -m ${module} "$@"
             '';
           };
+          publicExporter = mkWorkingTreeCli
+            "obsidian-public-export"
+            "obsidian_automation.public_export";
+          publicPublisher = mkWorkingTreeCli
+            "obsidian-public-publish"
+            "obsidian_automation.public_publish";
         in
         {
           default = pkgs.mkShellNoCC {
             packages = [
               pkgs.git
+              pkgs.nodejs_22
               pythonEnv
               publicExporter
+              publicPublisher
             ];
 
             shellHook = ''
