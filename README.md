@@ -8,7 +8,7 @@ The first implementation target is a deterministic Public Exporter that generate
 
 This repository may contain reusable automation code, schemas, tests, prompts, and container definitions. It must not contain production credentials, private Vault contents, internal endpoints, runner registration data, or environment-specific secrets.
 
-The Public Exporter and Publisher are deterministic and do not use an LLM. The private Vault is the source of projection content; public-repository-owned files are preserved separately.
+The Public Exporter is deterministic and does not use an LLM. The private Vault is the source of projection content; public-repository-owned files are preserved separately.
 
 ## Nix development environment
 
@@ -24,7 +24,9 @@ With direnv installed, the repository also provides `.envrc`:
 direnv allow
 ```
 
-The development shell provides Python 3.11, pytest, Git, Node.js 22, `obsidian-public-export`, and `obsidian-public-publish` from the current working tree.
+The development shell provides Python, pytest, Git, Node.js, `obsidian-public-export`, and `obsidian-public-publish` from the current working tree.
+
+Nix is for development and manual verification only. The production Gitea Runner is expected to run independently in a dedicated Debian environment and does not require Nix.
 
 ## Public Exporter v0
 
@@ -64,19 +66,10 @@ v0 rejects path traversal, symlinks in managed paths, missing required allowlist
 
 ## Public Publisher v0
 
-`obsidian-public-publish` is the transactional wrapper intended for Gitea Runner usage. The destination must be a clean `ObsidianCore` Git repository root.
+`obsidian-public-publish` is the transaction helper intended for a trusted Gitea Runner. It requires a clean `ObsidianCore` checkout, applies the projection, runs repository validation/tests, and creates one local commit only after validation succeeds. It intentionally never runs `git push`.
 
-```bash
-obsidian-public-publish \
-  --source /path/to/private-vault \
-  --destination /path/to/ObsidianCore \
-  --config configs/public-export.example.toml
-```
-
-When projection content changes, it validates `ObsidianCore` and creates one local Git commit. It deliberately never runs `git push`. A validation failure creates no commit, and an unchanged projection is a no-op.
-
-The instance-level Gitea Runner deployment boundary and an example private-Vault workflow are documented in `docs/gitea-publication.md` and `examples/gitea/public-projection.yml`.
+The production design and example Gitea workflow are documented in `docs/gitea-publication.md` and `examples/gitea/public-projection.yml`.
 
 ## Current scope
 
-The current scope covers deterministic private-Vault-to-public-Projection generation and a Gitea-driven publication path. AI/LLM workflows, Nextcloud-to-Gitea snapshot automation, and canonical Vault mutation remain out of scope.
+Automated public projection publishing is being added before any AI/LLM workflow or canonical Vault write path. AI proposal, evaluation, and execution remain out of scope for this stage.
