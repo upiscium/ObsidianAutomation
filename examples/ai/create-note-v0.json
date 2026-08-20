@@ -1,0 +1,9 @@
+{
+  "contract_version": 1,
+  "operation": "create_note",
+  "mutation_id": "018f6c3e-7c8f-7b52-a7a2-8be3518e7182",
+  "target": {
+    "path": "11-Knowledge/example.md"
+  },
+  "content": "---\ntype: knowledge-note\n---\n\n# Example\n"
+}
