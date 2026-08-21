@@ -17,6 +17,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+      - run: bash -n examples/ai/apply-authority-fixture-acls.sh examples/ai/authority-separation-gate.sh
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
