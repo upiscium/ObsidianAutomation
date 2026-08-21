@@ -82,6 +82,14 @@ def _execution_directory(ai_root: Path) -> Path:
         raise ExecutionOrchestrationError(
             f"execution path is not a safe directory: {execution}"
         )
+    parent_flags = os.O_RDONLY | os.O_DIRECTORY
+    if hasattr(os, "O_CLOEXEC"):
+        parent_flags |= os.O_CLOEXEC
+    parent_fd = os.open(layout.root, parent_flags)
+    try:
+        os.fsync(parent_fd)
+    finally:
+        os.close(parent_fd)
     return execution
 
 
