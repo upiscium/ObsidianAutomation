@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/upiscium/ObsidianAutomation/schemas/execution-intent-v0.schema.json",
+  "title": "AI canonical mutation durable execution intent v0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "record_version",
+    "mutation_sha256",
+    "approval_sha256",
+    "target_path",
+    "content_sha256",
+    "prepared_at"
+  ],
+  "properties": {
+    "record_version": {"const": 1},
+    "mutation_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "approval_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "target_path": {"type": "string", "minLength": 4, "maxLength": 1024},
+    "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "prepared_at": {"type": "string", "format": "date-time", "pattern": "Z$"}
+  }
+}
