@@ -62,7 +62,7 @@ created=()
 
 cleanup() {
   local path
-  for path in "${created[@]:-}"; do
+  for path in "${created[@]}"; do
     rm -f -- "$path" || true
   done
 }
@@ -100,13 +100,10 @@ probe_write() {
   fi
 }
 
-seed_file() {
-  local directory=$1
-  local name=$2
-  local path="$directory/$name"
+create_seed() {
+  local path=$1
   created+=("$path")
   runuser -u "$SYNC_USER" -- sh -c 'printf "authority-gate-seed\n" > "$1"' sh "$path"
-  printf '%s\n' "$path"
 }
 
 probe_read() {
@@ -130,12 +127,19 @@ probe_read() {
   fi
 }
 
-knowledge_seed=$(seed_file "$KNOWLEDGE" .authority-gate-knowledge)
-untrusted_seed=$(seed_file "$UNTRUSTED" .authority-gate-untrusted)
-validation_seed=$(seed_file "$VALIDATION" .authority-gate-validation)
-review_seed=$(seed_file "$REVIEW" .authority-gate-review)
-execution_seed=$(seed_file "$EXECUTION" .authority-gate-execution)
-receipts_seed=$(seed_file "$RECEIPTS" .authority-gate-receipt)
+knowledge_seed="$KNOWLEDGE/.authority-gate-knowledge"
+untrusted_seed="$UNTRUSTED/.authority-gate-untrusted"
+validation_seed="$VALIDATION/.authority-gate-validation"
+review_seed="$REVIEW/.authority-gate-review"
+execution_seed="$EXECUTION/.authority-gate-execution"
+receipts_seed="$RECEIPTS/.authority-gate-receipt"
+
+create_seed "$knowledge_seed"
+create_seed "$untrusted_seed"
+create_seed "$validation_seed"
+create_seed "$review_seed"
+create_seed "$execution_seed"
+create_seed "$receipts_seed"
 
 # Positive read capabilities.
 probe_read "$READER_USER" "$knowledge_seed" allow "Reader reads canonical Knowledge"
