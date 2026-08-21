@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/upiscium/ObsidianAutomation/schemas/execution-receipt-v0.schema.json",
+  "title": "AI canonical mutation execution receipt v0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["mutation_id", "mutation_sha256", "target_path", "content_sha256", "executed_at", "result"],
+  "properties": {
+    "mutation_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "mutation_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "target_path": {"type": "string", "minLength": 4, "maxLength": 1024},
+    "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "executed_at": {"type": "string", "format": "date-time", "pattern": "Z$"},
+    "result": {"const": "success"}
+  }
+}

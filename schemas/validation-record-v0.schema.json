@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/upiscium/ObsidianAutomation/schemas/validation-record-v0.schema.json",
+  "title": "AI deterministic validation record v0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["record_version", "proposal_sha256", "result", "validated_at", "mutation_sha256", "reason"],
+  "properties": {
+    "record_version": {"const": 1},
+    "proposal_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "result": {"enum": ["accepted", "rejected"]},
+    "validated_at": {"type": "string", "format": "date-time", "pattern": "Z$"},
+    "mutation_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "reason": {"type": ["string", "null"], "maxLength": 1024}
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "result": {"const": "accepted"},
+        "mutation_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "reason": {"type": "null"}
+      }
+    },
+    {
+      "properties": {
+        "result": {"const": "rejected"},
+        "mutation_sha256": {"type": "null"},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 1024}
+      }
+    }
+  ]
+}

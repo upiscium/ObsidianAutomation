@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/upiscium/ObsidianAutomation/schemas/approval-record-v0.schema.json",
+  "title": "AI human approval record v0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["record_version", "mutation_sha256", "decision", "decided_at", "approver"],
+  "properties": {
+    "record_version": {"const": 1},
+    "mutation_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "decision": {"enum": ["approve", "reject"]},
+    "decided_at": {"type": "string", "format": "date-time", "pattern": "Z$"},
+    "approver": {"type": "string", "minLength": 1, "maxLength": 256}
+  }
+}
