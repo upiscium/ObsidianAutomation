@@ -63,32 +63,36 @@ done
 # Traversal only on container directories. Stage-specific permissions are below.
 setfacl -b "$VAULT_ROOT"
 setfacl -k "$VAULT_ROOT" || true
-setfacl -m \
+for entry in \
   "u:$READER_USER:--x" \
   "u:$GENERATOR_USER:--x" \
   "u:$VALIDATOR_USER:--x" \
   "u:$REVIEWER_USER:--x" \
-  "u:$EXECUTOR_USER:--x" \
-  "$VAULT_ROOT"
+  "u:$EXECUTOR_USER:--x"; do
+  setfacl -m "$entry" "$VAULT_ROOT"
+done
 
 setfacl -b "$AI_ROOT"
 setfacl -k "$AI_ROOT" || true
-setfacl -m \
+for entry in \
   "u:$GENERATOR_USER:--x" \
   "u:$VALIDATOR_USER:--x" \
   "u:$REVIEWER_USER:--x" \
-  "u:$EXECUTOR_USER:--x" \
-  "$AI_ROOT"
+  "u:$EXECUTOR_USER:--x"; do
+  setfacl -m "$entry" "$AI_ROOT"
+done
 
 apply_directory_acl() {
   local directory=$1
   shift
 
   setfacl -m u::rwx,g::---,o::---,m::rwx "$directory"
-  setfacl -m "$@" "$directory"
+  local entry
+  for entry in "$@"; do
+    setfacl -m "$entry" "$directory"
+  done
 
   setfacl -m d:u::rwx,d:g::---,d:o::---,d:m::rwx "$directory"
-  local entry
   for entry in "$@"; do
     setfacl -m "d:$entry" "$directory"
   done
