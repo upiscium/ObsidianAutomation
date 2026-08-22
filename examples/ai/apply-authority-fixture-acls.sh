@@ -24,6 +24,7 @@ KNOWLEDGE="$VAULT_ROOT/11-Knowledge"
 UNTRUSTED="$AI_ROOT/00-Untrusted"
 VALIDATION="$AI_ROOT/10-Validation"
 REVIEW="$AI_ROOT/20-Review"
+LOCKS="$AI_ROOT/24-Locks"
 EXECUTION="$AI_ROOT/25-Execution"
 TRANSPORT="$AI_ROOT/27-Transport"
 RECEIPTS="$AI_ROOT/30-Receipts"
@@ -59,7 +60,7 @@ done
 
 SYNC_GROUP=$(id -gn "$SYNC_USER")
 
-# The Vault mirror belongs to Sync Transport. Other actors receive only read/traverse ACLs.
+# The Vault mirror belongs to Sync Transport. Other actors receive read/traverse only.
 install -d -o "$SYNC_USER" -g "$SYNC_GROUP" -m 0700 "$VAULT_ROOT"
 install -d -o "$SYNC_USER" -g "$SYNC_GROUP" -m 0700 "$KNOWLEDGE"
 setfacl -b "$VAULT_ROOT"
@@ -88,10 +89,10 @@ for entry in \
   setfacl -m "d:$entry" "$KNOWLEDGE"
 done
 
-# AI lifecycle state is not part of the synchronized Vault mirror. Root owns the
-# state container and each actor receives only its stage capability.
+# AI lifecycle state is local-only. Root owns the state container and each
+# semantic/transport stage has an explicit writer identity.
 install -d -o root -g root -m 0700 "$AI_ROOT"
-for directory in "$UNTRUSTED" "$VALIDATION" "$REVIEW" "$EXECUTION" "$TRANSPORT" "$RECEIPTS"; do
+for directory in "$UNTRUSTED" "$VALIDATION" "$REVIEW" "$LOCKS" "$EXECUTION" "$TRANSPORT" "$RECEIPTS"; do
   install -d -o root -g root -m 0700 "$directory"
   setfacl -b "$directory"
   setfacl -k "$directory" || true
@@ -100,24 +101,22 @@ done
 setfacl -b "$AI_ROOT"
 setfacl -k "$AI_ROOT" || true
 for entry in \
-  "u:$SYNC_USER:--x" \
+  "u:$SYNC_USER:r-x" \
   "u:$GENERATOR_USER:--x" \
   "u:$VALIDATOR_USER:--x" \
-  "u:$REVIEWER_USER:--x" \
-  "u:$EXECUTOR_USER:--x"; do
+  "u:$REVIEWER_USER:r-x" \
+  "u:$EXECUTOR_USER:r-x"; do
   setfacl -m "$entry" "$AI_ROOT"
 done
 
 apply_directory_acl() {
   local directory=$1
   shift
-
   setfacl -m u::rwx,g::---,o::---,m::rwx "$directory"
   local entry
   for entry in "$@"; do
     setfacl -m "$entry" "$directory"
   done
-
   setfacl -m d:u::rwx,d:g::---,d:o::---,d:m::rwx "$directory"
   for entry in "$@"; do
     setfacl -m "d:$entry" "$directory"
@@ -139,12 +138,21 @@ apply_directory_acl "$REVIEW" \
   "u:$REVIEWER_USER:rwx" \
   "u:$EXECUTOR_USER:r-x"
 
+# Operational lock files carry no semantic authority. Executor, Sync, and the
+# Human recovery tool share only this lock directory.
+apply_directory_acl "$LOCKS" \
+  "u:$SYNC_USER:rwx" \
+  "u:$REVIEWER_USER:rwx" \
+  "u:$EXECUTOR_USER:rwx"
+
 apply_directory_acl "$EXECUTION" \
   "u:$SYNC_USER:r-x" \
+  "u:$REVIEWER_USER:r-x" \
   "u:$EXECUTOR_USER:rwx"
 
 apply_directory_acl "$TRANSPORT" \
   "u:$SYNC_USER:rwx" \
+  "u:$REVIEWER_USER:r-x" \
   "u:$EXECUTOR_USER:r-x"
 
 apply_directory_acl "$RECEIPTS" \
