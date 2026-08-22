@@ -4,6 +4,8 @@ import argparse
 import hashlib
 import json
 import os
+import stat
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
@@ -107,8 +109,22 @@ def _request_path(execution_dir: Path, digest: str) -> Path:
     return execution_dir / f"{digest}.transport-request.json"
 
 
-def _result_path(execution_dir: Path, digest: str) -> Path:
-    return execution_dir / f"{digest}.transport-result.json"
+def _transport_directory(ai_root: Path) -> Path:
+    root = ensure_artifact_layout(ai_root).root
+    path = root / "27-Transport"
+    try:
+        info = path.lstat()
+    except FileNotFoundError as exc:
+        raise ProductionOrchestrationError(
+            f"required transport directory does not exist: {path}"
+        ) from exc
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise ProductionOrchestrationError(f"transport path is not a safe directory: {path}")
+    return path
+
+
+def _result_path(transport_dir: Path, digest: str) -> Path:
+    return transport_dir / f"{digest}.transport-result.json"
 
 
 def _recovery_path(ai_root: Path, digest: str) -> Path:
@@ -142,7 +158,7 @@ def parse_transport_request(data: bytes) -> TransportRequest:
         mutation_sha = _require_sha256(value["mutation_sha256"], label="mutation_sha256")
         intent_sha = _require_sha256(value["intent_sha256"], label="intent_sha256")
         content_sha = _require_sha256(value["content_sha256"], label="content_sha256")
-    except (ArtifactLifecycleError, TypeError) as exc:
+    except ArtifactLifecycleError as exc:
         raise ProductionOrchestrationError(str(exc)) from exc
     target_path = value["target_path"]
     if not isinstance(target_path, str) or not target_path:
@@ -183,25 +199,26 @@ def parse_transport_result(data: bytes) -> TransportResult:
         expected_sha = _require_sha256(
             value["expected_content_sha256"], label="expected_content_sha256"
         )
-    except (ArtifactLifecycleError, TypeError) as exc:
+    except ArtifactLifecycleError as exc:
         raise ProductionOrchestrationError(str(exc)) from exc
+
     result = value["result"]
     if result not in {"created_verified", "target_exists_matching", "target_exists_conflict"}:
         raise ProductionOrchestrationError("transport result is invalid")
-    observed_sha_value = value["observed_content_sha256"]
-    if observed_sha_value is None:
+
+    observed_value = value["observed_content_sha256"]
+    if observed_value is None:
         observed_sha = None
     else:
         try:
-            observed_sha = _require_sha256(
-                observed_sha_value, label="observed_content_sha256"
-            )
-        except (ArtifactLifecycleError, TypeError) as exc:
+            observed_sha = _require_sha256(observed_value, label="observed_content_sha256")
+        except ArtifactLifecycleError as exc:
             raise ProductionOrchestrationError(str(exc)) from exc
     if result in {"created_verified", "target_exists_matching"} and observed_sha != expected_sha:
         raise ProductionOrchestrationError("matching transport result must bind expected remote bytes")
     if result == "target_exists_conflict" and observed_sha is None:
         raise ProductionOrchestrationError("conflicting transport result requires observed content hash")
+
     target_path = value["target_path"]
     if not isinstance(target_path, str) or not target_path:
         raise ProductionOrchestrationError("transport result target_path is invalid")
@@ -230,19 +247,21 @@ def _load_optional(path: Path, parser):
     except ArtifactLifecycleError as exc:
         if not os.path.lexists(path):
             return None, None
-        raise ProductionOrchestrationError(f"artifact exists but cannot be safely read: {path}") from exc
+        raise ProductionOrchestrationError(
+            f"artifact exists but cannot be safely read: {path}"
+        ) from exc
     return data, parser(data)
 
 
-def _load_request(execution_dir: Path, digest: str) -> tuple[bytes | None, TransportRequest | None]:
+def _load_request(execution_dir: Path, digest: str):
     data, request = _load_optional(_request_path(execution_dir, digest), parse_transport_request)
     if request is not None and request.mutation_sha256 != digest:
         raise ProductionOrchestrationError("transport request is bound to another mutation")
     return data, request
 
 
-def _load_result(execution_dir: Path, digest: str) -> tuple[bytes | None, TransportResult | None]:
-    data, result = _load_optional(_result_path(execution_dir, digest), parse_transport_result)
+def _load_result(transport_dir: Path, digest: str):
+    data, result = _load_optional(_result_path(transport_dir, digest), parse_transport_result)
     if result is not None and result.mutation_sha256 != digest:
         raise ProductionOrchestrationError("transport result is bound to another mutation")
     return data, result
@@ -360,6 +379,7 @@ def prepare_transport_request(
     except ArtifactLifecycleError as exc:
         raise ProductionOrchestrationError(str(exc)) from exc
     execution_dir = _execution_directory(ai_root)
+    _transport_directory(ai_root)
     with _mutation_lock(execution_dir, digest):
         if load_recovery_record(ai_root, digest) is not None:
             raise ProductionOrchestrationError("Human recovery decision already exists")
@@ -392,11 +412,12 @@ def process_transport_request(
     except ArtifactLifecycleError as exc:
         raise ProductionOrchestrationError(str(exc)) from exc
     execution_dir = _execution_directory(ai_root)
+    transport_dir = _transport_directory(ai_root)
     with _mutation_lock(execution_dir, digest):
         request_bytes, request = _load_request(execution_dir, digest)
         if request is None or request_bytes is None:
             raise ProductionOrchestrationError("transport request does not exist")
-        _, _, mutation_bytes, mutation, _ = _verify_request_binding(
+        _, _, _, mutation, _ = _verify_request_binding(
             ai_root,
             digest,
             request_bytes,
@@ -406,7 +427,7 @@ def process_transport_request(
         if load_recovery_record(ai_root, digest) is not None:
             raise ProductionOrchestrationError("Human recovery decision suppresses transport")
 
-        _, existing = _load_result(execution_dir, digest)
+        _, existing = _load_result(transport_dir, digest)
         if existing is not None:
             _verify_result_binding(request_bytes, request, existing)
             return existing
@@ -414,8 +435,6 @@ def process_transport_request(
         content = mutation.content.encode("utf-8")
         if hashlib.sha256(content).hexdigest() != request.content_sha256:
             raise ProductionOrchestrationError("mutation content no longer matches request")
-        timestamp = observed_at or _utc_now()
-        _require_timestamp(timestamp, label="observed_at")
 
         try:
             created = create_fn(
@@ -428,28 +447,32 @@ def process_transport_request(
                 allow_http=allow_http,
             )
         except WebDAVTargetExists:
-            observation = observe_fn(
-                base_url=base_url,
-                target_path=request.target_path,
-                expected_content_sha256=request.content_sha256,
-                username=username,
-                password=password,
-                timeout=timeout,
-                allow_http=allow_http,
-            )
+            try:
+                observation = observe_fn(
+                    base_url=base_url,
+                    target_path=request.target_path,
+                    expected_content_sha256=request.content_sha256,
+                    username=username,
+                    password=password,
+                    timeout=timeout,
+                    allow_http=allow_http,
+                )
+            except WebDAVCreateError as exc:
+                raise ProductionOrchestrationError(str(exc)) from exc
             if observation.result == "absent":
                 raise ProductionOrchestrationError(
                     "remote target disappeared after create precondition conflict; retry later"
                 )
-            result_name = (
-                "target_exists_matching"
-                if observation.result == "matching"
-                else "target_exists_conflict"
-            )
+            timestamp = observed_at or _utc_now()
+            _require_timestamp(timestamp, label="observed_at")
             result = TransportResult(
                 mutation_sha256=digest,
                 request_sha256=sha256_bytes(request_bytes),
-                result=result_name,
+                result=(
+                    "target_exists_matching"
+                    if observation.result == "matching"
+                    else "target_exists_conflict"
+                ),
                 target_path=request.target_path,
                 expected_content_sha256=request.content_sha256,
                 observed_content_sha256=observation.content_sha256,
@@ -460,6 +483,8 @@ def process_transport_request(
         except WebDAVCreateError as exc:
             raise ProductionOrchestrationError(str(exc)) from exc
         else:
+            timestamp = observed_at or _utc_now()
+            _require_timestamp(timestamp, label="observed_at")
             result = TransportResult(
                 mutation_sha256=digest,
                 request_sha256=sha256_bytes(request_bytes),
@@ -473,7 +498,7 @@ def process_transport_request(
             )
 
         try:
-            _store_immutable(_result_path(execution_dir, digest), result.to_json_bytes())
+            _store_immutable(_result_path(transport_dir, digest), result.to_json_bytes())
         except ArtifactLifecycleError as exc:
             raise ProductionOrchestrationError(
                 "remote effect was observed but transport result persistence failed"
@@ -518,10 +543,11 @@ def _reconcile_production_unlocked(
     allowed_roots: Sequence[str],
 ) -> ReconciliationResult:
     execution_dir, intent, _ = _load_intent_binding(ai_root, digest)
+    transport_dir = _transport_directory(ai_root)
     if intent is None:
         return ReconciliationResult("not_started", digest, None, None)
 
-    mutation_bytes, mutation, review_bytes, _ = _load_context(
+    _, mutation, review_bytes, _ = _load_context(
         ai_root,
         digest,
         allowed_roots=allowed_roots,
@@ -534,7 +560,11 @@ def _reconcile_production_unlocked(
     if request is None or request_bytes is None:
         if receipt is not None or recovery is not None:
             return ReconciliationResult(
-                "conflict", digest, intent.target_path, "terminal artifact exists without transport request", receipt
+                "conflict",
+                digest,
+                intent.target_path,
+                "terminal artifact exists without transport request",
+                receipt,
             )
         return ReconciliationResult("request_pending", digest, intent.target_path, None)
 
@@ -545,11 +575,15 @@ def _reconcile_production_unlocked(
         request,
         allowed_roots=allowed_roots,
     )
-    _, result = _load_result(execution_dir, digest)
+    _, result = _load_result(transport_dir, digest)
     if result is None:
         if receipt is not None or recovery is not None:
             return ReconciliationResult(
-                "conflict", digest, request.target_path, "terminal artifact exists without transport result", receipt
+                "conflict",
+                digest,
+                request.target_path,
+                "terminal artifact exists without transport result",
+                receipt,
             )
         return ReconciliationResult("transport_pending", digest, request.target_path, None)
 
@@ -576,13 +610,21 @@ def _reconcile_production_unlocked(
             and receipt.executed_at == result.observed_at
         ):
             return ReconciliationResult(
-                "conflict", digest, request.target_path, "receipt does not match verified remote result", receipt
+                "conflict",
+                digest,
+                request.target_path,
+                "receipt does not match verified remote result",
+                receipt,
             )
         return ReconciliationResult("completed", digest, request.target_path, None, receipt)
 
     if receipt is not None:
         return ReconciliationResult(
-            "conflict", digest, request.target_path, "receipt exists without verified remote create", receipt
+            "conflict",
+            digest,
+            request.target_path,
+            "receipt exists without verified remote create",
+            receipt,
         )
 
     if recovery is not None:
@@ -594,7 +636,10 @@ def _reconcile_production_unlocked(
             content_sha256=request.content_sha256,
         ):
             return ReconciliationResult(
-                "conflict", digest, request.target_path, "recovery record does not match production intent"
+                "conflict",
+                digest,
+                request.target_path,
+                "recovery record does not match production intent",
             )
         if recovery.decision == "abandon":
             return ReconciliationResult(
@@ -613,7 +658,10 @@ def _reconcile_production_unlocked(
                 + recovery.reason,
             )
         return ReconciliationResult(
-            "conflict", digest, request.target_path, "recovery decision is incompatible with transport result"
+            "conflict",
+            digest,
+            request.target_path,
+            "recovery decision is incompatible with transport result",
         )
 
     if result.result == "target_exists_matching":
@@ -642,12 +690,9 @@ def reconcile_production_execution(
     except ArtifactLifecycleError as exc:
         raise ProductionOrchestrationError(str(exc)) from exc
     execution_dir = _execution_directory(ai_root)
+    _transport_directory(ai_root)
     with _mutation_lock(execution_dir, digest):
-        return _reconcile_production_unlocked(
-            ai_root,
-            digest,
-            allowed_roots=allowed_roots,
-        )
+        return _reconcile_production_unlocked(ai_root, digest, allowed_roots=allowed_roots)
 
 
 def advance_production_executor(
@@ -663,25 +708,10 @@ def advance_production_executor(
     except ArtifactLifecycleError as exc:
         raise ProductionOrchestrationError(str(exc)) from exc
     execution_dir = _execution_directory(ai_root)
+    _transport_directory(ai_root)
     with _mutation_lock(execution_dir, digest):
-        state = _reconcile_production_unlocked(
-            ai_root,
-            digest,
-            allowed_roots=allowed_roots,
-        )
-        if state.status == "not_started":
-            _store_request_unlocked(
-                ai_root,
-                vault_root,
-                digest,
-                allowed_roots=allowed_roots,
-                note_policy=note_policy,
-                requested_at=None,
-            )
-            return _reconcile_production_unlocked(
-                ai_root, digest, allowed_roots=allowed_roots
-            )
-        if state.status == "request_pending":
+        state = _reconcile_production_unlocked(ai_root, digest, allowed_roots=allowed_roots)
+        if state.status in {"not_started", "request_pending"}:
             _store_request_unlocked(
                 ai_root,
                 vault_root,
@@ -696,12 +726,11 @@ def advance_production_executor(
         if state.status != "remote_verified_pending_receipt":
             return state
 
-        _, result = _load_result(execution_dir, digest)
+        transport_dir = _transport_directory(ai_root)
+        _, result = _load_result(transport_dir, digest)
         if result is None or result.result != "created_verified":
             raise ProductionOrchestrationError("verified remote result disappeared before receipt")
-        _, mutation, _, _ = _load_context(
-            ai_root, digest, allowed_roots=allowed_roots
-        )
+        _, mutation, _, _ = _load_context(ai_root, digest, allowed_roots=allowed_roots)
         receipt = ExecutionReceipt(
             mutation_id=mutation.mutation_id,
             mutation_sha256=digest,
@@ -715,9 +744,7 @@ def advance_production_executor(
             raise ProductionOrchestrationError(
                 "verified remote effect exists but receipt persistence failed"
             ) from exc
-        final = _reconcile_production_unlocked(
-            ai_root, digest, allowed_roots=allowed_roots
-        )
+        final = _reconcile_production_unlocked(ai_root, digest, allowed_roots=allowed_roots)
         if final.status != "completed":
             raise ProductionOrchestrationError(
                 f"receipt persisted but production reconciliation is {final.status}"
@@ -747,28 +774,25 @@ def record_remote_human_recovery(
         raise ProductionOrchestrationError("reason is invalid")
 
     execution_dir = _execution_directory(ai_root)
+    transport_dir = _transport_directory(ai_root)
     with _mutation_lock(execution_dir, digest):
         existing = load_recovery_record(ai_root, digest)
         if existing is not None:
-            if (
-                existing.decision == decision
-                and existing.resolver == resolver
-                and existing.reason == reason
-            ):
+            if existing.decision == decision and existing.resolver == resolver and existing.reason == reason:
                 return existing
             raise ProductionOrchestrationError("immutable recovery decision already exists")
 
-        state = _reconcile_production_unlocked(
-            ai_root, digest, allowed_roots=allowed_roots
-        )
+        state = _reconcile_production_unlocked(ai_root, digest, allowed_roots=allowed_roots)
         if state.status not in {"remote_effect_observed_without_receipt", "conflict"}:
             raise ProductionOrchestrationError(
                 f"production state is not recoverable: {state.status}"
             )
         request_bytes, request = _load_request(execution_dir, digest)
-        _, result = _load_result(execution_dir, digest)
+        _, result = _load_result(transport_dir, digest)
         if request is None or request_bytes is None or result is None:
             raise ProductionOrchestrationError("transport result is required for recovery")
+        if result.result not in {"target_exists_matching", "target_exists_conflict"}:
+            raise ProductionOrchestrationError("verified create result is not Human-recoverable")
         if decision == "adopt_observed_effect" and result.result != "target_exists_matching":
             raise ProductionOrchestrationError(
                 "adopt_observed_effect requires a matching remote observation"
@@ -819,7 +843,7 @@ def executor_main(argv: Sequence[str] | None = None) -> int:
             allowed_roots=args.allowed_root,
         )
     except (ArtifactLifecycleError, ExecutionOrchestrationError, ProductionOrchestrationError) as exc:
-        print(f"error: {exc}")
+        print(f"error: {exc}", file=sys.stderr)
         return 2
     print(json.dumps({"status": state.status, "reason": state.reason}, sort_keys=True))
     return 0
@@ -844,8 +868,13 @@ def worker_main(argv: Sequence[str] | None = None) -> int:
             password=password,
             timeout=args.timeout,
         )
-    except (ArtifactLifecycleError, ExecutionOrchestrationError, ProductionOrchestrationError) as exc:
-        print(f"error: {exc}")
+    except (
+        ArtifactLifecycleError,
+        ExecutionOrchestrationError,
+        ProductionOrchestrationError,
+        WebDAVCreateError,
+    ) as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return 2
     print(
         json.dumps(
