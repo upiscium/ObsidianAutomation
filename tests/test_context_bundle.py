@@ -9,6 +9,7 @@ from obsidian_automation.artifact_lifecycle import ArtifactLifecycleError, sha25
 from obsidian_automation.context_bundle import (
     CONTEXT_STAGE,
     build_context_bundle,
+    load_context_bundle,
     parse_context_bundle,
     store_context_bundle,
 )
@@ -38,7 +39,7 @@ def test_context_bundle_reads_exact_sources_and_persists_immutable_bytes(tmp_pat
 
     assert path == state / CONTEXT_STAGE / f"{digest}.context.json"
     assert sha256_bytes(path.read_bytes()) == digest
-    parsed = parse_context_bundle(path.read_bytes())
+    parsed = load_context_bundle(state, digest)
     assert [source.path for source in parsed.sources] == [
         "11-Knowledge/A.md",
         "11-Knowledge/B.md",
@@ -92,6 +93,21 @@ def test_context_bundle_detects_content_hash_tampering(tmp_path: Path) -> None:
         parse_context_bundle((json.dumps(value) + "\n").encode())
 
 
+def test_context_bundle_load_rejects_artifact_hash_mismatch(tmp_path: Path) -> None:
+    vault, state = _roots(tmp_path)
+    bundle = build_context_bundle(
+        vault,
+        query="query",
+        source_paths=[],
+        created_at="2026-08-22T00:00:00Z",
+    )
+    digest, path = store_context_bundle(state, bundle)
+    path.write_bytes(path.read_bytes() + b" ")
+
+    with pytest.raises(ArtifactLifecycleError, match="artifact hash mismatch"):
+        load_context_bundle(state, digest)
+
+
 def test_context_bundle_allows_empty_retrieval_result(tmp_path: Path) -> None:
     vault, state = _roots(tmp_path)
     bundle = build_context_bundle(
@@ -103,4 +119,4 @@ def test_context_bundle_allows_empty_retrieval_result(tmp_path: Path) -> None:
     digest, path = store_context_bundle(state, bundle)
 
     assert digest == sha256_bytes(path.read_bytes())
-    assert parse_context_bundle(path.read_bytes()).sources == ()
+    assert load_context_bundle(state, digest).sources == ()
