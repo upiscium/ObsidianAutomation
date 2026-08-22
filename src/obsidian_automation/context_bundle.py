@@ -13,6 +13,7 @@ from .artifact_lifecycle import (
     ArtifactLifecycleError,
     _canonical_json_bytes,
     _decode_json_object,
+    _read_exact_file,
     _require_safe_directory,
     _require_sha256,
     _store_immutable,
@@ -244,10 +245,16 @@ def parse_context_bundle(data: bytes) -> ContextBundle:
     return ContextBundle(query=query, created_at=created_at, sources=tuple(sources))
 
 
-def store_context_bundle(ai_root: Path, bundle: ContextBundle) -> tuple[str, Path]:
-    context_dir = ai_root.absolute() / CONTEXT_STAGE
-    _require_safe_directory(ai_root.absolute(), create=False)
+def _context_directory(ai_root: Path) -> Path:
+    root = ai_root.absolute()
+    context_dir = root / CONTEXT_STAGE
+    _require_safe_directory(root, create=False)
     _require_safe_directory(context_dir, create=False)
+    return context_dir
+
+
+def store_context_bundle(ai_root: Path, bundle: ContextBundle) -> tuple[str, Path]:
+    context_dir = _context_directory(ai_root)
     data = bundle.to_json_bytes()
     # Parse our own canonical bytes before persistence so malformed in-memory
     # objects cannot cross the Reader -> Generator boundary.
@@ -255,6 +262,15 @@ def store_context_bundle(ai_root: Path, bundle: ContextBundle) -> tuple[str, Pat
     digest = sha256_bytes(data)
     path = context_dir / f"{digest}.context.json"
     return digest, _store_immutable(path, data)
+
+
+def load_context_bundle(ai_root: Path, context_sha256: str) -> ContextBundle:
+    digest = _require_sha256(context_sha256, label="context_sha256")
+    path = _context_directory(ai_root) / f"{digest}.context.json"
+    data = _read_exact_file(path)
+    if sha256_bytes(data) != digest:
+        raise ArtifactLifecycleError("context bundle artifact hash mismatch")
+    return parse_context_bundle(data)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
