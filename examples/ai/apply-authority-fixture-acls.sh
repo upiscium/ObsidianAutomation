@@ -60,15 +60,17 @@ done
 
 SYNC_GROUP=$(id -gn "$SYNC_USER")
 
-# The Vault mirror belongs to Sync Transport. Other actors receive read/traverse only.
+# The Vault mirror belongs to Sync Transport. Reader only traverses the root.
+# Validator and Executor require root directory listing so deterministic
+# case-fold collision checks can inspect each canonical path component.
 install -d -o "$SYNC_USER" -g "$SYNC_GROUP" -m 0700 "$VAULT_ROOT"
 install -d -o "$SYNC_USER" -g "$SYNC_GROUP" -m 0700 "$KNOWLEDGE"
 setfacl -b "$VAULT_ROOT"
 setfacl -k "$VAULT_ROOT" || true
 for entry in \
   "u:$READER_USER:--x" \
-  "u:$VALIDATOR_USER:--x" \
-  "u:$EXECUTOR_USER:--x"; do
+  "u:$VALIDATOR_USER:r-x" \
+  "u:$EXECUTOR_USER:r-x"; do
   setfacl -m "$entry" "$VAULT_ROOT"
 done
 
