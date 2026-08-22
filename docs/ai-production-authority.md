@@ -55,6 +55,7 @@ Recommended layout:
 │   └── 11-Knowledge/
 └── state/                   # local-only; never rclone-sync this tree
     ├── 00-Untrusted/
+    ├── 04-Index/
     ├── 05-Context/
     ├── 10-Validation/
     ├── 20-Review/
@@ -64,7 +65,9 @@ Recommended layout:
     └── 30-Receipts/
 ```
 
-This separation is required. If AI state were kept inside a directory managed by `rclone sync` from Nextcloud, local-only context/intent/review/receipt artifacts could be deleted by a pull when they are absent remotely.
+This separation is required. If AI state were kept inside a directory managed by `rclone sync` from Nextcloud, local-only index/context/intent/review/receipt artifacts could be deleted by a pull when they are absent remotely.
+
+`04-Index` is Reader-private, non-authoritative derived state. Reader/Indexer is the only identity that may read or write it. The index never grants Generator direct Vault visibility.
 
 `05-Context` is a non-authoritative Reader -> Generator boundary. Reader/Indexer is the only writer and reads exact bytes from the canonical Knowledge mirror. Generator may read immutable Context Bundles but cannot write or replace them. Context does not grant validation, approval, execution, transport, or receipt authority; Generator output remains untrusted regardless of Context contents.
 
@@ -77,6 +80,9 @@ The reusable Python APIs take `vault_root` and `ai_root` separately.
 ```text
 Reader / Indexer
   read canonical 11-Knowledge
+  create immutable 04-Index/<sha>.index.json
+  select exact index SHA
+  deterministic lexical retrieval
   create immutable 05-Context/<sha>.context.json
         ↓ read-only boundary
 Generator
@@ -86,7 +92,7 @@ Generator
 Validator
 ```
 
-Generator deliberately has no direct path to canonical Knowledge. A Context Bundle contains the exact selected Markdown bytes, each source path, and a SHA-256 of each source. It is retrieval evidence for generation, not a trusted mutation artifact.
+Generator deliberately has no direct path to canonical Knowledge or Reader's index. A Context Bundle contains the exact selected Markdown bytes, each source path, and a SHA-256 of each source. It is retrieval evidence for generation, not a trusted mutation artifact.
 
 ## Canonical write sequence
 
@@ -131,6 +137,7 @@ Therefore:
 | --- | --- | --- | --- | --- | --- | --- |
 | Vault `11-Knowledge` | rw | r | - | r | - | r |
 | State `00-Untrusted` | - | - | rw | r | - | - |
+| State `04-Index` | - | rw | - | - | - | - |
 | State `05-Context` | - | rw | r | - | - | - |
 | State `10-Validation` | r | - | - | rw | r | r |
 | State `20-Review` | r | - | - | - | rw | r |
@@ -156,19 +163,19 @@ Remote Human recovery is bound to the exact durable intent and the exact transpo
 
 Simple owner/group/mode bits cannot express the required matrix cleanly. Production v0 requires a local filesystem with Linux POSIX ACL support and `setfacl`/`getfacl`.
 
-State stage directories should be root-owned; named-user ACL entries grant only the required stage capability. This prevents the Sync Transport from modifying Validation/Review/Execution, prevents the Executor from writing Transport results, prevents Reviewer from modifying machine-attested artifacts, and prevents Generator from reading the Vault or rewriting Reader-produced Context.
+State stage directories should be root-owned; named-user ACL entries grant only the required stage capability. This prevents the Sync Transport from modifying Validation/Review/Execution, prevents the Executor from writing Transport results, prevents Reviewer from modifying machine-attested artifacts, and prevents Generator from reading the Vault or Reader-private Index or rewriting Reader-produced Context.
 
 ## Required negative guarantees
 
 Production acceptance requires proving at OS level that:
 
-- Generator cannot read or write canonical Knowledge; it can read but not write `05-Context`; it cannot write later lifecycle stages.
-- Reader can read canonical Knowledge and write `05-Context`, but cannot read/write Generator proposals or later lifecycle stages and cannot write the Vault.
-- Validator can read canonical Knowledge and Untrusted but cannot write either canonical Knowledge or later stages.
-- Human reviewer can write Review and operational Locks but cannot write canonical Knowledge, Context, Validation, Execution, Transport, or Receipts.
-- Executor cannot write the Vault mirror, Context, Untrusted, Validation, Review, or Transport.
+- Generator cannot read or write canonical Knowledge or `04-Index`; it can read but not write `05-Context`; it cannot write later lifecycle stages.
+- Reader can read canonical Knowledge, read/write `04-Index`, and write `05-Context`, but cannot read/write Generator proposals or later lifecycle stages and cannot write the Vault.
+- Validator can read canonical Knowledge and Untrusted but cannot read Index/Context or write canonical Knowledge or later stages.
+- Human reviewer can write Review and operational Locks but cannot read Index/Context or write canonical Knowledge, Validation, Execution, Transport, or Receipts.
+- Executor cannot write the Vault mirror, Index, Context, Untrusted, Validation, Review, or Transport.
 - Executor can write only Locks, Execution, and Receipts.
-- Sync can write the local Vault mirror, Locks, and Transport results, but cannot forge Context, Untrusted, Validation, Review, Execution, or Receipts.
+- Sync can write the local Vault mirror, Locks, and Transport results, but cannot forge Index, Context, Untrusted, Validation, Review, Execution, or Receipts.
 - no identity other than Sync can read the Nextcloud writer credential.
 
 ## Health marker
@@ -186,19 +193,20 @@ The historical `.rclone-bisync` namespace name is retained for compatibility, bu
 1. Create the dedicated unprivileged AI Writer LXC.
 2. Create separate Linux identities for Sync, Reader, Generator, Validator, Reviewer, and Executor.
 3. Create separate `vault` and `state` roots.
-4. Apply and verify the revised POSIX ACL matrix, including `05-Context`, `24-Locks`, and `27-Transport`.
+4. Apply and verify the revised POSIX ACL matrix, including `04-Index`, `05-Context`, `24-Locks`, and `27-Transport`.
 5. Initialize the Vault mirror with Nextcloud -> local pull only.
-6. Install the production Reader context builder, validator, executor, and transport worker at one immutable ObsidianAutomation revision.
+6. Install Reader index/retrieval/context tools, validator, executor, and transport worker at one immutable ObsidianAutomation revision.
 7. Only after all local Gates pass, install the Nextcloud writer credential readable solely by `obsidian-ai-sync`.
 8. Run a disposable remote conditional-create E2E before enabling any real `create_note` proposal.
 9. Keep the Phase 1 Snapshot LXC unchanged and read-only.
-10. Connect Generator/Evaluator LLMs only after the deterministic path and Reader -> Generator context boundary are proven.
+10. Establish the deterministic lexical retrieval baseline before connecting Generator/Evaluator LLMs or semantic retrieval.
 
 ## Out of scope
 
 - multi-host Executor coordination;
 - automatic Human approval;
 - Generator/Evaluator LLM integration;
-- automatic retrieval/ranking policy for selecting Context Bundle sources;
+- embedding/vector retrieval and LLM reranking;
+- automatic index scheduling;
 - update/merge/delete/rename canonical mutations;
 - cryptographic identity proof for Human review records.

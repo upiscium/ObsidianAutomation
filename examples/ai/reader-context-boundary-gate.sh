@@ -18,10 +18,11 @@ REVIEWER_USER=${REVIEWER_USER:-obsidian-ai-reviewer}
 EXECUTOR_USER=${EXECUTOR_USER:-obsidian-ai-executor}
 
 KNOWLEDGE="$VAULT_ROOT/11-Knowledge"
+INDEX="$AI_ROOT/04-Index"
 CONTEXT="$AI_ROOT/05-Context"
 UNTRUSTED="$AI_ROOT/00-Untrusted"
 
-for directory in "$KNOWLEDGE" "$CONTEXT" "$UNTRUSTED"; do
+for directory in "$KNOWLEDGE" "$INDEX" "$CONTEXT" "$UNTRUSTED"; do
   [[ -d "$directory" && ! -L "$directory" ]] || {
     echo "ERROR: unsafe or missing fixture directory: $directory" >&2
     exit 1
@@ -62,27 +63,35 @@ probe_write() {
 }
 
 knowledge_seed="$KNOWLEDGE/.reader-context-gate-knowledge"
+index_seed="$INDEX/.reader-context-gate-index"
 context_seed="$CONTEXT/.reader-context-gate-context"
 untrusted_seed="$UNTRUSTED/.reader-context-gate-untrusted"
-created+=("$knowledge_seed" "$context_seed" "$untrusted_seed")
+created+=("$knowledge_seed" "$index_seed" "$context_seed" "$untrusted_seed")
 
 runuser -u "$SYNC_USER" -- sh -c 'printf "knowledge\n" > "$1"' sh "$knowledge_seed"
+runuser -u "$READER_USER" -- sh -c 'printf "index\n" > "$1"' sh "$index_seed"
 runuser -u "$READER_USER" -- sh -c 'printf "context\n" > "$1"' sh "$context_seed"
 runuser -u "$GENERATOR_USER" -- sh -c 'printf "proposal\n" > "$1"' sh "$untrusted_seed"
 
 probe_read "$READER_USER" "$knowledge_seed" allow "Reader reads canonical Knowledge"
+probe_read "$READER_USER" "$index_seed" allow "Reader reads its Index"
 probe_read "$READER_USER" "$context_seed" allow "Reader reads its Context bundle"
 probe_read "$GENERATOR_USER" "$context_seed" allow "Generator reads Reader-produced Context"
 probe_read "$GENERATOR_USER" "$knowledge_seed" deny "Generator cannot bypass Reader and read Knowledge"
+probe_read "$GENERATOR_USER" "$index_seed" deny "Generator cannot inspect Reader Index"
 probe_read "$READER_USER" "$untrusted_seed" deny "Reader cannot read Generator proposals"
 
 for user in "$SYNC_USER" "$VALIDATOR_USER" "$REVIEWER_USER" "$EXECUTOR_USER"; do
+  probe_read "$user" "$index_seed" deny "$user cannot read Index"
   probe_read "$user" "$context_seed" deny "$user cannot read Context"
 done
 
+probe_write "$READER_USER" "$INDEX" allow "Reader writes Index"
 probe_write "$READER_USER" "$CONTEXT" allow "Reader writes Context"
+probe_write "$GENERATOR_USER" "$INDEX" deny "Generator cannot rewrite Index"
 probe_write "$GENERATOR_USER" "$CONTEXT" deny "Generator cannot rewrite Context"
 for user in "$SYNC_USER" "$VALIDATOR_USER" "$REVIEWER_USER" "$EXECUTOR_USER"; do
+  probe_write "$user" "$INDEX" deny "$user cannot write Index"
   probe_write "$user" "$CONTEXT" deny "$user cannot write Context"
 done
 
