@@ -5,9 +5,10 @@ from pathlib import Path
 import pytest
 
 from obsidian_automation.artifact_lifecycle import ArtifactLifecycleError, sha256_bytes
-from obsidian_automation.context_bundle import load_context_bundle
+from obsidian_automation.context_bundle import MAX_CONTEXT_BYTES, load_context_bundle
 from obsidian_automation.knowledge_index import (
     INDEX_STAGE,
+    MAX_DOCUMENT_BYTES,
     build_knowledge_index,
     load_knowledge_index,
     rank_documents,
@@ -127,6 +128,43 @@ def test_retrieval_builds_exact_context_from_ranked_notes(tmp_path: Path) -> Non
     assert len(context.sources) == 1
     assert context.sources[0].path == "11-Knowledge/LXC GPU.md"
     assert context.sources[0].content == note
+
+
+def test_retrieval_respects_context_aggregate_byte_budget(tmp_path: Path) -> None:
+    vault, state = _roots(tmp_path)
+    payload = "alpha " * 18000
+    for index in range(5):
+        (vault / "11-Knowledge" / f"Large-{index}.md").write_text(
+            _note(body=f"# Alpha {index}\n{payload}"),
+            encoding="utf-8",
+        )
+
+    index_sha, _ = store_knowledge_index(state, build_knowledge_index(vault))
+    result = retrieve_context(
+        state,
+        vault,
+        index_sha256=index_sha,
+        query="alpha",
+        top_k=5,
+    )
+
+    selected = result["selected"]
+    assert isinstance(selected, list)
+    assert len(selected) == 4
+    context = load_context_bundle(state, str(result["context_sha256"]))
+    assert sum(len(source.content.encode("utf-8")) for source in context.sources) <= MAX_CONTEXT_BYTES
+
+
+def test_index_rejects_source_larger_than_context_source_limit(tmp_path: Path) -> None:
+    vault, _ = _roots(tmp_path)
+    oversized = "x" * (MAX_DOCUMENT_BYTES + 1)
+    (vault / "11-Knowledge" / "TooLarge.md").write_text(
+        _note(body=oversized),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ArtifactLifecycleError, match="exceeds"):
+        build_knowledge_index(vault)
 
 
 def test_retrieval_fails_closed_when_index_is_stale(tmp_path: Path) -> None:
