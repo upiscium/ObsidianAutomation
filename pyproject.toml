@@ -12,6 +12,7 @@ requires-python = ">=3.11"
 obsidian-public-export = "obsidian_automation.public_export:main"
 obsidian-public-publish = "obsidian_automation.public_publish:main"
 obsidian-vault-snapshot = "obsidian_automation.vault_snapshot_cli:main"
+obsidian-webdav-create = "obsidian_automation.webdav_create:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
