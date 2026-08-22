@@ -29,11 +29,11 @@ def query_idf_weights(index: KnowledgeIndex, query: str) -> dict[str, float]:
     if n_docs == 0:
         return {term: 1.0 for term in terms}
 
+    wanted = set(terms)
     doc_freq: Counter[str] = Counter()
     for doc in index.documents:
-        for term in terms:
-            if term in doc.term_freq:
-                doc_freq[term] += 1
+        for term in doc.term_freq.keys() & wanted:
+            doc_freq[term] += 1
 
     return {
         term: math.log(
@@ -59,7 +59,9 @@ def _coverage_from_weights(
     matched_terms = tuple(
         term for term in weights if document.term_freq.get(term, 0) > 0
     )
-    missing_terms = tuple(term for term in weights if document.term_freq.get(term, 0) <= 0)
+    missing_terms = tuple(
+        term for term in weights if document.term_freq.get(term, 0) <= 0
+    )
     matched_weight = sum(weights[term] for term in matched_terms)
     total_weight = sum(weights.values())
     coverage = matched_weight / total_weight if total_weight > 0.0 else 0.0
