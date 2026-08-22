@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/upiscium/ObsidianAutomation/schemas/remote-human-recovery-v0.schema.json",
+  "title": "Remote canonical effect Human recovery v0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "record_version",
+    "mutation_sha256",
+    "intent_sha256",
+    "transport_result_sha256",
+    "decision",
+    "observed_status",
+    "target_path",
+    "expected_content_sha256",
+    "decided_at",
+    "resolver",
+    "reason"
+  ],
+  "properties": {
+    "record_version": {"const": 1},
+    "mutation_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "intent_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "transport_result_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "decision": {"enum": ["adopt_observed_effect", "abandon"]},
+    "observed_status": {"enum": ["remote_effect_observed_without_receipt", "conflict"]},
+    "target_path": {"type": "string", "minLength": 1, "maxLength": 1024},
+    "expected_content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "decided_at": {"type": "string", "format": "date-time", "pattern": "Z$"},
+    "resolver": {"type": "string", "minLength": 1, "maxLength": 256},
+    "reason": {"type": "string", "minLength": 1, "maxLength": 2048}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"decision": {"const": "adopt_observed_effect"}}},
+      "then": {"properties": {"observed_status": {"const": "remote_effect_observed_without_receipt"}}}
+    }
+  ]
+}

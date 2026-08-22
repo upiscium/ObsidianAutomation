@@ -9,7 +9,7 @@ import ssl
 import stat
 import sys
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Sequence
 from urllib.parse import quote, urlsplit, urlunsplit
 
@@ -27,6 +27,15 @@ class WebDAVCreateResult:
     target_url: str
     content_sha256: str
     status_code: int
+    etag: str | None
+
+
+@dataclass(frozen=True)
+class WebDAVObservation:
+    target_url: str
+    result: str
+    status_code: int
+    content_sha256: str | None
     etag: str | None
 
 
@@ -93,6 +102,63 @@ def _authorization(username: str, password: str) -> str:
     return f"Basic {token}"
 
 
+def observe_remote(
+    *,
+    base_url: str,
+    target_path: str,
+    expected_content_sha256: str,
+    username: str,
+    password: str,
+    timeout: float = 30.0,
+    allow_http: bool = False,
+) -> WebDAVObservation:
+    if not username:
+        raise WebDAVCreateError("username must not be empty")
+    if not password:
+        raise WebDAVCreateError("password must not be empty")
+    if len(expected_content_sha256) != 64 or any(
+        char not in "0123456789abcdef" for char in expected_content_sha256
+    ):
+        raise WebDAVCreateError("expected_content_sha256 must be lowercase SHA-256 hex")
+
+    target_url = build_target_url(base_url, target_path, allow_http=allow_http)
+    parsed = urlsplit(target_url)
+    auth = _authorization(username, password)
+    conn = _connection(parsed, timeout=timeout)
+    try:
+        conn.request("GET", parsed.path, headers={"Authorization": auth})
+        response = conn.getresponse()
+        remote = response.read()
+        status = response.status
+        etag = response.getheader("ETag")
+    except OSError as exc:
+        raise WebDAVCreateError(f"WebDAV observation GET failed: {exc}") from exc
+    finally:
+        conn.close()
+
+    if status == 404:
+        return WebDAVObservation(
+            target_url=target_url,
+            result="absent",
+            status_code=status,
+            content_sha256=None,
+            etag=etag,
+        )
+    if status != 200:
+        raise WebDAVCreateError(
+            f"WebDAV observation GET returned unexpected HTTP status {status}"
+        )
+
+    actual_sha = hashlib.sha256(remote).hexdigest()
+    return WebDAVObservation(
+        target_url=target_url,
+        result="matching" if actual_sha == expected_content_sha256 else "conflict",
+        status_code=status,
+        content_sha256=actual_sha,
+        etag=etag,
+    )
+
+
 def conditional_create(
     *,
     base_url: str,
@@ -137,31 +203,24 @@ def conditional_create(
     if not 200 <= status < 300:
         raise WebDAVCreateError(f"WebDAV PUT returned unexpected HTTP status {status}")
 
-    verify = _connection(parsed, timeout=timeout)
-    try:
-        verify.request("GET", parsed.path, headers={"Authorization": auth})
-        response = verify.getresponse()
-        remote = response.read()
-        verify_status = response.status
-        verify_etag = response.getheader("ETag")
-    except OSError as exc:
-        raise WebDAVCreateError(f"WebDAV verification GET failed: {exc}") from exc
-    finally:
-        verify.close()
-
-    if verify_status != 200:
-        raise WebDAVCreateError(
-            f"WebDAV verification GET returned unexpected HTTP status {verify_status}"
-        )
     expected_sha = hashlib.sha256(content).hexdigest()
-    if hashlib.sha256(remote).hexdigest() != expected_sha:
+    observation = observe_remote(
+        base_url=base_url,
+        target_path=target_path,
+        expected_content_sha256=expected_sha,
+        username=username,
+        password=password,
+        timeout=timeout,
+        allow_http=allow_http,
+    )
+    if observation.result != "matching":
         raise WebDAVCreateError("remote bytes do not match the requested create content")
 
     return WebDAVCreateResult(
         target_url=target_url,
         content_sha256=expected_sha,
         status_code=status,
-        etag=verify_etag or etag,
+        etag=observation.etag or etag,
     )
 
 

@@ -4,15 +4,14 @@
 
 Phase 2 introduces canonical Vault writes. The Snapshot LXC from Phase 1 remains read-only and must not be upgraded into a canonical writer.
 
-Production v0 therefore uses one dedicated AI Writer host/LXC. The host is the only machine allowed to run the canonical executor. Generator, Validator, Human review, Executor, Reader/Indexer, and sync transport are separated by Linux identities and filesystem ACLs.
-
-This document defines the permission boundary. It does not define the Nextcloud synchronization implementation itself.
+Production v0 uses one dedicated AI Writer host/LXC. Generator, Validator, Human review, Executor, Reader/Indexer, and Sync Transport are separated by Linux identities and filesystem ACLs. Canonical remote creation is performed only by the Sync Transport with a conditional WebDAV request.
 
 ## Host boundary
 
 ```text
 Nextcloud Live Vault
         ^
+        | conditional WebDAV create
         | dedicated writer credential
         |
 AI Writer host/LXC
@@ -27,15 +26,13 @@ Snapshot LXC
 └── existing Nextcloud read-only credential only
 ```
 
-Production v0 requires exactly one canonical Executor host. The host-local `flock` in the execution orchestrator is not a distributed lock.
+Production v0 requires exactly one AI Writer host. The shared production lock is host-local and is not a distributed lock.
 
 ## Credential boundary
 
 Only `obsidian-ai-sync` may hold the Nextcloud writer credential.
 
-`obsidian-ai-sync` is a transport authority. It necessarily has broad access to the synchronized Vault, but it must not run an LLM, accept Generator/Evaluator prompts, or expose a semantic mutation interface.
-
-The following identities must have no Nextcloud writer credential:
+The following identities have no Nextcloud writer credential:
 
 - `obsidian-ai-reader`;
 - `obsidian-ai-generator`;
@@ -44,40 +41,68 @@ The following identities must have no Nextcloud writer credential:
 - `obsidian-ai-executor`;
 - the Phase 1 Snapshot LXC account.
 
-The Executor gets canonical write authority from the local filesystem permission boundary, not from a remote storage credential.
+`obsidian-ai-sync` does not accept LLM prompts or semantic mutation instructions. It consumes an exact durable transport request prepared by the Executor, independently rechecks the validated mutation / Human approval / execution intent binding, performs `PUT` with `If-None-Match: *`, verifies the remote bytes, and writes only the transport-result stage.
 
-## Canonical entrypoint
+## Mirror and AI state are separate
 
-Production must expose only the recovery-aware executor entrypoint:
+Production must not store the AI lifecycle journal inside the pull-only Vault mirror.
 
-```text
-run_recovery_aware_create_note
-```
-
-The lower-level `run_approved_create_note` remains an implementation primitive and is not the production service entrypoint.
-
-## Filesystem layout
-
-The synchronized local Vault contains:
+Recommended layout:
 
 ```text
-<Vault>/
-├── 11-Knowledge/
-└── 20-AI/
+/var/lib/obsidian-ai/
+├── vault/                   # Nextcloud -> local pull-only mirror
+│   └── 11-Knowledge/
+└── state/                   # local authority journal; never rclone-sync this tree
     ├── 00-Untrusted/
     ├── 10-Validation/
     ├── 20-Review/
+    ├── 24-Locks/
     ├── 25-Execution/
+    ├── 27-Transport/
     └── 30-Receipts/
 ```
 
-The reusable scripts in `examples/ai/` operate only on a disposable Vault carrying the marker file:
+This separation is required. If AI state were kept inside a directory managed by `rclone sync` from Nextcloud, local-only intent/review/receipt artifacts could be deleted by a pull when they are absent remotely.
+
+`24-Locks` is operational state only. It carries no approval, mutation, transport-attestation, or receipt authority. Executor, Sync Transport, and the Human recovery tool share write access to this directory solely so the three processes can serialize one mutation on the single production host without granting write access to each other's semantic stages.
+
+The reusable Python APIs take `vault_root` and `ai_root` separately.
+
+## Canonical write sequence
 
 ```text
-.obsidian-ai-disposable-fixture
+shared per-mutation lock
+        ↓
+Executor
+  validate local mirror + Human approval
+  persist durable intent
+  write 25-Execution/<sha>.transport-request.json
+        ↓
+Sync Transport
+  read exact request + validation + approval + intent
+  conditional WebDAV PUT (If-None-Match: *)
+  remote GET byte verification
+  write 27-Transport/<sha>.transport-result.json
+        ↓
+Executor
+  verify exact transport-result binding
+  write 30-Receipts/<sha>.receipt.json
 ```
 
-They intentionally refuse to run without that marker.
+The Executor never writes the local Vault mirror as the canonical effect. The mirror remains a read replica and later observes the successful Nextcloud write through the normal pull path.
+
+## Why `27-Transport` is a separate authority stage
+
+Transport results must not live in the Executor-writable `25-Execution` directory. Otherwise the Executor identity could forge a `created_verified` result and manufacture a success receipt without contacting Nextcloud.
+
+Therefore:
+
+- Executor writes `25-Execution` and reads `27-Transport`;
+- Sync reads `25-Execution` and writes `27-Transport`;
+- Reviewer reads both when resolving an ambiguous remote outcome;
+- all three share only `24-Locks` for host-local mutual exclusion;
+- only a verified `created_verified` result allows the Executor to create a success receipt.
 
 ## Actor permissions
 
@@ -85,64 +110,75 @@ They intentionally refuse to run without that marker.
 
 | Resource | Sync | Reader | Generator | Validator | Human reviewer | Executor |
 | --- | --- | --- | --- | --- | --- | --- |
-| `11-Knowledge` | rw | r | - | r | - | rw |
-| `20-AI/00-Untrusted` | rw | - | rw | r | - | - |
-| `20-AI/10-Validation` | rw | - | - | rw | r | r |
-| `20-AI/20-Review` | rw | - | - | - | rw | r |
-| `20-AI/25-Execution` | rw | - | - | - | - | rw |
-| `20-AI/30-Receipts` | rw | - | - | - | r | rw |
+| Vault `11-Knowledge` | rw | r | - | r | - | r |
+| State `00-Untrusted` | - | - | rw | r | - | - |
+| State `10-Validation` | r | - | - | rw | r | r |
+| State `20-Review` | r | - | - | - | rw | r |
+| State `24-Locks` | rw | - | - | - | rw | rw |
+| State `25-Execution` | r | - | - | - | r | rw |
+| State `27-Transport` | rw | - | - | - | r | r |
+| State `30-Receipts` | - | - | - | - | r | rw |
 
-The Generator deliberately does not receive direct canonical Vault read access. Retrieval/context should be supplied through the Reader/Indexer boundary rather than by giving the LLM filesystem access to the full Vault.
+The Generator deliberately does not receive direct canonical Vault read access. Retrieval/context is supplied through the Reader/Indexer boundary instead.
 
 The Human reviewer does not receive canonical write permission through this mechanism. Human editing through normal Obsidian remains a separate existing authority path.
 
-## Why POSIX ACLs are used
+## Remote crash semantics
 
-Simple owner/group/mode bits cannot express the required matrix cleanly. For example, `11-Knowledge` must be writable by Sync and Executor while remaining read-only to Validator/Reader. POSIX ACLs allow those identities to be separated without making Validator a member of a canonical-writer group.
+A remote conditional PUT and local transport-result persistence are not one atomic transaction.
 
-The v0 deployment therefore requires a local filesystem with normal Linux POSIX ACL support and the `setfacl`/`getfacl` utilities.
+- If PUT never succeeds, no result is written and retry remains possible.
+- If PUT succeeds and the verified `created_verified` result is durable, receipt creation can be retried safely.
+- If PUT succeeds but the process crashes before the result is durable, the next conditional PUT returns 412. The Sync Transport observes the remote bytes and records `target_exists_matching` or `target_exists_conflict`.
+- `target_exists_matching` is not converted automatically into success because the actor that created the bytes can no longer be proven. Human recovery may explicitly adopt the observed effect without creating a success receipt, or abandon it.
 
-No NFS/CIFS permission emulation is assumed by this contract.
+Remote Human recovery is bound to the exact durable intent and the exact transport-result bytes.
 
-## ACL inheritance
+## POSIX ACL requirement
 
-The fixture ACL script installs both access ACLs and default ACLs. New artifacts should inherit the same stage-specific authority boundary.
+Simple owner/group/mode bits cannot express the required matrix cleanly. Production v0 requires a local filesystem with Linux POSIX ACL support and `setfacl`/`getfacl`.
 
-The sync transport remains the directory owner. Additional actor permissions are granted as named-user ACL entries.
-
-This is an explicit trust decision: compromise of `obsidian-ai-sync` compromises the synchronized Vault. The mitigation is service isolation and absence of any LLM-facing interface, not pretending the transport credential is low privilege.
+State stage directories should be root-owned; named-user ACL entries grant only the required stage capability. This prevents the Sync Transport from modifying Validation/Review/Execution, prevents the Executor from writing Transport results, and prevents Reviewer from modifying machine-attested artifacts.
 
 ## Required negative guarantees
 
 Production acceptance requires proving at OS level that:
 
-- Generator cannot create or modify anything under `11-Knowledge`, Validation, Review, Execution, or Receipts.
-- Validator cannot create or modify canonical notes, Review, Execution, or Receipts.
-- Human review identity cannot write canonical notes, Validation, Execution, or Receipts.
-- Reader cannot write canonical notes or any `20-AI` stage.
-- Executor cannot write Untrusted, Validation, or Review.
-- Executor can write only the approved canonical root plus Execution/Receipts.
-- Sync transport can synchronize all required directories but is the only identity with the Nextcloud writer credential.
+- Generator cannot read or write canonical Knowledge and cannot write later lifecycle stages.
+- Validator can read canonical Knowledge and Untrusted but cannot write either canonical Knowledge or later stages.
+- Human reviewer can write Review and operational Locks but cannot write canonical Knowledge, Validation, Execution, Transport, or Receipts.
+- Reader can read canonical Knowledge but cannot write the Vault or AI state.
+- Executor cannot write the Vault mirror, Untrusted, Validation, Review, or Transport.
+- Executor can write only Locks, Execution, and Receipts.
+- Sync can write the local Vault mirror, Locks, and Transport results, but cannot forge Untrusted, Validation, Review, Execution, or Receipts.
+- no identity other than Sync can read the Nextcloud writer credential.
 
-The disposable authority gate performs positive and negative write probes using `runuser` rather than inferring capability only from configuration.
+## Health marker
+
+The transport health marker remains:
+
+```text
+98-System/.rclone-bisync/RCLONE_TEST
+```
+
+The historical `.rclone-bisync` namespace name is retained for compatibility, but canonical writes do not use bisync. The Public Exporter excludes `98-System/.rclone-bisync/**`.
 
 ## Production deployment sequence
 
-1. Create a dedicated unprivileged AI Writer host/LXC.
-2. Create separate Linux identities for Sync, Reader, Generator, Validator, and Executor.
-3. Select the real Human reviewer account/tool identity.
-4. Create a disposable Vault fixture on the same filesystem type intended for production.
-5. Apply the ACL fixture policy.
-6. Run the authority-separation Gate and require all probes to pass.
-7. Only after the Gate passes, design and install the Nextcloud writer/sync transport.
-8. Keep the Phase 1 Snapshot LXC unchanged and read-only.
-9. Deploy the deterministic pipeline before connecting Generator/Evaluator LLMs.
+1. Create the dedicated unprivileged AI Writer LXC.
+2. Create separate Linux identities for Sync, Reader, Generator, Validator, Reviewer, and Executor.
+3. Create separate `vault` and `state` roots.
+4. Apply and verify the revised POSIX ACL matrix, including `24-Locks` and `27-Transport`.
+5. Initialize the Vault mirror with Nextcloud -> local pull only.
+6. Install the production executor and transport worker at one immutable ObsidianAutomation revision.
+7. Only after all local Gates pass, install the Nextcloud writer credential readable solely by `obsidian-ai-sync`.
+8. Run a disposable remote conditional-create E2E before enabling any real `create_note` proposal.
+9. Keep the Phase 1 Snapshot LXC unchanged and read-only.
+10. Connect Generator/Evaluator LLMs only after the deterministic path is proven.
 
 ## Out of scope
 
 - multi-host Executor coordination;
-- Nextcloud synchronization transport choice;
-- production credentials;
 - automatic Human approval;
 - Generator/Evaluator LLM integration;
 - update/merge/delete/rename canonical mutations;

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/upiscium/ObsidianAutomation/schemas/transport-result-v0.schema.json",
+  "title": "Canonical create transport result v0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "record_version",
+    "mutation_sha256",
+    "request_sha256",
+    "result",
+    "target_path",
+    "expected_content_sha256",
+    "observed_content_sha256",
+    "observed_at",
+    "http_status",
+    "etag"
+  ],
+  "properties": {
+    "record_version": {"const": 1},
+    "mutation_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "request_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "result": {"enum": ["created_verified", "target_exists_matching", "target_exists_conflict"]},
+    "target_path": {"type": "string", "minLength": 1, "maxLength": 1024},
+    "expected_content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "observed_content_sha256": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      ]
+    },
+    "observed_at": {"type": "string", "format": "date-time", "pattern": "Z$"},
+    "http_status": {"type": "integer", "minimum": 100, "maximum": 599},
+    "etag": {"type": ["string", "null"]}
+  }
+}

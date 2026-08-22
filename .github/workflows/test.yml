@@ -48,11 +48,17 @@ jobs:
               --shell /usr/sbin/nologin \
               "$user"
           done
-      - name: Run disposable Authority separation Gate
+      - name: Run separate Vault/state Authority separation Gate
         run: |
-          sudo install -d -m 0700 /tmp/obsidian-ai-fixture
-          sudo touch /tmp/obsidian-ai-fixture/.obsidian-ai-disposable-fixture
-          sudo env VAULT_ROOT=/tmp/obsidian-ai-fixture \
+          sudo install -d -m 0700 /tmp/obsidian-ai-vault-fixture
+          sudo touch /tmp/obsidian-ai-vault-fixture/.obsidian-ai-disposable-fixture
+          sudo install -d -m 0700 /tmp/obsidian-ai-state-fixture
+          sudo touch /tmp/obsidian-ai-state-fixture/.obsidian-ai-disposable-state
+          sudo env \
+            VAULT_ROOT=/tmp/obsidian-ai-vault-fixture \
+            AI_ROOT=/tmp/obsidian-ai-state-fixture \
             bash examples/ai/apply-authority-fixture-acls.sh
-          sudo env VAULT_ROOT=/tmp/obsidian-ai-fixture \
+          sudo env \
+            VAULT_ROOT=/tmp/obsidian-ai-vault-fixture \
+            AI_ROOT=/tmp/obsidian-ai-state-fixture \
             bash examples/ai/authority-separation-gate.sh
