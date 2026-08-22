@@ -14,6 +14,7 @@ from .artifact_lifecycle import (
     _canonical_json_bytes,
     _decode_json_object,
     _require_safe_directory,
+    _require_sha256,
     _store_immutable,
     _utc_now,
     sha256_bytes,
@@ -151,10 +152,15 @@ def build_context_bundle(
     if len(source_paths) > MAX_SOURCES:
         raise ArtifactLifecycleError(f"context bundle supports at most {MAX_SOURCES} sources")
 
+    normalized_paths: list[str] = []
+    for path in source_paths:
+        _safe_source_parts(path)
+        normalized_paths.append(path)
+
     seen: set[str] = set()
     sources: list[ContextSource] = []
     total = 0
-    for path in sorted(source_paths, key=lambda value: value.casefold()):
+    for path in sorted(normalized_paths, key=lambda value: value.casefold()):
         folded = path.casefold()
         if folded in seen:
             raise ArtifactLifecycleError(f"duplicate context source path: {path}")
@@ -188,7 +194,7 @@ def parse_context_bundle(data: bytes) -> ContextBundle:
     value = _decode_json_object(data, label="context bundle")
     if set(value) != {"record_version", "query", "created_at", "sources"}:
         raise ArtifactLifecycleError("context bundle properties do not match contract")
-    if value["record_version"] != 1:
+    if type(value["record_version"]) is not int or value["record_version"] != 1:
         raise ArtifactLifecycleError("context bundle record_version must be integer 1")
 
     query = value["query"]
@@ -217,8 +223,9 @@ def parse_context_bundle(data: bytes) -> ContextBundle:
         if folded in seen:
             raise ArtifactLifecycleError("context bundle contains duplicate source paths")
         seen.add(folded)
-        if not isinstance(digest, str) or len(digest) != 64:
+        if not isinstance(digest, str):
             raise ArtifactLifecycleError("context source content_sha256 is invalid")
+        digest = _require_sha256(digest, label="context source content_sha256")
         if not isinstance(content, str):
             raise ArtifactLifecycleError("context source content must be a string")
         encoded = content.encode("utf-8")
