@@ -13,9 +13,14 @@ from .artifact_lifecycle import (
     sha256_bytes,
     store_untrusted_proposal,
 )
-from .canonical_mutation import CreateNoteMutation
+from .canonical_mutation import CreateNoteMutation, MutationValidationError
 from .context_bundle import ContextBundle, load_context_bundle
-from .knowledge_note_policy import MAX_CONTENT_BYTES, validate_knowledge_note_v0
+from .knowledge_note_policy import (
+    ALLOWED_CATEGORIES,
+    ALLOWED_SOURCE_TYPES,
+    MAX_CONTENT_BYTES,
+    validate_knowledge_note_v0,
+)
 
 
 OUTPUT_CONTRACT_VERSION = "knowledge-note-semantic-output-v0"
@@ -24,23 +29,6 @@ MAX_GENERATOR_OUTPUT_BYTES = 256 * 1024
 MAX_TITLE_CHARS = 200
 MAX_BODY_BYTES = 252 * 1024
 
-_ALLOWED_CATEGORIES = (
-    "",
-    "explanation",
-    "manual",
-    "troubleshooting",
-    "spec",
-    "reference",
-    "summary",
-)
-_ALLOWED_SOURCE_TYPES = (
-    "self",
-    "official",
-    "paper",
-    "book",
-    "web",
-    "other",
-)
 _WINDOWS_FORBIDDEN = set('<>:"/\\|?*')
 _WINDOWS_RESERVED_STEMS = {
     "con",
@@ -64,11 +52,11 @@ OUTPUT_JSON_SCHEMA: Mapping[str, object] = {
         },
         "category": {
             "type": "string",
-            "enum": list(_ALLOWED_CATEGORIES),
+            "enum": list(ALLOWED_CATEGORIES),
         },
         "source_type": {
             "type": "string",
-            "enum": list(_ALLOWED_SOURCE_TYPES),
+            "enum": list(ALLOWED_SOURCE_TYPES),
         },
         "body": {
             "type": "string",
@@ -182,9 +170,9 @@ def parse_generator_output(data: bytes) -> KnowledgeGeneratorOutput:
     source_type = value["source_type"]
     body = _validate_body(value["body"])
 
-    if not isinstance(category, str) or category not in _ALLOWED_CATEGORIES:
+    if not isinstance(category, str) or category not in ALLOWED_CATEGORIES:
         raise ArtifactLifecycleError("generator output category is not allowed")
-    if not isinstance(source_type, str) or source_type not in _ALLOWED_SOURCE_TYPES:
+    if not isinstance(source_type, str) or source_type not in ALLOWED_SOURCE_TYPES:
         raise ArtifactLifecycleError("generator output source_type is not allowed")
 
     return KnowledgeGeneratorOutput(
@@ -293,7 +281,7 @@ def assemble_knowledge_note_proposal(
     )
     try:
         validate_knowledge_note_v0(mutation)
-    except Exception as exc:
+    except MutationValidationError as exc:
         raise ArtifactLifecycleError(f"assembled Knowledge Note violates policy: {exc}") from exc
 
     return _canonical_json_bytes(
