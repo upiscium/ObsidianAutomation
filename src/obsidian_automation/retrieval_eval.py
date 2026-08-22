@@ -29,6 +29,7 @@ EVAL_VERSION = 1
 METRIC_K = 3
 MAX_CASES = 512
 CUTOFF_RATIOS = (0.0, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 1.0)
+TOP1_SCORE_THRESHOLDS = (0.0, 1.0, 2.0, 3.0, 5.0, 8.0, 12.0)
 
 
 @dataclass(frozen=True)
@@ -191,14 +192,15 @@ def _baseline_metrics(
     }
 
 
-def _select_for_ratio(
+def _select_candidates(
     index: KnowledgeIndex,
     ranked: Sequence[RankedDocument],
     *,
     ratio: float,
+    min_top1_score: float,
     top_k: int,
 ) -> tuple[RankedDocument, ...]:
-    if not ranked:
+    if not ranked or ranked[0].score < min_top1_score:
         return ()
     threshold = ranked[0].score * ratio
     size_by_path = {doc.path: doc.byte_size for doc in index.documents}
@@ -217,12 +219,13 @@ def _select_for_ratio(
     return tuple(selected)
 
 
-def _cutoff_metrics(
+def _selection_metrics(
     index: KnowledgeIndex,
     cases: Sequence[RetrievalEvalCase],
     rankings: dict[str, tuple[RankedDocument, ...]],
     *,
     ratio: float,
+    min_top1_score: float,
     top_k: int,
 ) -> dict[str, object]:
     selected_total = 0
@@ -234,8 +237,13 @@ def _cutoff_metrics(
     positive_cases = 0
 
     for case in cases:
-        ranked = rankings[case.case_id]
-        selected = _select_for_ratio(index, ranked, ratio=ratio, top_k=top_k)
+        selected = _select_candidates(
+            index,
+            rankings[case.case_id],
+            ratio=ratio,
+            min_top1_score=min_top1_score,
+            top_k=top_k,
+        )
         relevant = set(case.relevant_paths)
 
         selected_total += len(selected)
@@ -256,7 +264,6 @@ def _cutoff_metrics(
     f1 = (2.0 * precision * recall / (precision + recall)) if precision + recall else 0.0
 
     return {
-        "ratio": ratio,
         "micro_precision": _round_metric(precision),
         "micro_recall": _round_metric(recall),
         "micro_f1": _round_metric(f1),
@@ -307,21 +314,39 @@ def evaluate_retrieval(
             }
         )
 
+    relative_sweep = []
+    for ratio in CUTOFF_RATIOS:
+        row = _selection_metrics(
+            index,
+            eval_set.cases,
+            rankings,
+            ratio=ratio,
+            min_top1_score=0.0,
+            top_k=top_k,
+        )
+        row["ratio"] = ratio
+        relative_sweep.append(row)
+
+    absolute_sweep = []
+    for threshold in TOP1_SCORE_THRESHOLDS:
+        row = _selection_metrics(
+            index,
+            eval_set.cases,
+            rankings,
+            ratio=0.0,
+            min_top1_score=threshold,
+            top_k=top_k,
+        )
+        row["min_top1_score"] = threshold
+        absolute_sweep.append(row)
+
     return {
         "eval_version": EVAL_VERSION,
         "name": eval_set.name,
         "case_count": len(eval_set.cases),
         "baseline": _baseline_metrics(eval_set.cases, rankings),
-        "cutoff_sweep": [
-            _cutoff_metrics(
-                index,
-                eval_set.cases,
-                rankings,
-                ratio=ratio,
-                top_k=top_k,
-            )
-            for ratio in CUTOFF_RATIOS
-        ],
+        "relative_cutoff_sweep": relative_sweep,
+        "absolute_top1_score_sweep": absolute_sweep,
         "cases": case_reports,
     }
 
