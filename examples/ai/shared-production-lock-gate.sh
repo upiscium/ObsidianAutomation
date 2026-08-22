@@ -30,18 +30,28 @@ LOCK_PATH="$LOCK_DIR/$DIGEST.lock"
   exit 1
 }
 
-for command in runuser python3 getfacl; do
+for command in runuser python3 getfacl mktemp cp chmod; do
   command -v "$command" >/dev/null || {
     echo "ERROR: required command not found: $command" >&2
     exit 1
   }
 done
 
+# GitHub Actions checkout parents are not necessarily traversable by the
+# fixture system users. Copy only the package under test to a disposable,
+# read-only-for-actors import root so the Gate tests ACLs rather than checkout
+# directory permissions.
+PYTHON_ROOT=$(mktemp -d)
+chmod 0755 "$PYTHON_ROOT"
+cp -a "$REPO_ROOT/src/obsidian_automation" "$PYTHON_ROOT/obsidian_automation"
+chmod -R a+rX "$PYTHON_ROOT/obsidian_automation"
+
 cleanup() {
   rm -f -- "$LOCK_PATH"
+  rm -rf -- "$PYTHON_ROOT"
 }
 trap cleanup EXIT
-cleanup
+rm -f -- "$LOCK_PATH"
 
 failures=0
 pass() { printf 'PASS: %s\n' "$1"; }
@@ -50,7 +60,7 @@ fail() { printf 'FAIL: %s\n' "$1" >&2; failures=$((failures + 1)); }
 probe_lock() {
   local user=$1 expected=$2 label=$3
   if runuser -u "$user" -- env \
-    PYTHONPATH="$REPO_ROOT/src" \
+    PYTHONPATH="$PYTHON_ROOT" \
     python3 - "$LOCK_DIR" "$DIGEST" <<'PY'
 import sys
 from pathlib import Path
