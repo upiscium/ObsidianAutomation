@@ -28,6 +28,15 @@ def _existing_validation(ai_root: Path, proposal_sha256: str) -> dict[str, objec
     record = parse_validation_record(_read_exact_file(path))
     if record.proposal_sha256 != proposal_sha256:
         raise ArtifactLifecycleError("validation record is bound to another proposal")
+
+    if record.result == "accepted":
+        if record.mutation_sha256 is None:
+            raise ArtifactLifecycleError("accepted validation is missing mutation_sha256")
+        mutation_path = ai_root / "10-Validation" / f"{record.mutation_sha256}.mutation.json"
+        mutation_bytes = _read_exact_file(mutation_path)
+        if sha256_bytes(mutation_bytes) != record.mutation_sha256:
+            raise ArtifactLifecycleError("validated mutation artifact hash mismatch")
+
     return {
         "policy": POLICY_NAME,
         "proposal_sha256": proposal_sha256,
