@@ -35,6 +35,7 @@ def _setup(tmp_path: Path):
     state = tmp_path / "state"
     state.mkdir()
     ensure_artifact_layout(state)
+    (state / "24-Locks").mkdir()
     (state / "27-Transport").mkdir()
 
     proposal = (
