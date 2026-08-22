@@ -35,7 +35,7 @@ from .execution_orchestrator import (
     _prepare_unlocked,
     _verify_intent,
 )
-from .human_recovery import RecoveryRecord, load_recovery_record
+from .human_recovery import load_recovery_record
 from .webdav_create import (
     WebDAVCreateError,
     WebDAVCreateResult,
@@ -101,6 +101,37 @@ class TransportResult:
         )
 
 
+@dataclass(frozen=True)
+class RemoteRecoveryRecord:
+    mutation_sha256: str
+    intent_sha256: str
+    transport_result_sha256: str
+    decision: str
+    observed_status: str
+    target_path: str
+    expected_content_sha256: str
+    decided_at: str
+    resolver: str
+    reason: str
+
+    def to_json_bytes(self) -> bytes:
+        return _canonical_json_bytes(
+            {
+                "record_version": 1,
+                "mutation_sha256": self.mutation_sha256,
+                "intent_sha256": self.intent_sha256,
+                "transport_result_sha256": self.transport_result_sha256,
+                "decision": self.decision,
+                "observed_status": self.observed_status,
+                "target_path": self.target_path,
+                "expected_content_sha256": self.expected_content_sha256,
+                "decided_at": self.decided_at,
+                "resolver": self.resolver,
+                "reason": self.reason,
+            }
+        )
+
+
 CreateCallable = Callable[..., WebDAVCreateResult]
 ObserveCallable = Callable[..., WebDAVObservation]
 
@@ -127,8 +158,8 @@ def _result_path(transport_dir: Path, digest: str) -> Path:
     return transport_dir / f"{digest}.transport-result.json"
 
 
-def _recovery_path(ai_root: Path, digest: str) -> Path:
-    return ensure_artifact_layout(ai_root).review / f"{digest}.recovery.json"
+def _remote_recovery_path(ai_root: Path, digest: str) -> Path:
+    return ensure_artifact_layout(ai_root).review / f"{digest}.remote-recovery.json"
 
 
 def _require_timestamp(value: object, *, label: str) -> str:
@@ -205,7 +236,6 @@ def parse_transport_result(data: bytes) -> TransportResult:
     result = value["result"]
     if result not in {"created_verified", "target_exists_matching", "target_exists_conflict"}:
         raise ProductionOrchestrationError("transport result is invalid")
-
     observed_value = value["observed_content_sha256"]
     if observed_value is None:
         observed_sha = None
@@ -241,6 +271,70 @@ def parse_transport_result(data: bytes) -> TransportResult:
     )
 
 
+def parse_remote_recovery(data: bytes) -> RemoteRecoveryRecord:
+    try:
+        value = _decode_json_object(data, label="remote recovery record")
+    except ArtifactLifecycleError as exc:
+        raise ProductionOrchestrationError(str(exc)) from exc
+    required = {
+        "record_version",
+        "mutation_sha256",
+        "intent_sha256",
+        "transport_result_sha256",
+        "decision",
+        "observed_status",
+        "target_path",
+        "expected_content_sha256",
+        "decided_at",
+        "resolver",
+        "reason",
+    }
+    if set(value) != required:
+        raise ProductionOrchestrationError("remote recovery properties do not match contract")
+    if type(value["record_version"]) is not int or value["record_version"] != 1:
+        raise ProductionOrchestrationError("remote recovery record_version must be 1")
+    try:
+        mutation_sha = _require_sha256(value["mutation_sha256"], label="mutation_sha256")
+        intent_sha = _require_sha256(value["intent_sha256"], label="intent_sha256")
+        result_sha = _require_sha256(
+            value["transport_result_sha256"], label="transport_result_sha256"
+        )
+        expected_sha = _require_sha256(
+            value["expected_content_sha256"], label="expected_content_sha256"
+        )
+    except ArtifactLifecycleError as exc:
+        raise ProductionOrchestrationError(str(exc)) from exc
+    decision = value["decision"]
+    if decision not in {"adopt_observed_effect", "abandon"}:
+        raise ProductionOrchestrationError("remote recovery decision is invalid")
+    observed_status = value["observed_status"]
+    if observed_status not in {"remote_effect_observed_without_receipt", "conflict"}:
+        raise ProductionOrchestrationError("remote recovery observed_status is invalid")
+    if decision == "adopt_observed_effect" and observed_status != "remote_effect_observed_without_receipt":
+        raise ProductionOrchestrationError("adopt_observed_effect requires matching remote effect")
+    target_path = value["target_path"]
+    resolver = value["resolver"]
+    reason = value["reason"]
+    if not isinstance(target_path, str) or not target_path:
+        raise ProductionOrchestrationError("remote recovery target_path is invalid")
+    if not isinstance(resolver, str) or not resolver or len(resolver) > 256:
+        raise ProductionOrchestrationError("remote recovery resolver is invalid")
+    if not isinstance(reason, str) or not reason or len(reason) > 2048:
+        raise ProductionOrchestrationError("remote recovery reason is invalid")
+    return RemoteRecoveryRecord(
+        mutation_sha256=mutation_sha,
+        intent_sha256=intent_sha,
+        transport_result_sha256=result_sha,
+        decision=decision,
+        observed_status=observed_status,
+        target_path=target_path,
+        expected_content_sha256=expected_sha,
+        decided_at=_require_timestamp(value["decided_at"], label="decided_at"),
+        resolver=resolver,
+        reason=reason,
+    )
+
+
 def _load_optional(path: Path, parser):
     try:
         data = _read_exact_file(path)
@@ -265,6 +359,13 @@ def _load_result(transport_dir: Path, digest: str):
     if result is not None and result.mutation_sha256 != digest:
         raise ProductionOrchestrationError("transport result is bound to another mutation")
     return data, result
+
+
+def _load_remote_recovery(ai_root: Path, digest: str):
+    data, recovery = _load_optional(_remote_recovery_path(ai_root, digest), parse_remote_recovery)
+    if recovery is not None and recovery.mutation_sha256 != digest:
+        raise ProductionOrchestrationError("remote recovery is bound to another mutation")
+    return data, recovery
 
 
 def _load_intent_binding(ai_root: Path, digest: str):
@@ -314,6 +415,13 @@ def _verify_result_binding(
         raise ProductionOrchestrationError("transport result target does not match request")
     if result.expected_content_sha256 != request.content_sha256:
         raise ProductionOrchestrationError("transport result content hash does not match request")
+
+
+def _legacy_recovery_exists(ai_root: Path, digest: str) -> bool:
+    try:
+        return load_recovery_record(ai_root, digest) is not None
+    except Exception as exc:
+        raise ProductionOrchestrationError("legacy recovery artifact is invalid") from exc
 
 
 def _store_request_unlocked(
@@ -381,7 +489,7 @@ def prepare_transport_request(
     execution_dir = _execution_directory(ai_root)
     _transport_directory(ai_root)
     with _mutation_lock(execution_dir, digest):
-        if load_recovery_record(ai_root, digest) is not None:
+        if _legacy_recovery_exists(ai_root, digest) or _load_remote_recovery(ai_root, digest)[1] is not None:
             raise ProductionOrchestrationError("Human recovery decision already exists")
         return _store_request_unlocked(
             ai_root,
@@ -424,7 +532,7 @@ def process_transport_request(
             request,
             allowed_roots=allowed_roots,
         )
-        if load_recovery_record(ai_root, digest) is not None:
+        if _legacy_recovery_exists(ai_root, digest) or _load_remote_recovery(ai_root, digest)[1] is not None:
             raise ProductionOrchestrationError("Human recovery decision suppresses transport")
 
         _, existing = _load_result(transport_dir, digest)
@@ -517,11 +625,12 @@ def _load_receipt(ai_root: Path, digest: str):
     return _parse_receipt(data)
 
 
-def _verify_recovery_binding(
+def _verify_remote_recovery_binding(
     ai_root: Path,
     digest: str,
-    recovery: RecoveryRecord,
+    recovery: RemoteRecoveryRecord,
     *,
+    result_bytes: bytes,
     target_path: str,
     content_sha256: str,
 ) -> bool:
@@ -531,6 +640,7 @@ def _verify_recovery_binding(
     return (
         recovery.mutation_sha256 == digest
         and recovery.intent_sha256 == intent_sha
+        and recovery.transport_result_sha256 == sha256_bytes(result_bytes)
         and recovery.target_path == target_path
         and recovery.expected_content_sha256 == content_sha256
     )
@@ -556,15 +666,16 @@ def _reconcile_production_unlocked(
 
     request_bytes, request = _load_request(execution_dir, digest)
     receipt = _load_receipt(ai_root, digest)
-    recovery = load_recovery_record(ai_root, digest)
+    legacy_recovery = _legacy_recovery_exists(ai_root, digest)
+    remote_recovery_bytes, remote_recovery = _load_remote_recovery(ai_root, digest)
+    if legacy_recovery:
+        return ReconciliationResult(
+            "conflict", digest, intent.target_path, "local recovery artifact is incompatible with production execution", receipt
+        )
     if request is None or request_bytes is None:
-        if receipt is not None or recovery is not None:
+        if receipt is not None or remote_recovery is not None:
             return ReconciliationResult(
-                "conflict",
-                digest,
-                intent.target_path,
-                "terminal artifact exists without transport request",
-                receipt,
+                "conflict", digest, intent.target_path, "terminal artifact exists without transport request", receipt
             )
         return ReconciliationResult("request_pending", digest, intent.target_path, None)
 
@@ -575,28 +686,20 @@ def _reconcile_production_unlocked(
         request,
         allowed_roots=allowed_roots,
     )
-    _, result = _load_result(transport_dir, digest)
-    if result is None:
-        if receipt is not None or recovery is not None:
+    result_bytes, result = _load_result(transport_dir, digest)
+    if result is None or result_bytes is None:
+        if receipt is not None or remote_recovery is not None:
             return ReconciliationResult(
-                "conflict",
-                digest,
-                request.target_path,
-                "terminal artifact exists without transport result",
-                receipt,
+                "conflict", digest, request.target_path, "terminal artifact exists without transport result", receipt
             )
         return ReconciliationResult("transport_pending", digest, request.target_path, None)
 
     _verify_result_binding(request_bytes, request, result)
 
     if result.result == "created_verified":
-        if recovery is not None:
+        if remote_recovery is not None:
             return ReconciliationResult(
-                "conflict",
-                digest,
-                request.target_path,
-                "Human recovery decision conflicts with verified remote create",
-                receipt,
+                "conflict", digest, request.target_path, "Human recovery conflicts with verified remote create", receipt
             )
         if receipt is None:
             return ReconciliationResult(
@@ -610,58 +713,45 @@ def _reconcile_production_unlocked(
             and receipt.executed_at == result.observed_at
         ):
             return ReconciliationResult(
-                "conflict",
-                digest,
-                request.target_path,
-                "receipt does not match verified remote result",
-                receipt,
+                "conflict", digest, request.target_path, "receipt does not match verified remote result", receipt
             )
         return ReconciliationResult("completed", digest, request.target_path, None, receipt)
 
     if receipt is not None:
         return ReconciliationResult(
-            "conflict",
-            digest,
-            request.target_path,
-            "receipt exists without verified remote create",
-            receipt,
+            "conflict", digest, request.target_path, "receipt exists without verified remote create", receipt
         )
 
-    if recovery is not None:
-        if not _verify_recovery_binding(
+    if remote_recovery is not None:
+        if not _verify_remote_recovery_binding(
             ai_root,
             digest,
-            recovery,
+            remote_recovery,
+            result_bytes=result_bytes,
             target_path=request.target_path,
             content_sha256=request.content_sha256,
         ):
             return ReconciliationResult(
-                "conflict",
-                digest,
-                request.target_path,
-                "recovery record does not match production intent",
+                "conflict", digest, request.target_path, "remote recovery no longer matches transport result"
             )
-        if recovery.decision == "abandon":
+        if remote_recovery.decision == "abandon":
             return ReconciliationResult(
-                "resolved_abandoned", digest, request.target_path, recovery.reason
+                "resolved_abandoned", digest, request.target_path, remote_recovery.reason
             )
         if (
-            recovery.decision == "adopt_observed_effect"
+            remote_recovery.decision == "adopt_observed_effect"
             and result.result == "target_exists_matching"
-            and recovery.observed_status == "remote_effect_observed_without_receipt"
+            and remote_recovery.observed_status == "remote_effect_observed_without_receipt"
         ):
             return ReconciliationResult(
                 "resolved_effect_adopted",
                 digest,
                 request.target_path,
                 "Human accepted the observed remote effect without claiming executor provenance; "
-                + recovery.reason,
+                + remote_recovery.reason,
             )
         return ReconciliationResult(
-            "conflict",
-            digest,
-            request.target_path,
-            "recovery decision is incompatible with transport result",
+            "conflict", digest, request.target_path, "remote recovery is incompatible with transport result"
         )
 
     if result.result == "target_exists_matching":
@@ -720,9 +810,7 @@ def advance_production_executor(
                 note_policy=note_policy,
                 requested_at=None,
             )
-            return _reconcile_production_unlocked(
-                ai_root, digest, allowed_roots=allowed_roots
-            )
+            return _reconcile_production_unlocked(ai_root, digest, allowed_roots=allowed_roots)
         if state.status != "remote_verified_pending_receipt":
             return state
 
@@ -761,13 +849,13 @@ def record_remote_human_recovery(
     reason: str,
     allowed_roots: Sequence[str],
     decided_at: str | None = None,
-) -> RecoveryRecord:
+) -> RemoteRecoveryRecord:
     try:
         digest = _require_sha256(mutation_sha256, label="mutation_sha256")
     except ArtifactLifecycleError as exc:
         raise ProductionOrchestrationError(str(exc)) from exc
     if decision not in {"adopt_observed_effect", "abandon"}:
-        raise ProductionOrchestrationError("recovery decision is invalid")
+        raise ProductionOrchestrationError("remote recovery decision is invalid")
     if not isinstance(resolver, str) or not resolver or len(resolver) > 256:
         raise ProductionOrchestrationError("resolver is invalid")
     if not isinstance(reason, str) or not reason or len(reason) > 2048:
@@ -776,11 +864,13 @@ def record_remote_human_recovery(
     execution_dir = _execution_directory(ai_root)
     transport_dir = _transport_directory(ai_root)
     with _mutation_lock(execution_dir, digest):
-        existing = load_recovery_record(ai_root, digest)
+        if _legacy_recovery_exists(ai_root, digest):
+            raise ProductionOrchestrationError("local recovery artifact already exists")
+        _, existing = _load_remote_recovery(ai_root, digest)
         if existing is not None:
             if existing.decision == decision and existing.resolver == resolver and existing.reason == reason:
                 return existing
-            raise ProductionOrchestrationError("immutable recovery decision already exists")
+            raise ProductionOrchestrationError("immutable remote recovery decision already exists")
 
         state = _reconcile_production_unlocked(ai_root, digest, allowed_roots=allowed_roots)
         if state.status not in {"remote_effect_observed_without_receipt", "conflict"}:
@@ -788,8 +878,8 @@ def record_remote_human_recovery(
                 f"production state is not recoverable: {state.status}"
             )
         request_bytes, request = _load_request(execution_dir, digest)
-        _, result = _load_result(transport_dir, digest)
-        if request is None or request_bytes is None or result is None:
+        result_bytes, result = _load_result(transport_dir, digest)
+        if request is None or request_bytes is None or result is None or result_bytes is None:
             raise ProductionOrchestrationError("transport result is required for recovery")
         if result.result not in {"target_exists_matching", "target_exists_conflict"}:
             raise ProductionOrchestrationError("verified create result is not Human-recoverable")
@@ -802,9 +892,10 @@ def record_remote_human_recovery(
             raise ProductionOrchestrationError("execution intent is required for recovery")
         timestamp = decided_at or _utc_now()
         _require_timestamp(timestamp, label="decided_at")
-        record = RecoveryRecord(
+        record = RemoteRecoveryRecord(
             mutation_sha256=digest,
             intent_sha256=intent_sha,
+            transport_result_sha256=sha256_bytes(result_bytes),
             decision=decision,
             observed_status=(
                 "remote_effect_observed_without_receipt"
@@ -818,7 +909,7 @@ def record_remote_human_recovery(
             reason=reason,
         )
         try:
-            _store_immutable(_recovery_path(ai_root, digest), record.to_json_bytes())
+            _store_immutable(_remote_recovery_path(ai_root, digest), record.to_json_bytes())
         except ArtifactLifecycleError as exc:
             raise ProductionOrchestrationError(str(exc)) from exc
         return record
