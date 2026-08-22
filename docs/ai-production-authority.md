@@ -26,7 +26,7 @@ Snapshot LXC
 └── existing Nextcloud read-only credential only
 ```
 
-Production v0 requires exactly one AI Writer host. The host-local `flock` used by the orchestration journal is not a distributed lock.
+Production v0 requires exactly one AI Writer host. The shared production lock is host-local and is not a distributed lock.
 
 ## Credential boundary
 
@@ -57,18 +57,23 @@ Recommended layout:
     ├── 00-Untrusted/
     ├── 10-Validation/
     ├── 20-Review/
+    ├── 24-Locks/
     ├── 25-Execution/
     ├── 27-Transport/
     └── 30-Receipts/
 ```
 
-This separation is required. If `20-AI` were kept inside a directory managed by `rclone sync` from Nextcloud, local-only intent/review/receipt artifacts could be deleted by a pull when they are absent remotely.
+This separation is required. If AI state were kept inside a directory managed by `rclone sync` from Nextcloud, local-only intent/review/receipt artifacts could be deleted by a pull when they are absent remotely.
 
-The reusable Python APIs therefore take `vault_root` and `ai_root` separately.
+`24-Locks` is operational state only. It carries no approval, mutation, transport-attestation, or receipt authority. Executor, Sync Transport, and the Human recovery tool share write access to this directory solely so the three processes can serialize one mutation on the single production host without granting write access to each other's semantic stages.
+
+The reusable Python APIs take `vault_root` and `ai_root` separately.
 
 ## Canonical write sequence
 
 ```text
+shared per-mutation lock
+        ↓
 Executor
   validate local mirror + Human approval
   persist durable intent
@@ -95,6 +100,8 @@ Therefore:
 
 - Executor writes `25-Execution` and reads `27-Transport`;
 - Sync reads `25-Execution` and writes `27-Transport`;
+- Reviewer reads both when resolving an ambiguous remote outcome;
+- all three share only `24-Locks` for host-local mutual exclusion;
 - only a verified `created_verified` result allows the Executor to create a success receipt.
 
 ## Actor permissions
@@ -107,8 +114,9 @@ Therefore:
 | State `00-Untrusted` | - | - | rw | r | - | - |
 | State `10-Validation` | r | - | - | rw | r | r |
 | State `20-Review` | r | - | - | - | rw | r |
-| State `25-Execution` | r | - | - | - | - | rw |
-| State `27-Transport` | rw | - | - | - | - | r |
+| State `24-Locks` | rw | - | - | - | rw | rw |
+| State `25-Execution` | r | - | - | - | r | rw |
+| State `27-Transport` | rw | - | - | - | r | r |
 | State `30-Receipts` | - | - | - | - | r | rw |
 
 The Generator deliberately does not receive direct canonical Vault read access. Retrieval/context is supplied through the Reader/Indexer boundary instead.
@@ -130,7 +138,7 @@ Remote Human recovery is bound to the exact durable intent and the exact transpo
 
 Simple owner/group/mode bits cannot express the required matrix cleanly. Production v0 requires a local filesystem with Linux POSIX ACL support and `setfacl`/`getfacl`.
 
-State stage directories should be root-owned; named-user ACL entries grant only the required stage capability. This prevents the Sync Transport from modifying Validation/Review/Execution and prevents the Executor from writing Transport results.
+State stage directories should be root-owned; named-user ACL entries grant only the required stage capability. This prevents the Sync Transport from modifying Validation/Review/Execution, prevents the Executor from writing Transport results, and prevents Reviewer from modifying machine-attested artifacts.
 
 ## Required negative guarantees
 
@@ -138,11 +146,11 @@ Production acceptance requires proving at OS level that:
 
 - Generator cannot read or write canonical Knowledge and cannot write later lifecycle stages.
 - Validator can read canonical Knowledge and Untrusted but cannot write either canonical Knowledge or later stages.
-- Human reviewer can write Review but cannot write canonical Knowledge, Validation, Execution, Transport, or Receipts.
+- Human reviewer can write Review and operational Locks but cannot write canonical Knowledge, Validation, Execution, Transport, or Receipts.
 - Reader can read canonical Knowledge but cannot write the Vault or AI state.
 - Executor cannot write the Vault mirror, Untrusted, Validation, Review, or Transport.
-- Executor can write only Execution and Receipts.
-- Sync can write the local Vault mirror and Transport results, but cannot forge Untrusted, Validation, Review, Execution, or Receipts.
+- Executor can write only Locks, Execution, and Receipts.
+- Sync can write the local Vault mirror, Locks, and Transport results, but cannot forge Untrusted, Validation, Review, Execution, or Receipts.
 - no identity other than Sync can read the Nextcloud writer credential.
 
 ## Health marker
@@ -160,7 +168,7 @@ The historical `.rclone-bisync` namespace name is retained for compatibility, bu
 1. Create the dedicated unprivileged AI Writer LXC.
 2. Create separate Linux identities for Sync, Reader, Generator, Validator, Reviewer, and Executor.
 3. Create separate `vault` and `state` roots.
-4. Apply and verify the revised POSIX ACL matrix, including `27-Transport`.
+4. Apply and verify the revised POSIX ACL matrix, including `24-Locks` and `27-Transport`.
 5. Initialize the Vault mirror with Nextcloud -> local pull only.
 6. Install the production executor and transport worker at one immutable ObsidianAutomation revision.
 7. Only after all local Gates pass, install the Nextcloud writer credential readable solely by `obsidian-ai-sync`.
