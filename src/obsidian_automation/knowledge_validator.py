@@ -21,10 +21,20 @@ from .canonical_mutation import MutationValidationError, validate_create_note
 from .knowledge_note_policy import KNOWLEDGE_ROOT, POLICY_NAME, validate_knowledge_note_v0
 
 
+def _verify_proposal(ai_root: Path, proposal_sha256: str) -> bytes:
+    proposal_path = ai_root / "00-Untrusted" / f"{proposal_sha256}.proposal.json"
+    proposal_bytes = _read_exact_file(proposal_path)
+    if sha256_bytes(proposal_bytes) != proposal_sha256:
+        raise ArtifactLifecycleError("untrusted proposal artifact hash mismatch")
+    return proposal_bytes
+
+
 def _existing_validation(ai_root: Path, proposal_sha256: str) -> dict[str, object] | None:
     path = ai_root / "10-Validation" / f"{proposal_sha256}.validation.json"
     if not os.path.lexists(path):
         return None
+
+    _verify_proposal(ai_root, proposal_sha256)
     record = parse_validation_record(_read_exact_file(path))
     if record.proposal_sha256 != proposal_sha256:
         raise ArtifactLifecycleError("validation record is bound to another proposal")
@@ -59,10 +69,7 @@ def validate_proposal(
     if existing is not None:
         return existing
 
-    proposal_path = layout.untrusted / f"{digest}.proposal.json"
-    proposal_bytes = _read_exact_file(proposal_path)
-    if sha256_bytes(proposal_bytes) != digest:
-        raise ArtifactLifecycleError("untrusted proposal artifact hash mismatch")
+    proposal_bytes = _verify_proposal(layout.root, digest)
 
     try:
         validated = validate_create_note(
