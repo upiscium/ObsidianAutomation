@@ -65,7 +65,7 @@ def _eval_bytes() -> bytes:
     ).encode()
 
 
-def test_eval_reports_baseline_and_cutoff_sweep(tmp_path: Path) -> None:
+def test_eval_reports_baseline_and_diagnostic_sweeps(tmp_path: Path) -> None:
     report = evaluate_retrieval(_index(tmp_path), parse_eval_set(_eval_bytes()), top_k=3)
 
     assert report["case_count"] == 4
@@ -76,10 +76,31 @@ def test_eval_reports_baseline_and_cutoff_sweep(tmp_path: Path) -> None:
     assert baseline["mrr"] == 1.0
     assert baseline["negative_accuracy"] == 1.0
 
-    sweep = report["cutoff_sweep"]
-    assert [row["ratio"] for row in sweep] == [0.0, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 1.0]
-    assert all(0.0 <= row["micro_precision"] <= 1.0 for row in sweep)
-    assert all(0.0 <= row["micro_recall"] <= 1.0 for row in sweep)
+    relative = report["relative_cutoff_sweep"]
+    assert [row["ratio"] for row in relative] == [
+        0.0,
+        0.2,
+        0.3,
+        0.4,
+        0.5,
+        0.6,
+        0.7,
+        0.8,
+        1.0,
+    ]
+    assert all(0.0 <= row["micro_precision"] <= 1.0 for row in relative)
+    assert all(0.0 <= row["micro_recall"] <= 1.0 for row in relative)
+
+    absolute = report["absolute_top1_score_sweep"]
+    assert [row["min_top1_score"] for row in absolute] == [
+        0.0,
+        1.0,
+        2.0,
+        3.0,
+        5.0,
+        8.0,
+        12.0,
+    ]
 
 
 def test_eval_rejects_relevant_path_absent_from_index(tmp_path: Path) -> None:
@@ -119,7 +140,13 @@ def test_eval_rejects_duplicate_case_ids() -> None:
         parse_eval_set(data)
 
 
-def test_cutoff_selected_count_is_nonincreasing(tmp_path: Path) -> None:
+def test_relative_cutoff_selected_count_is_nonincreasing(tmp_path: Path) -> None:
     report = evaluate_retrieval(_index(tmp_path), parse_eval_set(_eval_bytes()), top_k=3)
-    counts = [row["selected_total"] for row in report["cutoff_sweep"]]
+    counts = [row["selected_total"] for row in report["relative_cutoff_sweep"]]
+    assert counts == sorted(counts, reverse=True)
+
+
+def test_absolute_threshold_selected_count_is_nonincreasing(tmp_path: Path) -> None:
+    report = evaluate_retrieval(_index(tmp_path), parse_eval_set(_eval_bytes()), top_k=3)
+    counts = [row["selected_total"] for row in report["absolute_top1_score_sweep"]]
     assert counts == sorted(counts, reverse=True)
