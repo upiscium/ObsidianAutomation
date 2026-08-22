@@ -13,8 +13,11 @@ obsidian-public-export = "obsidian_automation.public_export:main"
 obsidian-public-publish = "obsidian_automation.public_publish:main"
 obsidian-vault-snapshot = "obsidian_automation.vault_snapshot_cli:main"
 obsidian-webdav-create = "obsidian_automation.webdav_create:main"
+obsidian-knowledge-validator = "obsidian_automation.knowledge_validator:main"
 obsidian-production-executor = "obsidian_automation.production_orchestrator:executor_main"
 obsidian-production-webdav-worker = "obsidian_automation.production_orchestrator:worker_main"
+obsidian-production-knowledge-executor = "obsidian_automation.knowledge_production:executor_main"
+obsidian-production-knowledge-webdav-worker = "obsidian_automation.knowledge_production:worker_main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
