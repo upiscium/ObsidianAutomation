@@ -8,6 +8,7 @@ if [[ ${EUID} -ne 0 ]]; then
 fi
 
 : "${VAULT_ROOT:?set VAULT_ROOT to a disposable Vault root}"
+AI_ROOT=${AI_ROOT:-"$VAULT_ROOT/20-AI"}
 
 SYNC_USER=${SYNC_USER:-obsidian-ai-sync}
 READER_USER=${READER_USER:-obsidian-ai-reader}
@@ -16,17 +17,23 @@ VALIDATOR_USER=${VALIDATOR_USER:-obsidian-ai-validator}
 REVIEWER_USER=${REVIEWER_USER:-obsidian-ai-reviewer}
 EXECUTOR_USER=${EXECUTOR_USER:-obsidian-ai-executor}
 
-MARKER="$VAULT_ROOT/.obsidian-ai-disposable-fixture"
-AI_ROOT="$VAULT_ROOT/20-AI"
+VAULT_MARKER="$VAULT_ROOT/.obsidian-ai-disposable-fixture"
+DEFAULT_AI_ROOT="$VAULT_ROOT/20-AI"
+STATE_MARKER="$AI_ROOT/.obsidian-ai-disposable-state"
 KNOWLEDGE="$VAULT_ROOT/11-Knowledge"
 UNTRUSTED="$AI_ROOT/00-Untrusted"
 VALIDATION="$AI_ROOT/10-Validation"
 REVIEW="$AI_ROOT/20-Review"
 EXECUTION="$AI_ROOT/25-Execution"
+TRANSPORT="$AI_ROOT/27-Transport"
 RECEIPTS="$AI_ROOT/30-Receipts"
 
-if [[ ! -f "$MARKER" ]]; then
-  echo "ERROR: refusing ACL mutation without $MARKER" >&2
+if [[ ! -f "$VAULT_MARKER" ]]; then
+  echo "ERROR: refusing ACL mutation without $VAULT_MARKER" >&2
+  exit 1
+fi
+if [[ "$AI_ROOT" != "$DEFAULT_AI_ROOT" && ! -f "$STATE_MARKER" ]]; then
+  echo "ERROR: refusing separate state ACL mutation without $STATE_MARKER" >&2
   exit 1
 fi
 
@@ -52,29 +59,48 @@ done
 
 SYNC_GROUP=$(id -gn "$SYNC_USER")
 
+# The Vault mirror belongs to Sync Transport. Other actors receive only read/traverse ACLs.
 install -d -o "$SYNC_USER" -g "$SYNC_GROUP" -m 0700 "$VAULT_ROOT"
-install -d -o "$SYNC_USER" -g "$SYNC_GROUP" -m 0700 "$AI_ROOT"
-for directory in "$KNOWLEDGE" "$UNTRUSTED" "$VALIDATION" "$REVIEW" "$EXECUTION" "$RECEIPTS"; do
-  install -d -o "$SYNC_USER" -g "$SYNC_GROUP" -m 0700 "$directory"
-  setfacl -b "$directory"
-  setfacl -k "$directory" || true
-done
-
-# Traversal only on container directories. Stage-specific permissions are below.
+install -d -o "$SYNC_USER" -g "$SYNC_GROUP" -m 0700 "$KNOWLEDGE"
 setfacl -b "$VAULT_ROOT"
 setfacl -k "$VAULT_ROOT" || true
 for entry in \
   "u:$READER_USER:--x" \
-  "u:$GENERATOR_USER:--x" \
   "u:$VALIDATOR_USER:--x" \
-  "u:$REVIEWER_USER:--x" \
   "u:$EXECUTOR_USER:--x"; do
   setfacl -m "$entry" "$VAULT_ROOT"
+done
+
+setfacl -b "$KNOWLEDGE"
+setfacl -k "$KNOWLEDGE" || true
+setfacl -m u::rwx,g::---,o::---,m::rwx "$KNOWLEDGE"
+for entry in \
+  "u:$READER_USER:r-x" \
+  "u:$VALIDATOR_USER:r-x" \
+  "u:$EXECUTOR_USER:r-x"; do
+  setfacl -m "$entry" "$KNOWLEDGE"
+done
+setfacl -m d:u::rwx,d:g::---,d:o::---,d:m::rwx "$KNOWLEDGE"
+for entry in \
+  "u:$READER_USER:r-x" \
+  "u:$VALIDATOR_USER:r-x" \
+  "u:$EXECUTOR_USER:r-x"; do
+  setfacl -m "d:$entry" "$KNOWLEDGE"
+done
+
+# AI lifecycle state is not part of the synchronized Vault mirror. Root owns the
+# state container and each actor receives only its stage capability.
+install -d -o root -g root -m 0700 "$AI_ROOT"
+for directory in "$UNTRUSTED" "$VALIDATION" "$REVIEW" "$EXECUTION" "$TRANSPORT" "$RECEIPTS"; do
+  install -d -o root -g root -m 0700 "$directory"
+  setfacl -b "$directory"
+  setfacl -k "$directory" || true
 done
 
 setfacl -b "$AI_ROOT"
 setfacl -k "$AI_ROOT" || true
 for entry in \
+  "u:$SYNC_USER:--x" \
   "u:$GENERATOR_USER:--x" \
   "u:$VALIDATOR_USER:--x" \
   "u:$REVIEWER_USER:--x" \
@@ -98,30 +124,34 @@ apply_directory_acl() {
   done
 }
 
-apply_directory_acl "$KNOWLEDGE" \
-  "u:$READER_USER:r-x" \
-  "u:$VALIDATOR_USER:r-x" \
-  "u:$EXECUTOR_USER:rwx"
-
 apply_directory_acl "$UNTRUSTED" \
   "u:$GENERATOR_USER:rwx" \
   "u:$VALIDATOR_USER:r-x"
 
 apply_directory_acl "$VALIDATION" \
+  "u:$SYNC_USER:r-x" \
   "u:$VALIDATOR_USER:rwx" \
   "u:$REVIEWER_USER:r-x" \
   "u:$EXECUTOR_USER:r-x"
 
 apply_directory_acl "$REVIEW" \
+  "u:$SYNC_USER:r-x" \
   "u:$REVIEWER_USER:rwx" \
   "u:$EXECUTOR_USER:r-x"
 
 apply_directory_acl "$EXECUTION" \
+  "u:$SYNC_USER:r-x" \
   "u:$EXECUTOR_USER:rwx"
+
+apply_directory_acl "$TRANSPORT" \
+  "u:$SYNC_USER:rwx" \
+  "u:$EXECUTOR_USER:r-x"
 
 apply_directory_acl "$RECEIPTS" \
   "u:$REVIEWER_USER:r-x" \
   "u:$EXECUTOR_USER:rwx"
 
-echo "Applied disposable AI authority ACL fixture to: $VAULT_ROOT"
-echo "Sync owner: $SYNC_USER:$SYNC_GROUP"
+echo "Applied disposable AI authority ACL fixture"
+echo "Vault mirror: $VAULT_ROOT"
+echo "AI state:     $AI_ROOT"
+echo "Sync identity: $SYNC_USER:$SYNC_GROUP"
