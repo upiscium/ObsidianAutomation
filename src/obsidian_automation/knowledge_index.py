@@ -160,6 +160,19 @@ def _validate_index_path(path: str) -> tuple[str, ...]:
     return parts
 
 
+def _vault_root_flags() -> int:
+    # Reader is intentionally execute/search-only on the Vault root. O_PATH
+    # keeps that least-privilege boundary while allowing dirfd traversal into
+    # the explicitly readable 11-Knowledge subtree.
+    access_flag = os.O_PATH if hasattr(os, "O_PATH") else os.O_RDONLY
+    flags = access_flag | os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    return flags
+
+
 def _open_directory(parent_fd: int, component: str) -> int:
     flags = os.O_RDONLY | os.O_DIRECTORY
     if hasattr(os, "O_NOFOLLOW"):
@@ -214,14 +227,8 @@ def _read_fd_limited(fd: int, *, path: str) -> bytes:
 
 
 def _scan_markdown_files(vault_root: Path) -> list[tuple[str, bytes]]:
-    root_flags = os.O_RDONLY | os.O_DIRECTORY
-    if hasattr(os, "O_NOFOLLOW"):
-        root_flags |= os.O_NOFOLLOW
-    if hasattr(os, "O_CLOEXEC"):
-        root_flags |= os.O_CLOEXEC
-
     try:
-        vault_fd = os.open(vault_root, root_flags)
+        vault_fd = os.open(vault_root, _vault_root_flags())
     except OSError as exc:
         raise ArtifactLifecycleError("Vault root must be a safe directory") from exc
 
