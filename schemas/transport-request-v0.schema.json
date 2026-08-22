@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/upiscium/ObsidianAutomation/schemas/transport-request-v0.schema.json",
+  "title": "Canonical create transport request v0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "record_version",
+    "mutation_sha256",
+    "intent_sha256",
+    "target_path",
+    "content_sha256",
+    "requested_at"
+  ],
+  "properties": {
+    "record_version": {"const": 1},
+    "mutation_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "intent_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "target_path": {"type": "string", "minLength": 1, "maxLength": 1024},
+    "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "requested_at": {"type": "string", "format": "date-time", "pattern": "Z$"}
+  }
+}
