@@ -16,6 +16,7 @@ from .artifact_lifecycle import (
 from .context_bundle import MAX_CONTEXT_BYTES
 from .knowledge_index import (
     DEFAULT_TOP_K,
+    MAX_TOP_K,
     KnowledgeIndex,
     RankedDocument,
     load_knowledge_index,
@@ -276,8 +277,10 @@ def evaluate_retrieval(
     *,
     top_k: int = DEFAULT_TOP_K,
 ) -> dict[str, object]:
-    if type(top_k) is not int or not 1 <= top_k <= 16:
-        raise ArtifactLifecycleError("evaluation top_k must be an integer in 1..16")
+    if type(top_k) is not int or not 1 <= top_k <= MAX_TOP_K:
+        raise ArtifactLifecycleError(
+            f"evaluation top_k must be an integer in 1..{MAX_TOP_K}"
+        )
     _validate_eval_against_index(eval_set, index)
 
     rankings: dict[str, tuple[RankedDocument, ...]] = {}
