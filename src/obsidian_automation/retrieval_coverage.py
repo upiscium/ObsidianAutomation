@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from collections import Counter
 from dataclasses import dataclass
+from typing import Mapping
 
 from .knowledge_index import KnowledgeIndex, IndexedDocument, tokenize
 
@@ -42,12 +43,10 @@ def query_idf_weights(index: KnowledgeIndex, query: str) -> dict[str, float]:
     }
 
 
-def weighted_query_coverage(
-    index: KnowledgeIndex,
-    query: str,
+def _coverage_from_weights(
     document: IndexedDocument,
+    weights: Mapping[str, float],
 ) -> QueryCoverage:
-    weights = query_idf_weights(index, query)
     if not weights:
         return QueryCoverage(
             coverage=0.0,
@@ -60,7 +59,7 @@ def weighted_query_coverage(
     matched_terms = tuple(
         term for term in weights if document.term_freq.get(term, 0) > 0
     )
-    missing_terms = tuple(term for term in weights if term not in matched_terms)
+    missing_terms = tuple(term for term in weights if document.term_freq.get(term, 0) <= 0)
     matched_weight = sum(weights[term] for term in matched_terms)
     total_weight = sum(weights.values())
     coverage = matched_weight / total_weight if total_weight > 0.0 else 0.0
@@ -74,8 +73,17 @@ def weighted_query_coverage(
     )
 
 
+def weighted_query_coverage(
+    index: KnowledgeIndex,
+    query: str,
+    document: IndexedDocument,
+) -> QueryCoverage:
+    return _coverage_from_weights(document, query_idf_weights(index, query))
+
+
 def coverage_by_path(index: KnowledgeIndex, query: str) -> dict[str, QueryCoverage]:
+    weights = query_idf_weights(index, query)
     return {
-        doc.path: weighted_query_coverage(index, query, doc)
+        doc.path: _coverage_from_weights(doc, weights)
         for doc in index.documents
     }
