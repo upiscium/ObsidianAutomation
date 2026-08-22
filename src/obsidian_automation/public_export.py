@@ -26,6 +26,7 @@ class ExportConfig:
     include: tuple[str, ...]
     repository_owned: tuple[str, ...]
     strict_missing: bool = True
+    exclude: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -79,19 +80,21 @@ def load_config(path: Path) -> ExportConfig:
         raise ExportError(f"unsupported config version: {version!r}")
 
     include = tuple(raw.get("include", ()))
+    exclude = tuple(raw.get("exclude", ()))
     repository_owned = tuple(raw.get("repository_owned", ()))
     strict_missing = bool(raw.get("strict_missing", True))
 
     if not include:
         raise ExportError("config must contain at least one include pattern")
 
-    for pattern in (*include, *repository_owned):
+    for pattern in (*include, *exclude, *repository_owned):
         if not isinstance(pattern, str):
             raise ExportError("all path patterns must be strings")
         _validate_pattern(pattern)
 
     return ExportConfig(
         include=include,
+        exclude=exclude,
         repository_owned=repository_owned,
         strict_missing=strict_missing,
     )
@@ -160,6 +163,10 @@ def _is_repository_owned(relative: str, config: ExportConfig) -> bool:
     return _matches_any(relative, _owned_patterns(config))
 
 
+def _is_excluded(relative: str, config: ExportConfig) -> bool:
+    return _matches_any(relative, config.exclude)
+
+
 def _assert_not_repository_owned(relative: str, config: ExportConfig) -> None:
     if _is_repository_owned(relative, config):
         raise ExportError(f"managed path collides with repository-owned path: {relative}")
@@ -218,6 +225,11 @@ def build_plan(source: Path, destination: Path, config: ExportConfig) -> tuple[l
         raise ExportError(f"source Vault does not exist or is not a directory: {source}")
 
     source_files = _expand_files(source, config.include, strict_missing=config.strict_missing)
+    source_files = {
+        relative: path
+        for relative, path in source_files.items()
+        if not _is_excluded(relative, config)
+    }
     destination_files = _collect_destination_files(destination, config)
 
     for relative in source_files:

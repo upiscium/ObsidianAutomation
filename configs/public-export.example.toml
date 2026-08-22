@@ -16,6 +16,10 @@ include = [
   ".obsidian/snippets/**",
 ]
 
+exclude = [
+  "98-System/.rclone-bisync/**",
+]
+
 repository_owned = [
   ".git",
   ".git/**",

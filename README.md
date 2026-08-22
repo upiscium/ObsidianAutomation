@@ -37,7 +37,7 @@ The exporter treats the destination repository as two trust domains:
 
 Git metadata (`.git` and `.git/**`) is always protected even if it is omitted from the configuration.
 
-The example policy is in `configs/public-export.example.toml`.
+The example policy is in `configs/public-export.example.toml`. Optional `exclude` patterns remove operational or private files from the selected source projection even when a broader `include` pattern matches them; an already-exported excluded path is removed from the destination on the next apply.
 
 ### Preview a projection
 
