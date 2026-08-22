@@ -166,7 +166,9 @@ def _production_lock(lock_dir: Path, mutation_sha256: str) -> Iterator[None]:
     if hasattr(os, "O_CLOEXEC"):
         flags |= os.O_CLOEXEC
     try:
-        fd = os.open(lock_dir / f"{digest}.lock", flags, 0o600)
+        # 24-Locks is deliberately shared operational state. 0660 preserves
+        # the parent default ACL's rw entries for Sync / Reviewer / Executor.
+        fd = os.open(lock_dir / f"{digest}.lock", flags, 0o660)
     except OSError as exc:
         raise ProductionOrchestrationError("cannot open production mutation lock") from exc
     try:

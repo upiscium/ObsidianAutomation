@@ -17,7 +17,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
-      - run: bash -n examples/ai/apply-authority-fixture-acls.sh examples/ai/authority-separation-gate.sh examples/ai/validator-vault-access-gate.sh
+      - run: bash -n examples/ai/apply-authority-fixture-acls.sh examples/ai/authority-separation-gate.sh examples/ai/validator-vault-access-gate.sh examples/ai/shared-production-lock-gate.sh
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
@@ -65,3 +65,7 @@ jobs:
           sudo env \
             VAULT_ROOT=/tmp/obsidian-ai-vault-fixture \
             bash examples/ai/validator-vault-access-gate.sh
+          sudo env \
+            AI_ROOT=/tmp/obsidian-ai-state-fixture \
+            REPO_ROOT="$GITHUB_WORKSPACE" \
+            bash examples/ai/shared-production-lock-gate.sh
