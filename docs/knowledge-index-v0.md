@@ -12,7 +12,7 @@ v0 deliberately uses only deterministic local processing:
 04-Index/<sha>.index.json
     ↓ explicit index SHA
 BM25 lexical ranking
-    ↓ top-k
+    ↓ top-k within Context byte budget
 05-Context/<sha>.context.json
     ↓ read-only
 Generator
@@ -48,11 +48,12 @@ status: active
 
 Hidden path components are ignored. Symlinks anywhere in the visible retrieval corpus are rejected rather than followed. Case-fold collisions are rejected.
 
-Limits:
+Limits are aligned with Context Bundle v0 so every indexed document is individually retrievable:
 
 - maximum visible Markdown files scanned: 4096;
-- maximum source size: 256 KiB;
-- maximum serialized index size: 64 MiB.
+- maximum source size: 128 KiB;
+- maximum serialized index size: 64 MiB;
+- maximum Context aggregate source bytes: 512 KiB.
 
 ## Tokenizer
 
@@ -100,7 +101,9 @@ b  = 0.75
 
 Ranking is deterministic for one exact index artifact and one exact query. Score ties are resolved by case-folded path and then exact path.
 
-Only documents with a positive lexical score are selected. A query with zero matches produces an empty Context Bundle rather than inventing context.
+Only documents with a positive lexical score are candidates. Reader walks candidates in score order and selects at most `top_k` documents while keeping the aggregate exact source bytes within the 512 KiB Context Bundle limit. A candidate that would exceed the budget is skipped and the next ranked candidate is considered.
+
+A query with zero matches produces an empty Context Bundle rather than inventing context.
 
 ## Content-addressed index
 
@@ -164,6 +167,7 @@ Retrieval output reports:
 
 - exact index SHA;
 - exact Context Bundle SHA;
+- total positive lexical match count;
 - selected paths;
 - each selected source SHA;
 - deterministic BM25 score string.
