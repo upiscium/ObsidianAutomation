@@ -74,6 +74,19 @@ def _safe_source_parts(path: str) -> tuple[str, ...]:
     return parts
 
 
+def _vault_root_flags() -> int:
+    # Reader intentionally has only search/traverse permission on the Vault
+    # root. Linux O_PATH lets us hold a safe directory fd without requiring
+    # directory listing permission; actual reads start at 11-Knowledge.
+    access_flag = os.O_PATH if hasattr(os, "O_PATH") else os.O_RDONLY
+    flags = access_flag | os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    return flags
+
+
 def _read_source_nofollow(vault_root: Path, path: str) -> bytes:
     parts = _safe_source_parts(path)
     dir_flags = os.O_RDONLY | os.O_DIRECTORY
@@ -88,7 +101,7 @@ def _read_source_nofollow(vault_root: Path, path: str) -> bytes:
     fds: list[int] = []
     try:
         try:
-            current = os.open(vault_root, dir_flags)
+            current = os.open(vault_root, _vault_root_flags())
         except OSError as exc:
             raise ArtifactLifecycleError("Vault root must be an existing non-symlink directory") from exc
         fds.append(current)
