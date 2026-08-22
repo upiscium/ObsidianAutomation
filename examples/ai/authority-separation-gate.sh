@@ -24,6 +24,7 @@ KNOWLEDGE="$VAULT_ROOT/11-Knowledge"
 UNTRUSTED="$AI_ROOT/00-Untrusted"
 VALIDATION="$AI_ROOT/10-Validation"
 REVIEW="$AI_ROOT/20-Review"
+LOCKS="$AI_ROOT/24-Locks"
 EXECUTION="$AI_ROOT/25-Execution"
 TRANSPORT="$AI_ROOT/27-Transport"
 RECEIPTS="$AI_ROOT/30-Receipts"
@@ -57,7 +58,7 @@ for user in \
   }
 done
 
-for directory in "$KNOWLEDGE" "$UNTRUSTED" "$VALIDATION" "$REVIEW" "$EXECUTION" "$TRANSPORT" "$RECEIPTS"; do
+for directory in "$KNOWLEDGE" "$UNTRUSTED" "$VALIDATION" "$REVIEW" "$LOCKS" "$EXECUTION" "$TRANSPORT" "$RECEIPTS"; do
   [[ -d "$directory" && ! -L "$directory" ]] || {
     echo "ERROR: unsafe or missing fixture directory: $directory" >&2
     exit 1
@@ -108,6 +109,7 @@ knowledge_seed="$KNOWLEDGE/.authority-gate-knowledge"
 untrusted_seed="$UNTRUSTED/.authority-gate-untrusted"
 validation_seed="$VALIDATION/.authority-gate-validation"
 review_seed="$REVIEW/.authority-gate-review"
+lock_seed="$LOCKS/.authority-gate-lock"
 execution_seed="$EXECUTION/.authority-gate-execution"
 transport_seed="$TRANSPORT/.authority-gate-transport"
 receipts_seed="$RECEIPTS/.authority-gate-receipt"
@@ -116,6 +118,7 @@ create_seed "$SYNC_USER" "$knowledge_seed"
 create_seed "$GENERATOR_USER" "$untrusted_seed"
 create_seed "$VALIDATOR_USER" "$validation_seed"
 create_seed "$REVIEWER_USER" "$review_seed"
+create_seed "$EXECUTOR_USER" "$lock_seed"
 create_seed "$EXECUTOR_USER" "$execution_seed"
 create_seed "$SYNC_USER" "$transport_seed"
 create_seed "$EXECUTOR_USER" "$receipts_seed"
@@ -126,6 +129,8 @@ probe_read "$GENERATOR_USER" "$untrusted_seed" allow "Generator reads Untrusted"
 probe_read "$VALIDATOR_USER" "$untrusted_seed" allow "Validator reads Untrusted"
 probe_read "$VALIDATOR_USER" "$knowledge_seed" allow "Validator reads canonical Knowledge"
 probe_read "$REVIEWER_USER" "$validation_seed" allow "Reviewer reads Validation"
+probe_read "$REVIEWER_USER" "$execution_seed" allow "Reviewer reads Execution request"
+probe_read "$REVIEWER_USER" "$transport_seed" allow "Reviewer reads Transport result"
 probe_read "$REVIEWER_USER" "$receipts_seed" allow "Reviewer reads Receipts"
 probe_read "$EXECUTOR_USER" "$validation_seed" allow "Executor reads Validation"
 probe_read "$EXECUTOR_USER" "$review_seed" allow "Executor reads Review"
@@ -139,37 +144,38 @@ probe_read "$GENERATOR_USER" "$knowledge_seed" deny "Generator cannot read canon
 probe_read "$GENERATOR_USER" "$validation_seed" deny "Generator cannot read Validation"
 probe_read "$READER_USER" "$untrusted_seed" deny "Reader has no AI state access"
 probe_read "$REVIEWER_USER" "$knowledge_seed" deny "Reviewer has no canonical Knowledge access"
-probe_read "$REVIEWER_USER" "$execution_seed" deny "Reviewer cannot read Execution journal"
-probe_read "$REVIEWER_USER" "$transport_seed" deny "Reviewer cannot read Transport journal"
 probe_read "$EXECUTOR_USER" "$untrusted_seed" deny "Executor cannot read Untrusted proposals directly"
 probe_read "$SYNC_USER" "$untrusted_seed" deny "Sync cannot read Untrusted proposals"
 probe_read "$SYNC_USER" "$receipts_seed" deny "Sync cannot read Receipts"
 
-# Positive writes: exactly one writer authority per stage, except the Vault mirror owned by Sync.
+# Positive writes: one semantic writer per stage; Locks are deliberately shared operational state.
 probe_write "$SYNC_USER" "$KNOWLEDGE" allow "Sync writes local Vault mirror"
 probe_write "$GENERATOR_USER" "$UNTRUSTED" allow "Generator writes Untrusted"
 probe_write "$VALIDATOR_USER" "$VALIDATION" allow "Validator writes Validation"
-probe_write "$REVIEWER_USER" "$REVIEW" allow "Reviewer writes Review"
+probe_write "$REVIEWER_USER" "$REVIEW" allow "Reviewer writes Review / recovery"
+probe_write "$SYNC_USER" "$LOCKS" allow "Sync writes shared operational Locks"
+probe_write "$REVIEWER_USER" "$LOCKS" allow "Reviewer writes shared operational Locks"
+probe_write "$EXECUTOR_USER" "$LOCKS" allow "Executor writes shared operational Locks"
 probe_write "$EXECUTOR_USER" "$EXECUTION" allow "Executor writes Execution request"
 probe_write "$SYNC_USER" "$TRANSPORT" allow "Sync writes Transport result"
 probe_write "$EXECUTOR_USER" "$RECEIPTS" allow "Executor writes Receipts"
 
-# Reader is read-only everywhere.
-for directory in "$KNOWLEDGE" "$UNTRUSTED" "$VALIDATION" "$REVIEW" "$EXECUTION" "$TRANSPORT" "$RECEIPTS"; do
+# Reader is read-only everywhere and cannot use the shared lock stage.
+for directory in "$KNOWLEDGE" "$UNTRUSTED" "$VALIDATION" "$REVIEW" "$LOCKS" "$EXECUTION" "$TRANSPORT" "$RECEIPTS"; do
   probe_write "$READER_USER" "$directory" deny "Reader denied write: ${directory}"
 done
 
 # Generator writes only Untrusted.
-for directory in "$KNOWLEDGE" "$VALIDATION" "$REVIEW" "$EXECUTION" "$TRANSPORT" "$RECEIPTS"; do
+for directory in "$KNOWLEDGE" "$VALIDATION" "$REVIEW" "$LOCKS" "$EXECUTION" "$TRANSPORT" "$RECEIPTS"; do
   probe_write "$GENERATOR_USER" "$directory" deny "Generator denied write: ${directory}"
 done
 
 # Validator writes only Validation.
-for directory in "$KNOWLEDGE" "$UNTRUSTED" "$REVIEW" "$EXECUTION" "$TRANSPORT" "$RECEIPTS"; do
+for directory in "$KNOWLEDGE" "$UNTRUSTED" "$REVIEW" "$LOCKS" "$EXECUTION" "$TRANSPORT" "$RECEIPTS"; do
   probe_write "$VALIDATOR_USER" "$directory" deny "Validator denied write: ${directory}"
 done
 
-# Reviewer writes only Review.
+# Reviewer writes Review and Locks, but not canonical or machine-attested stages.
 for directory in "$KNOWLEDGE" "$UNTRUSTED" "$VALIDATION" "$EXECUTION" "$TRANSPORT" "$RECEIPTS"; do
   probe_write "$REVIEWER_USER" "$directory" deny "Reviewer denied write: ${directory}"
 done
@@ -179,7 +185,7 @@ for directory in "$KNOWLEDGE" "$UNTRUSTED" "$VALIDATION" "$REVIEW" "$TRANSPORT";
   probe_write "$EXECUTOR_USER" "$directory" deny "Executor denied write: ${directory}"
 done
 
-# Sync owns the mirror and Transport only; it cannot forge semantic authority stages or Receipts.
+# Sync owns the mirror and Transport only, plus non-authoritative Locks.
 for directory in "$UNTRUSTED" "$VALIDATION" "$REVIEW" "$EXECUTION" "$RECEIPTS"; do
   probe_write "$SYNC_USER" "$directory" deny "Sync denied write: ${directory}"
 done
