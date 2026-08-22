@@ -11,7 +11,7 @@ import unicodedata
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
+from typing import Mapping, Sequence
 
 from .artifact_lifecycle import (
     ArtifactLifecycleError,
@@ -21,10 +21,11 @@ from .artifact_lifecycle import (
     _require_safe_directory,
     _require_sha256,
     _store_immutable,
-    _utc_now,
     sha256_bytes,
 )
 from .context_bundle import (
+    MAX_CONTEXT_BYTES,
+    MAX_SOURCE_BYTES,
     MAX_SOURCES,
     build_context_bundle,
     store_context_bundle,
@@ -36,7 +37,7 @@ KNOWLEDGE_ROOT = "11-Knowledge"
 TOKENIZER_VERSION = "nfkc-ascii-cjk-bigram-v0"
 RANKER_VERSION = "bm25-fieldboost-v0"
 MAX_DOCUMENTS = 4096
-MAX_DOCUMENT_BYTES = 256 * 1024
+MAX_DOCUMENT_BYTES = MAX_SOURCE_BYTES
 MAX_INDEX_BYTES = 64 * 1024 * 1024
 DEFAULT_TOP_K = 8
 MAX_TOP_K = MAX_SOURCES
@@ -112,21 +113,18 @@ def _is_cjk(ch: str) -> bool:
 
 def tokenize(text: str) -> tuple[str, ...]:
     normalized = unicodedata.normalize("NFKC", text).casefold()
-    tokens: list[str] = []
-
-    tokens.extend(_ASCII_WORD_RE.findall(normalized))
-
+    tokens: list[str] = list(_ASCII_WORD_RE.findall(normalized))
     cjk_run: list[str] = []
+
     def flush_cjk() -> None:
         nonlocal cjk_run
         if not cjk_run:
             return
         tokens.extend(cjk_run)
-        if len(cjk_run) >= 2:
-            tokens.extend(
-                cjk_run[i] + cjk_run[i + 1]
-                for i in range(len(cjk_run) - 1)
-            )
+        tokens.extend(
+            cjk_run[index] + cjk_run[index + 1]
+            for index in range(len(cjk_run) - 1)
+        )
         cjk_run = []
 
     for ch in normalized:
@@ -135,7 +133,6 @@ def tokenize(text: str) -> tuple[str, ...]:
         else:
             flush_cjk()
     flush_cjk()
-
     return tuple(token for token in tokens if token)
 
 
@@ -145,7 +142,22 @@ def _safe_component(component: str) -> None:
     if component != component.strip():
         raise ArtifactLifecycleError("Knowledge path component has edge whitespace")
     if any(ch in _WINDOWS_FORBIDDEN or ord(ch) < 0x20 for ch in component):
-        raise ArtifactLifecycleError("Knowledge path contains a cross-platform unsafe character")
+        raise ArtifactLifecycleError(
+            "Knowledge path contains a cross-platform unsafe character"
+        )
+
+
+def _validate_index_path(path: str) -> tuple[str, ...]:
+    if not isinstance(path, str) or not path.startswith(f"{KNOWLEDGE_ROOT}/"):
+        raise ArtifactLifecycleError("Knowledge index path is invalid")
+    parts = tuple(path.split("/"))
+    if len(parts) < 2 or parts[0] != KNOWLEDGE_ROOT:
+        raise ArtifactLifecycleError("Knowledge index path is invalid")
+    for component in parts[1:]:
+        _safe_component(component)
+    if not parts[-1].endswith(".md"):
+        raise ArtifactLifecycleError("Knowledge index path must reference Markdown")
+    return parts
 
 
 def _open_directory(parent_fd: int, component: str) -> int:
@@ -393,11 +405,21 @@ def parse_knowledge_index(data: bytes) -> KnowledgeIndex:
     seen: set[str] = set()
     for raw in raw_documents:
         required = {
-            "path", "content_sha256", "byte_size", "title", "status",
-            "category", "maturity", "source_type", "token_count", "term_freq",
+            "path",
+            "content_sha256",
+            "byte_size",
+            "title",
+            "status",
+            "category",
+            "maturity",
+            "source_type",
+            "token_count",
+            "term_freq",
         }
         if not isinstance(raw, dict) or set(raw) != required:
-            raise ArtifactLifecycleError("Knowledge index document properties do not match contract")
+            raise ArtifactLifecycleError(
+                "Knowledge index document properties do not match contract"
+            )
         path = raw["path"]
         digest = raw["content_sha256"]
         byte_size = raw["byte_size"]
@@ -408,8 +430,10 @@ def parse_knowledge_index(data: bytes) -> KnowledgeIndex:
         source_type = raw["source_type"]
         token_count = raw["token_count"]
         raw_tf = raw["term_freq"]
-        if not isinstance(path, str) or not path.startswith(f"{KNOWLEDGE_ROOT}/"):
+
+        if not isinstance(path, str):
             raise ArtifactLifecycleError("Knowledge index path is invalid")
+        _validate_index_path(path)
         folded = path.casefold()
         if folded in seen:
             raise ArtifactLifecycleError("Knowledge index contains duplicate paths")
@@ -419,7 +443,10 @@ def parse_knowledge_index(data: bytes) -> KnowledgeIndex:
         digest = _require_sha256(digest, label="Knowledge index content_sha256")
         if type(byte_size) is not int or not 0 <= byte_size <= MAX_DOCUMENT_BYTES:
             raise ArtifactLifecycleError("Knowledge index byte_size is invalid")
-        if not all(isinstance(v, str) for v in (title, status, category, maturity, source_type)):
+        if not all(
+            isinstance(value, str)
+            for value in (title, status, category, maturity, source_type)
+        ):
             raise ArtifactLifecycleError("Knowledge index metadata must be strings")
         if status != "active":
             raise ArtifactLifecycleError("Knowledge index may contain only active notes")
@@ -427,15 +454,25 @@ def parse_knowledge_index(data: bytes) -> KnowledgeIndex:
             raise ArtifactLifecycleError("Knowledge index token_count is invalid")
         if not isinstance(raw_tf, dict):
             raise ArtifactLifecycleError("Knowledge index term_freq is invalid")
+
         term_freq: dict[str, int] = {}
         total = 0
         for term, count in raw_tf.items():
-            if not isinstance(term, str) or not term or type(count) is not int or count <= 0:
-                raise ArtifactLifecycleError("Knowledge index term frequency entry is invalid")
+            if (
+                not isinstance(term, str)
+                or not term
+                or type(count) is not int
+                or count <= 0
+            ):
+                raise ArtifactLifecycleError(
+                    "Knowledge index term frequency entry is invalid"
+                )
             term_freq[term] = count
             total += count
         if total != token_count:
-            raise ArtifactLifecycleError("Knowledge index token_count does not match term_freq")
+            raise ArtifactLifecycleError(
+                "Knowledge index token_count does not match term_freq"
+            )
         documents.append(
             IndexedDocument(
                 path=path,
@@ -471,7 +508,9 @@ def verify_index_current(vault_root: Path, index: KnowledgeIndex) -> None:
     expected = [(doc.path, doc.content_sha256) for doc in index.documents]
     observed = [(doc.path, doc.content_sha256) for doc in current.documents]
     if observed != expected:
-        raise ArtifactLifecycleError("Knowledge index is stale; rebuild before retrieval")
+        raise ArtifactLifecycleError(
+            "Knowledge index is stale; rebuild before retrieval"
+        )
 
 
 def rank_documents(index: KnowledgeIndex, query: str) -> tuple[RankedDocument, ...]:
@@ -516,6 +555,26 @@ def rank_documents(index: KnowledgeIndex, query: str) -> tuple[RankedDocument, .
     return tuple(ranked)
 
 
+def _select_with_context_limit(
+    index: KnowledgeIndex,
+    ranked: Sequence[RankedDocument],
+    *,
+    top_k: int,
+) -> tuple[RankedDocument, ...]:
+    by_path = {doc.path: doc for doc in index.documents}
+    selected: list[RankedDocument] = []
+    total_bytes = 0
+    for item in ranked:
+        if len(selected) >= top_k:
+            break
+        size = by_path[item.path].byte_size
+        if total_bytes + size > MAX_CONTEXT_BYTES:
+            continue
+        selected.append(item)
+        total_bytes += size
+    return tuple(selected)
+
+
 def retrieve_context(
     ai_root: Path,
     vault_root: Path,
@@ -525,11 +584,13 @@ def retrieve_context(
     top_k: int = DEFAULT_TOP_K,
 ) -> dict[str, object]:
     if type(top_k) is not int or not 1 <= top_k <= MAX_TOP_K:
-        raise ArtifactLifecycleError(f"top_k must be an integer in 1..{MAX_TOP_K}")
+        raise ArtifactLifecycleError(
+            f"top_k must be an integer in 1..{MAX_TOP_K}"
+        )
     index = load_knowledge_index(ai_root, index_sha256)
     verify_index_current(vault_root, index)
     ranked = rank_documents(index, query)
-    selected = ranked[:top_k]
+    selected = _select_with_context_limit(index, ranked, top_k=top_k)
 
     bundle = build_context_bundle(
         vault_root,
@@ -540,7 +601,9 @@ def retrieve_context(
     for source in bundle.sources:
         expected = indexed_by_path[source.path].content_sha256
         if source.content_sha256 != expected:
-            raise ArtifactLifecycleError("Knowledge source changed during context construction")
+            raise ArtifactLifecycleError(
+                "Knowledge source changed during context construction"
+            )
     context_sha, context_path = store_context_bundle(ai_root, bundle)
 
     return {
@@ -548,6 +611,7 @@ def retrieve_context(
         "context_sha256": context_sha,
         "context_path": str(context_path),
         "query": query,
+        "matched_count": len(ranked),
         "selected": [
             {
                 "path": item.path,
@@ -570,7 +634,16 @@ def index_main(argv: Sequence[str] | None = None) -> int:
     except (ArtifactLifecycleError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    print(json.dumps({"index_sha256": digest, "path": str(path), "document_count": len(index.documents)}, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "index_sha256": digest,
+                "path": str(path),
+                "document_count": len(index.documents),
+            },
+            sort_keys=True,
+        )
+    )
     return 0
 
 
