@@ -62,7 +62,7 @@ Negative cases report:
 
 ## Relative-score cutoff sweep
 
-The report also simulates Context selection at ratios:
+The report simulates Context selection at ratios:
 
 ```text
 0.0, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 1.0
@@ -85,7 +85,27 @@ Each ratio reports:
 - negative clean rate;
 - average number of selected documents.
 
-This PR does not choose or enforce a production cutoff. The sweep exists so a later selection-policy change can be justified from labelled measurements rather than from one or two observed queries.
+A relative cutoff always retains Top-1 when any positive-score match exists. Therefore it can reduce lower-ranked context noise, but cannot by itself reject a hard negative that has a spurious Top-1 match.
+
+## Absolute Top-1 score diagnostic sweep
+
+To expose that failure mode, the report also simulates minimum Top-1 BM25 score thresholds:
+
+```text
+0, 1, 2, 3, 5, 8, 12
+```
+
+A query produces no selected Context when:
+
+```text
+top1_score < minimum_top1_score
+```
+
+This sweep uses no relative lower-rank cutoff (`ratio = 0`) and exists only to diagnose whether an absolute confidence gate may help negative-query rejection.
+
+Absolute BM25 scores depend on corpus and query composition, so these thresholds are not a production policy and should not be transferred blindly between corpora.
+
+Both diagnostic sweeps use the same labelled cases and report the same selection-level precision/recall/F1, full-recall, negative-clean, and average-selected metrics.
 
 ## Evaluation-set guidance
 
@@ -97,7 +117,8 @@ A useful set should include multiple query classes:
 - broad research-topic queries;
 - near-neighbour discrimination cases;
 - multi-relevant-document cases;
-- negative/no-match queries.
+- clean negative queries with no lexical overlap;
+- hard negative queries that deliberately share vocabulary with unrelated Knowledge notes.
 
 Do not label relevance from the current ranking itself. Labels should express which canonical Knowledge notes are actually useful for answering the query.
 
