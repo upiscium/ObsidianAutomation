@@ -22,6 +22,7 @@ DEFAULT_AI_ROOT="$VAULT_ROOT/20-AI"
 STATE_MARKER="$AI_ROOT/.obsidian-ai-disposable-state"
 KNOWLEDGE="$VAULT_ROOT/11-Knowledge"
 UNTRUSTED="$AI_ROOT/00-Untrusted"
+CONTEXT="$AI_ROOT/05-Context"
 VALIDATION="$AI_ROOT/10-Validation"
 REVIEW="$AI_ROOT/20-Review"
 LOCKS="$AI_ROOT/24-Locks"
@@ -92,9 +93,10 @@ for entry in \
 done
 
 # AI lifecycle state is local-only. Root owns the state container and each
-# semantic/transport stage has an explicit writer identity.
+# semantic/transport stage has an explicit writer identity. 05-Context is a
+# non-authoritative Reader -> Generator boundary: Reader writes; Generator reads.
 install -d -o root -g root -m 0700 "$AI_ROOT"
-for directory in "$UNTRUSTED" "$VALIDATION" "$REVIEW" "$LOCKS" "$EXECUTION" "$TRANSPORT" "$RECEIPTS"; do
+for directory in "$UNTRUSTED" "$CONTEXT" "$VALIDATION" "$REVIEW" "$LOCKS" "$EXECUTION" "$TRANSPORT" "$RECEIPTS"; do
   install -d -o root -g root -m 0700 "$directory"
   setfacl -b "$directory"
   setfacl -k "$directory" || true
@@ -104,6 +106,7 @@ setfacl -b "$AI_ROOT"
 setfacl -k "$AI_ROOT" || true
 for entry in \
   "u:$SYNC_USER:r-x" \
+  "u:$READER_USER:--x" \
   "u:$GENERATOR_USER:--x" \
   "u:$VALIDATOR_USER:--x" \
   "u:$REVIEWER_USER:r-x" \
@@ -128,6 +131,10 @@ apply_directory_acl() {
 apply_directory_acl "$UNTRUSTED" \
   "u:$GENERATOR_USER:rwx" \
   "u:$VALIDATOR_USER:r-x"
+
+apply_directory_acl "$CONTEXT" \
+  "u:$READER_USER:rwx" \
+  "u:$GENERATOR_USER:r-x"
 
 apply_directory_acl "$VALIDATION" \
   "u:$SYNC_USER:r-x" \
