@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://upiscium.github.io/ObsidianAutomation/schemas/knowledge-index-v0.schema.json",
+  "title": "Knowledge Index v0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["record_version", "tokenizer", "ranker", "documents"],
+  "properties": {
+    "record_version": {"const": 1},
+    "tokenizer": {"const": "nfkc-ascii-cjk-bigram-v0"},
+    "ranker": {"const": "bm25-fieldboost-v0"},
+    "documents": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "content_sha256",
+          "byte_size",
+          "title",
+          "status",
+          "category",
+          "maturity",
+          "source_type",
+          "token_count",
+          "term_freq"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "pattern": "^11-Knowledge/.+\\.md$"
+          },
+          "content_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "byte_size": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 262144
+          },
+          "title": {"type": "string"},
+          "status": {"const": "active"},
+          "category": {"type": "string"},
+          "maturity": {"type": "string"},
+          "source_type": {"type": "string"},
+          "token_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "term_freq": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      }
+    }
+  }
+}
