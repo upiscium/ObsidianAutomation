@@ -24,3 +24,35 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e '.[dev]'
       - run: pytest -q
+
+  authority-fixture:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+      - run: sudo apt-get update && sudo apt-get install -y acl
+      - name: Create authority fixture users
+        run: |
+          for user in \
+            obsidian-ai-sync \
+            obsidian-ai-reader \
+            obsidian-ai-generator \
+            obsidian-ai-validator \
+            obsidian-ai-reviewer \
+            obsidian-ai-executor
+          do
+            sudo useradd \
+              --system \
+              --user-group \
+              --no-create-home \
+              --shell /usr/sbin/nologin \
+              "$user"
+          done
+      - name: Run disposable Authority separation Gate
+        run: |
+          sudo install -d -m 0700 /tmp/obsidian-ai-fixture
+          sudo touch /tmp/obsidian-ai-fixture/.obsidian-ai-disposable-fixture
+          sudo env VAULT_ROOT=/tmp/obsidian-ai-fixture \
+            bash examples/ai/apply-authority-fixture-acls.sh
+          sudo env VAULT_ROOT=/tmp/obsidian-ai-fixture \
+            bash examples/ai/authority-separation-gate.sh
