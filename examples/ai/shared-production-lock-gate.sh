@@ -59,9 +59,12 @@ fail() { printf 'FAIL: %s\n' "$1" >&2; failures=$((failures + 1)); }
 
 probe_lock() {
   local user=$1 expected=$2 label=$3
+  local output
+  output=$(mktemp)
+
   if runuser -u "$user" -- env \
     PYTHONPATH="$PYTHON_ROOT" \
-    python3 - "$LOCK_DIR" "$DIGEST" <<'PY'
+    python3 - "$LOCK_DIR" "$DIGEST" >"$output" 2>&1 <<'PY'
 import sys
 from pathlib import Path
 
@@ -71,10 +74,22 @@ with _production_lock(Path(sys.argv[1]), sys.argv[2]):
     pass
 PY
   then
-    [[ $expected == allow ]] && pass "$label" || fail "$label (unexpected lock open succeeded)"
+    if [[ $expected == allow ]]; then
+      pass "$label"
+    else
+      fail "$label (unexpected lock open succeeded)"
+      cat "$output" >&2
+    fi
   else
-    [[ $expected == deny ]] && pass "$label" || fail "$label (expected lock open failed)"
+    if [[ $expected == deny ]]; then
+      pass "$label"
+    else
+      fail "$label (expected lock open failed)"
+      cat "$output" >&2
+    fi
   fi
+
+  rm -f -- "$output"
 }
 
 # The first actor creates the per-mutation lock. The next two actors must be

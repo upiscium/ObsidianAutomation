@@ -17,6 +17,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+      - name: Verify AI Gate scripts are executable
+        run: |
+          test -x examples/ai/apply-authority-fixture-acls.sh
+          test -x examples/ai/authority-separation-gate.sh
+          test -x examples/ai/validator-vault-access-gate.sh
+          test -x examples/ai/shared-production-lock-gate.sh
       - run: bash -n examples/ai/apply-authority-fixture-acls.sh examples/ai/authority-separation-gate.sh examples/ai/validator-vault-access-gate.sh examples/ai/shared-production-lock-gate.sh
       - uses: actions/setup-python@v7
         with:
