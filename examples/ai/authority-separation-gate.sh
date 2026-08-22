@@ -139,10 +139,11 @@ probe_read "$SYNC_USER" "$validation_seed" allow "Sync reads Validation"
 probe_read "$SYNC_USER" "$review_seed" allow "Sync reads Review"
 probe_read "$SYNC_USER" "$execution_seed" allow "Sync reads Execution request"
 
-# Negative reads protecting trust boundaries.
+# Negative reads protecting trust boundaries. Reader -> Generator Context access
+# is covered by reader-context-boundary-gate.sh.
 probe_read "$GENERATOR_USER" "$knowledge_seed" deny "Generator cannot read canonical Knowledge directly"
 probe_read "$GENERATOR_USER" "$validation_seed" deny "Generator cannot read Validation"
-probe_read "$READER_USER" "$untrusted_seed" deny "Reader has no AI state access"
+probe_read "$READER_USER" "$untrusted_seed" deny "Reader cannot read Untrusted proposals"
 probe_read "$REVIEWER_USER" "$knowledge_seed" deny "Reviewer has no canonical Knowledge access"
 probe_read "$EXECUTOR_USER" "$untrusted_seed" deny "Executor cannot read Untrusted proposals directly"
 probe_read "$SYNC_USER" "$untrusted_seed" deny "Sync cannot read Untrusted proposals"
@@ -160,7 +161,8 @@ probe_write "$EXECUTOR_USER" "$EXECUTION" allow "Executor writes Execution reque
 probe_write "$SYNC_USER" "$TRANSPORT" allow "Sync writes Transport result"
 probe_write "$EXECUTOR_USER" "$RECEIPTS" allow "Executor writes Receipts"
 
-# Reader is read-only everywhere and cannot use the shared lock stage.
+# Reader cannot write canonical or semantic/transport stages. Its sole local
+# state write capability is 05-Context, tested by reader-context-boundary-gate.sh.
 for directory in "$KNOWLEDGE" "$UNTRUSTED" "$VALIDATION" "$REVIEW" "$LOCKS" "$EXECUTION" "$TRANSPORT" "$RECEIPTS"; do
   probe_write "$READER_USER" "$directory" deny "Reader denied write: ${directory}"
 done

@@ -23,7 +23,8 @@ jobs:
           test -x examples/ai/authority-separation-gate.sh
           test -x examples/ai/validator-vault-access-gate.sh
           test -x examples/ai/shared-production-lock-gate.sh
-      - run: bash -n examples/ai/apply-authority-fixture-acls.sh examples/ai/authority-separation-gate.sh examples/ai/validator-vault-access-gate.sh examples/ai/shared-production-lock-gate.sh
+          test -x examples/ai/reader-context-boundary-gate.sh
+      - run: bash -n examples/ai/apply-authority-fixture-acls.sh examples/ai/authority-separation-gate.sh examples/ai/validator-vault-access-gate.sh examples/ai/shared-production-lock-gate.sh examples/ai/reader-context-boundary-gate.sh
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
@@ -68,6 +69,10 @@ jobs:
             VAULT_ROOT=/tmp/obsidian-ai-vault-fixture \
             AI_ROOT=/tmp/obsidian-ai-state-fixture \
             bash examples/ai/authority-separation-gate.sh
+          sudo env \
+            VAULT_ROOT=/tmp/obsidian-ai-vault-fixture \
+            AI_ROOT=/tmp/obsidian-ai-state-fixture \
+            bash examples/ai/reader-context-boundary-gate.sh
           sudo env \
             VAULT_ROOT=/tmp/obsidian-ai-vault-fixture \
             bash examples/ai/validator-vault-access-gate.sh
