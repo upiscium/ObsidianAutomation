@@ -23,6 +23,11 @@ from .knowledge_index import (
     rank_documents,
     verify_index_current,
 )
+from .retrieval_coverage import (
+    COVERAGE_THRESHOLDS,
+    QueryCoverage,
+    coverage_by_path,
+)
 
 
 EVAL_VERSION = 1
@@ -54,7 +59,11 @@ def _round_metric(value: float) -> float:
 
 
 def _safe_eval_path(path: object) -> str:
-    if not isinstance(path, str) or not path.startswith("11-Knowledge/") or not path.endswith(".md"):
+    if (
+        not isinstance(path, str)
+        or not path.startswith("11-Knowledge/")
+        or not path.endswith(".md")
+    ):
         raise ArtifactLifecycleError(
             "retrieval eval relevant path must be a 11-Knowledge Markdown path"
         )
@@ -69,7 +78,9 @@ def _safe_eval_path(path: object) -> str:
 def parse_eval_set(data: bytes) -> RetrievalEvalSet:
     value = _decode_json_object(data, label="retrieval eval set")
     if set(value) != {"eval_version", "name", "cases"}:
-        raise ArtifactLifecycleError("retrieval eval set properties do not match contract")
+        raise ArtifactLifecycleError(
+            "retrieval eval set properties do not match contract"
+        )
     if type(value["eval_version"]) is not int or value["eval_version"] != EVAL_VERSION:
         raise ArtifactLifecycleError(f"eval_version must be integer {EVAL_VERSION}")
 
@@ -85,18 +96,27 @@ def parse_eval_set(data: bytes) -> RetrievalEvalSet:
     seen_ids: set[str] = set()
     cases: list[RetrievalEvalCase] = []
     for raw in raw_cases:
-        if not isinstance(raw, dict) or set(raw) != {"id", "query", "relevant_paths"}:
-            raise ArtifactLifecycleError("retrieval eval case properties do not match contract")
+        if (
+            not isinstance(raw, dict)
+            or set(raw) != {"id", "query", "relevant_paths"}
+        ):
+            raise ArtifactLifecycleError(
+                "retrieval eval case properties do not match contract"
+            )
         case_id = raw["id"]
         query = raw["query"]
         raw_paths = raw["relevant_paths"]
         if not isinstance(case_id, str) or not case_id.strip() or len(case_id) > 128:
             raise ArtifactLifecycleError("retrieval eval case id is invalid")
         if case_id in seen_ids:
-            raise ArtifactLifecycleError(f"duplicate retrieval eval case id: {case_id}")
+            raise ArtifactLifecycleError(
+                f"duplicate retrieval eval case id: {case_id}"
+            )
         seen_ids.add(case_id)
         if not isinstance(query, str) or not query.strip() or len(query) > 4096:
-            raise ArtifactLifecycleError(f"retrieval eval query is invalid: {case_id}")
+            raise ArtifactLifecycleError(
+                f"retrieval eval query is invalid: {case_id}"
+            )
         if not isinstance(raw_paths, list) or len(raw_paths) > 64:
             raise ArtifactLifecycleError(
                 f"retrieval eval relevant_paths is invalid: {case_id}"
@@ -129,17 +149,24 @@ def load_eval_set(path: Path) -> RetrievalEvalSet:
     return parse_eval_set(_read_exact_file(path))
 
 
-def _validate_eval_against_index(eval_set: RetrievalEvalSet, index: KnowledgeIndex) -> None:
+def _validate_eval_against_index(
+    eval_set: RetrievalEvalSet,
+    index: KnowledgeIndex,
+) -> None:
     index_paths = {doc.path for doc in index.documents}
     for case in eval_set.cases:
         missing = [path for path in case.relevant_paths if path not in index_paths]
         if missing:
             raise ArtifactLifecycleError(
-                f"retrieval eval case {case.case_id} references paths absent from the selected active index: {missing}"
+                f"retrieval eval case {case.case_id} references paths absent "
+                f"from the selected active index: {missing}"
             )
 
 
-def _first_relevant_rank(ranked: Sequence[RankedDocument], relevant: set[str]) -> int | None:
+def _first_relevant_rank(
+    ranked: Sequence[RankedDocument],
+    relevant: set[str],
+) -> int | None:
     for position, item in enumerate(ranked, 1):
         if item.path in relevant:
             return position
@@ -183,30 +210,49 @@ def _baseline_metrics(
     return {
         "positive_case_count": positive_count,
         "negative_case_count": negative_count,
-        "top1_accuracy": _round_metric(top1_hits / positive_count) if positive_count else None,
+        "top1_accuracy": (
+            _round_metric(top1_hits / positive_count) if positive_count else None
+        ),
         "hit_at_3": _round_metric(hit3 / positive_count) if positive_count else None,
-        "recall_at_3_macro": _round_metric(recall_sum / positive_count) if positive_count else None,
-        "precision_at_3_macro": _round_metric(precision_sum / positive_count) if positive_count else None,
-        "mrr": _round_metric(reciprocal_sum / positive_count) if positive_count else None,
-        "negative_accuracy": _round_metric(negative_clean / negative_count) if negative_count else None,
+        "recall_at_3_macro": (
+            _round_metric(recall_sum / positive_count) if positive_count else None
+        ),
+        "precision_at_3_macro": (
+            _round_metric(precision_sum / positive_count) if positive_count else None
+        ),
+        "mrr": (
+            _round_metric(reciprocal_sum / positive_count) if positive_count else None
+        ),
+        "negative_accuracy": (
+            _round_metric(negative_clean / negative_count) if negative_count else None
+        ),
     }
 
 
 def _select_candidates(
     index: KnowledgeIndex,
     ranked: Sequence[RankedDocument],
+    coverages: dict[str, QueryCoverage],
     *,
+    min_coverage: float,
     ratio: float,
     min_top1_score: float,
     top_k: int,
 ) -> tuple[RankedDocument, ...]:
-    if not ranked or ranked[0].score < min_top1_score:
+    eligible = [
+        item
+        for item in ranked
+        if coverages[item.path].coverage >= min_coverage
+    ]
+    if not eligible or eligible[0].score < min_top1_score:
         return ()
-    threshold = ranked[0].score * ratio
+
+    threshold = eligible[0].score * ratio
     size_by_path = {doc.path: doc.byte_size for doc in index.documents}
     selected: list[RankedDocument] = []
     total_bytes = 0
-    for item in ranked:
+
+    for item in eligible:
         if len(selected) >= top_k:
             break
         if item.score < threshold:
@@ -216,6 +262,7 @@ def _select_candidates(
             continue
         selected.append(item)
         total_bytes += size
+
     return tuple(selected)
 
 
@@ -223,7 +270,9 @@ def _selection_metrics(
     index: KnowledgeIndex,
     cases: Sequence[RetrievalEvalCase],
     rankings: dict[str, tuple[RankedDocument, ...]],
+    coverages: dict[str, dict[str, QueryCoverage]],
     *,
+    min_coverage: float,
     ratio: float,
     min_top1_score: float,
     top_k: int,
@@ -240,6 +289,8 @@ def _selection_metrics(
         selected = _select_candidates(
             index,
             rankings[case.case_id],
+            coverages[case.case_id],
+            min_coverage=min_coverage,
             ratio=ratio,
             min_top1_score=min_top1_score,
             top_k=top_k,
@@ -261,17 +312,25 @@ def _selection_metrics(
 
     precision = true_positive / selected_total if selected_total else 0.0
     recall = true_positive / relevant_total if relevant_total else 0.0
-    f1 = (2.0 * precision * recall / (precision + recall)) if precision + recall else 0.0
+    f1 = (
+        2.0 * precision * recall / (precision + recall)
+        if precision + recall
+        else 0.0
+    )
 
     return {
         "micro_precision": _round_metric(precision),
         "micro_recall": _round_metric(recall),
         "micro_f1": _round_metric(f1),
         "positive_full_recall_rate": (
-            _round_metric(full_recall_cases / positive_cases) if positive_cases else None
+            _round_metric(full_recall_cases / positive_cases)
+            if positive_cases
+            else None
         ),
         "negative_clean_rate": (
-            _round_metric(negative_clean / negative_total) if negative_total else None
+            _round_metric(negative_clean / negative_total)
+            if negative_total
+            else None
         ),
         "average_selected": _round_metric(selected_total / len(cases)),
         "selected_total": selected_total,
@@ -291,11 +350,16 @@ def evaluate_retrieval(
     _validate_eval_against_index(eval_set, index)
 
     rankings: dict[str, tuple[RankedDocument, ...]] = {}
+    coverages: dict[str, dict[str, QueryCoverage]] = {}
     case_reports: list[dict[str, object]] = []
+
     for case in eval_set.cases:
         ranked = rank_documents(index, case.query)
+        case_coverage = coverage_by_path(index, case.query)
         rankings[case.case_id] = ranked
+        coverages[case.case_id] = case_coverage
         relevant = set(case.relevant_paths)
+
         case_reports.append(
             {
                 "id": case.case_id,
@@ -308,6 +372,16 @@ def evaluate_retrieval(
                         "path": item.path,
                         "score": format(item.score, ".12g"),
                         "relevant": item.path in relevant,
+                        "query_coverage": _round_metric(
+                            case_coverage[item.path].coverage
+                        ),
+                        "matched_query_terms": len(
+                            case_coverage[item.path].matched_terms
+                        ),
+                        "query_terms": (
+                            len(case_coverage[item.path].matched_terms)
+                            + len(case_coverage[item.path].missing_terms)
+                        ),
                     }
                     for item in ranked[: max(METRIC_K, top_k)]
                 ],
@@ -320,6 +394,8 @@ def evaluate_retrieval(
             index,
             eval_set.cases,
             rankings,
+            coverages,
+            min_coverage=0.0,
             ratio=ratio,
             min_top1_score=0.0,
             top_k=top_k,
@@ -333,12 +409,48 @@ def evaluate_retrieval(
             index,
             eval_set.cases,
             rankings,
+            coverages,
+            min_coverage=0.0,
             ratio=0.0,
             min_top1_score=threshold,
             top_k=top_k,
         )
         row["min_top1_score"] = threshold
         absolute_sweep.append(row)
+
+    coverage_sweep = []
+    for threshold in COVERAGE_THRESHOLDS:
+        row = _selection_metrics(
+            index,
+            eval_set.cases,
+            rankings,
+            coverages,
+            min_coverage=threshold,
+            ratio=0.0,
+            min_top1_score=0.0,
+            top_k=top_k,
+        )
+        row["min_query_coverage"] = threshold
+        coverage_sweep.append(row)
+
+    combined_sweep = []
+    for coverage_threshold in COVERAGE_THRESHOLDS:
+        for ratio in CUTOFF_RATIOS:
+            for score_threshold in TOP1_SCORE_THRESHOLDS:
+                row = _selection_metrics(
+                    index,
+                    eval_set.cases,
+                    rankings,
+                    coverages,
+                    min_coverage=coverage_threshold,
+                    ratio=ratio,
+                    min_top1_score=score_threshold,
+                    top_k=top_k,
+                )
+                row["min_query_coverage"] = coverage_threshold
+                row["ratio"] = ratio
+                row["min_top1_score"] = score_threshold
+                combined_sweep.append(row)
 
     return {
         "eval_version": EVAL_VERSION,
@@ -347,6 +459,8 @@ def evaluate_retrieval(
         "baseline": _baseline_metrics(eval_set.cases, rankings),
         "relative_cutoff_sweep": relative_sweep,
         "absolute_top1_score_sweep": absolute_sweep,
+        "query_coverage_sweep": coverage_sweep,
+        "combined_sweep": combined_sweep,
         "cases": case_reports,
     }
 
