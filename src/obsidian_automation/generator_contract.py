@@ -138,7 +138,7 @@ def _validate_title(value: object) -> str:
         raise ArtifactLifecycleError("generator output title has a cross-platform unsafe suffix")
     if any(ch in _WINDOWS_FORBIDDEN or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
         raise ArtifactLifecycleError("generator output title contains a cross-platform unsafe character")
-    if value.casefold() in _WINDOWS_RESERVED_STEMS:
+    if value.split(".", 1)[0].casefold() in _WINDOWS_RESERVED_STEMS:
         raise ArtifactLifecycleError("generator output title is a reserved Windows filename")
     try:
         value.encode("utf-8")
@@ -205,6 +205,7 @@ def prompt_template_bytes() -> bytes:
     return _canonical_json_bytes(
         {
             "template_version": PROMPT_TEMPLATE_VERSION,
+            "output_contract_version": OUTPUT_CONTRACT_VERSION,
             "system": _SYSTEM_PROMPT,
             "output_schema": OUTPUT_JSON_SCHEMA,
             "user_payload_version": 1,
