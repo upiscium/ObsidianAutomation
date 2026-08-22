@@ -39,7 +39,7 @@
           "byte_size": {
             "type": "integer",
             "minimum": 0,
-            "maximum": 262144
+            "maximum": 131072
           },
           "title": {"type": "string"},
           "status": {"const": "active"},
