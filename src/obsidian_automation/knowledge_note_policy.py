@@ -10,7 +10,7 @@ KNOWLEDGE_ROOT = "11-Knowledge"
 POLICY_NAME = "knowledge-note-v0"
 MAX_CONTENT_BYTES = 256 * 1024
 
-_ALLOWED_CATEGORIES = {
+ALLOWED_CATEGORIES = (
     "",
     "explanation",
     "manual",
@@ -18,15 +18,15 @@ _ALLOWED_CATEGORIES = {
     "spec",
     "reference",
     "summary",
-}
-_ALLOWED_SOURCE_TYPES = {
+)
+ALLOWED_SOURCE_TYPES = (
     "self",
     "official",
     "paper",
     "book",
     "web",
     "other",
-}
+)
 _REQUIRED_FRONTMATTER_KEYS = {
     "type",
     "status",
@@ -151,11 +151,11 @@ def validate_knowledge_note_v0(mutation: CreateNoteMutation) -> None:
         raise MutationValidationError("AI-created Knowledge status must be active")
     if frontmatter.maturity != "draft":
         raise MutationValidationError("AI-created Knowledge maturity must be draft")
-    if frontmatter.category not in _ALLOWED_CATEGORIES:
+    if frontmatter.category not in ALLOWED_CATEGORIES:
         raise MutationValidationError(
             f"Knowledge category is not allowed: {frontmatter.category!r}"
         )
-    if frontmatter.source_type not in _ALLOWED_SOURCE_TYPES:
+    if frontmatter.source_type not in ALLOWED_SOURCE_TYPES:
         raise MutationValidationError(
             f"Knowledge source_type is not allowed: {frontmatter.source_type!r}"
         )
