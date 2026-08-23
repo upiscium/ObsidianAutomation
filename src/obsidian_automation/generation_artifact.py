@@ -147,6 +147,12 @@ def _validated_model_config(value: object) -> dict[str, object]:
     return dict(value)
 
 
+def validate_model_config(value: Mapping[str, object]) -> dict[str, object]:
+    """Validate provider configuration before inference uses it."""
+
+    return _validated_model_config(dict(value))
+
+
 def parse_generation_record(data: bytes) -> GenerationRecord:
     if len(data) > MAX_GENERATION_RECORD_BYTES:
         raise ArtifactLifecycleError(
