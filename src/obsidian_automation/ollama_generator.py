@@ -14,14 +14,13 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 
 from .artifact_lifecycle import (
     ArtifactLifecycleError,
-    _canonical_json_bytes,
     _decode_json_object,
     _require_sha256,
 )
 from .generation_artifact import (
-    MAX_MODEL_CONFIG_BYTES,
     build_generation_record,
     store_generation_record,
+    validate_model_config,
 )
 from .generator_contract import (
     MAX_GENERATOR_OUTPUT_BYTES,
@@ -249,6 +248,16 @@ def _validated_implementation_revision(value: str) -> str:
     return value
 
 
+def _provider_model_config(options: Mapping[str, object]) -> dict[str, object]:
+    return validate_model_config(
+        {
+            "adapter_version": ADAPTER_VERSION,
+            "think": False,
+            "options": dict(options),
+        }
+    )
+
+
 def _validated_options(options: Mapping[str, object] | None) -> dict[str, object]:
     value = dict(DEFAULT_OPTIONS if options is None else options)
     try:
@@ -264,14 +273,11 @@ def _validated_options(options: Mapping[str, object] | None) -> dict[str, object
     if len(encoded) > MAX_OPTIONS_BYTES:
         raise ArtifactLifecycleError(f"Ollama options exceed {MAX_OPTIONS_BYTES} canonical bytes")
 
-    model_config = {
-        "adapter_version": ADAPTER_VERSION,
-        "think": False,
-        "options": value,
-    }
-    if len(_canonical_json_bytes(model_config)) > MAX_MODEL_CONFIG_BYTES:
-        raise ArtifactLifecycleError("Ollama generation model_config exceeds provenance limit")
-    return value
+    validated = _provider_model_config(value)
+    validated_options = validated.get("options")
+    if not isinstance(validated_options, dict):
+        raise ArtifactLifecycleError("validated Ollama options are not an object")
+    return dict(validated_options)
 
 
 def _chat_semantic_output(
@@ -363,11 +369,7 @@ def generate_knowledge_note_with_ollama(
         output=output,
     )
 
-    model_config = {
-        "adapter_version": ADAPTER_VERSION,
-        "think": False,
-        "options": inference_options,
-    }
+    model_config = _provider_model_config(inference_options)
     record = build_generation_record(
         ai_root,
         context_sha256=context_digest,
