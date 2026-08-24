@@ -14,6 +14,7 @@ SYNC_USER=${SYNC_USER:-obsidian-ai-sync}
 READER_USER=${READER_USER:-obsidian-ai-reader}
 GENERATOR_USER=${GENERATOR_USER:-obsidian-ai-generator}
 VALIDATOR_USER=${VALIDATOR_USER:-obsidian-ai-validator}
+EVALUATOR_USER=${EVALUATOR_USER:-obsidian-ai-evaluator}
 REVIEWER_USER=${REVIEWER_USER:-obsidian-ai-reviewer}
 EXECUTOR_USER=${EXECUTOR_USER:-obsidian-ai-executor}
 
@@ -24,6 +25,9 @@ KNOWLEDGE="$VAULT_ROOT/11-Knowledge"
 UNTRUSTED="$AI_ROOT/00-Untrusted"
 INDEX="$AI_ROOT/04-Index"
 CONTEXT="$AI_ROOT/05-Context"
+EVALUATION_REQUEST="$AI_ROOT/12-Evaluation-Request"
+EVALUATION_CONTEXT="$AI_ROOT/14-Evaluation-Context"
+EVALUATION="$AI_ROOT/15-Evaluation"
 VALIDATION="$AI_ROOT/10-Validation"
 REVIEW="$AI_ROOT/20-Review"
 LOCKS="$AI_ROOT/24-Locks"
@@ -52,6 +56,7 @@ for user in \
   "$READER_USER" \
   "$GENERATOR_USER" \
   "$VALIDATOR_USER" \
+  "$EVALUATOR_USER" \
   "$REVIEWER_USER" \
   "$EXECUTOR_USER"; do
   id "$user" >/dev/null 2>&1 || {
@@ -62,9 +67,6 @@ done
 
 SYNC_GROUP=$(id -gn "$SYNC_USER")
 
-# The Vault mirror belongs to Sync Transport. Reader only traverses the root.
-# Validator and Executor require root directory listing so deterministic
-# case-fold collision checks can inspect each canonical path component.
 install -d -o "$SYNC_USER" -g "$SYNC_GROUP" -m 0700 "$VAULT_ROOT"
 install -d -o "$SYNC_USER" -g "$SYNC_GROUP" -m 0700 "$KNOWLEDGE"
 setfacl -b "$VAULT_ROOT"
@@ -93,10 +95,11 @@ for entry in \
   setfacl -m "d:$entry" "$KNOWLEDGE"
 done
 
-# AI lifecycle state is local-only. 04-Index is Reader-private derived state;
-# 05-Context is the non-authoritative Reader -> Generator handoff.
 install -d -o root -g root -m 0700 "$AI_ROOT"
-for directory in "$UNTRUSTED" "$INDEX" "$CONTEXT" "$VALIDATION" "$REVIEW" "$LOCKS" "$EXECUTION" "$TRANSPORT" "$RECEIPTS"; do
+for directory in \
+  "$UNTRUSTED" "$INDEX" "$CONTEXT" "$VALIDATION" \
+  "$EVALUATION_REQUEST" "$EVALUATION_CONTEXT" "$EVALUATION" \
+  "$REVIEW" "$LOCKS" "$EXECUTION" "$TRANSPORT" "$RECEIPTS"; do
   install -d -o root -g root -m 0700 "$directory"
   setfacl -b "$directory"
   setfacl -k "$directory" || true
@@ -109,6 +112,7 @@ for entry in \
   "u:$READER_USER:--x" \
   "u:$GENERATOR_USER:--x" \
   "u:$VALIDATOR_USER:--x" \
+  "u:$EVALUATOR_USER:--x" \
   "u:$REVIEWER_USER:r-x" \
   "u:$EXECUTOR_USER:r-x"; do
   setfacl -m "$entry" "$AI_ROOT"
@@ -130,28 +134,41 @@ apply_directory_acl() {
 
 apply_directory_acl "$UNTRUSTED" \
   "u:$GENERATOR_USER:rwx" \
-  "u:$VALIDATOR_USER:r-x"
+  "u:$VALIDATOR_USER:r-x" \
+  "u:$EVALUATOR_USER:r-x"
 
 apply_directory_acl "$INDEX" \
   "u:$READER_USER:rwx"
 
 apply_directory_acl "$CONTEXT" \
   "u:$READER_USER:rwx" \
-  "u:$GENERATOR_USER:r-x"
+  "u:$GENERATOR_USER:r-x" \
+  "u:$EVALUATOR_USER:r-x"
 
 apply_directory_acl "$VALIDATION" \
   "u:$SYNC_USER:r-x" \
   "u:$VALIDATOR_USER:rwx" \
+  "u:$EVALUATOR_USER:r-x" \
   "u:$REVIEWER_USER:r-x" \
   "u:$EXECUTOR_USER:r-x"
+
+apply_directory_acl "$EVALUATION_REQUEST" \
+  "u:$VALIDATOR_USER:rwx" \
+  "u:$READER_USER:r-x"
+
+apply_directory_acl "$EVALUATION_CONTEXT" \
+  "u:$READER_USER:rwx" \
+  "u:$EVALUATOR_USER:r-x"
+
+apply_directory_acl "$EVALUATION" \
+  "u:$EVALUATOR_USER:rwx" \
+  "u:$REVIEWER_USER:r-x"
 
 apply_directory_acl "$REVIEW" \
   "u:$SYNC_USER:r-x" \
   "u:$REVIEWER_USER:rwx" \
   "u:$EXECUTOR_USER:r-x"
 
-# Operational lock files carry no semantic authority. Executor, Sync, and the
-# Human recovery tool share only this lock directory.
 apply_directory_acl "$LOCKS" \
   "u:$SYNC_USER:rwx" \
   "u:$REVIEWER_USER:rwx" \
