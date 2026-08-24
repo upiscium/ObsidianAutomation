@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
-from .artifact_lifecycle import ArtifactLifecycleError, _require_sha256
+from .artifact_lifecycle import ArtifactLifecycleError, _decode_json_object, _require_sha256
 from .context_bundle import load_context_bundle
 from .evaluation_artifact import (
     _load_accepted_mutation,
@@ -247,13 +247,7 @@ def _load_options_file(path: Path | None) -> Mapping[str, object] | None:
         raise ArtifactLifecycleError(
             f"Ollama evaluator options file exceeds {MAX_OPTIONS_BYTES} bytes"
         )
-    try:
-        value = json.loads(data)
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise ArtifactLifecycleError("Ollama evaluator options file is not valid JSON") from exc
-    if not isinstance(value, dict):
-        raise ArtifactLifecycleError("Ollama evaluator options file must contain a JSON object")
-    return value
+    return _decode_json_object(data, label="Ollama evaluator options file")
 
 
 def main(argv: list[str] | None = None) -> int:
