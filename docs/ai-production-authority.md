@@ -2,9 +2,9 @@
 
 ## Purpose
 
-Phase 2 introduces canonical Vault writes. The Snapshot LXC from Phase 1 remains read-only and must not be upgraded into a canonical writer.
+Phase 2 introduces canonical Vault writes while preserving strict authority separation. The Phase 1 Snapshot LXC remains permanently read-only and must not be upgraded into a canonical writer.
 
-Production v0 uses one dedicated AI Writer host/LXC. Generator, Validator, Human review, Executor, Reader/Indexer, and Sync Transport are separated by Linux identities and filesystem ACLs. Canonical remote creation is performed only by the Sync Transport with a conditional WebDAV request.
+Production v0 uses one dedicated AI Writer host/LXC. Sync Transport, Reader/Indexer, Generator, Validator, Evaluator, Human Review, and Executor are separated by Linux identities and filesystem ACLs. Canonical remote creation is performed only by Sync Transport with a conditional WebDAV request.
 
 ## Host boundary
 
@@ -19,6 +19,7 @@ AI Writer host/LXC
 ├── obsidian-ai-reader
 ├── obsidian-ai-generator
 ├── obsidian-ai-validator
+├── obsidian-ai-evaluator
 ├── <human reviewer account>
 └── obsidian-ai-executor
 
@@ -37,11 +38,12 @@ The following identities have no Nextcloud writer credential:
 - `obsidian-ai-reader`;
 - `obsidian-ai-generator`;
 - `obsidian-ai-validator`;
+- `obsidian-ai-evaluator`;
 - the Human review account/tool;
 - `obsidian-ai-executor`;
 - the Phase 1 Snapshot LXC account.
 
-`obsidian-ai-sync` does not accept LLM prompts or semantic mutation instructions. It consumes an exact durable transport request prepared by the Executor, independently rechecks the validated mutation / Human approval / execution intent binding, performs `PUT` with `If-None-Match: *`, verifies the remote bytes, and writes only the transport-result stage.
+`obsidian-ai-sync` does not accept LLM prompts or semantic mutation instructions. It consumes an exact durable transport request prepared by Executor, independently rechecks the validated mutation / Human approval / execution intent binding, performs `PUT` with `If-None-Match: *`, verifies remote bytes, and writes only the transport-result stage.
 
 ## Mirror and AI state are separate
 
@@ -58,6 +60,9 @@ Recommended layout:
     ├── 04-Index/
     ├── 05-Context/
     ├── 10-Validation/
+    ├── 12-Evaluation-Request/
+    ├── 14-Evaluation-Context/
+    ├── 15-Evaluation/
     ├── 20-Review/
     ├── 24-Locks/
     ├── 25-Execution/
@@ -65,15 +70,17 @@ Recommended layout:
     └── 30-Receipts/
 ```
 
-This separation is required. If AI state were kept inside a directory managed by `rclone sync` from Nextcloud, local-only index/context/intent/review/receipt artifacts could be deleted by a pull when they are absent remotely.
+This separation is required. A Nextcloud pull must never be able to delete local-only index/context/validation/evaluation/review/execution/transport/receipt artifacts.
 
-`04-Index` is Reader-private, non-authoritative derived state. Reader/Indexer is the only identity that may read or write it. The index never grants Generator direct Vault visibility.
+## Derived retrieval state
 
-`05-Context` is a non-authoritative Reader -> Generator boundary. Reader/Indexer is the only writer and reads exact bytes from the canonical Knowledge mirror. Generator may read immutable Context Bundles but cannot write or replace them. Context does not grant validation, approval, execution, transport, or receipt authority; Generator output remains untrusted regardless of Context contents.
+`04-Index` is Reader-private, non-authoritative derived state. Reader/Indexer is the only identity that may read or write it.
 
-`24-Locks` is operational state only. It carries no approval, mutation, transport-attestation, or receipt authority. Executor, Sync Transport, and the Human recovery tool share write access to this directory solely so the three processes can serialize one mutation on the single production host without granting write access to each other's semantic stages.
+`05-Context` is the non-authoritative Reader -> Generator boundary. Reader is the only writer. Generator and Evaluator may read exact Context Bundles but cannot rewrite them. Context never grants validation, evaluation, approval, execution, transport, or receipt authority.
 
-The reusable Python APIs take `vault_root` and `ai_root` separately.
+`12-Evaluation-Request` is a bounded Validator -> Reader bridge. It exists so Reader does not need read access to Generator proposals or Validation. Validator deterministically projects the accepted proposal/mutation binding, target path, and retrieval query. Reader is read-only on this stage.
+
+`14-Evaluation-Context` is a non-authoritative Reader -> Evaluator boundary. Reader uses canonical Knowledge plus Reader-private Index to produce exact candidate bytes for redundancy/consistency evaluation. Evaluator may read but not rewrite it.
 
 ## Reader / Generator sequence
 
@@ -81,18 +88,56 @@ The reusable Python APIs take `vault_root` and `ai_root` separately.
 Reader / Indexer
   read canonical 11-Knowledge
   create immutable 04-Index/<sha>.index.json
-  select exact index SHA
-  deterministic lexical retrieval
+  deterministic production retrieval
   create immutable 05-Context/<sha>.context.json
         ↓ read-only boundary
 Generator
   read exact Context Bundle
+  call approved LLM provider
   produce 00-Untrusted/<sha>.proposal.json
+  produce 00-Untrusted/<sha>.generation.json
         ↓
 Validator
 ```
 
-Generator deliberately has no direct path to canonical Knowledge or Reader's index. A Context Bundle contains the exact selected Markdown bytes, each source path, and a SHA-256 of each source. It is retrieval evidence for generation, not a trusted mutation artifact.
+Generator deliberately has no direct path to canonical Knowledge or Reader's Index. Generation provenance is audit provenance written by an untrusted identity; it is not a validation or approval attestation.
+
+## Validator / Evaluator / Human sequence
+
+```text
+Validator
+  read proposal + canonical Knowledge
+  apply deterministic create_note + Knowledge Note policy
+  write accepted/rejected 10-Validation
+        ↓ accepted only
+Validator
+  write deterministic 12-Evaluation-Request
+        ↓
+Reader
+  read request + 04-Index + canonical Knowledge
+  write recall-biased 14-Evaluation-Context
+        ↓
+Evaluator
+  read proposal/generation provenance
+  read original 05-Context
+  read accepted 10-Validation
+  read 14-Evaluation-Context
+  write advisory 15-Evaluation
+        ↓
+Human reviewer
+  read Validation + Evaluation
+  write exact-artifact decision in 20-Review
+```
+
+Evaluator v0 assesses groundedness, redundancy, and consistency. Its recommendation is advisory machine output.
+
+```text
+Evaluation != Validation
+Evaluation != Human approval
+Evaluation recommendation != execution authority
+```
+
+Executor remains authorized by deterministic Validation plus exact Human approval, not by an Evaluator recommendation.
 
 ## Canonical write sequence
 
@@ -115,11 +160,11 @@ Executor
   write 30-Receipts/<sha>.receipt.json
 ```
 
-The Executor never writes the local Vault mirror as the canonical effect. The mirror remains a read replica and later observes the successful Nextcloud write through the normal pull path.
+Executor never writes the local Vault mirror as the canonical effect. The mirror remains a read replica and later observes the successful Nextcloud write through the normal pull path.
 
-## Why `27-Transport` is a separate authority stage
+## Why `27-Transport` is separate authority
 
-Transport results must not live in the Executor-writable `25-Execution` directory. Otherwise the Executor identity could forge a `created_verified` result and manufacture a success receipt without contacting Nextcloud.
+Transport results must not live in Executor-writable `25-Execution`. Otherwise Executor could forge a `created_verified` result and manufacture a success receipt without contacting Nextcloud.
 
 Therefore:
 
@@ -127,55 +172,68 @@ Therefore:
 - Sync reads `25-Execution` and writes `27-Transport`;
 - Reviewer reads both when resolving an ambiguous remote outcome;
 - all three share only `24-Locks` for host-local mutual exclusion;
-- only a verified `created_verified` result allows the Executor to create a success receipt.
+- only verified `created_verified` allows Executor to create a success receipt.
 
 ## Actor permissions
 
-`r` means file content/listing may be read, `w` means artifacts may be created in that directory, and `-` means no direct access is required.
+`r` means content/listing may be read, `w` means artifacts may be created, and `-` means no direct access is required.
 
-| Resource | Sync | Reader | Generator | Validator | Human reviewer | Executor |
-| --- | --- | --- | --- | --- | --- | --- |
-| Vault `11-Knowledge` | rw | r | - | r | - | r |
-| State `00-Untrusted` | - | - | rw | r | - | - |
-| State `04-Index` | - | rw | - | - | - | - |
-| State `05-Context` | - | rw | r | - | - | - |
-| State `10-Validation` | r | - | - | rw | r | r |
-| State `20-Review` | r | - | - | - | rw | r |
-| State `24-Locks` | rw | - | - | - | rw | rw |
-| State `25-Execution` | r | - | - | - | r | rw |
-| State `27-Transport` | rw | - | - | - | r | r |
-| State `30-Receipts` | - | - | - | - | r | rw |
+| Resource | Sync | Reader | Generator | Validator | Evaluator | Human reviewer | Executor |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Vault `11-Knowledge` | rw | r | - | r | - | - | r |
+| State `00-Untrusted` | - | - | rw | r | r | - | - |
+| State `04-Index` | - | rw | - | - | - | - | - |
+| State `05-Context` | - | rw | r | - | r | - | - |
+| State `10-Validation` | r | - | - | rw | r | r | r |
+| State `12-Evaluation-Request` | - | r | - | rw | - | - | - |
+| State `14-Evaluation-Context` | - | rw | - | - | r | - | - |
+| State `15-Evaluation` | - | - | - | - | rw | r | - |
+| State `20-Review` | r | - | - | - | - | rw | r |
+| State `24-Locks` | rw | - | - | - | - | rw | rw |
+| State `25-Execution` | r | - | - | - | - | r | rw |
+| State `27-Transport` | rw | - | - | - | - | r | r |
+| State `30-Receipts` | - | - | - | - | - | r | rw |
 
-The Human reviewer does not receive canonical write permission through this mechanism. Human editing through normal Obsidian remains a separate existing authority path.
+Human reviewer does not receive canonical write permission through this mechanism. Human editing through normal Obsidian remains a separate existing authority path.
+
+## Evaluator-specific isolation
+
+Evaluator cannot read canonical Knowledge or `04-Index`. This prevents the LLM evaluation stage from independently expanding its knowledge visibility beyond Reader-selected exact artifacts.
+
+Evaluator cannot read `12-Evaluation-Request`; it consumes only the Reader-produced `14-Evaluation-Context`. This keeps candidate selection under Reader authority.
+
+Evaluator cannot write Validation, Review, Locks, Execution, Transport, or Receipts. Therefore it cannot convert an advisory judgement into a canonical effect.
+
+Reader cannot read Generator proposals or Validation. It receives only the deterministic bounded request needed for evaluation retrieval.
 
 ## Remote crash semantics
 
 A remote conditional PUT and local transport-result persistence are not one atomic transaction.
 
 - If PUT never succeeds, no result is written and retry remains possible.
-- If PUT succeeds and the verified `created_verified` result is durable, receipt creation can be retried safely.
-- If PUT succeeds but the process crashes before the result is durable, the next conditional PUT returns 412. The Sync Transport observes the remote bytes and records `target_exists_matching` or `target_exists_conflict`.
+- If PUT succeeds and verified `created_verified` is durable, receipt creation can be retried safely.
+- If PUT succeeds but the process crashes before result persistence, the next conditional PUT returns 412. Sync observes remote bytes and records `target_exists_matching` or `target_exists_conflict`.
 - `target_exists_matching` is not converted automatically into success because the actor that created the bytes can no longer be proven. Human recovery may explicitly adopt the observed effect without creating a success receipt, or abandon it.
 
-Remote Human recovery is bound to the exact durable intent and the exact transport-result bytes.
+Remote Human recovery is bound to exact durable intent and exact transport-result bytes.
 
 ## POSIX ACL requirement
 
-Simple owner/group/mode bits cannot express the required matrix cleanly. Production v0 requires a local filesystem with Linux POSIX ACL support and `setfacl`/`getfacl`.
+Simple owner/group/mode bits cannot express this matrix cleanly. Production v0 requires a local filesystem with Linux POSIX ACL support and `setfacl`/`getfacl`.
 
-State stage directories should be root-owned; named-user ACL entries grant only the required stage capability. This prevents the Sync Transport from modifying Validation/Review/Execution, prevents the Executor from writing Transport results, prevents Reviewer from modifying machine-attested artifacts, and prevents Generator from reading the Vault or Reader-private Index or rewriting Reader-produced Context.
+State stage directories are root-owned; named-user ACL entries grant only the required stage capability. Default ACLs ensure newly created immutable artifacts inherit the same reader boundaries.
 
 ## Required negative guarantees
 
 Production acceptance requires proving at OS level that:
 
-- Generator cannot read or write canonical Knowledge or `04-Index`; it can read but not write `05-Context`; it cannot write later lifecycle stages.
-- Reader can read canonical Knowledge, read/write `04-Index`, and write `05-Context`, but cannot read/write Generator proposals or later lifecycle stages and cannot write the Vault.
-- Validator can read canonical Knowledge and Untrusted but cannot read Index/Context or write canonical Knowledge or later stages.
-- Human reviewer can write Review and operational Locks but cannot read Index/Context or write canonical Knowledge, Validation, Execution, Transport, or Receipts.
-- Executor cannot write the Vault mirror, Index, Context, Untrusted, Validation, Review, or Transport.
-- Executor can write only Locks, Execution, and Receipts.
-- Sync can write the local Vault mirror, Locks, and Transport results, but cannot forge Index, Context, Untrusted, Validation, Review, Execution, or Receipts.
+- Generator cannot read canonical Knowledge or `04-Index`; it can read but not write `05-Context`; it writes only `00-Untrusted`.
+- Reader can read canonical Knowledge, read/write `04-Index`, write `05-Context`, read `12-Evaluation-Request`, and write `14-Evaluation-Context`; it cannot read Generator proposals or Validation and cannot write the Vault.
+- Validator can read canonical Knowledge and Untrusted, write Validation and Evaluation Request, but cannot read Index/Context or write canonical Knowledge/Evaluation/Review/later stages.
+- Evaluator can read Untrusted, original Context, Validation, and Evaluation Context; it cannot read the Vault, Index, Evaluation Request, Human Review, or later execution stages; it writes only Evaluation.
+- Human reviewer can read Validation and Evaluation, write Review and operational Locks, but cannot write canonical Knowledge, machine-produced Validation/Evaluation, Execution, Transport, or Receipts.
+- Executor cannot write the Vault mirror, Index, Context, Untrusted, Validation, Evaluation Request/Context/Evaluation, Review, or Transport; it writes only Locks, Execution, and Receipts.
+- Sync can write the local Vault mirror, Locks, and Transport results, but cannot forge Index, Context, Untrusted, Validation, Evaluation, Review, Execution, or Receipts.
 - no identity other than Sync can read the Nextcloud writer credential.
 
 ## Health marker
@@ -186,27 +244,26 @@ The transport health marker remains:
 98-System/.rclone-bisync/RCLONE_TEST
 ```
 
-The historical `.rclone-bisync` namespace name is retained for compatibility, but canonical writes do not use bisync. The Public Exporter excludes `98-System/.rclone-bisync/**`.
+The historical `.rclone-bisync` namespace name is retained for compatibility, but canonical writes do not use bisync. Public Exporter excludes `98-System/.rclone-bisync/**`.
 
 ## Production deployment sequence
 
 1. Create the dedicated unprivileged AI Writer LXC.
-2. Create separate Linux identities for Sync, Reader, Generator, Validator, Reviewer, and Executor.
+2. Create separate Linux identities for Sync, Reader, Generator, Validator, Evaluator, Reviewer, and Executor.
 3. Create separate `vault` and `state` roots.
-4. Apply and verify the revised POSIX ACL matrix, including `04-Index`, `05-Context`, `24-Locks`, and `27-Transport`.
-5. Initialize the Vault mirror with Nextcloud -> local pull only.
-6. Install Reader index/retrieval/context tools, validator, executor, and transport worker at one immutable ObsidianAutomation revision.
-7. Only after all local Gates pass, install the Nextcloud writer credential readable solely by `obsidian-ai-sync`.
-8. Run a disposable remote conditional-create E2E before enabling any real `create_note` proposal.
-9. Keep the Phase 1 Snapshot LXC unchanged and read-only.
-10. Establish the deterministic lexical retrieval baseline before connecting Generator/Evaluator LLMs or semantic retrieval.
+4. Create all lifecycle stage directories, including `12-Evaluation-Request`, `14-Evaluation-Context`, and `15-Evaluation`.
+5. Apply and verify the POSIX ACL matrix.
+6. Initialize the Vault mirror with Nextcloud -> local pull only.
+7. Install all tools at one immutable ObsidianAutomation revision.
+8. Only after local Gates pass, install the Nextcloud writer credential readable solely by `obsidian-ai-sync`.
+9. Run disposable Generator/Validator/Evaluator and remote conditional-create E2Es before enabling real automatic flow.
+10. Keep the Phase 1 Snapshot LXC unchanged and read-only.
 
 ## Out of scope
 
 - multi-host Executor coordination;
 - automatic Human approval;
-- Generator/Evaluator LLM integration;
-- embedding/vector retrieval and LLM reranking;
+- semantic/vector retrieval and LLM reranking;
 - automatic index scheduling;
 - update/merge/delete/rename canonical mutations;
 - cryptographic identity proof for Human review records.

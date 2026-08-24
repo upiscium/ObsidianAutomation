@@ -46,6 +46,7 @@ jobs:
             obsidian-ai-reader \
             obsidian-ai-generator \
             obsidian-ai-validator \
+            obsidian-ai-evaluator \
             obsidian-ai-reviewer \
             obsidian-ai-executor
           do
