@@ -1,0 +1,37 @@
+[Unit]
+Description=Promote reviewed ObsidianCore changes to the Live Obsidian Vault
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/obsidian-core-promotion/promotion.env
+ConditionPathExists=/etc/obsidian-core-promotion/public-export.toml
+ConditionPathExists=/etc/obsidian-core-promotion/nextcloud.password
+
+[Service]
+Type=oneshot
+User=obsidian-core-promoter
+Group=obsidian-core-promoter
+EnvironmentFile=/etc/obsidian-core-promotion/promotion.env
+ExecStart=/opt/obsidian-core-promotion/venv/bin/obsidian-core-promotion-run
+UMask=0077
+StateDirectory=obsidian-core-promotion
+StateDirectoryMode=0700
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadOnlyPaths=/etc/obsidian-core-promotion
