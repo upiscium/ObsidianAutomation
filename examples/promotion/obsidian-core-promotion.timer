@@ -1,0 +1,12 @@
+[Unit]
+Description=Poll ObsidianCore for reviewed changes to promote
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+RandomizedDelaySec=30s
+Persistent=yes
+Unit=obsidian-core-promotion.service
+
+[Install]
+WantedBy=timers.target
