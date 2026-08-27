@@ -136,7 +136,10 @@ def test_plan_fails_if_managed_path_becomes_symlink(tmp_path: Path) -> None:
     os.symlink("../../../README.md", target)
     head = _commit(repo, "unsafe symlink")
 
-    with pytest.raises(PromotionError, match="regular files only"):
+    # Git reports regular-file -> symlink as a type change (T). Promotion v0
+    # accepts only A/M/D regular-file changes, so the unsafe object is rejected
+    # before any content is read from the new tree.
+    with pytest.raises(PromotionError, match="unsupported Git change type 'T'"):
         build_promotion_plan(repo, base_ref=base, head_ref=head, config_path=config)
 
 
