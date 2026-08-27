@@ -179,7 +179,7 @@ Bootstrap is an explicit operator action:
 obsidian-core-promotion-checkpoint-init
 ```
 
-Choose a Core commit known to represent the current publication baseline. The command refuses to overwrite an existing checkpoint.
+Choose a Core commit known to represent the current publication baseline. The command verifies that the supplied commit exists in the supplied `ObsidianCore` repository and refuses to overwrite an existing checkpoint.
 
 The checkpoint is ordering/audit state, not the sole write-safety boundary: each mutation still carries per-file Core base/head SHA preconditions and remote ETag preconditions.
 
@@ -210,6 +210,7 @@ Checkpoint bootstrap:
 ```bash
 obsidian-core-promotion-checkpoint-init \
   --checkpoint /var/lib/obsidian-promotion/core.checkpoint.json \
+  --core-repo /var/lib/obsidian-promotion/ObsidianCore \
   --core-commit <known-current-core-commit> \
   --config /etc/obsidian-deployment/public-export.toml
 ```
