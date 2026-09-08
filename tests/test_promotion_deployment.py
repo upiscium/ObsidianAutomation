@@ -155,7 +155,7 @@ def test_production_bootstrap_and_promotion_cycle(tmp_path: Path) -> None:
             {
                 "If-Match": '"v1"',
                 "Content-Type": "application/octet-stream",
-                "X-NC-WebDAV-AutoMkcol": "1",
+                "X-NC-WebDAV-Auto-Mkcol": "1",
             },
         )
     ]

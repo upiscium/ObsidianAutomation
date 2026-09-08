@@ -102,7 +102,7 @@ If another client changes the target after preflight, the conditional request mu
 PUT requests include:
 
 ```text
-X-NC-WebDAV-AutoMkcol: 1
+X-NC-WebDAV-Auto-Mkcol: 1
 ```
 
 so a reviewed Core create under a newly-added nested managed directory can be uploaded without a separate unconditional recursive `MKCOL` transaction.

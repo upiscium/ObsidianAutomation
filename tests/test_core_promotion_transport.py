@@ -149,7 +149,7 @@ class FakeDAV:
 
         if method == "PUT":
             assert body is not None
-            assert headers.get("X-NC-WebDAV-AutoMkcol") == "1"
+            assert headers.get("X-NC-WebDAV-Auto-Mkcol") == "1"
             self.files[path] = body
             self.versions[path] = self.versions.get(path, 0) + 1
             response = HTTPResponse(201 if current_etag is None else 204, b"", self._etag(path))
