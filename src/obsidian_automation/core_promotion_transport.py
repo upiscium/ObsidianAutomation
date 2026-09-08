@@ -361,7 +361,7 @@ def _perform_mutation(
             {
                 "If-None-Match": "*",
                 "Content-Type": "application/octet-stream",
-                "X-NC-WebDAV-AutoMkcol": "1",
+                "X-NC-WebDAV-Auto-Mkcol": "1",
             }
         )
     elif change.action == "update":
@@ -376,7 +376,7 @@ def _perform_mutation(
             {
                 "If-Match": etag,
                 "Content-Type": "application/octet-stream",
-                "X-NC-WebDAV-AutoMkcol": "1",
+                "X-NC-WebDAV-Auto-Mkcol": "1",
             }
         )
     elif change.action == "delete":
