@@ -167,3 +167,14 @@ def test_schema_has_no_recommendation_authority() -> None:
         "consistency",
         "findings",
     }
+
+
+def test_schema_constrains_finding_prefixes_before_strict_parsing() -> None:
+    schema = output_schema()
+    properties = schema["properties"]
+    assert isinstance(properties, dict)
+    findings = properties["findings"]
+    assert isinstance(findings, dict)
+    items = findings["items"]
+    assert isinstance(items, dict)
+    assert items["pattern"] == "^(groundedness:|redundancy:|consistency:)"
