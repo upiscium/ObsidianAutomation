@@ -1,8 +1,8 @@
-# Evaluator Prompt / Output Contract v0
+# Evaluator Prompt / Output Contract v1
 
 ## Purpose
 
-Evaluator v0 is an advisory semantic assessment stage between deterministic Validation and Human Review.
+Evaluator v1 is an advisory semantic assessment stage between deterministic Validation and Human Review.
 
 It evaluates an already-validated `create_note` candidate against two distinct evidence sets:
 
@@ -36,13 +36,30 @@ The model returns exactly:
   "groundedness": "pass | concern | unknown",
   "redundancy": "none | possible | likely",
   "consistency": "pass | concern | unknown",
-  "findings": []
+  "findings": [
+    {
+      "dimension": "groundedness | redundancy | consistency",
+      "detail": "concise observation"
+    }
+  ]
 }
 ```
 
 The model does **not** return `recommendation`.
 
-Unknown or duplicate properties are rejected. Findings are bounded and must start with one of:
+Unknown or duplicate properties are rejected. Each finding is structurally scoped by a `dimension` enum instead of a regex-prefixed free-form string. `detail` contains only the observation. Deterministic code normalizes accepted findings to the existing Evaluation Record representation:
+
+```text
+groundedness: <detail>
+redundancy: <detail>
+consistency: <detail>
+```
+
+This keeps downstream Human Review compatibility while avoiding reliance on JSON Schema `pattern`, which is not accepted by some Ollama structured-output implementations.
+
+## Why v1 changes the finding shape
+
+Evaluator v0 required each model-produced finding string to start with one of:
 
 ```text
 groundedness:
@@ -50,7 +67,9 @@ redundancy:
 consistency:
 ```
 
-This keeps findings scoped to the three declared assessment dimensions rather than allowing free-form workflow instructions.
+The strict parser correctly enforced that rule, but the original provider schema could not express it. Adding JSON Schema `pattern` aligned the schema with the parser but caused production Ollama `/api/chat` requests to fail with HTTP 400 on an implementation that does not accept `pattern` in structured-output schemas.
+
+v1 moves the scope marker into a normal enum field. This preserves fail-closed parsing without depending on regex schema support.
 
 ## Groundedness scope
 
@@ -134,6 +153,8 @@ manual_review
   every other combination, including unknown and possible
 ```
 
+The v1 output-shape change does not alter this recommendation policy.
+
 This recommendation is still advisory. It is not Validation, Human approval, or execution authority.
 
 ## Prompt contract
@@ -141,7 +162,13 @@ This recommendation is still advisory. It is not Validation, Human approval, or 
 Template version:
 
 ```text
-knowledge-note-evaluator-v0
+knowledge-note-evaluator-v1
+```
+
+Output contract version:
+
+```text
+knowledge-note-evaluator-output-v1
 ```
 
 The prompt-template SHA binds:
@@ -168,6 +195,14 @@ evaluation_candidates
 
 BM25 scores are intentionally not sent to the LLM. Retrieval score is a candidate-selection mechanism, not semantic evidence and should not bias the model's final assessment.
 
+## Structured-output compatibility boundary
+
+The provider-facing schema intentionally uses basic object, array, enum, string, length, required, and `additionalProperties` constraints.
+
+It intentionally does not depend on regex `pattern` for finding scope. The deterministic parser still revalidates every provider response and rejects malformed finding objects, invalid dimensions, untrimmed or oversized detail strings, duplicate findings, unknown properties, and model-controlled recommendations.
+
+Provider structured-output enforcement is therefore defense in depth. It is not trusted as the sole parser or workflow authority.
+
 ## Prompt injection boundary
 
 Proposal text, generation sources, and candidate Knowledge Note text are all treated as untrusted data.
@@ -189,15 +224,31 @@ Evaluator remains unable to:
 - write Human Review, Execution, Transport, or Receipts;
 - hold the Nextcloud writer credential.
 
+## Production acceptance
+
+The production near-duplicate case remains:
+
+```text
+existing:
+11-Knowledge/Nextcloud+RemotelySaveでObsidianVaultを共有する方法.md
+
+generated:
+11-Knowledge/Nextcloud_RemotelySaveでObsidianVaultを共有する方法.md
+```
+
+Expected minimum result:
+
+```text
+redundancy = likely
+recommendation = do_not_proceed
+```
+
+The exact deployed implementation revision, prompt template SHA, Ollama model identifier, and model digest must be bound into the persisted Evaluation Record.
+
 ## Out of scope
 
-- Ollama/provider transport;
-- model selection;
 - automatic retries;
+- cloud model providers;
 - automatic rejection or approval based on recommendation;
 - semantic/vector candidate retrieval;
 - objective factual verification beyond supplied evidence.
-
-## Next step
-
-Implement a thin Ollama Evaluator adapter that loads exact bound artifacts, renders this prompt, requests structured output, strictly parses it, applies `conservative-triad-v0`, and persists the resulting `15-Evaluation` record.
