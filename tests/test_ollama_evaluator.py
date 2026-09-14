@@ -163,7 +163,10 @@ def test_near_duplicate_e2e_persists_likely_and_deterministic_do_not_proceed(tmp
             "redundancy": "likely",
             "consistency": "pass",
             "findings": [
-                "redundancy: 11-Knowledge/Nextcloud+RemotelySaveでObsidianVaultを共有する方法.md と核心手順が実質的に同一。"
+                {
+                    "dimension": "redundancy",
+                    "detail": "11-Knowledge/Nextcloud+RemotelySaveでObsidianVaultを共有する方法.md と核心手順が実質的に同一。",
+                }
             ],
         },
         calls,
@@ -182,11 +185,15 @@ def test_near_duplicate_e2e_persists_likely_and_deterministic_do_not_proceed(tmp
 
     assert result.redundancy == "likely"
     assert result.recommendation == "do_not_proceed"
+    assert result.findings == (
+        "redundancy: 11-Knowledge/Nextcloud+RemotelySaveでObsidianVaultを共有する方法.md と核心手順が実質的に同一。",
+    )
     assert result.model_revision == DIGEST
     assert result.evaluation_path.is_file()
     record = load_evaluation_record(state, result.evaluation_sha256)
     assert record.assessment.redundancy == "likely"
     assert record.assessment.recommendation == "do_not_proceed"
+    assert record.assessment.findings == result.findings
     assert record.model_config == {
         "adapter_version": ADAPTER_VERSION,
         "think": False,
@@ -207,7 +214,15 @@ def test_near_duplicate_e2e_persists_likely_and_deterministic_do_not_proceed(tmp
     assert isinstance(findings_schema, dict)
     finding_items = findings_schema["items"]
     assert isinstance(finding_items, dict)
-    assert finding_items["pattern"] == "^(groundedness:|redundancy:|consistency:)"
+    assert finding_items["type"] == "object"
+    finding_properties = finding_items["properties"]
+    assert isinstance(finding_properties, dict)
+    assert finding_properties["dimension"]["enum"] == [
+        "groundedness",
+        "redundancy",
+        "consistency",
+    ]
+    assert "pattern" not in json.dumps(format_schema)
     user_payload = json.loads(payload["messages"][1]["content"])
     assert "score" not in json.dumps(user_payload, ensure_ascii=False)
 
@@ -226,6 +241,32 @@ def test_malformed_model_output_is_rejected_before_evaluation_persistence(tmp_pa
     )
 
     with pytest.raises(OllamaProviderError, match="properties do not match"):
+        evaluate_knowledge_note_with_ollama(
+            state,
+            proposal_sha256=proposal_sha,
+            generation_sha256=generation_sha,
+            evaluation_context_sha256=evaluation_context_sha,
+            base_url="https://ollama.arc.upiscium.dev",
+            model="gemma4:12b",
+            implementation_revision=REVISION,
+            transport=transport,
+        )
+    assert list((state / EVALUATION_STAGE).iterdir()) == []
+
+
+def test_invalid_finding_dimension_is_rejected_before_evaluation_persistence(tmp_path: Path) -> None:
+    _, state, proposal_sha, generation_sha, evaluation_context_sha = _fixture(tmp_path)
+    transport = _transport_with_output(
+        {
+            "groundedness": "pass",
+            "redundancy": "likely",
+            "consistency": "pass",
+            "findings": [{"dimension": "workflow", "detail": "reject it"}],
+        },
+        [],
+    )
+
+    with pytest.raises(OllamaProviderError, match="dimension"):
         evaluate_knowledge_note_with_ollama(
             state,
             proposal_sha256=proposal_sha,
