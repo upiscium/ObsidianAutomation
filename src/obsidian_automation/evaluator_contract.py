@@ -14,18 +14,18 @@ from .context_bundle import ContextBundle
 from .evaluation_artifact import EvaluationAssessment, EvaluationContext
 
 
-EVALUATOR_OUTPUT_CONTRACT_VERSION = "knowledge-note-evaluator-output-v0"
-EVALUATOR_PROMPT_TEMPLATE_VERSION = "knowledge-note-evaluator-v0"
+EVALUATOR_OUTPUT_CONTRACT_VERSION = "knowledge-note-evaluator-output-v1"
+EVALUATOR_PROMPT_TEMPLATE_VERSION = "knowledge-note-evaluator-v1"
 RECOMMENDATION_POLICY_VERSION = "conservative-triad-v0"
 MAX_EVALUATOR_OUTPUT_BYTES = 32 * 1024
 MAX_EVALUATOR_FINDINGS = 8
 MAX_EVALUATOR_FINDING_CHARS = 1024
+MAX_EVALUATOR_FINDING_DETAIL_CHARS = 1000
 
 _GROUNDEDNESS = ("pass", "concern", "unknown")
 _REDUNDANCY = ("none", "possible", "likely")
 _CONSISTENCY = ("pass", "concern", "unknown")
-_FINDING_PREFIXES = ("groundedness:", "redundancy:", "consistency:")
-_FINDING_PATTERN = "^(" + "|".join(_FINDING_PREFIXES) + ")"
+_FINDING_DIMENSIONS = ("groundedness", "redundancy", "consistency")
 
 
 OUTPUT_JSON_SCHEMA: Mapping[str, object] = {
@@ -40,10 +40,20 @@ OUTPUT_JSON_SCHEMA: Mapping[str, object] = {
             "type": "array",
             "maxItems": MAX_EVALUATOR_FINDINGS,
             "items": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": MAX_EVALUATOR_FINDING_CHARS,
-                "pattern": _FINDING_PATTERN,
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["dimension", "detail"],
+                "properties": {
+                    "dimension": {
+                        "type": "string",
+                        "enum": list(_FINDING_DIMENSIONS),
+                    },
+                    "detail": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": MAX_EVALUATOR_FINDING_DETAIL_CHARS,
+                    },
+                },
             },
         },
     },
@@ -82,7 +92,9 @@ Assess these dimensions independently:
 
 findings
 - Return at most eight concise findings.
-- Every finding must begin with exactly one of: "groundedness:", "redundancy:", or "consistency:".
+- Every finding is an object with exactly two properties: dimension and detail.
+- dimension must be exactly one of: groundedness, redundancy, consistency.
+- detail is the observation only; do not repeat the dimension prefix in detail.
 - Mention relevant source/candidate paths when they materially support the finding.
 - State observations, not workflow decisions.
 """
@@ -101,7 +113,7 @@ class EvaluatorOutput:
                 "groundedness": self.groundedness,
                 "redundancy": self.redundancy,
                 "consistency": self.consistency,
-                "findings": list(self.findings),
+                "findings": [_model_finding(item) for item in self.findings],
             }
         )
 
@@ -115,24 +127,59 @@ class EvaluatorPrompt:
     output_schema: Mapping[str, object]
 
 
-def _validate_finding(value: object) -> str:
+def _validate_finding_detail(value: object) -> str:
     if not isinstance(value, str):
-        raise ArtifactLifecycleError("evaluator finding must be a string")
-    if not value or value != value.strip() or len(value) > MAX_EVALUATOR_FINDING_CHARS:
+        raise ArtifactLifecycleError("evaluator finding detail must be a string")
+    if (
+        not value
+        or value != value.strip()
+        or len(value) > MAX_EVALUATOR_FINDING_DETAIL_CHARS
+    ):
         raise ArtifactLifecycleError(
-            f"evaluator finding must be non-empty, trimmed, and at most {MAX_EVALUATOR_FINDING_CHARS} characters"
+            "evaluator finding detail must be non-empty, trimmed, and at most "
+            f"{MAX_EVALUATOR_FINDING_DETAIL_CHARS} characters"
         )
     if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
-        raise ArtifactLifecycleError("evaluator finding must not contain control characters")
-    if not value.startswith(_FINDING_PREFIXES):
-        raise ArtifactLifecycleError(
-            "evaluator finding must start with groundedness:, redundancy:, or consistency:"
-        )
+        raise ArtifactLifecycleError("evaluator finding detail must not contain control characters")
     try:
         value.encode("utf-8")
     except UnicodeEncodeError as exc:
-        raise ArtifactLifecycleError("evaluator finding must be UTF-8 encodable") from exc
+        raise ArtifactLifecycleError("evaluator finding detail must be UTF-8 encodable") from exc
     return value
+
+
+def _normalized_finding(dimension: object, detail: object) -> str:
+    if not isinstance(dimension, str) or dimension not in _FINDING_DIMENSIONS:
+        raise ArtifactLifecycleError("evaluator finding dimension is invalid")
+    normalized_detail = _validate_finding_detail(detail)
+    finding = f"{dimension}: {normalized_detail}"
+    if len(finding) > MAX_EVALUATOR_FINDING_CHARS:
+        raise ArtifactLifecycleError(
+            f"evaluator finding must be at most {MAX_EVALUATOR_FINDING_CHARS} characters"
+        )
+    return finding
+
+
+def _parse_model_finding(value: object) -> str:
+    if not isinstance(value, dict) or set(value) != {"dimension", "detail"}:
+        raise ArtifactLifecycleError("evaluator finding properties do not match contract")
+    return _normalized_finding(value["dimension"], value["detail"])
+
+
+def _model_finding(value: object) -> dict[str, str]:
+    if not isinstance(value, str):
+        raise ArtifactLifecycleError("evaluator normalized finding must be a string")
+    for dimension in _FINDING_DIMENSIONS:
+        prefix = f"{dimension}: "
+        if value.startswith(prefix):
+            detail = value[len(prefix) :]
+            normalized = _normalized_finding(dimension, detail)
+            if normalized != value:
+                raise ArtifactLifecycleError("evaluator normalized finding is not canonical")
+            return {"dimension": dimension, "detail": detail}
+    raise ArtifactLifecycleError(
+        "evaluator normalized finding must start with groundedness:, redundancy:, or consistency:"
+    )
 
 
 def parse_evaluator_output(data: bytes) -> EvaluatorOutput:
@@ -159,7 +206,7 @@ def parse_evaluator_output(data: bytes) -> EvaluatorOutput:
     if not isinstance(raw_findings, list) or len(raw_findings) > MAX_EVALUATOR_FINDINGS:
         raise ArtifactLifecycleError("evaluator findings are invalid")
 
-    findings = tuple(_validate_finding(item) for item in raw_findings)
+    findings = tuple(_parse_model_finding(item) for item in raw_findings)
     if len(set(findings)) != len(findings):
         raise ArtifactLifecycleError("evaluator findings must not contain duplicates")
 

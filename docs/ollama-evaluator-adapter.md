@@ -9,7 +9,7 @@
 00-Untrusted Generation Record -> exact 05-Context
 14-Evaluation-Context
         ↓ binding checks
-Evaluator Prompt / Output Contract v0
+Evaluator Prompt / Output Contract v1
         ↓
 Ollama /api/chat structured output
         ↓ strict parser
@@ -70,6 +70,27 @@ The adapter resolves the installed model with `GET /api/tags` and binds the retu
 ```
 
 The provider response must be complete, must identify the resolved model, must contain an assistant message, and must pass `parse_evaluator_output()` after UTF-8 and byte-size checks.
+
+## Structured finding compatibility
+
+Evaluator Prompt / Output Contract v1 represents each model-produced finding as:
+
+```json
+{
+  "dimension": "groundedness | redundancy | consistency",
+  "detail": "concise observation"
+}
+```
+
+The provider-facing schema uses an enum for `dimension` and bounded string constraints for `detail`. It intentionally does not use JSON Schema `pattern` because some Ollama structured-output implementations reject schemas containing `pattern` with HTTP 400.
+
+After strict parsing, deterministic code normalizes each finding to the existing Evaluation Record / Human Review representation:
+
+```text
+<dimension>: <detail>
+```
+
+This changes the model-facing contract without changing Evaluation Record authority or `conservative-triad-v0` recommendation semantics.
 
 ## Network boundary
 
