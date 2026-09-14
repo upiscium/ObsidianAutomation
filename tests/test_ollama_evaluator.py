@@ -199,7 +199,15 @@ def test_near_duplicate_e2e_persists_likely_and_deterministic_do_not_proceed(tmp
     assert payload["stream"] is False
     assert payload["think"] is False
     assert payload["options"] == {"temperature": 0}
-    assert isinstance(payload["format"], dict)
+    format_schema = payload["format"]
+    assert isinstance(format_schema, dict)
+    properties = format_schema["properties"]
+    assert isinstance(properties, dict)
+    findings_schema = properties["findings"]
+    assert isinstance(findings_schema, dict)
+    finding_items = findings_schema["items"]
+    assert isinstance(finding_items, dict)
+    assert finding_items["pattern"] == "^(groundedness:|redundancy:|consistency:)"
     user_payload = json.loads(payload["messages"][1]["content"])
     assert "score" not in json.dumps(user_payload, ensure_ascii=False)
 

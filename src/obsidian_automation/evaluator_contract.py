@@ -25,6 +25,7 @@ _GROUNDEDNESS = ("pass", "concern", "unknown")
 _REDUNDANCY = ("none", "possible", "likely")
 _CONSISTENCY = ("pass", "concern", "unknown")
 _FINDING_PREFIXES = ("groundedness:", "redundancy:", "consistency:")
+_FINDING_PATTERN = "^(" + "|".join(_FINDING_PREFIXES) + ")"
 
 
 OUTPUT_JSON_SCHEMA: Mapping[str, object] = {
@@ -42,6 +43,7 @@ OUTPUT_JSON_SCHEMA: Mapping[str, object] = {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": MAX_EVALUATOR_FINDING_CHARS,
+                "pattern": _FINDING_PATTERN,
             },
         },
     },
