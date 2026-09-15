@@ -11,11 +11,13 @@ from .artifact_lifecycle import (
     ArtifactLifecycleError,
     _read_exact_file,
     _require_sha256,
+    ensure_artifact_layout,
     load_review_record,
+    parse_validation_record,
     sha256_bytes,
     store_evaluation_bound_review_record,
 )
-from .evaluation_artifact import _load_accepted_mutation, load_evaluation_record
+from .evaluation_artifact import load_evaluation_record
 
 
 @dataclass(frozen=True)
@@ -26,6 +28,51 @@ class KnowledgeReviewResult:
     decision: str
     review_path: Path
     review_sha256: str
+
+
+def _verify_review_binding(
+    ai_root: Path,
+    *,
+    proposal_sha256: str,
+    mutation_sha256: str,
+) -> None:
+    """Verify Evaluation -> Validation -> mutation without reading 00-Untrusted.
+
+    Human Review is intentionally authorized to read 10-Validation and
+    15-Evaluation, but not Generator-owned 00-Untrusted. The accepted
+    Validation record is therefore the authority boundary for the proposal to
+    mutation binding at review time.
+    """
+
+    proposal_digest = _require_sha256(
+        proposal_sha256,
+        label="proposal_sha256",
+    )
+    mutation_digest = _require_sha256(
+        mutation_sha256,
+        label="mutation_sha256",
+    )
+    layout = ensure_artifact_layout(ai_root)
+
+    validation_path = layout.validation / f"{proposal_digest}.validation.json"
+    validation = parse_validation_record(_read_exact_file(validation_path))
+    if validation.proposal_sha256 != proposal_digest:
+        raise ArtifactLifecycleError(
+            "validation record is bound to another proposal"
+        )
+    if validation.result != "accepted" or validation.mutation_sha256 is None:
+        raise ArtifactLifecycleError(
+            "Human Review requires accepted validation"
+        )
+    if validation.mutation_sha256 != mutation_digest:
+        raise ArtifactLifecycleError(
+            "evaluation mutation does not match accepted validation"
+        )
+
+    mutation_path = layout.validation / f"{mutation_digest}.mutation.json"
+    mutation_bytes = _read_exact_file(mutation_path)
+    if sha256_bytes(mutation_bytes) != mutation_digest:
+        raise ArtifactLifecycleError("validated mutation artifact hash mismatch")
 
 
 def create_evaluation_bound_review(
@@ -42,14 +89,11 @@ def create_evaluation_bound_review(
     )
     evaluation = load_evaluation_record(ai_root, evaluation_digest)
 
-    accepted_mutation, _, _ = _load_accepted_mutation(
+    _verify_review_binding(
         ai_root,
-        evaluation.proposal_sha256,
+        proposal_sha256=evaluation.proposal_sha256,
+        mutation_sha256=evaluation.mutation_sha256,
     )
-    if accepted_mutation != evaluation.mutation_sha256:
-        raise ArtifactLifecycleError(
-            "evaluation mutation does not match accepted validation"
-        )
 
     review_path = store_evaluation_bound_review_record(
         ai_root,
