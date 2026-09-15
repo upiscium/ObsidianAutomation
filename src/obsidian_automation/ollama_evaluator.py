@@ -17,9 +17,10 @@ from .evaluation_artifact import (
 )
 from .evaluator_contract import (
     MAX_EVALUATOR_OUTPUT_BYTES,
-    EvaluatorOutput,
-    parse_evaluator_output,
-    render_evaluator_prompt,
+    DimensionEvaluatorOutput,
+    aggregate_dimension_outputs,
+    parse_dimension_evaluator_output,
+    render_evaluator_prompts,
     to_evaluation_assessment,
 )
 from .generation_artifact import load_generation_record, validate_model_config
@@ -38,8 +39,9 @@ from .ollama_generator import (
 
 
 PROVIDER_NAME = "ollama"
-ADAPTER_VERSION = "ollama-evaluator-chat-structured-v0"
+ADAPTER_VERSION = "ollama-evaluator-chat-structured-v1"
 MAX_OPTIONS_BYTES = 12 * 1024
+EVALUATION_PASSES = ("groundedness", "redundancy", "consistency")
 
 
 @dataclass(frozen=True)
@@ -66,14 +68,16 @@ def _provider_model_config(options: Mapping[str, object]) -> dict[str, object]:
         {
             "adapter_version": ADAPTER_VERSION,
             "think": False,
+            "passes": list(EVALUATION_PASSES),
             "options": dict(options),
         }
     )
 
 
-def _chat_evaluator_output(
+def _chat_dimension_output(
     base_url: str,
     *,
+    dimension: str,
     identity: OllamaModelIdentity,
     system_prompt: str,
     user_prompt: str,
@@ -81,7 +85,7 @@ def _chat_evaluator_output(
     options: Mapping[str, object],
     timeout: float,
     transport: JSONTransport | None,
-) -> EvaluatorOutput:
+) -> DimensionEvaluatorOutput:
     request_json = transport or _request_json
     response = request_json(
         base_url,
@@ -101,26 +105,36 @@ def _chat_evaluator_output(
         timeout=timeout,
     )
     if response.get("done") is not True:
-        raise OllamaProviderError("Ollama evaluator chat response is not complete")
+        raise OllamaProviderError(
+            f"Ollama {dimension} evaluator chat response is not complete"
+        )
     response_model = response.get("model")
     if not isinstance(response_model, str) or response_model != identity.identifier:
         raise OllamaProviderError(
-            "Ollama evaluator chat response model does not match resolved model"
+            f"Ollama {dimension} evaluator chat response model does not match resolved model"
         )
     message = response.get("message")
     if not isinstance(message, dict) or message.get("role") != "assistant":
-        raise OllamaProviderError("Ollama evaluator chat response message is invalid")
+        raise OllamaProviderError(
+            f"Ollama {dimension} evaluator chat response message is invalid"
+        )
     content = message.get("content")
     if not isinstance(content, str) or not content:
-        raise OllamaProviderError("Ollama evaluator chat response content is empty or invalid")
+        raise OllamaProviderError(
+            f"Ollama {dimension} evaluator chat response content is empty or invalid"
+        )
     try:
         data = content.encode("utf-8")
     except UnicodeEncodeError as exc:
-        raise OllamaProviderError("Ollama evaluator chat content is not UTF-8 encodable") from exc
+        raise OllamaProviderError(
+            f"Ollama {dimension} evaluator chat content is not UTF-8 encodable"
+        ) from exc
     if len(data) > MAX_EVALUATOR_OUTPUT_BYTES:
-        raise OllamaProviderError("Ollama semantic output exceeds evaluator output limit")
+        raise OllamaProviderError(
+            f"Ollama {dimension} semantic output exceeds evaluator output limit"
+        )
     try:
-        return parse_evaluator_output(data)
+        return parse_dimension_evaluator_output(data, dimension=dimension)
     except ArtifactLifecycleError as exc:
         raise OllamaProviderError(str(exc)) from exc
 
@@ -171,12 +185,14 @@ def evaluate_knowledge_note_with_ollama(
             "evaluator evaluation context is bound to another mutation"
         )
 
-    prompt = render_evaluator_prompt(
+    prompts = render_evaluator_prompts(
         target_path=target_path,
         proposal_content=proposal_content,
         generation_context=generation_context,
         evaluation_context=evaluation_context,
     )
+    if tuple(prompt.dimension for prompt in prompts) != EVALUATION_PASSES:
+        raise ArtifactLifecycleError("evaluator prompt pass order is invalid")
 
     identity = resolve_ollama_model(
         root,
@@ -184,17 +200,32 @@ def evaluate_knowledge_note_with_ollama(
         timeout=timeout_value,
         transport=transport,
     )
-    output = _chat_evaluator_output(
-        root,
-        identity=identity,
-        system_prompt=prompt.system,
-        user_prompt=prompt.user,
-        output_schema=prompt.output_schema,
-        options=inference_options,
-        timeout=timeout_value,
-        transport=transport,
-    )
+
+    pass_outputs: list[DimensionEvaluatorOutput] = []
+    for prompt in prompts:
+        pass_outputs.append(
+            _chat_dimension_output(
+                root,
+                dimension=prompt.dimension,
+                identity=identity,
+                system_prompt=prompt.system,
+                user_prompt=prompt.user,
+                output_schema=prompt.output_schema,
+                options=inference_options,
+                timeout=timeout_value,
+                transport=transport,
+            )
+        )
+
+    output = aggregate_dimension_outputs(pass_outputs)
     assessment = to_evaluation_assessment(output)
+    prompt = prompts[0]
+    if any(
+        item.template_version != prompt.template_version
+        or item.template_sha256 != prompt.template_sha256
+        for item in prompts[1:]
+    ):
+        raise ArtifactLifecycleError("evaluator prompt provenance is inconsistent")
 
     record = build_evaluation_record(
         ai_root,
