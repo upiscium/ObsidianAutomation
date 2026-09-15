@@ -39,7 +39,9 @@ class ValidationRecord:
 
 @dataclass(frozen=True)
 class ReviewRecord:
+    record_version: int
     mutation_sha256: str
+    evaluation_sha256: str | None
     decision: str
     decided_at: str
     approver: str
@@ -363,13 +365,13 @@ def parse_validation_record(data: bytes) -> ValidationRecord:
     )
 
 
-def review_record_bytes(
+def _review_common_fields(
     *,
     mutation_sha256: str,
     decision: str,
     approver: str,
-    decided_at: str | None = None,
-) -> bytes:
+    decided_at: str | None,
+) -> tuple[str, str]:
     digest = _require_sha256(mutation_sha256, label="mutation_sha256")
     if decision not in {"approve", "reject"}:
         raise ArtifactLifecycleError("review decision must be approve or reject")
@@ -380,6 +382,24 @@ def review_record_bytes(
     timestamp = decided_at or _utc_now()
     if not isinstance(timestamp, str) or not timestamp.endswith("Z"):
         raise ArtifactLifecycleError("decided_at must be a UTC timestamp ending in Z")
+    return digest, timestamp
+
+
+def review_record_bytes(
+    *,
+    mutation_sha256: str,
+    decision: str,
+    approver: str,
+    decided_at: str | None = None,
+) -> bytes:
+    """Build the legacy v1 review record for backward compatibility."""
+
+    digest, timestamp = _review_common_fields(
+        mutation_sha256=mutation_sha256,
+        decision=decision,
+        approver=approver,
+        decided_at=decided_at,
+    )
     return _canonical_json_bytes(
         {
             "record_version": 1,
@@ -391,6 +411,43 @@ def review_record_bytes(
     )
 
 
+def evaluation_bound_review_record_bytes(
+    *,
+    mutation_sha256: str,
+    evaluation_sha256: str,
+    decision: str,
+    approver: str,
+    decided_at: str | None = None,
+) -> bytes:
+    digest, timestamp = _review_common_fields(
+        mutation_sha256=mutation_sha256,
+        decision=decision,
+        approver=approver,
+        decided_at=decided_at,
+    )
+    evaluation_digest = _require_sha256(
+        evaluation_sha256,
+        label="evaluation_sha256",
+    )
+    return _canonical_json_bytes(
+        {
+            "record_version": 2,
+            "mutation_sha256": digest,
+            "evaluation_sha256": evaluation_digest,
+            "decision": decision,
+            "decided_at": timestamp,
+            "approver": approver,
+        }
+    )
+
+
+def _require_exact_validated_mutation(layout: ArtifactLayout, digest: str) -> None:
+    mutation_path = layout.validation / f"{digest}.mutation.json"
+    mutation_bytes = _read_exact_file(mutation_path)
+    if sha256_bytes(mutation_bytes) != digest:
+        raise ArtifactLifecycleError("validated mutation artifact hash mismatch")
+
+
 def store_review_record(
     ai_root: Path,
     *,
@@ -399,12 +456,15 @@ def store_review_record(
     approver: str,
     decided_at: str | None = None,
 ) -> Path:
+    """Store a legacy v1 review artifact.
+
+    New Evaluator-backed Human Review creation must use
+    store_evaluation_bound_review_record().
+    """
+
     layout = ensure_artifact_layout(ai_root)
     digest = _require_sha256(mutation_sha256, label="mutation_sha256")
-    mutation_path = layout.validation / f"{digest}.mutation.json"
-    mutation_bytes = _read_exact_file(mutation_path)
-    if sha256_bytes(mutation_bytes) != digest:
-        raise ArtifactLifecycleError("validated mutation artifact hash mismatch")
+    _require_exact_validated_mutation(layout, digest)
     data = review_record_bytes(
         mutation_sha256=digest,
         decision=decision,
@@ -414,24 +474,71 @@ def store_review_record(
     return _store_immutable(layout.review / f"{digest}.approval.json", data)
 
 
+def store_evaluation_bound_review_record(
+    ai_root: Path,
+    *,
+    mutation_sha256: str,
+    evaluation_sha256: str,
+    decision: str,
+    approver: str,
+    decided_at: str | None = None,
+) -> Path:
+    layout = ensure_artifact_layout(ai_root)
+    digest = _require_sha256(mutation_sha256, label="mutation_sha256")
+    _require_exact_validated_mutation(layout, digest)
+    data = evaluation_bound_review_record_bytes(
+        mutation_sha256=digest,
+        evaluation_sha256=evaluation_sha256,
+        decision=decision,
+        approver=approver,
+        decided_at=decided_at,
+    )
+    return _store_immutable(layout.review / f"{digest}.approval.json", data)
+
+
 def parse_review_record(data: bytes) -> ReviewRecord:
     value = _decode_json_object(data, label="review record")
-    required = {
-        "record_version",
-        "mutation_sha256",
-        "decision",
-        "decided_at",
-        "approver",
-    }
+    version = value.get("record_version")
+    if type(version) is not int or version not in {1, 2}:
+        raise ArtifactLifecycleError("review record_version must be integer 1 or 2")
+
+    if version == 1:
+        required = {
+            "record_version",
+            "mutation_sha256",
+            "decision",
+            "decided_at",
+            "approver",
+        }
+    else:
+        required = {
+            "record_version",
+            "mutation_sha256",
+            "evaluation_sha256",
+            "decision",
+            "decided_at",
+            "approver",
+        }
     if set(value) != required:
         raise ArtifactLifecycleError("review record properties do not match contract")
-    if type(value["record_version"]) is not int or value["record_version"] != 1:
-        raise ArtifactLifecycleError("record_version must be integer 1")
 
     digest_value = value["mutation_sha256"]
     if not isinstance(digest_value, str):
         raise ArtifactLifecycleError("mutation_sha256 must be a string")
     digest = _require_sha256(digest_value, label="mutation_sha256")
+
+    evaluation_digest: str | None
+    if version == 2:
+        evaluation_value = value["evaluation_sha256"]
+        if not isinstance(evaluation_value, str):
+            raise ArtifactLifecycleError("evaluation_sha256 must be a string")
+        evaluation_digest = _require_sha256(
+            evaluation_value,
+            label="evaluation_sha256",
+        )
+    else:
+        evaluation_digest = None
+
     decision = value["decision"]
     decided_at = value["decided_at"]
     approver = value["approver"]
@@ -444,7 +551,9 @@ def parse_review_record(data: bytes) -> ReviewRecord:
             "approver must be a non-empty string up to 256 characters"
         )
     return ReviewRecord(
+        record_version=version,
         mutation_sha256=digest,
+        evaluation_sha256=evaluation_digest,
         decision=decision,
         decided_at=decided_at,
         approver=approver,
