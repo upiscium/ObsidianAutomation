@@ -120,6 +120,23 @@ def test_human_can_approve_do_not_proceed_evaluation(tmp_path: Path) -> None:
     assert review.approved is True
 
 
+def test_human_review_does_not_read_untrusted_proposal(tmp_path: Path) -> None:
+    _, ai_root, validated, proposal_sha, evaluation_sha, _ = _setup(tmp_path)
+    proposal_path = ai_root / "00-Untrusted" / f"{proposal_sha}.proposal.json"
+    proposal_path.chmod(0)
+
+    result = create_evaluation_bound_review(
+        ai_root,
+        evaluation_sha256=evaluation_sha,
+        decision="reject",
+        approver="human",
+        decided_at="2026-09-15T00:02:00Z",
+    )
+
+    assert result.mutation_sha256 == validated.mutation_sha256
+    assert result.decision == "reject"
+
+
 def test_human_can_reject_proceed_evaluation(tmp_path: Path) -> None:
     _, ai_root, validated, _, evaluation_sha, _ = _setup(
         tmp_path,
@@ -154,6 +171,46 @@ def test_cross_bound_evaluation_is_rejected(tmp_path: Path) -> None:
             ai_root,
             evaluation_sha256=evaluation_sha,
             decision="approve",
+            approver="human",
+        )
+
+
+def test_rejected_validation_is_rejected_before_review_persistence(tmp_path: Path) -> None:
+    _, ai_root, validated, proposal_sha, evaluation_sha, _ = _setup(tmp_path)
+    validation_path = ai_root / "10-Validation" / f"{proposal_sha}.validation.json"
+    value = json.loads(validation_path.read_text())
+    value["result"] = "rejected"
+    value["mutation_sha256"] = None
+    value["reason"] = "review fixture rejection"
+    validation_path.write_bytes(_canonical_json_bytes(value))
+
+    with pytest.raises(ArtifactLifecycleError, match="requires accepted validation"):
+        create_evaluation_bound_review(
+            ai_root,
+            evaluation_sha256=evaluation_sha,
+            decision="reject",
+            approver="human",
+        )
+    assert not (
+        ensure_artifact_layout(ai_root).review
+        / f"{validated.mutation_sha256}.approval.json"
+    ).exists()
+
+
+def test_modified_mutation_is_rejected_before_review_persistence(tmp_path: Path) -> None:
+    _, ai_root, validated, _, evaluation_sha, _ = _setup(tmp_path)
+    mutation_path = (
+        ai_root
+        / "10-Validation"
+        / f"{validated.mutation_sha256}.mutation.json"
+    )
+    mutation_path.write_bytes(mutation_path.read_bytes() + b" ")
+
+    with pytest.raises(ArtifactLifecycleError, match="artifact hash mismatch"):
+        create_evaluation_bound_review(
+            ai_root,
+            evaluation_sha256=evaluation_sha,
+            decision="reject",
             approver="human",
         )
 
