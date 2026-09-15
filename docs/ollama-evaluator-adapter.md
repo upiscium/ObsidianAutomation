@@ -1,10 +1,10 @@
-# Ollama Evaluator Adapter v1
+# Ollama Evaluator Adapter v2
 
 ## Purpose
 
 `obsidian-knowledge-evaluate` connects the advisory Evaluator stage to Ollama while preserving the existing authority topology.
 
-Evaluator v1 executes the v2 prompt contract as three isolated `/api/chat` calls:
+Adapter v2 executes the v3 prompt contract as one Groundedness call plus two pairwise calls for every Evaluation Context candidate:
 
 ```text
 accepted mutation
@@ -14,19 +14,19 @@ Generation Record -> exact 05-Context
 GET /api/tags -> resolve exact model identifier/digest
         ↓
 Groundedness /api/chat
-        ↓ strict parse
-Redundancy /api/chat
-        ↓ strict parse
-Consistency /api/chat
-        ↓ strict parse
-all three succeed
-        ↓ deterministic aggregation
+        ↓
+for each candidate, in Evaluation Context order:
+  Redundancy /api/chat
+  Consistency /api/chat
+        ↓
+all calls strict-parse and bind successfully
+        ↓ deterministic severity aggregation
 conservative-triad-v0
         ↓
 15-Evaluation/<sha>.evaluation.json
 ```
 
-No partial Evaluation Record is written if any pass fails.
+No partial Evaluation Record is written if any provider call or parser/binding step fails.
 
 ## CLI
 
@@ -47,21 +47,22 @@ Production binds `--implementation-revision` to the exact deployed merge commit.
 
 ## Binding checks
 
-Before provider inference, the adapter verifies that:
+Before inference, the adapter verifies:
 
 1. Validation accepted the proposal and exact mutation content is available;
 2. the Generation Record is bound to the same proposal;
 3. the exact `05-Context` bound by the Generation Record hash-validates;
 4. `14-Evaluation-Context` is bound to the same proposal and accepted mutation;
-5. endpoint, timeout, model options, and implementation revision satisfy existing contracts.
+5. endpoint, timeout, model options, and implementation revision satisfy existing contracts;
+6. generated provider-call order exactly matches Groundedness followed by `(Redundancy, Consistency)` for every candidate in Evaluation Context order.
 
 ## Model identity
 
 The adapter resolves the requested model once with `GET /api/tags`.
 
-All three semantic passes use the same resolved model identifier and digest. The final Evaluation Record binds that identifier and digest once.
+Every semantic call uses the same resolved identifier and digest. The final Evaluation Record binds that model identity once.
 
-## Three provider calls
+## Provider calls
 
 Each `/api/chat` request uses:
 
@@ -70,7 +71,7 @@ Each `/api/chat` request uses:
   "model": "<resolved model>",
   "messages": [
     {"role": "system", "content": "<dimension-specific system prompt>"},
-    {"role": "user", "content": "<dimension-specific deterministic payload>"}
+    {"role": "user", "content": "<deterministic payload>"}
   ],
   "stream": false,
   "think": false,
@@ -79,7 +80,7 @@ Each `/api/chat` request uses:
 }
 ```
 
-The model-facing result is:
+The model returns:
 
 ```json
 {
@@ -90,9 +91,7 @@ The model-facing result is:
 }
 ```
 
-The dimension is fixed by the pass and cannot be selected by the model.
-
-Provider responses must be complete, identify the resolved model, contain a valid assistant message, satisfy output byte bounds, and pass the deterministic dimension parser.
+The model never controls dimension, candidate identity, recommendation, model identity, or aggregation policy.
 
 ## Evidence isolation
 
@@ -102,43 +101,69 @@ Groundedness receives:
 proposal + original generation input
 ```
 
-It does not receive Evaluation Context candidates.
-
-Redundancy and consistency receive:
+Each Redundancy or Consistency call receives:
 
 ```text
-proposal + Evaluation Context candidates
+proposal + exactly one evaluation_candidate
 ```
 
-They do not receive generation input.
+Generation input, retrieval scores, and every other candidate are absent from that pairwise call.
 
-This isolation prevents a model from treating generation-quality or rewrite-quality as evidence against Knowledge redundancy.
+This prevents an unrelated candidate from dominating the semantic comparison for a known near-duplicate.
+
+## Candidate provenance
+
+Pairwise model findings contain only a detail string. After strict parsing, deterministic code binds the expected candidate path:
+
+```text
+redundancy: [11-Knowledge/example.md] <detail>
+consistency: [11-Knowledge/example.md] <detail>
+```
+
+The candidate path therefore does not depend on the model reproducing it correctly.
+
+## Deterministic aggregation
+
+Redundancy chooses the strongest assessment:
+
+```text
+none < possible < likely
+```
+
+Consistency chooses:
+
+```text
+pass < unknown < concern
+```
+
+Findings are retained only from pairwise results at the winning severity, subject to existing bounds.
+
+If Evaluation Context has zero candidates, aggregation yields:
+
+```text
+redundancy=none
+consistency=pass
+```
 
 ## Persistence boundary
 
-Inference results remain in memory until all three passes succeed.
+All inference results remain in memory until all required calls succeed.
 
-If pass 1, 2, or 3 fails because of transport, response shape, model identity, UTF-8, byte bounds, or strict parser validation, `15-Evaluation` is not written.
+Any transport, response-shape, model-identity, UTF-8, byte-bound, parser, candidate-binding, or aggregation failure prevents `15-Evaluation` persistence.
 
-After all passes succeed, findings are normalized to:
-
-```text
-<dimension>: <detail>
-```
-
-and the three assessments are aggregated into the existing Evaluation Record shape.
+Only after successful deterministic aggregation is one Evaluation Record built and stored.
 
 ## Network boundary
 
-The Evaluator reuses the Generator adapter transport policy:
+The Evaluator reuses the Generator transport policy:
 
 - remote endpoints require HTTPS;
 - HTTP is allowed only for loopback;
 - URL credentials are rejected;
 - base URL path/query/fragment are rejected;
 - environment proxies are not inherited;
-- HTTP redirects are not followed;
-- normal TLS certificate validation remains enabled;
+- redirects are not followed;
+- standard TLS validation remains enabled;
 - provider responses are bounded.
 
 ## Provenance
@@ -150,21 +175,19 @@ The Evaluator reuses the Generator adapter transport policy:
 - Generation Record SHA;
 - Evaluation Context SHA;
 - evaluator implementation revision;
-- prompt template version/SHA covering all three passes;
+- prompt template version/SHA;
 - provider `ollama`;
-- resolved model identifier and model digest;
-- adapter version `ollama-evaluator-chat-structured-v1`;
-- pass order `groundedness`, `redundancy`, `consistency`;
+- resolved model identifier and digest;
+- adapter version `ollama-evaluator-chat-structured-v2`;
+- strategy `groundedness-plus-pairwise-candidates-v0`;
 - `think=false`;
 - exact inference options;
 - aggregated semantic assessment;
 - deterministic recommendation.
 
-Raw prompts and raw provider responses are not persisted.
+Raw prompts, raw model responses, and partial pairwise outputs are not persisted.
 
 ## Recommendation authority
-
-The model cannot output `recommendation`.
 
 `conservative-triad-v0` remains unchanged:
 
@@ -179,17 +202,19 @@ manual_review
   otherwise
 ```
 
-The recommendation remains advisory. Human Review remains authority.
+Recommendation remains advisory. Human Review remains authority.
 
 ## Production acceptance
 
-The production near-duplicate case remains:
+Existing:
 
 ```text
-existing:
 11-Knowledge/Nextcloud+RemotelySaveでObsidianVaultを共有する方法.md
+```
 
-generated:
+Generated:
+
+```text
 11-Knowledge/Nextcloud_RemotelySaveでObsidianVaultを共有する方法.md
 ```
 
@@ -200,4 +225,4 @@ redundancy = likely
 recommendation = do_not_proceed
 ```
 
-The existing v1 Evaluation artifacts from gemma4:12b, gemma4:26b, and qwen3.6:27b remain immutable failure-corpus evidence.
+Earlier v1/v2 Evaluation artifacts remain immutable failure-corpus evidence.

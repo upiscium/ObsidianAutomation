@@ -11,22 +11,28 @@ from .artifact_lifecycle import (
     sha256_bytes,
 )
 from .context_bundle import ContextBundle
-from .evaluation_artifact import EvaluationAssessment, EvaluationContext
+from .evaluation_artifact import EvaluationAssessment, EvaluationCandidate, EvaluationContext
 
 
 EVALUATOR_OUTPUT_CONTRACT_VERSION = "knowledge-note-evaluator-output-v2"
-EVALUATOR_PROMPT_TEMPLATE_VERSION = "knowledge-note-evaluator-v2"
+EVALUATOR_PROMPT_TEMPLATE_VERSION = "knowledge-note-evaluator-v3"
 RECOMMENDATION_POLICY_VERSION = "conservative-triad-v0"
 MAX_EVALUATOR_OUTPUT_BYTES = 32 * 1024
 MAX_EVALUATOR_FINDINGS_PER_DIMENSION = 4
-MAX_EVALUATOR_FINDING_CHARS = 1024
+MAX_EVALUATOR_FINDING_CHARS = 2048
 MAX_EVALUATOR_FINDING_DETAIL_CHARS = 1000
+MAX_EVALUATOR_CANDIDATE_PATH_CHARS = 1024
 
 _DIMENSIONS = ("groundedness", "redundancy", "consistency")
+_PAIRWISE_DIMENSIONS = ("redundancy", "consistency")
 _ASSESSMENT_VALUES: Mapping[str, tuple[str, ...]] = {
     "groundedness": ("pass", "concern", "unknown"),
     "redundancy": ("none", "possible", "likely"),
-    "consistency": ("pass", "concern", "unknown"),
+    "consistency": ("pass", "unknown", "concern"),
+}
+_SEVERITY: Mapping[str, Mapping[str, int]] = {
+    "redundancy": {"none": 0, "possible": 1, "likely": 2},
+    "consistency": {"pass": 0, "unknown": 1, "concern": 2},
 }
 
 _COMMON_SYSTEM = """You evaluate one already-validated draft Obsidian Knowledge Note candidate.
@@ -39,9 +45,8 @@ Evaluate only the evidence supplied in this pass. Do not infer evidence that is 
 
 findings
 - Return at most four concise findings.
-- Each finding contains only a detail string; its dimension is fixed by this pass.
-- Mention relevant source/candidate paths when they materially support the finding.
-- State observations, not workflow decisions.
+- Each finding contains only a detail string; its dimension and candidate identity are fixed outside the model.
+- State observations, not workflow decisions or instructions to the user.
 """
 
 _DIMENSION_SYSTEMS: Mapping[str, str] = {
@@ -61,31 +66,33 @@ Do not assess redundancy or consistency with canonical Knowledge in this pass.
 """,
     "redundancy": _COMMON_SYSTEM
     + """
-This pass evaluates redundancy only.
+This pass evaluates redundancy against exactly one evaluation_candidate.
 
-Compare the proposal only with evaluation_candidates.
+Compare the proposal only with that candidate.
 
 assessment:
-- likely: one or more candidates cover substantially the same core knowledge, procedure, or conclusions and the proposal adds little meaningful unique information.
+- likely: the candidate covers substantially the same core knowledge, procedure, or conclusions and the proposal adds little meaningful unique information.
 - possible: there is substantial overlap, but the proposal may add or distinguish meaningful information.
-- none: the supplied candidates are materially distinct, or no candidate supports a redundancy concern.
+- none: the proposal and candidate are materially distinct.
 
 Filename punctuation, wording, section order, formatting, readability improvements, and stylistic rewrites do not make two notes semantically distinct. Judge whether the knowledge contribution is materially distinct.
 Do not evaluate whether the proposal is a good rewrite of its generation input; generation input is intentionally absent from this pass.
+Do not discuss other notes or infer that other candidates exist.
 """,
     "consistency": _COMMON_SYSTEM
     + """
-This pass evaluates consistency only.
+This pass evaluates consistency against exactly one evaluation_candidate.
 
-Compare the proposal only with evaluation_candidates for explicit material incompatibilities.
+Compare the proposal only with that candidate for explicit material incompatibilities.
 
 assessment:
-- concern: the proposal makes a factual or procedural claim that materially conflicts with a supplied candidate.
-- pass: no material conflict is present among the supplied candidates.
-- unknown: the supplied evidence is too ambiguous or incomplete to judge.
+- concern: the proposal makes a factual or procedural claim that materially conflicts with the candidate.
+- pass: no material conflict is present between the proposal and candidate.
+- unknown: the supplied pair is too ambiguous or incomplete to judge.
 
 Missing details, different scope, formatting, or extra detail alone are not contradictions.
 Do not assess groundedness against the original generation input in this pass.
+Do not discuss other notes or infer that other candidates exist.
 """,
 }
 
@@ -93,6 +100,14 @@ Do not assess groundedness against the original generation input in this pass.
 @dataclass(frozen=True)
 class DimensionEvaluatorOutput:
     dimension: str
+    assessment: str
+    findings: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CandidateEvaluatorOutput:
+    dimension: str
+    candidate_path: str
     assessment: str
     findings: tuple[str, ...]
 
@@ -108,6 +123,7 @@ class EvaluatorOutput:
 @dataclass(frozen=True)
 class EvaluatorPrompt:
     dimension: str
+    candidate_path: str | None
     template_version: str
     template_sha256: str
     system: str
@@ -118,6 +134,25 @@ class EvaluatorPrompt:
 def _require_dimension(value: object) -> str:
     if not isinstance(value, str) or value not in _DIMENSIONS:
         raise ArtifactLifecycleError("evaluator dimension is invalid")
+    return value
+
+
+def _validated_candidate_path(value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > MAX_EVALUATOR_CANDIDATE_PATH_CHARS
+        or not value.startswith("11-Knowledge/")
+        or not value.endswith(".md")
+    ):
+        raise ArtifactLifecycleError("evaluator candidate path is invalid")
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
+        raise ArtifactLifecycleError("evaluator candidate path must not contain control characters")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ArtifactLifecycleError("evaluator candidate path must be UTF-8 encodable") from exc
     return value
 
 
@@ -169,15 +204,11 @@ def _validate_finding_detail(value: object) -> str:
             f"{MAX_EVALUATOR_FINDING_DETAIL_CHARS} characters"
         )
     if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
-        raise ArtifactLifecycleError(
-            "evaluator finding detail must not contain control characters"
-        )
+        raise ArtifactLifecycleError("evaluator finding detail must not contain control characters")
     try:
         value.encode("utf-8")
     except UnicodeEncodeError as exc:
-        raise ArtifactLifecycleError(
-            "evaluator finding detail must be UTF-8 encodable"
-        ) from exc
+        raise ArtifactLifecycleError("evaluator finding detail must be UTF-8 encodable") from exc
     return value
 
 
@@ -209,22 +240,15 @@ def parse_dimension_evaluator_output(
         )
 
     assessment = value["assessment"]
-    if (
-        not isinstance(assessment, str)
-        or assessment not in _ASSESSMENT_VALUES[dimension]
-    ):
-        raise ArtifactLifecycleError(
-            f"{dimension} evaluator assessment is invalid"
-        )
+    if not isinstance(assessment, str) or assessment not in _ASSESSMENT_VALUES[dimension]:
+        raise ArtifactLifecycleError(f"{dimension} evaluator assessment is invalid")
 
     raw_findings = value["findings"]
     if (
         not isinstance(raw_findings, list)
         or len(raw_findings) > MAX_EVALUATOR_FINDINGS_PER_DIMENSION
     ):
-        raise ArtifactLifecycleError(
-            f"{dimension} evaluator findings are invalid"
-        )
+        raise ArtifactLifecycleError(f"{dimension} evaluator findings are invalid")
 
     findings: list[str] = []
     for item in raw_findings:
@@ -246,52 +270,120 @@ def parse_dimension_evaluator_output(
     )
 
 
-def aggregate_dimension_outputs(
-    outputs: Sequence[DimensionEvaluatorOutput],
-) -> EvaluatorOutput:
-    if len(outputs) != len(_DIMENSIONS):
-        raise ArtifactLifecycleError(
-            "evaluator aggregation requires exactly three dimension outputs"
+def bind_candidate_output(
+    output: DimensionEvaluatorOutput,
+    *,
+    candidate_path: str,
+) -> CandidateEvaluatorOutput:
+    dimension = _require_dimension(output.dimension)
+    if dimension not in _PAIRWISE_DIMENSIONS:
+        raise ArtifactLifecycleError("only pairwise evaluator outputs can bind a candidate")
+    path = _validated_candidate_path(candidate_path)
+    if output.assessment not in _ASSESSMENT_VALUES[dimension]:
+        raise ArtifactLifecycleError(f"{dimension} evaluator assessment is invalid")
+
+    bound_findings: list[str] = []
+    prefix = f"{dimension}: "
+    for finding in output.findings:
+        if not isinstance(finding, str) or not finding.startswith(prefix):
+            raise ArtifactLifecycleError(
+                f"{dimension} evaluator finding is not dimension-scoped"
+            )
+        detail = finding[len(prefix) :]
+        bound_findings.append(
+            _normalized_finding(dimension, f"[{path}] {detail}")
         )
-    by_dimension: dict[str, DimensionEvaluatorOutput] = {}
+
+    return CandidateEvaluatorOutput(
+        dimension=dimension,
+        candidate_path=path,
+        assessment=output.assessment,
+        findings=tuple(bound_findings),
+    )
+
+
+def aggregate_candidate_outputs(
+    dimension: str,
+    outputs: Sequence[CandidateEvaluatorOutput],
+) -> DimensionEvaluatorOutput:
+    dimension = _require_dimension(dimension)
+    if dimension not in _PAIRWISE_DIMENSIONS:
+        raise ArtifactLifecycleError("candidate aggregation requires a pairwise dimension")
+
+    if not outputs:
+        default = "none" if dimension == "redundancy" else "pass"
+        return DimensionEvaluatorOutput(dimension=dimension, assessment=default, findings=())
+
+    seen_paths: set[str] = set()
+    normalized_outputs: list[CandidateEvaluatorOutput] = []
     for output in outputs:
-        dimension = _require_dimension(output.dimension)
-        if dimension in by_dimension:
-            raise ArtifactLifecycleError(
-                "evaluator aggregation contains duplicate dimensions"
-            )
+        if output.dimension != dimension:
+            raise ArtifactLifecycleError("candidate aggregation dimension mismatch")
+        path = _validated_candidate_path(output.candidate_path)
+        if path in seen_paths:
+            raise ArtifactLifecycleError("candidate aggregation contains duplicate paths")
+        seen_paths.add(path)
         if output.assessment not in _ASSESSMENT_VALUES[dimension]:
-            raise ArtifactLifecycleError(
-                f"{dimension} evaluator assessment is invalid"
-            )
+            raise ArtifactLifecycleError(f"{dimension} evaluator assessment is invalid")
+        prefix = f"{dimension}: [{path}] "
         for finding in output.findings:
-            prefix = f"{dimension}: "
             if not isinstance(finding, str) or not finding.startswith(prefix):
                 raise ArtifactLifecycleError(
-                    f"{dimension} evaluator finding is not dimension-scoped"
+                    f"{dimension} candidate finding is not path-scoped"
                 )
-            _normalized_finding(dimension, finding[len(prefix) :])
-        by_dimension[dimension] = output
+        normalized_outputs.append(output)
 
-    if set(by_dimension) != set(_DIMENSIONS):
-        raise ArtifactLifecycleError(
-            "evaluator aggregation is missing a required dimension"
-        )
-
-    findings = tuple(
-        finding
-        for dimension in _DIMENSIONS
-        for finding in by_dimension[dimension].findings
+    severity = _SEVERITY[dimension]
+    winning_assessment = max(
+        (output.assessment for output in normalized_outputs),
+        key=lambda value: severity[value],
     )
+
+    findings: list[str] = []
+    for output in normalized_outputs:
+        if output.assessment != winning_assessment:
+            continue
+        for finding in output.findings:
+            if finding not in findings:
+                findings.append(finding)
+            if len(findings) >= MAX_EVALUATOR_FINDINGS_PER_DIMENSION:
+                break
+        if len(findings) >= MAX_EVALUATOR_FINDINGS_PER_DIMENSION:
+            break
+
+    return DimensionEvaluatorOutput(
+        dimension=dimension,
+        assessment=winning_assessment,
+        findings=tuple(findings),
+    )
+
+
+def aggregate_evaluator_outputs(
+    *,
+    groundedness: DimensionEvaluatorOutput,
+    redundancy_pairs: Sequence[CandidateEvaluatorOutput],
+    consistency_pairs: Sequence[CandidateEvaluatorOutput],
+) -> EvaluatorOutput:
+    if groundedness.dimension != "groundedness":
+        raise ArtifactLifecycleError("groundedness evaluator output is invalid")
+    if groundedness.assessment not in _ASSESSMENT_VALUES["groundedness"]:
+        raise ArtifactLifecycleError("groundedness evaluator assessment is invalid")
+
+    redundancy_paths = tuple(item.candidate_path for item in redundancy_pairs)
+    consistency_paths = tuple(item.candidate_path for item in consistency_pairs)
+    if redundancy_paths != consistency_paths:
+        raise ArtifactLifecycleError("pairwise evaluator candidate sets do not match")
+
+    redundancy = aggregate_candidate_outputs("redundancy", redundancy_pairs)
+    consistency = aggregate_candidate_outputs("consistency", consistency_pairs)
+    findings = groundedness.findings + redundancy.findings + consistency.findings
     if len(set(findings)) != len(findings):
-        raise ArtifactLifecycleError(
-            "evaluator aggregated findings must not contain duplicates"
-        )
+        raise ArtifactLifecycleError("evaluator aggregated findings must not contain duplicates")
 
     return EvaluatorOutput(
-        groundedness=by_dimension["groundedness"].assessment,
-        redundancy=by_dimension["redundancy"].assessment,
-        consistency=by_dimension["consistency"].assessment,
+        groundedness=groundedness.assessment,
+        redundancy=redundancy.assessment,
+        consistency=consistency.assessment,
         findings=findings,
     )
 
@@ -303,13 +395,8 @@ def _validated_evaluator_output(output: EvaluatorOutput) -> EvaluatorOutput:
         "consistency": output.consistency,
     }
     for dimension, assessment in values.items():
-        if (
-            not isinstance(assessment, str)
-            or assessment not in _ASSESSMENT_VALUES[dimension]
-        ):
-            raise ArtifactLifecycleError(
-                f"evaluator {dimension} assessment is invalid"
-            )
+        if not isinstance(assessment, str) or assessment not in _ASSESSMENT_VALUES[dimension]:
+            raise ArtifactLifecycleError(f"evaluator {dimension} assessment is invalid")
     if len(output.findings) > MAX_EVALUATOR_FINDINGS_PER_DIMENSION * len(_DIMENSIONS):
         raise ArtifactLifecycleError("evaluator findings are invalid")
     for finding in output.findings:
@@ -319,20 +406,14 @@ def _validated_evaluator_output(output: EvaluatorOutput) -> EvaluatorOutput:
         for dimension in _DIMENSIONS:
             prefix = f"{dimension}: "
             if finding.startswith(prefix):
-                if _normalized_finding(dimension, finding[len(prefix) :]) != finding:
-                    raise ArtifactLifecycleError(
-                        "evaluator normalized finding is not canonical"
-                    )
+                if len(finding) > MAX_EVALUATOR_FINDING_CHARS:
+                    raise ArtifactLifecycleError("evaluator finding is too long")
                 matched = True
                 break
         if not matched:
-            raise ArtifactLifecycleError(
-                "evaluator finding must be dimension-scoped"
-            )
+            raise ArtifactLifecycleError("evaluator finding must be dimension-scoped")
     if len(set(output.findings)) != len(output.findings):
-        raise ArtifactLifecycleError(
-            "evaluator findings must not contain duplicates"
-        )
+        raise ArtifactLifecycleError("evaluator findings must not contain duplicates")
     return output
 
 
@@ -370,14 +451,20 @@ def prompt_template_bytes() -> bytes:
             "template_version": EVALUATOR_PROMPT_TEMPLATE_VERSION,
             "output_contract_version": EVALUATOR_OUTPUT_CONTRACT_VERSION,
             "recommendation_policy_version": RECOMMENDATION_POLICY_VERSION,
-            "pass_order": list(_DIMENSIONS),
+            "strategy": "groundedness-plus-pairwise-candidates-v0",
+            "pass_order": ["groundedness", "candidate:(redundancy,consistency)*"],
             "passes": {
                 dimension: {
                     "system": _DIMENSION_SYSTEMS[dimension],
                     "output_schema": _output_schema_for(dimension),
-                    "user_payload_version": 2,
+                    "user_payload_version": 3,
                 }
                 for dimension in _DIMENSIONS
+            },
+            "aggregation": {
+                "redundancy": ["none", "possible", "likely"],
+                "consistency": ["pass", "unknown", "concern"],
+                "findings": "winning-severity-only",
             },
         }
     )
@@ -398,15 +485,12 @@ def _generation_sources(bundle: ContextBundle) -> list[dict[str, str]]:
     ]
 
 
-def _evaluation_candidates(context: EvaluationContext) -> list[dict[str, str]]:
-    return [
-        {
-            "path": candidate.path,
-            "content_sha256": candidate.content_sha256,
-            "content": candidate.content,
-        }
-        for candidate in context.candidates
-    ]
+def _candidate_payload(candidate: EvaluationCandidate) -> dict[str, str]:
+    return {
+        "path": _validated_candidate_path(candidate.path),
+        "content_sha256": candidate.content_sha256,
+        "content": candidate.content,
+    }
 
 
 def _proposal_payload(target_path: str, proposal_content: str) -> dict[str, str]:
@@ -417,15 +501,11 @@ def _proposal_payload(target_path: str, proposal_content: str) -> dict[str, str]
     ):
         raise ArtifactLifecycleError("evaluator target_path is invalid")
     if not isinstance(proposal_content, str) or not proposal_content:
-        raise ArtifactLifecycleError(
-            "evaluator proposal_content must be non-empty"
-        )
+        raise ArtifactLifecycleError("evaluator proposal_content must be non-empty")
     try:
         proposal_content.encode("utf-8")
     except UnicodeEncodeError as exc:
-        raise ArtifactLifecycleError(
-            "evaluator proposal_content must be UTF-8 encodable"
-        ) from exc
+        raise ArtifactLifecycleError("evaluator proposal_content must be UTF-8 encodable") from exc
     return {
         "target_path": target_path,
         "content": proposal_content,
@@ -443,31 +523,47 @@ def render_evaluator_prompts(
     template_sha = prompt_template_sha256()
     prompts: list[EvaluatorPrompt] = []
 
-    for dimension in _DIMENSIONS:
-        payload: dict[str, object] = {
-            "payload_version": 2,
-            "dimension": dimension,
-            "proposal": proposal,
-        }
-        if dimension == "groundedness":
-            payload["generation_input"] = {
-                "query": generation_context.query,
-                "sources": _generation_sources(generation_context),
-            }
-        else:
-            payload["evaluation_candidates"] = _evaluation_candidates(
-                evaluation_context
-            )
-
-        prompts.append(
-            EvaluatorPrompt(
-                dimension=dimension,
-                template_version=EVALUATOR_PROMPT_TEMPLATE_VERSION,
-                template_sha256=template_sha,
-                system=_DIMENSION_SYSTEMS[dimension],
-                user=_canonical_json_bytes(payload).decode("utf-8"),
-                output_schema=output_schema(dimension),
-            )
+    groundedness_payload = {
+        "payload_version": 3,
+        "dimension": "groundedness",
+        "proposal": proposal,
+        "generation_input": {
+            "query": generation_context.query,
+            "sources": _generation_sources(generation_context),
+        },
+    }
+    prompts.append(
+        EvaluatorPrompt(
+            dimension="groundedness",
+            candidate_path=None,
+            template_version=EVALUATOR_PROMPT_TEMPLATE_VERSION,
+            template_sha256=template_sha,
+            system=_DIMENSION_SYSTEMS["groundedness"],
+            user=_canonical_json_bytes(groundedness_payload).decode("utf-8"),
+            output_schema=output_schema("groundedness"),
         )
+    )
+
+    for candidate in evaluation_context.candidates:
+        candidate_payload = _candidate_payload(candidate)
+        candidate_path = candidate_payload["path"]
+        for dimension in _PAIRWISE_DIMENSIONS:
+            payload = {
+                "payload_version": 3,
+                "dimension": dimension,
+                "proposal": proposal,
+                "evaluation_candidate": candidate_payload,
+            }
+            prompts.append(
+                EvaluatorPrompt(
+                    dimension=dimension,
+                    candidate_path=candidate_path,
+                    template_version=EVALUATOR_PROMPT_TEMPLATE_VERSION,
+                    template_sha256=template_sha,
+                    system=_DIMENSION_SYSTEMS[dimension],
+                    user=_canonical_json_bytes(payload).decode("utf-8"),
+                    output_schema=output_schema(dimension),
+                )
+            )
 
     return tuple(prompts)

@@ -1,28 +1,31 @@
-# Evaluator Prompt / Output Contract v2
+# Evaluator Prompt / Output Contract v3
 
 ## Purpose
 
-Evaluator v2 is an advisory semantic assessment stage between deterministic Validation and Human Review.
+Evaluator v3 is an advisory semantic assessment stage between deterministic Validation and Human Review.
 
-Production acceptance with `gemma4:12b`, `gemma4:26b`, and `qwen3.6:27b` showed the same failure mode: when groundedness evidence and duplicate candidates were presented in one prompt, all three models classified a known near-duplicate as `redundancy=none`. The models repeatedly interpreted formatting/readability improvements as evidence against redundancy.
+Production testing showed two independent interference modes:
 
-v2 removes that task interference by evaluating each semantic dimension in a separate provider call.
+1. v1: groundedness evidence and duplicate candidates in one prompt caused cross-dimension task interference;
+2. v2: even after dimension separation, multiple Evaluation Context candidates in one Redundancy/Consistency pass caused candidate interference. An unrelated MARL/LLM research note dominated the model output while a known Nextcloud near-duplicate was missed.
+
+v3 keeps Groundedness isolated and evaluates every Evaluation Context candidate pairwise for Redundancy and Consistency.
 
 ```text
 validated proposal
         │
-        ├─ Groundedness pass
-        │    proposal + original 05-Context only
+        ├─ Groundedness
+        │    proposal + original 05-Context
         │
-        ├─ Redundancy pass
-        │    proposal + 14-Evaluation-Context candidates only
-        │
-        └─ Consistency pass
-             proposal + 14-Evaluation-Context candidates only
+        └─ for each Evaluation Context candidate
+             ├─ Redundancy
+             │    proposal + exactly one candidate
+             └─ Consistency
+                  proposal + exactly one candidate
 
-all three strict parses succeed
+all provider calls strict-parse successfully
         ↓
-deterministic aggregation
+deterministic per-dimension severity aggregation
         ↓
 conservative-triad-v0
         ↓
@@ -35,7 +38,7 @@ The LLM does not own workflow authority.
 
 ## Model-facing output
 
-Each pass returns only one assessment and findings for that pass:
+The model-facing output shape is unchanged from v2:
 
 ```json
 {
@@ -46,21 +49,21 @@ Each pass returns only one assessment and findings for that pass:
 }
 ```
 
-The dimension is fixed by the pass and is not model-controlled.
-
-The model cannot return `recommendation`.
-
-Accepted findings are normalized deterministically into the existing Evaluation Record representation:
+Therefore the output contract version remains:
 
 ```text
-groundedness: <detail>
-redundancy: <detail>
-consistency: <detail>
+knowledge-note-evaluator-output-v2
 ```
 
-The persisted `15-Evaluation` record shape therefore remains unchanged.
+The prompt/input contract changes to:
 
-## Pass 1: Groundedness
+```text
+knowledge-note-evaluator-v3
+```
+
+The dimension and candidate identity are fixed outside the model. The model cannot return `recommendation`.
+
+## Groundedness pass
 
 Input:
 
@@ -68,10 +71,10 @@ Input:
 proposal
 generation_input
   query
-  exact generation source path/hash/content
+  exact source path/hash/content
 ```
 
-`evaluation_candidates` are intentionally absent.
+Evaluation candidates are absent.
 
 Assessment values:
 
@@ -81,19 +84,21 @@ concern
 unknown
 ```
 
-Groundedness asks only whether material factual/procedural claims are supported by the exact evidence supplied to the Generator. It is not objective-truth verification.
+Groundedness asks only whether material proposal claims are supported by the exact evidence supplied to the Generator.
 
-## Pass 2: Redundancy
+## Pairwise Redundancy
+
+One provider call is made for each candidate.
 
 Input:
 
 ```text
 proposal
-evaluation_candidates
+evaluation_candidate
   exact candidate path/hash/content
 ```
 
-`generation_input` is intentionally absent.
+Only one candidate is present. Generation input, retrieval scores, and all other candidates are absent.
 
 Assessment values:
 
@@ -103,48 +108,71 @@ possible
 likely
 ```
 
-`likely` means that one or more candidates cover substantially the same core knowledge, procedure, or conclusions and the proposal adds little meaningful unique information.
-
 Filename punctuation, wording, section order, formatting, readability improvements, and stylistic rewrites do not make two notes semantically distinct.
 
-BM25 scores are not sent to the model.
+## Pairwise Consistency
 
-## Pass 3: Consistency
-
-Input:
-
-```text
-proposal
-evaluation_candidates
-  exact candidate path/hash/content
-```
-
-`generation_input` is intentionally absent.
+One provider call is made for each candidate using the same pairwise evidence shape.
 
 Assessment values:
 
 ```text
 pass
-concern
 unknown
+concern
 ```
 
-Consistency asks only whether material factual or procedural claims explicitly conflict with supplied candidates. Different scope, omission, formatting, or extra detail alone is not a contradiction.
+Consistency asks only whether material factual or procedural claims explicitly conflict with that one candidate. Different scope, omission, formatting, or extra detail alone is not a contradiction.
 
-## Fail-closed aggregation
+## Deterministic candidate binding
 
-The three provider calls use the same resolved model identifier and model digest.
+Candidate paths are not trusted to the model output. After strict parsing, deterministic code binds the known candidate path to each accepted pairwise finding:
 
-No Evaluation Record is persisted until all three passes have:
+```text
+redundancy: [11-Knowledge/example.md] <detail>
+consistency: [11-Knowledge/example.md] <detail>
+```
+
+This preserves provenance even if the model omits or mistypes a path.
+
+## Deterministic aggregation
+
+Redundancy severity:
+
+```text
+none < possible < likely
+```
+
+Consistency severity:
+
+```text
+pass < unknown < concern
+```
+
+The strongest assessment across all candidates becomes the final dimension assessment. Findings are taken only from pairwise results at the winning severity and are bounded deterministically.
+
+If Evaluation Context contains zero candidates:
+
+```text
+redundancy = none
+consistency = pass
+```
+
+Groundedness remains independent.
+
+## Fail-closed behavior
+
+All provider calls use one resolved model identifier and digest.
+
+No Evaluation Record is persisted until every required call has:
 
 1. completed successfully;
 2. returned the resolved model;
-3. passed byte bounds;
-4. passed strict deterministic parsing.
+3. satisfied byte bounds;
+4. passed strict deterministic parsing;
+5. been bound to the expected candidate path and dimension.
 
-If any pass fails, no partial `15-Evaluation` artifact is written.
-
-Only after all three passes succeed are their assessments aggregated into one internal Evaluator output.
+Any provider/parser/binding failure aborts the whole Evaluation without writing a partial `15-Evaluation` artifact.
 
 ## Deterministic recommendation policy
 
@@ -170,31 +198,31 @@ manual_review
   every other combination
 ```
 
-Recommendation remains advisory. It is not Validation, Human approval, or execution authority.
+Recommendation remains advisory and is not Human approval or execution authority.
 
-## Contract versions
+## Prompt-template provenance
 
-```text
-prompt template:
-knowledge-note-evaluator-v2
+The prompt-template SHA binds:
 
-model output contract:
-knowledge-note-evaluator-output-v2
-```
-
-The prompt-template SHA binds all three fixed system prompts, each dimension-specific JSON Schema, pass order, payload format version, output contract version, and recommendation policy version.
+- `knowledge-note-evaluator-v3`;
+- output contract `knowledge-note-evaluator-output-v2`;
+- pairwise strategy identifier;
+- all dimension-specific system prompts;
+- all JSON Schemas;
+- payload version 3;
+- deterministic severity order;
+- finding aggregation policy;
+- `conservative-triad-v0`.
 
 ## Structured-output compatibility
 
-Each pass schema uses only basic object, array, enum, string, length, required, and `additionalProperties` constraints. It does not use JSON Schema `pattern`.
-
-Finding scope is deterministic because each provider call is already bound to exactly one dimension.
+Schemas use basic object, array, enum, string, length, required, and `additionalProperties` constraints. JSON Schema `pattern` is intentionally not used because the production Ollama implementation rejected it.
 
 ## Prompt injection boundary
 
-Proposal text, generation sources, and candidate Knowledge Note text are untrusted data. Each system prompt forbids following commands, role changes, policies, or output-format requests found inside those fields.
+Proposal text, generation sources, and candidate Knowledge Note text are untrusted data. System prompts explicitly forbid following commands, role changes, policies, or output-format requests found inside them.
 
-This is defense in depth, not a security proof.
+Pairwise isolation also reduces the blast radius of a malicious or instruction-like candidate: it cannot share one model context with other candidates.
 
 ## Authority
 
@@ -211,13 +239,15 @@ Human Review remains the authority after Evaluation.
 
 ## Production acceptance
 
-The production near-duplicate case remains:
+Existing:
 
 ```text
-existing:
 11-Knowledge/Nextcloud+RemotelySaveでObsidianVaultを共有する方法.md
+```
 
-generated:
+Generated proposal:
+
+```text
 11-Knowledge/Nextcloud_RemotelySaveでObsidianVaultを共有する方法.md
 ```
 
@@ -228,4 +258,4 @@ redundancy = likely
 recommendation = do_not_proceed
 ```
 
-The existing v1 failure artifacts are retained as immutable failure-corpus records.
+All earlier v1/v2 Evaluation artifacts remain immutable failure-corpus records.
