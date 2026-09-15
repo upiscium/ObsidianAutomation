@@ -9,6 +9,7 @@ from obsidian_automation.artifact_lifecycle import (
     ArtifactLifecycleError,
     _canonical_json_bytes,
     ensure_artifact_layout,
+    evaluation_bound_review_record_bytes,
     load_review_record,
     sha256_bytes,
     store_untrusted_proposal,
@@ -16,6 +17,11 @@ from obsidian_automation.artifact_lifecycle import (
     store_validation_record,
 )
 from obsidian_automation.canonical_mutation import validate_create_note
+from obsidian_automation.execution_orchestrator import (
+    ExecutionOrchestrationError,
+    prepare_execution_intent,
+    reconcile_execution,
+)
 from obsidian_automation.knowledge_review import create_evaluation_bound_review
 
 
@@ -85,11 +91,11 @@ def _setup(
     evaluation_sha = sha256_bytes(evaluation_bytes)
     evaluation_path = ai_root / "15-Evaluation" / f"{evaluation_sha}.evaluation.json"
     evaluation_path.write_bytes(evaluation_bytes)
-    return ai_root, validated, proposal_sha, evaluation_sha, evaluation_path
+    return vault, ai_root, validated, proposal_sha, evaluation_sha, evaluation_path
 
 
 def test_human_can_approve_do_not_proceed_evaluation(tmp_path: Path) -> None:
-    ai_root, validated, proposal_sha, evaluation_sha, _ = _setup(
+    _, ai_root, validated, proposal_sha, evaluation_sha, _ = _setup(
         tmp_path,
         recommendation="do_not_proceed",
     )
@@ -115,7 +121,7 @@ def test_human_can_approve_do_not_proceed_evaluation(tmp_path: Path) -> None:
 
 
 def test_human_can_reject_proceed_evaluation(tmp_path: Path) -> None:
-    ai_root, validated, _, evaluation_sha, _ = _setup(
+    _, ai_root, validated, _, evaluation_sha, _ = _setup(
         tmp_path,
         recommendation="proceed",
     )
@@ -135,7 +141,7 @@ def test_human_can_reject_proceed_evaluation(tmp_path: Path) -> None:
 
 
 def test_cross_bound_evaluation_is_rejected(tmp_path: Path) -> None:
-    ai_root, _, _, evaluation_sha, _ = _setup(
+    _, ai_root, _, _, evaluation_sha, _ = _setup(
         tmp_path,
         evaluation_mutation_sha256="f" * 64,
     )
@@ -153,7 +159,7 @@ def test_cross_bound_evaluation_is_rejected(tmp_path: Path) -> None:
 
 
 def test_modified_evaluation_is_rejected_before_review_persistence(tmp_path: Path) -> None:
-    ai_root, validated, _, evaluation_sha, evaluation_path = _setup(tmp_path)
+    _, ai_root, validated, _, evaluation_sha, evaluation_path = _setup(tmp_path)
     value = json.loads(evaluation_path.read_text())
     value["assessment"]["recommendation"] = "manual_review"
     evaluation_path.write_text(json.dumps(value, ensure_ascii=False) + "\n")
@@ -172,7 +178,7 @@ def test_modified_evaluation_is_rejected_before_review_persistence(tmp_path: Pat
 
 
 def test_review_persistence_is_immutable_and_idempotent(tmp_path: Path) -> None:
-    ai_root, _, _, evaluation_sha, _ = _setup(tmp_path)
+    _, ai_root, _, _, evaluation_sha, _ = _setup(tmp_path)
 
     first = create_evaluation_bound_review(
         ai_root,
@@ -198,4 +204,44 @@ def test_review_persistence_is_immutable_and_idempotent(tmp_path: Path) -> None:
             decision="reject",
             approver="human",
             decided_at="2026-09-15T00:03:00Z",
+        )
+
+
+def test_v2_review_bytes_are_bound_into_execution_intent(tmp_path: Path) -> None:
+    vault, ai_root, validated, _, evaluation_sha, _ = _setup(tmp_path)
+    review_result = create_evaluation_bound_review(
+        ai_root,
+        evaluation_sha256=evaluation_sha,
+        decision="approve",
+        approver="human",
+        decided_at="2026-09-15T00:02:00Z",
+    )
+
+    intent = prepare_execution_intent(
+        ai_root,
+        vault,
+        validated.mutation_sha256,
+        allowed_roots=["11-Knowledge"],
+        prepared_at="2026-09-15T00:03:00Z",
+    )
+    assert intent.approval_sha256 == review_result.review_sha256
+
+    review_result.review_path.write_bytes(
+        evaluation_bound_review_record_bytes(
+            mutation_sha256=validated.mutation_sha256,
+            evaluation_sha256=evaluation_sha,
+            decision="approve",
+            approver="different-human",
+            decided_at="2026-09-15T00:04:00Z",
+        )
+    )
+    with pytest.raises(
+        ExecutionOrchestrationError,
+        match="approval artifact changed after intent preparation",
+    ):
+        reconcile_execution(
+            ai_root,
+            vault,
+            validated.mutation_sha256,
+            allowed_roots=["11-Knowledge"],
         )
