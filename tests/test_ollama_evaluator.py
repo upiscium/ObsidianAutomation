@@ -21,6 +21,7 @@ from obsidian_automation.knowledge_index import build_knowledge_index, store_kno
 from obsidian_automation.knowledge_validator import validate_proposal
 from obsidian_automation.ollama_evaluator import (
     ADAPTER_VERSION,
+    EVALUATION_PASSES,
     OllamaProviderError,
     evaluate_knowledge_note_with_ollama,
 )
@@ -132,7 +133,25 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, str, str, str]:
     return vault, state, proposal_sha, generation_sha, evaluation_context_sha
 
 
-def _transport_with_output(output: dict[str, object], calls: list[dict[str, object]]):
+def _good_outputs() -> dict[str, dict[str, object]]:
+    return {
+        "groundedness": {"assessment": "pass", "findings": []},
+        "redundancy": {
+            "assessment": "likely",
+            "findings": [
+                {
+                    "detail": "11-Knowledge/Nextcloud+RemotelySaveでObsidianVaultを共有する方法.md と核心手順が実質的に同一。"
+                }
+            ],
+        },
+        "consistency": {"assessment": "pass", "findings": []},
+    }
+
+
+def _transport_with_outputs(
+    outputs: dict[str, dict[str, object]],
+    calls: list[dict[str, object]],
+):
     def transport(base_url: str, **kwargs: object) -> dict[str, object]:
         calls.append({"base_url": base_url, **kwargs})
         if kwargs["path"] == "/api/tags":
@@ -142,35 +161,32 @@ def _transport_with_output(output: dict[str, object], calls: list[dict[str, obje
                 ]
             }
         assert kwargs["path"] == "/api/chat"
+        payload = kwargs["payload"]
+        assert isinstance(payload, dict)
+        messages = payload["messages"]
+        assert isinstance(messages, list)
+        user_payload = json.loads(messages[1]["content"])
+        dimension = user_payload["dimension"]
         return {
             "model": "gemma4:12b",
             "done": True,
             "message": {
                 "role": "assistant",
-                "content": json.dumps(output, ensure_ascii=False, separators=(",", ":")),
+                "content": json.dumps(
+                    outputs[dimension],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
             },
         }
 
     return transport
 
 
-def test_near_duplicate_e2e_persists_likely_and_deterministic_do_not_proceed(tmp_path: Path) -> None:
+def test_near_duplicate_e2e_uses_three_isolated_passes_and_persists_likely(tmp_path: Path) -> None:
     _, state, proposal_sha, generation_sha, evaluation_context_sha = _fixture(tmp_path)
     calls: list[dict[str, object]] = []
-    transport = _transport_with_output(
-        {
-            "groundedness": "pass",
-            "redundancy": "likely",
-            "consistency": "pass",
-            "findings": [
-                {
-                    "dimension": "redundancy",
-                    "detail": "11-Knowledge/Nextcloud+RemotelySaveでObsidianVaultを共有する方法.md と核心手順が実質的に同一。",
-                }
-            ],
-        },
-        calls,
-    )
+    transport = _transport_with_outputs(_good_outputs(), calls)
 
     result = evaluate_knowledge_note_with_ollama(
         state,
@@ -190,6 +206,7 @@ def test_near_duplicate_e2e_persists_likely_and_deterministic_do_not_proceed(tmp
     )
     assert result.model_revision == DIGEST
     assert result.evaluation_path.is_file()
+
     record = load_evaluation_record(state, result.evaluation_sha256)
     assert record.assessment.redundancy == "likely"
     assert record.assessment.recommendation == "do_not_proceed"
@@ -197,48 +214,54 @@ def test_near_duplicate_e2e_persists_likely_and_deterministic_do_not_proceed(tmp
     assert record.model_config == {
         "adapter_version": ADAPTER_VERSION,
         "think": False,
+        "passes": list(EVALUATION_PASSES),
         "options": {"temperature": 0},
     }
 
-    chat = calls[1]
-    payload = chat["payload"]
-    assert isinstance(payload, dict)
-    assert payload["stream"] is False
-    assert payload["think"] is False
-    assert payload["options"] == {"temperature": 0}
-    format_schema = payload["format"]
-    assert isinstance(format_schema, dict)
-    properties = format_schema["properties"]
-    assert isinstance(properties, dict)
-    findings_schema = properties["findings"]
-    assert isinstance(findings_schema, dict)
-    finding_items = findings_schema["items"]
-    assert isinstance(finding_items, dict)
-    assert finding_items["type"] == "object"
-    finding_properties = finding_items["properties"]
-    assert isinstance(finding_properties, dict)
-    assert finding_properties["dimension"]["enum"] == [
-        "groundedness",
-        "redundancy",
-        "consistency",
+    assert len(calls) == 4
+    chat_calls = calls[1:]
+    dimensions: list[str] = []
+    for call in chat_calls:
+        payload = call["payload"]
+        assert isinstance(payload, dict)
+        assert payload["stream"] is False
+        assert payload["think"] is False
+        assert payload["options"] == {"temperature": 0}
+        assert "pattern" not in json.dumps(payload["format"])
+        user_payload = json.loads(payload["messages"][1]["content"])
+        dimensions.append(user_payload["dimension"])
+
+        if user_payload["dimension"] == "groundedness":
+            assert "generation_input" in user_payload
+            assert "evaluation_candidates" not in user_payload
+            assert payload["format"]["properties"]["assessment"]["enum"] == [
+                "pass",
+                "concern",
+                "unknown",
+            ]
+        else:
+            assert "generation_input" not in user_payload
+            assert "evaluation_candidates" in user_payload
+            assert "score" not in json.dumps(user_payload, ensure_ascii=False)
+
+    assert tuple(dimensions) == EVALUATION_PASSES
+    redundancy_payload = chat_calls[1]["payload"]
+    assert redundancy_payload["format"]["properties"]["assessment"]["enum"] == [
+        "none",
+        "possible",
+        "likely",
     ]
-    assert "pattern" not in json.dumps(format_schema)
-    user_payload = json.loads(payload["messages"][1]["content"])
-    assert "score" not in json.dumps(user_payload, ensure_ascii=False)
 
 
-def test_malformed_model_output_is_rejected_before_evaluation_persistence(tmp_path: Path) -> None:
+def test_first_pass_malformed_output_is_rejected_before_persistence(tmp_path: Path) -> None:
     _, state, proposal_sha, generation_sha, evaluation_context_sha = _fixture(tmp_path)
-    transport = _transport_with_output(
-        {
-            "groundedness": "pass",
-            "redundancy": "likely",
-            "consistency": "pass",
-            "findings": [],
-            "recommendation": "proceed",
-        },
-        [],
-    )
+    outputs = _good_outputs()
+    outputs["groundedness"] = {
+        "assessment": "pass",
+        "findings": [],
+        "recommendation": "proceed",
+    }
+    calls: list[dict[str, object]] = []
 
     with pytest.raises(OllamaProviderError, match="properties do not match"):
         evaluate_knowledge_note_with_ollama(
@@ -249,24 +272,23 @@ def test_malformed_model_output_is_rejected_before_evaluation_persistence(tmp_pa
             base_url="https://ollama.arc.upiscium.dev",
             model="gemma4:12b",
             implementation_revision=REVISION,
-            transport=transport,
+            transport=_transport_with_outputs(outputs, calls),
         )
+
+    assert len(calls) == 2
     assert list((state / EVALUATION_STAGE).iterdir()) == []
 
 
-def test_invalid_finding_dimension_is_rejected_before_evaluation_persistence(tmp_path: Path) -> None:
+def test_second_pass_failure_does_not_persist_partial_evaluation(tmp_path: Path) -> None:
     _, state, proposal_sha, generation_sha, evaluation_context_sha = _fixture(tmp_path)
-    transport = _transport_with_output(
-        {
-            "groundedness": "pass",
-            "redundancy": "likely",
-            "consistency": "pass",
-            "findings": [{"dimension": "workflow", "detail": "reject it"}],
-        },
-        [],
-    )
+    outputs = _good_outputs()
+    outputs["redundancy"] = {
+        "assessment": "likely",
+        "findings": [{"dimension": "redundancy", "detail": "invalid shape"}],
+    }
+    calls: list[dict[str, object]] = []
 
-    with pytest.raises(OllamaProviderError, match="dimension"):
+    with pytest.raises(OllamaProviderError, match="properties do not match"):
         evaluate_knowledge_note_with_ollama(
             state,
             proposal_sha256=proposal_sha,
@@ -275,8 +297,10 @@ def test_invalid_finding_dimension_is_rejected_before_evaluation_persistence(tmp
             base_url="https://ollama.arc.upiscium.dev",
             model="gemma4:12b",
             implementation_revision=REVISION,
-            transport=transport,
+            transport=_transport_with_outputs(outputs, calls),
         )
+
+    assert len(calls) == 3
     assert list((state / EVALUATION_STAGE).iterdir()) == []
 
 

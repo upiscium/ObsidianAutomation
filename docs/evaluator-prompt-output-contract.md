@@ -1,53 +1,56 @@
-# Evaluator Prompt / Output Contract v1
+# Evaluator Prompt / Output Contract v2
 
 ## Purpose
 
-Evaluator v1 is an advisory semantic assessment stage between deterministic Validation and Human Review.
+Evaluator v2 is an advisory semantic assessment stage between deterministic Validation and Human Review.
 
-It evaluates an already-validated `create_note` candidate against two distinct evidence sets:
+Production acceptance with `gemma4:12b`, `gemma4:26b`, and `qwen3.6:27b` showed the same failure mode: when groundedness evidence and duplicate candidates were presented in one prompt, all three models classified a known near-duplicate as `redundancy=none`. The models repeatedly interpreted formatting/readability improvements as evidence against redundancy.
 
-1. the original Reader-produced generation Context, for groundedness;
-2. the Reader-produced Evaluation Context candidates, for redundancy and consistency.
-
-The LLM does not own workflow authority.
+v2 removes that task interference by evaluating each semantic dimension in a separate provider call.
 
 ```text
 validated proposal
-original 05-Context
-14-Evaluation-Context
+        │
+        ├─ Groundedness pass
+        │    proposal + original 05-Context only
+        │
+        ├─ Redundancy pass
+        │    proposal + 14-Evaluation-Context candidates only
+        │
+        └─ Consistency pass
+             proposal + 14-Evaluation-Context candidates only
+
+all three strict parses succeed
         ↓
-Evaluator prompt
+deterministic aggregation
         ↓
-LLM semantic assessment
-        ↓ strict parser
-Deterministic recommendation policy
+conservative-triad-v0
         ↓
 15-Evaluation
         ↓ advisory input
 Human Review
 ```
 
-## Model-owned output
+The LLM does not own workflow authority.
 
-The model returns exactly:
+## Model-facing output
+
+Each pass returns only one assessment and findings for that pass:
 
 ```json
 {
-  "groundedness": "pass | concern | unknown",
-  "redundancy": "none | possible | likely",
-  "consistency": "pass | concern | unknown",
+  "assessment": "<dimension-specific enum>",
   "findings": [
-    {
-      "dimension": "groundedness | redundancy | consistency",
-      "detail": "concise observation"
-    }
+    {"detail": "concise observation"}
   ]
 }
 ```
 
-The model does **not** return `recommendation`.
+The dimension is fixed by the pass and is not model-controlled.
 
-Unknown or duplicate properties are rejected. Each finding is structurally scoped by a `dimension` enum instead of a regex-prefixed free-form string. `detail` contains only the observation. Deterministic code normalizes accepted findings to the existing Evaluation Record representation:
+The model cannot return `recommendation`.
+
+Accepted findings are normalized deterministically into the existing Evaluation Record representation:
 
 ```text
 groundedness: <detail>
@@ -55,87 +58,101 @@ redundancy: <detail>
 consistency: <detail>
 ```
 
-This keeps downstream Human Review compatibility while avoiding reliance on JSON Schema `pattern`, which is not accepted by some Ollama structured-output implementations.
+The persisted `15-Evaluation` record shape therefore remains unchanged.
 
-## Why v1 changes the finding shape
+## Pass 1: Groundedness
 
-Evaluator v0 required each model-produced finding string to start with one of:
+Input:
 
 ```text
-groundedness:
-redundancy:
-consistency:
+proposal
+generation_input
+  query
+  exact generation source path/hash/content
 ```
 
-The strict parser correctly enforced that rule, but the original provider schema could not express it. Adding JSON Schema `pattern` aligned the schema with the parser but caused production Ollama `/api/chat` requests to fail with HTTP 400 on an implementation that does not accept `pattern` in structured-output schemas.
+`evaluation_candidates` are intentionally absent.
 
-v1 moves the scope marker into a normal enum field. This preserves fail-closed parsing without depending on regex schema support.
-
-## Groundedness scope
-
-Groundedness compares the proposal with the exact generation input: the original query plus the exact source bytes contained in the Reader-produced `05-Context` artifact.
+Assessment values:
 
 ```text
 pass
-  Material factual/procedural claims are supported by supplied generation input.
-
 concern
-  At least one material claim is unsupported by or materially conflicts with supplied generation input.
-
 unknown
-  Supplied generation input is insufficient for a defensible judgment.
 ```
 
-`pass` is not an objective-truth guarantee. It means only that the proposal is adequately grounded in the evidence that was supplied to the Generator.
+Groundedness asks only whether material factual/procedural claims are supported by the exact evidence supplied to the Generator. It is not objective-truth verification.
 
-## Redundancy scope
+## Pass 2: Redundancy
 
-Redundancy compares the proposal with the bounded recall-oriented candidates in `14-Evaluation-Context`.
+Input:
 
 ```text
-likely
-  A candidate covers substantially the same core knowledge/procedure/conclusions
-  and the proposal adds little meaningful unique information.
+proposal
+evaluation_candidates
+  exact candidate path/hash/content
+```
 
-possible
-  There is substantial overlap, but meaningful differentiation or additional
-  information may remain.
+`generation_input` is intentionally absent.
 
+Assessment values:
+
+```text
 none
-  Supplied candidates are materially distinct or do not support a redundancy
-  concern.
+possible
+likely
 ```
 
-Filename punctuation, wording changes, reordered sections, or stylistic rewrites are explicitly not sufficient to make two notes semantically distinct.
+`likely` means that one or more candidates cover substantially the same core knowledge, procedure, or conclusions and the proposal adds little meaningful unique information.
 
-The candidate set is not exhaustive, so `none` does not prove global non-duplication.
+Filename punctuation, wording, section order, formatting, readability improvements, and stylistic rewrites do not make two notes semantically distinct.
 
-## Consistency scope
+BM25 scores are not sent to the model.
 
-Consistency compares the proposal with the supplied Evaluation Context candidates for explicit material conflicts.
+## Pass 3: Consistency
+
+Input:
 
 ```text
-concern
-  A material factual or procedural claim is incompatible with a supplied candidate.
-
-pass
-  No material conflict is present among supplied candidates.
-
-unknown
-  Evidence is ambiguous or insufficient for a defensible judgment.
+proposal
+evaluation_candidates
+  exact candidate path/hash/content
 ```
 
-Different scope, omission, or extra detail alone does not constitute contradiction.
+`generation_input` is intentionally absent.
+
+Assessment values:
+
+```text
+pass
+concern
+unknown
+```
+
+Consistency asks only whether material factual or procedural claims explicitly conflict with supplied candidates. Different scope, omission, formatting, or extra detail alone is not a contradiction.
+
+## Fail-closed aggregation
+
+The three provider calls use the same resolved model identifier and model digest.
+
+No Evaluation Record is persisted until all three passes have:
+
+1. completed successfully;
+2. returned the resolved model;
+3. passed byte bounds;
+4. passed strict deterministic parsing.
+
+If any pass fails, no partial `15-Evaluation` artifact is written.
+
+Only after all three passes succeed are their assessments aggregated into one internal Evaluator output.
 
 ## Deterministic recommendation policy
 
-Version:
+Version remains:
 
 ```text
 conservative-triad-v0
 ```
-
-Recommendation is calculated by deterministic code after strict output parsing.
 
 ```text
 proceed
@@ -150,70 +167,36 @@ do_not_proceed
   OR consistency = concern
 
 manual_review
-  every other combination, including unknown and possible
+  every other combination
 ```
 
-The v1 output-shape change does not alter this recommendation policy.
+Recommendation remains advisory. It is not Validation, Human approval, or execution authority.
 
-This recommendation is still advisory. It is not Validation, Human approval, or execution authority.
-
-## Prompt contract
-
-Template version:
+## Contract versions
 
 ```text
-knowledge-note-evaluator-v1
+prompt template:
+knowledge-note-evaluator-v2
+
+model output contract:
+knowledge-note-evaluator-output-v2
 ```
 
-Output contract version:
+The prompt-template SHA binds all three fixed system prompts, each dimension-specific JSON Schema, pass order, payload format version, output contract version, and recommendation policy version.
 
-```text
-knowledge-note-evaluator-output-v1
-```
+## Structured-output compatibility
 
-The prompt-template SHA binds:
+Each pass schema uses only basic object, array, enum, string, length, required, and `additionalProperties` constraints. It does not use JSON Schema `pattern`.
 
-- prompt template version;
-- evaluator output contract version;
-- deterministic recommendation policy version;
-- fixed system prompt;
-- output JSON Schema;
-- user payload format version.
-
-The user payload separates:
-
-```text
-proposal
-
-generation_input
-  query
-  exact generation source path/hash/content
-
-evaluation_candidates
-  exact candidate path/hash/content
-```
-
-BM25 scores are intentionally not sent to the LLM. Retrieval score is a candidate-selection mechanism, not semantic evidence and should not bias the model's final assessment.
-
-## Structured-output compatibility boundary
-
-The provider-facing schema intentionally uses basic object, array, enum, string, length, required, and `additionalProperties` constraints.
-
-It intentionally does not depend on regex `pattern` for finding scope. The deterministic parser still revalidates every provider response and rejects malformed finding objects, invalid dimensions, untrimmed or oversized detail strings, duplicate findings, unknown properties, and model-controlled recommendations.
-
-Provider structured-output enforcement is therefore defense in depth. It is not trusted as the sole parser or workflow authority.
+Finding scope is deterministic because each provider call is already bound to exactly one dimension.
 
 ## Prompt injection boundary
 
-Proposal text, generation sources, and candidate Knowledge Note text are all treated as untrusted data.
+Proposal text, generation sources, and candidate Knowledge Note text are untrusted data. Each system prompt forbids following commands, role changes, policies, or output-format requests found inside those fields.
 
-The system prompt explicitly forbids following commands, role changes, policies, or output-format requests found in those fields.
-
-This is defense in depth, not a security proof. Evaluator output remains advisory and passes through a strict deterministic parser before an Evaluation Record can be built.
+This is defense in depth, not a security proof.
 
 ## Authority
-
-This contract does not change the authority topology introduced by Evaluator Architecture v0.
 
 Evaluator remains unable to:
 
@@ -223,6 +206,8 @@ Evaluator remains unable to:
 - write `14-Evaluation-Context`;
 - write Human Review, Execution, Transport, or Receipts;
 - hold the Nextcloud writer credential.
+
+Human Review remains the authority after Evaluation.
 
 ## Production acceptance
 
@@ -243,12 +228,4 @@ redundancy = likely
 recommendation = do_not_proceed
 ```
 
-The exact deployed implementation revision, prompt template SHA, Ollama model identifier, and model digest must be bound into the persisted Evaluation Record.
-
-## Out of scope
-
-- automatic retries;
-- cloud model providers;
-- automatic rejection or approval based on recommendation;
-- semantic/vector candidate retrieval;
-- objective factual verification beyond supplied evidence.
+The existing v1 failure artifacts are retained as immutable failure-corpus records.
