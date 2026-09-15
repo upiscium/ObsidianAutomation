@@ -1,24 +1,32 @@
-# Ollama Evaluator Adapter v0
+# Ollama Evaluator Adapter v1
 
 ## Purpose
 
-`obsidian-knowledge-evaluate` connects the advisory Evaluator stage to an Ollama endpoint without changing the authority topology introduced by Evaluator Architecture v0.
+`obsidian-knowledge-evaluate` connects the advisory Evaluator stage to Ollama while preserving the existing authority topology.
+
+Evaluator v1 executes the v2 prompt contract as three isolated `/api/chat` calls:
 
 ```text
-10-Validation accepted mutation
-00-Untrusted Generation Record -> exact 05-Context
+accepted mutation
+Generation Record -> exact 05-Context
 14-Evaluation-Context
         ↓ binding checks
-Evaluator Prompt / Output Contract v1
+GET /api/tags -> resolve exact model identifier/digest
         ↓
-Ollama /api/chat structured output
-        ↓ strict parser
-conservative-triad-v0 recommendation
+Groundedness /api/chat
+        ↓ strict parse
+Redundancy /api/chat
+        ↓ strict parse
+Consistency /api/chat
+        ↓ strict parse
+all three succeed
+        ↓ deterministic aggregation
+conservative-triad-v0
         ↓
 15-Evaluation/<sha>.evaluation.json
 ```
 
-The adapter never grants approval or execution authority. `15-Evaluation` remains an advisory machine assessment consumed by Human Review.
+No partial Evaluation Record is written if any pass fails.
 
 ## CLI
 
@@ -35,77 +43,103 @@ obsidian-knowledge-evaluate \
   [--timeout <seconds>]
 ```
 
-Production must bind `--implementation-revision` to the exact deployed merge commit, not a feature-branch head.
+Production binds `--implementation-revision` to the exact deployed merge commit.
 
-## Pre-inference binding checks
+## Binding checks
 
-Before the provider is contacted, the adapter verifies:
+Before provider inference, the adapter verifies that:
 
-1. the proposal has accepted Validation and loads the accepted mutation exact content;
+1. Validation accepted the proposal and exact mutation content is available;
 2. the Generation Record is bound to the same proposal;
-3. the original `05-Context` identified by the Generation Record exists and hash-validates;
-4. the `14-Evaluation-Context` is bound to the same proposal and accepted mutation;
-5. implementation revision, endpoint, timeout, and inference options satisfy their existing contracts.
+3. the exact `05-Context` bound by the Generation Record hash-validates;
+4. `14-Evaluation-Context` is bound to the same proposal and accepted mutation;
+5. endpoint, timeout, model options, and implementation revision satisfy existing contracts.
 
-The prompt therefore evaluates the accepted mutation content, not arbitrary unvalidated proposal bytes.
+## Model identity
 
-## Ollama request
+The adapter resolves the requested model once with `GET /api/tags`.
 
-The adapter resolves the installed model with `GET /api/tags` and binds the returned model digest into the Evaluation Record.
+All three semantic passes use the same resolved model identifier and digest. The final Evaluation Record binds that identifier and digest once.
 
-`POST /api/chat` uses:
+## Three provider calls
+
+Each `/api/chat` request uses:
 
 ```json
 {
-  "model": "<resolved canonical model>",
+  "model": "<resolved model>",
   "messages": [
-    {"role": "system", "content": "<Evaluator Prompt Contract system>"},
-    {"role": "user", "content": "<deterministic evaluator payload>"}
+    {"role": "system", "content": "<dimension-specific system prompt>"},
+    {"role": "user", "content": "<dimension-specific deterministic payload>"}
   ],
   "stream": false,
   "think": false,
-  "format": "<Evaluator Output JSON Schema>",
+  "format": "<dimension-specific JSON Schema>",
   "options": {"temperature": 0}
 }
 ```
 
-The provider response must be complete, must identify the resolved model, must contain an assistant message, and must pass `parse_evaluator_output()` after UTF-8 and byte-size checks.
-
-## Structured finding compatibility
-
-Evaluator Prompt / Output Contract v1 represents each model-produced finding as:
+The model-facing result is:
 
 ```json
 {
-  "dimension": "groundedness | redundancy | consistency",
-  "detail": "concise observation"
+  "assessment": "<dimension-specific enum>",
+  "findings": [
+    {"detail": "concise observation"}
+  ]
 }
 ```
 
-The provider-facing schema uses an enum for `dimension` and bounded string constraints for `detail`. It intentionally does not use JSON Schema `pattern` because some Ollama structured-output implementations reject schemas containing `pattern` with HTTP 400.
+The dimension is fixed by the pass and cannot be selected by the model.
 
-After strict parsing, deterministic code normalizes each finding to the existing Evaluation Record / Human Review representation:
+Provider responses must be complete, identify the resolved model, contain a valid assistant message, satisfy output byte bounds, and pass the deterministic dimension parser.
+
+## Evidence isolation
+
+Groundedness receives:
+
+```text
+proposal + original generation input
+```
+
+It does not receive Evaluation Context candidates.
+
+Redundancy and consistency receive:
+
+```text
+proposal + Evaluation Context candidates
+```
+
+They do not receive generation input.
+
+This isolation prevents a model from treating generation-quality or rewrite-quality as evidence against Knowledge redundancy.
+
+## Persistence boundary
+
+Inference results remain in memory until all three passes succeed.
+
+If pass 1, 2, or 3 fails because of transport, response shape, model identity, UTF-8, byte bounds, or strict parser validation, `15-Evaluation` is not written.
+
+After all passes succeed, findings are normalized to:
 
 ```text
 <dimension>: <detail>
 ```
 
-This changes the model-facing contract without changing Evaluation Record authority or `conservative-triad-v0` recommendation semantics.
+and the three assessments are aggregated into the existing Evaluation Record shape.
 
 ## Network boundary
 
-The Evaluator reuses the Generator adapter's existing Ollama transport policy:
+The Evaluator reuses the Generator adapter transport policy:
 
-- remote endpoint requires HTTPS;
+- remote endpoints require HTTPS;
 - HTTP is allowed only for loopback;
-- embedded URL credentials are rejected;
+- URL credentials are rejected;
 - base URL path/query/fragment are rejected;
 - environment proxies are not inherited;
 - HTTP redirects are not followed;
-- standard Python TLS certificate verification remains enabled;
-- provider responses are size-bounded.
-
-This is important because both original Generation Context and candidate Knowledge bytes are sent to the configured Ollama endpoint.
+- normal TLS certificate validation remains enabled;
+- provider responses are bounded.
 
 ## Provenance
 
@@ -116,14 +150,14 @@ This is important because both original Generation Context and candidate Knowled
 - Generation Record SHA;
 - Evaluation Context SHA;
 - evaluator implementation revision;
-- evaluator prompt template version/SHA;
+- prompt template version/SHA covering all three passes;
 - provider `ollama`;
-- resolved model identifier;
-- installed model digest from `/api/tags`;
-- adapter version `ollama-evaluator-chat-structured-v0`;
+- resolved model identifier and model digest;
+- adapter version `ollama-evaluator-chat-structured-v1`;
+- pass order `groundedness`, `redundancy`, `consistency`;
 - `think=false`;
 - exact inference options;
-- semantic assessment;
+- aggregated semantic assessment;
 - deterministic recommendation.
 
 Raw prompts and raw provider responses are not persisted.
@@ -132,7 +166,7 @@ Raw prompts and raw provider responses are not persisted.
 
 The model cannot output `recommendation`.
 
-`conservative-triad-v0` derives it deterministically after strict parsing:
+`conservative-triad-v0` remains unchanged:
 
 ```text
 proceed
@@ -145,11 +179,11 @@ manual_review
   otherwise
 ```
 
-This recommendation remains advisory. It is not Validation, Human approval, or an Executor gate.
+The recommendation remains advisory. Human Review remains authority.
 
-## Production acceptance case
+## Production acceptance
 
-The first production acceptance case is the observed near-duplicate:
+The production near-duplicate case remains:
 
 ```text
 existing:
@@ -166,14 +200,4 @@ redundancy = likely
 recommendation = do_not_proceed
 ```
 
-The groundedness and consistency dimensions are inspected independently and are not hard-coded for this case.
-
-## Out of scope
-
-- automatic retry;
-- cloud providers;
-- provider authentication headers/API keys;
-- semantic/vector candidate retrieval;
-- automatic Human approval or rejection;
-- Executor enforcement based on Evaluation;
-- update/merge/delete/rename mutations.
+The existing v1 Evaluation artifacts from gemma4:12b, gemma4:26b, and qwen3.6:27b remain immutable failure-corpus evidence.
