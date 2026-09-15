@@ -17,8 +17,10 @@ from .evaluation_artifact import (
 )
 from .evaluator_contract import (
     MAX_EVALUATOR_OUTPUT_BYTES,
+    CandidateEvaluatorOutput,
     DimensionEvaluatorOutput,
-    aggregate_dimension_outputs,
+    aggregate_evaluator_outputs,
+    bind_candidate_output,
     parse_dimension_evaluator_output,
     render_evaluator_prompts,
     to_evaluation_assessment,
@@ -39,9 +41,9 @@ from .ollama_generator import (
 
 
 PROVIDER_NAME = "ollama"
-ADAPTER_VERSION = "ollama-evaluator-chat-structured-v1"
+ADAPTER_VERSION = "ollama-evaluator-chat-structured-v2"
+EVALUATION_STRATEGY = "groundedness-plus-pairwise-candidates-v0"
 MAX_OPTIONS_BYTES = 12 * 1024
-EVALUATION_PASSES = ("groundedness", "redundancy", "consistency")
 
 
 @dataclass(frozen=True)
@@ -68,7 +70,7 @@ def _provider_model_config(options: Mapping[str, object]) -> dict[str, object]:
         {
             "adapter_version": ADAPTER_VERSION,
             "think": False,
-            "passes": list(EVALUATION_PASSES),
+            "strategy": EVALUATION_STRATEGY,
             "options": dict(options),
         }
     )
@@ -139,6 +141,19 @@ def _chat_dimension_output(
         raise OllamaProviderError(str(exc)) from exc
 
 
+def _expected_prompt_order(evaluation_context: object) -> tuple[tuple[str, str | None], ...]:
+    candidates = getattr(evaluation_context, "candidates", None)
+    if not isinstance(candidates, tuple):
+        raise ArtifactLifecycleError("evaluator context candidates are invalid")
+    expected: list[tuple[str, str | None]] = [("groundedness", None)]
+    for candidate in candidates:
+        path = getattr(candidate, "path", None)
+        if not isinstance(path, str):
+            raise ArtifactLifecycleError("evaluator context candidate path is invalid")
+        expected.extend((("redundancy", path), ("consistency", path)))
+    return tuple(expected)
+
+
 def evaluate_knowledge_note_with_ollama(
     ai_root: Path,
     *,
@@ -191,7 +206,8 @@ def evaluate_knowledge_note_with_ollama(
         generation_context=generation_context,
         evaluation_context=evaluation_context,
     )
-    if tuple(prompt.dimension for prompt in prompts) != EVALUATION_PASSES:
+    actual_order = tuple((prompt.dimension, prompt.candidate_path) for prompt in prompts)
+    if actual_order != _expected_prompt_order(evaluation_context):
         raise ArtifactLifecycleError("evaluator prompt pass order is invalid")
 
     identity = resolve_ollama_model(
@@ -201,24 +217,51 @@ def evaluate_knowledge_note_with_ollama(
         transport=transport,
     )
 
-    pass_outputs: list[DimensionEvaluatorOutput] = []
-    for prompt in prompts:
-        pass_outputs.append(
-            _chat_dimension_output(
-                root,
-                dimension=prompt.dimension,
-                identity=identity,
-                system_prompt=prompt.system,
-                user_prompt=prompt.user,
-                output_schema=prompt.output_schema,
-                options=inference_options,
-                timeout=timeout_value,
-                transport=transport,
-            )
-        )
+    groundedness_output: DimensionEvaluatorOutput | None = None
+    redundancy_pairs: list[CandidateEvaluatorOutput] = []
+    consistency_pairs: list[CandidateEvaluatorOutput] = []
 
-    output = aggregate_dimension_outputs(pass_outputs)
+    for prompt in prompts:
+        dimension_output = _chat_dimension_output(
+            root,
+            dimension=prompt.dimension,
+            identity=identity,
+            system_prompt=prompt.system,
+            user_prompt=prompt.user,
+            output_schema=prompt.output_schema,
+            options=inference_options,
+            timeout=timeout_value,
+            transport=transport,
+        )
+        if prompt.dimension == "groundedness":
+            if prompt.candidate_path is not None or groundedness_output is not None:
+                raise ArtifactLifecycleError("groundedness evaluator pass is invalid")
+            groundedness_output = dimension_output
+            continue
+
+        if prompt.candidate_path is None:
+            raise ArtifactLifecycleError("pairwise evaluator pass is missing candidate path")
+        bound = bind_candidate_output(
+            dimension_output,
+            candidate_path=prompt.candidate_path,
+        )
+        if prompt.dimension == "redundancy":
+            redundancy_pairs.append(bound)
+        elif prompt.dimension == "consistency":
+            consistency_pairs.append(bound)
+        else:
+            raise ArtifactLifecycleError("pairwise evaluator dimension is invalid")
+
+    if groundedness_output is None:
+        raise ArtifactLifecycleError("groundedness evaluator pass is missing")
+
+    output = aggregate_evaluator_outputs(
+        groundedness=groundedness_output,
+        redundancy_pairs=redundancy_pairs,
+        consistency_pairs=consistency_pairs,
+    )
     assessment = to_evaluation_assessment(output)
+
     prompt = prompts[0]
     if any(
         item.template_version != prompt.template_version
