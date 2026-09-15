@@ -21,7 +21,7 @@ from obsidian_automation.knowledge_index import build_knowledge_index, store_kno
 from obsidian_automation.knowledge_validator import validate_proposal
 from obsidian_automation.ollama_evaluator import (
     ADAPTER_VERSION,
-    EVALUATION_PASSES,
+    EVALUATION_STRATEGY,
     OllamaProviderError,
     evaluate_knowledge_note_with_ollama,
 )
@@ -29,6 +29,7 @@ from obsidian_automation.ollama_evaluator import (
 
 DIGEST = "4eb23ef187e2c5462566d6a1d3bbbc2f1346d0b4327cbb66d58fffbcc9b2b05c"
 REVISION = "d" * 40
+EXISTING_PATH = "11-Knowledge/Nextcloud+RemotelySaveでObsidianVaultを共有する方法.md"
 
 
 def _note(body: str) -> str:
@@ -81,8 +82,7 @@ def _roots(tmp_path: Path) -> tuple[Path, Path]:
 
 def _fixture(tmp_path: Path) -> tuple[Path, Path, str, str, str]:
     vault, state = _roots(tmp_path)
-    existing_path = "11-Knowledge/Nextcloud+RemotelySaveでObsidianVaultを共有する方法.md"
-    (vault / existing_path).write_text(
+    (vault / EXISTING_PATH).write_text(
         _note("# 概要\n\nNextcloud の WebDAV と RemotelySave で Obsidian Vault を共有する方法。"),
         encoding="utf-8",
     )
@@ -112,7 +112,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, str, str, str]:
     generation_context = build_context_bundle(
         vault,
         query="Nextcloud Obsidian Vault 共有",
-        source_paths=[existing_path],
+        source_paths=[EXISTING_PATH],
         created_at="2026-08-24T00:00:00Z",
     )
     generation_context_sha, _ = store_context_bundle(state, generation_context)
@@ -138,11 +138,7 @@ def _good_outputs() -> dict[str, dict[str, object]]:
         "groundedness": {"assessment": "pass", "findings": []},
         "redundancy": {
             "assessment": "likely",
-            "findings": [
-                {
-                    "detail": "11-Knowledge/Nextcloud+RemotelySaveでObsidianVaultを共有する方法.md と核心手順が実質的に同一。"
-                }
-            ],
+            "findings": [{"detail": "The proposal covers the same core procedure."}],
         },
         "consistency": {"assessment": "pass", "findings": []},
     }
@@ -183,7 +179,7 @@ def _transport_with_outputs(
     return transport
 
 
-def test_near_duplicate_e2e_uses_three_isolated_passes_and_persists_likely(tmp_path: Path) -> None:
+def test_near_duplicate_e2e_uses_pairwise_candidate_passes_and_persists_likely(tmp_path: Path) -> None:
     _, state, proposal_sha, generation_sha, evaluation_context_sha = _fixture(tmp_path)
     calls: list[dict[str, object]] = []
     transport = _transport_with_outputs(_good_outputs(), calls)
@@ -202,7 +198,7 @@ def test_near_duplicate_e2e_uses_three_isolated_passes_and_persists_likely(tmp_p
     assert result.redundancy == "likely"
     assert result.recommendation == "do_not_proceed"
     assert result.findings == (
-        "redundancy: 11-Knowledge/Nextcloud+RemotelySaveでObsidianVaultを共有する方法.md と核心手順が実質的に同一。",
+        f"redundancy: [{EXISTING_PATH}] The proposal covers the same core procedure.",
     )
     assert result.model_revision == DIGEST
     assert result.evaluation_path.is_file()
@@ -214,43 +210,33 @@ def test_near_duplicate_e2e_uses_three_isolated_passes_and_persists_likely(tmp_p
     assert record.model_config == {
         "adapter_version": ADAPTER_VERSION,
         "think": False,
-        "passes": list(EVALUATION_PASSES),
+        "strategy": EVALUATION_STRATEGY,
         "options": {"temperature": 0},
     }
 
     assert len(calls) == 4
     chat_calls = calls[1:]
-    dimensions: list[str] = []
-    for call in chat_calls:
+    assert [json.loads(call["payload"]["messages"][1]["content"])["dimension"] for call in chat_calls] == [
+        "groundedness",
+        "redundancy",
+        "consistency",
+    ]
+
+    groundedness_payload = json.loads(chat_calls[0]["payload"]["messages"][1]["content"])
+    assert "generation_input" in groundedness_payload
+    assert "evaluation_candidate" not in groundedness_payload
+
+    for call in chat_calls[1:]:
         payload = call["payload"]
-        assert isinstance(payload, dict)
         assert payload["stream"] is False
         assert payload["think"] is False
         assert payload["options"] == {"temperature": 0}
         assert "pattern" not in json.dumps(payload["format"])
         user_payload = json.loads(payload["messages"][1]["content"])
-        dimensions.append(user_payload["dimension"])
-
-        if user_payload["dimension"] == "groundedness":
-            assert "generation_input" in user_payload
-            assert "evaluation_candidates" not in user_payload
-            assert payload["format"]["properties"]["assessment"]["enum"] == [
-                "pass",
-                "concern",
-                "unknown",
-            ]
-        else:
-            assert "generation_input" not in user_payload
-            assert "evaluation_candidates" in user_payload
-            assert "score" not in json.dumps(user_payload, ensure_ascii=False)
-
-    assert tuple(dimensions) == EVALUATION_PASSES
-    redundancy_payload = chat_calls[1]["payload"]
-    assert redundancy_payload["format"]["properties"]["assessment"]["enum"] == [
-        "none",
-        "possible",
-        "likely",
-    ]
+        assert "generation_input" not in user_payload
+        assert "evaluation_candidates" not in user_payload
+        assert user_payload["evaluation_candidate"]["path"] == EXISTING_PATH
+        assert "score" not in user_payload["evaluation_candidate"]
 
 
 def test_first_pass_malformed_output_is_rejected_before_persistence(tmp_path: Path) -> None:
@@ -279,7 +265,7 @@ def test_first_pass_malformed_output_is_rejected_before_persistence(tmp_path: Pa
     assert list((state / EVALUATION_STAGE).iterdir()) == []
 
 
-def test_second_pass_failure_does_not_persist_partial_evaluation(tmp_path: Path) -> None:
+def test_pairwise_pass_failure_does_not_persist_partial_evaluation(tmp_path: Path) -> None:
     _, state, proposal_sha, generation_sha, evaluation_context_sha = _fixture(tmp_path)
     outputs = _good_outputs()
     outputs["redundancy"] = {
