@@ -9,19 +9,32 @@ v0.1 is intentionally **read-only** with respect to the canonical Vault. It does
 The watcher is an integration service, not an AI service.
 
 ```text
-Nextcloud Vault --pull-only--> local Project mirror
-                                  |
-GitHub API (read-only) -----------+
-                                  v
-                         Repository snapshot
-                              + SQLite
-                                  |
-                                  v
-                    Deterministic status policy
-                                  |
-                                  v
-                       JSON status proposal
+Nextcloud Vault
+      |
+      | read-only Nextcloud identity
+      v
+obsidian-github-mirror
+      |
+      | local 10-Project mirror
+      v
+obsidian-github-sync <------ GitHub API (read-only)
+      |
+      v
+Repository Snapshot + SQLite
+      |
+      v
+Deterministic Status Policy
+      |
+      v
+JSON Status Proposal
 ```
+
+The mirror and watcher use separate Unix identities and separate credentials:
+
+- `obsidian-github-mirror`: can read Nextcloud and update only the local Vault mirror.
+- `obsidian-github-sync`: can read the local mirror and GitHub, and can write only its local SQLite state.
+
+The watcher identity cannot read the Nextcloud rclone credential. The mirror identity does not receive the GitHub token.
 
 AI/LLM processing is not part of the status decision path. A future integration may forward structured GitHub activity to an AI processor for summaries, but that is a separate downstream concern.
 
@@ -102,15 +115,58 @@ The intended production boundary is a dedicated unprivileged LXC named `obsidian
 Recommended layout:
 
 ```text
-/opt/obsidian-github-sync/app/       repository checkout
-/opt/obsidian-github-sync/venv/      Python virtualenv
+/opt/obsidian-github-sync/app/       repository checkout, root-owned
+/opt/obsidian-github-sync/venv/      Python virtualenv, root-owned
+
 /etc/obsidian-github-sync/config.toml
-/etc/obsidian-github-sync/credentials.env
-/etc/obsidian-github-sync/rclone.conf
-/etc/obsidian-github-sync/vault-pull.filters
+/etc/obsidian-github-sync/credentials.env      # GitHub only
+
+/etc/obsidian-github-mirror/rclone.conf        # Nextcloud only
+/etc/obsidian-github-mirror/vault-pull.filters
+
 /var/lib/obsidian-github-sync/state.sqlite3
-/var/lib/obsidian-github-sync/state/24-Locks/
-/srv/obsidian-github-sync/vault/      local pull-only Vault mirror
+/var/lib/obsidian-github-mirror/state/24-Locks/
+
+/srv/obsidian-github-sync/vault/                # local pull-only Vault mirror
+```
+
+### Service identities
+
+Create a shared read group, one mirror identity, and one watcher identity:
+
+```bash
+groupadd --system obsidian-github-vault
+
+useradd --system \
+  --home-dir /var/lib/obsidian-github-mirror \
+  --create-home \
+  --shell /usr/sbin/nologin \
+  --gid obsidian-github-vault \
+  obsidian-github-mirror
+
+# Skip useradd if obsidian-github-sync already exists.
+useradd --system \
+  --home-dir /var/lib/obsidian-github-sync \
+  --create-home \
+  --shell /usr/sbin/nologin \
+  obsidian-github-sync
+
+usermod -aG obsidian-github-vault obsidian-github-sync
+```
+
+The local mirror is writable by the mirror identity and group-readable by the watcher:
+
+```bash
+install -d -o obsidian-github-mirror -g obsidian-github-vault -m 2750 \
+  /srv/obsidian-github-sync/vault
+install -d -o obsidian-github-mirror -g obsidian-github-vault -m 0750 \
+  /var/lib/obsidian-github-mirror/state/24-Locks
+install -d -o obsidian-github-sync -g obsidian-github-sync -m 0750 \
+  /var/lib/obsidian-github-sync
+install -d -o root -g obsidian-github-sync -m 0750 \
+  /etc/obsidian-github-sync
+install -d -o root -g obsidian-github-vault -m 0750 \
+  /etc/obsidian-github-mirror
 ```
 
 Install runtime packages and the Python package:
@@ -119,6 +175,8 @@ Install runtime packages and the Python package:
 apt install -y rclone
 python3 -m venv /opt/obsidian-github-sync/venv
 /opt/obsidian-github-sync/venv/bin/pip install /opt/obsidian-github-sync/app
+chown -R root:root /opt/obsidian-github-sync
+chmod -R go-w /opt/obsidian-github-sync
 ```
 
 ### Pull-only Vault mirror
@@ -127,17 +185,17 @@ The watcher does not need the whole Vault. `examples/github-sync/vault-pull.filt
 
 The pull process reuses `obsidian-production-vault-pull`, which always runs `rclone sync` in the remote-to-local direction. The watcher unit additionally mounts the resulting local mirror read-only through systemd sandboxing.
 
-For the credential boundary, use a dedicated Nextcloud identity whose `ObsidianVault` access is read-only when possible. Do not reuse a canonical writer credential.
+For the credential boundary, use a dedicated Nextcloud identity whose `ObsidianVault` access is read-only. Do not reuse a canonical writer credential.
 
-Copy the filter and create the local state/mirror directories:
+Copy the filter:
 
 ```bash
-install -d -o obsidian-github-sync -g obsidian-github-sync /srv/obsidian-github-sync/vault
-install -d -o obsidian-github-sync -g obsidian-github-sync /var/lib/obsidian-github-sync/state/24-Locks
-install -m 0644 examples/github-sync/vault-pull.filters /etc/obsidian-github-sync/vault-pull.filters
+install -o root -g obsidian-github-vault -m 0640 \
+  examples/github-sync/vault-pull.filters \
+  /etc/obsidian-github-mirror/vault-pull.filters
 ```
 
-Configure an rclone WebDAV remote named `nextcloud-github-sync` in `/etc/obsidian-github-sync/rclone.conf`. The example service expects the Vault at:
+Configure an rclone WebDAV remote named `nextcloud-github-sync` in `/etc/obsidian-github-mirror/rclone.conf`. Keep that file readable only by root and the mirror group. The example service expects the canonical Vault at:
 
 ```text
 nextcloud-github-sync:ObsidianVault
