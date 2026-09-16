@@ -29,12 +29,13 @@ Deterministic Status Policy
 JSON Status Proposal
 ```
 
-The mirror and watcher use separate Unix identities and separate credentials:
+The mirror and watcher use separate Unix identities, primary groups, and credentials:
 
 - `obsidian-github-mirror`: can read Nextcloud and update only the local Vault mirror.
 - `obsidian-github-sync`: can read the local mirror and GitHub, and can write only its local SQLite state.
+- `obsidian-github-vault`: shared supplementary group used only to read the local mirror.
 
-The watcher identity cannot read the Nextcloud rclone credential. The mirror identity does not receive the GitHub token.
+The watcher identity cannot read the Nextcloud rclone credential. The mirror identity cannot read the GitHub token.
 
 AI/LLM processing is not part of the status decision path. A future integration may forward structured GitHub activity to an AI processor for summaries, but that is a separate downstream concern.
 
@@ -132,40 +133,40 @@ Recommended layout:
 
 ### Service identities
 
-Create a shared read group, one mirror identity, and one watcher identity:
+Create one shared mirror-read group and two isolated service identities. Each identity keeps its own primary group; the shared group carries no credentials.
 
 ```bash
 groupadd --system obsidian-github-vault
 
-useradd --system \
+useradd --system --user-group \
   --home-dir /var/lib/obsidian-github-mirror \
   --create-home \
   --shell /usr/sbin/nologin \
-  --gid obsidian-github-vault \
   obsidian-github-mirror
 
-# Skip useradd if obsidian-github-sync already exists.
-useradd --system \
+# Skip this useradd when the watcher user already exists.
+useradd --system --user-group \
   --home-dir /var/lib/obsidian-github-sync \
   --create-home \
   --shell /usr/sbin/nologin \
   obsidian-github-sync
 
+usermod -aG obsidian-github-vault obsidian-github-mirror
 usermod -aG obsidian-github-vault obsidian-github-sync
 ```
 
-The local mirror is writable by the mirror identity and group-readable by the watcher:
+The local mirror is owner-writable and shared-group-readable. The setgid bit keeps files under the mirror in `obsidian-github-vault`; the mirror service uses `UMask=0027` so they are not world-readable.
 
 ```bash
 install -d -o obsidian-github-mirror -g obsidian-github-vault -m 2750 \
   /srv/obsidian-github-sync/vault
-install -d -o obsidian-github-mirror -g obsidian-github-vault -m 0750 \
+install -d -o obsidian-github-mirror -g obsidian-github-mirror -m 0750 \
   /var/lib/obsidian-github-mirror/state/24-Locks
 install -d -o obsidian-github-sync -g obsidian-github-sync -m 0750 \
   /var/lib/obsidian-github-sync
 install -d -o root -g obsidian-github-sync -m 0750 \
   /etc/obsidian-github-sync
-install -d -o root -g obsidian-github-vault -m 0750 \
+install -d -o root -g obsidian-github-mirror -m 0750 \
   /etc/obsidian-github-mirror
 ```
 
@@ -183,19 +184,19 @@ chmod -R go-w /opt/obsidian-github-sync
 
 The watcher does not need the whole Vault. `examples/github-sync/vault-pull.filters` mirrors only `10-Project/**`.
 
-The pull process reuses `obsidian-production-vault-pull`, which always runs `rclone sync` in the remote-to-local direction. The watcher unit additionally mounts the resulting local mirror read-only through systemd sandboxing.
+The pull process reuses `obsidian-production-vault-pull`, which always runs `rclone sync` in the remote-to-local direction. The watcher unit additionally exposes the resulting local mirror read-only through systemd sandboxing.
 
-For the credential boundary, use a dedicated Nextcloud identity whose `ObsidianVault` access is read-only. Do not reuse a canonical writer credential.
+Use a dedicated Nextcloud identity whose `ObsidianVault` access is read-only. Do not reuse a canonical writer credential.
 
-Copy the filter:
+Copy the filter into the mirror-only configuration directory:
 
 ```bash
-install -o root -g obsidian-github-vault -m 0640 \
+install -o root -g obsidian-github-mirror -m 0640 \
   examples/github-sync/vault-pull.filters \
   /etc/obsidian-github-mirror/vault-pull.filters
 ```
 
-Configure an rclone WebDAV remote named `nextcloud-github-sync` in `/etc/obsidian-github-mirror/rclone.conf`. Keep that file readable only by root and the mirror group. The example service expects the canonical Vault at:
+Configure an rclone WebDAV remote named `nextcloud-github-sync` in `/etc/obsidian-github-mirror/rclone.conf` and set the file to `root:obsidian-github-mirror` mode `0640`. The watcher identity is not a member of that group and therefore cannot read this credential. The example service expects the canonical Vault at:
 
 ```text
 nextcloud-github-sync:ObsidianVault
