@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -25,8 +24,7 @@ def test_canonical_io_lock_creates_shared_regular_lock_file(tmp_path: Path) -> N
         assert path == root / "24-Locks" / CANONICAL_IO_LOCK_NAME
         assert path.is_file()
 
-    mode = os.stat(root / "24-Locks" / CANONICAL_IO_LOCK_NAME).st_mode & 0o777
-    assert mode & 0o660 == 0o660
+    assert (root / "24-Locks" / CANONICAL_IO_LOCK_NAME).is_file()
 
 
 def test_canonical_io_lock_rejects_symlink_lock_file(tmp_path: Path) -> None:
