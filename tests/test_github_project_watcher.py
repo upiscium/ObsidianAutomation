@@ -1,0 +1,283 @@
+from __future__ import annotations
+
+import io
+import json
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from obsidian_automation.github_project_watcher import (
+    ProjectBinding,
+    ProjectState,
+    RepositorySnapshot,
+    StateStore,
+    WatcherConfig,
+    decide_status,
+    run_once,
+    scan_projects,
+)
+
+
+NOW = datetime(2026, 9, 16, 15, 0, tzinfo=timezone.utc)
+
+
+def _snapshot(
+    *,
+    sha: str | None = "abc",
+    committed_at: datetime | None = None,
+    issues: frozenset[int] = frozenset(),
+    prs: frozenset[int] = frozenset(),
+) -> RepositorySnapshot:
+    return RepositorySnapshot(
+        repository="upiscium/Test",
+        latest_commit_sha=sha,
+        latest_commit_at=committed_at,
+        open_issues=issues,
+        open_prs=prs,
+        observed_at=NOW,
+    )
+
+
+def _state(
+    *,
+    status: str,
+    sha: str | None = "old",
+    committed_at: datetime | None = None,
+    issues: frozenset[int] = frozenset(),
+    prs: frozenset[int] = frozenset(),
+    pending_status: str | None = None,
+    pending_reason: str | None = None,
+    repository: str = "upiscium/Test",
+) -> ProjectState:
+    return ProjectState(
+        project_path="10-Project/Test.md",
+        repository=repository,
+        last_status=status,
+        latest_commit_sha=sha,
+        latest_commit_at=committed_at,
+        open_issues=issues,
+        open_prs=prs,
+        observed_at=NOW - timedelta(minutes=15),
+        pending_status=pending_status,
+        pending_reason=pending_reason,
+    )
+
+
+def _project(status: str = "planning", *, repository: str = "upiscium/Test") -> ProjectBinding:
+    return ProjectBinding(
+        path="10-Project/Test.md",
+        repository=repository,
+        status=status,
+    )
+
+
+def test_scan_projects_requires_explicit_watch_and_valid_metadata(tmp_path: Path) -> None:
+    project_dir = tmp_path / "10-Project"
+    project_dir.mkdir()
+    (project_dir / "Watched.md").write_text(
+        "---\ntype: project\nstatus: planning\ngithub_repo: upiscium/Test\ngithub_watch: true\n---\n",
+        encoding="utf-8",
+    )
+    (project_dir / "Ignored.md").write_text(
+        "---\ntype: project\nstatus: running\ngithub_repo: upiscium/Ignored\n---\n",
+        encoding="utf-8",
+    )
+    (project_dir / "Broken.md").write_text(
+        "---\ntype: project\nstatus: unknown\ngithub_repo: not-a-repo\ngithub_watch: true\n---\n",
+        encoding="utf-8",
+    )
+
+    projects, warnings = scan_projects(tmp_path)
+
+    assert projects == [
+        ProjectBinding(
+            path="10-Project/Watched.md",
+            repository="upiscium/Test",
+            status="planning",
+        )
+    ]
+    assert len(warnings) == 1
+    assert "invalid github_repo" in warnings[0]
+
+
+def test_recent_commit_makes_normal_project_running() -> None:
+    decision = decide_status(
+        _project("planning"),
+        _snapshot(committed_at=NOW - timedelta(days=2)),
+        None,
+        now=NOW,
+        active_window_days=7,
+    )
+    assert decision.proposed_status == "running"
+    assert decision.pending is True
+
+
+def test_stale_or_missing_commit_makes_normal_project_planning() -> None:
+    stale = decide_status(
+        _project("running"),
+        _snapshot(committed_at=NOW - timedelta(days=8)),
+        None,
+        now=NOW,
+        active_window_days=7,
+    )
+    missing = decide_status(
+        _project("running"),
+        _snapshot(sha=None, committed_at=None),
+        None,
+        now=NOW,
+        active_window_days=7,
+    )
+    assert stale.proposed_status == "planning"
+    assert missing.proposed_status == "planning"
+
+
+def test_stopped_is_never_changed_by_github_activity() -> None:
+    decision = decide_status(
+        _project("stopped"),
+        _snapshot(committed_at=NOW, issues=frozenset({1}), prs=frozenset({2})),
+        _state(status="stopped", sha="old"),
+        now=NOW,
+        active_window_days=7,
+    )
+    assert decision.proposed_status == "stopped"
+    assert decision.pending is False
+
+
+def test_terminal_status_first_observation_only_initializes_baseline() -> None:
+    decision = decide_status(
+        _project("done"),
+        _snapshot(committed_at=NOW, issues=frozenset({1}), prs=frozenset({2})),
+        None,
+        now=NOW,
+        active_window_days=7,
+    )
+    assert decision.proposed_status == "done"
+    assert "baseline" in decision.reason
+
+
+def test_entering_terminal_status_resets_baseline_before_reactivation() -> None:
+    decision = decide_status(
+        _project("cancelled"),
+        _snapshot(sha="new", committed_at=NOW, issues=frozenset({3})),
+        _state(status="running", sha="old", committed_at=NOW - timedelta(days=1)),
+        now=NOW,
+        active_window_days=7,
+    )
+    assert decision.proposed_status == "cancelled"
+    assert "baseline" in decision.reason
+
+
+def test_new_commit_after_terminal_baseline_reactivates_as_running() -> None:
+    decision = decide_status(
+        _project("done"),
+        _snapshot(sha="new", committed_at=NOW),
+        _state(status="done", sha="old", committed_at=NOW - timedelta(days=2)),
+        now=NOW,
+        active_window_days=7,
+    )
+    assert decision.proposed_status == "running"
+    assert decision.pending is True
+
+
+def test_new_open_issue_or_pr_after_terminal_baseline_reactivates_as_planning() -> None:
+    previous = _state(status="cancelled", issues=frozenset({1}), prs=frozenset({10}))
+    decision = decide_status(
+        _project("cancelled"),
+        _snapshot(
+            sha="old",
+            committed_at=previous.latest_commit_at,
+            issues=frozenset({1, 2}),
+            prs=frozenset({10, 11}),
+        ),
+        previous,
+        now=NOW,
+        active_window_days=7,
+    )
+    assert decision.proposed_status == "planning"
+    assert "issues=2" in decision.reason
+    assert "prs=11" in decision.reason
+
+
+def test_pending_proposal_repeats_until_canonical_status_changes() -> None:
+    previous = _state(
+        status="done",
+        sha="new",
+        committed_at=NOW,
+        pending_status="running",
+        pending_reason="new commit observed after terminal baseline",
+    )
+    decision = decide_status(
+        _project("done"),
+        _snapshot(sha="new", committed_at=NOW),
+        previous,
+        now=NOW + timedelta(minutes=15),
+        active_window_days=7,
+    )
+    assert decision.proposed_status == "running"
+    assert decision.pending is True
+
+
+def test_state_store_round_trips_pending_status(tmp_path: Path) -> None:
+    db = tmp_path / "state.sqlite3"
+    project = _project("done")
+    snapshot = _snapshot(
+        sha="sha",
+        committed_at=NOW,
+        issues=frozenset({3, 1}),
+        prs=frozenset({7}),
+    )
+    with StateStore(db) as store:
+        store.save(
+            project,
+            snapshot,
+            pending_status="running",
+            pending_reason="new commit",
+        )
+        loaded = store.load(project.path)
+    assert loaded is not None
+    assert loaded.repository == "upiscium/Test"
+    assert loaded.open_issues == frozenset({1, 3})
+    assert loaded.open_prs == frozenset({7})
+    assert loaded.pending_status == "running"
+
+
+class _FakeClient:
+    def __init__(self, snapshot: RepositorySnapshot) -> None:
+        self.value = snapshot
+        self.calls: list[str] = []
+
+    def snapshot(self, repository: str, *, observed_at: datetime | None = None) -> RepositorySnapshot:
+        self.calls.append(repository)
+        return RepositorySnapshot(
+            repository=repository,
+            latest_commit_sha=self.value.latest_commit_sha,
+            latest_commit_at=self.value.latest_commit_at,
+            open_issues=self.value.open_issues,
+            open_prs=self.value.open_prs,
+            observed_at=observed_at or self.value.observed_at,
+        )
+
+
+def test_run_once_fetches_shared_repository_once_and_emits_json(tmp_path: Path) -> None:
+    project_dir = tmp_path / "vault" / "10-Project"
+    project_dir.mkdir(parents=True)
+    for name in ("A", "B"):
+        (project_dir / f"{name}.md").write_text(
+            "---\ntype: project\nstatus: planning\ngithub_repo: upiscium/Test\ngithub_watch: true\n---\n",
+            encoding="utf-8",
+        )
+    config = WatcherConfig(
+        vault_root=tmp_path / "vault",
+        state_db=tmp_path / "state.sqlite3",
+    )
+    client = _FakeClient(_snapshot(committed_at=NOW - timedelta(days=1)))
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+
+    result = run_once(config, client=client, now=NOW, stdout=stdout, stderr=stderr)
+
+    assert result == 0
+    assert client.calls == ["upiscium/Test"]
+    rows = [json.loads(line) for line in stdout.getvalue().splitlines()]
+    assert len(rows) == 2
+    assert all(row["proposed_status"] == "running" for row in rows)
+    assert stderr.getvalue() == ""

@@ -1,0 +1,27 @@
+[Unit]
+Description=Obsidian GitHub Project status watcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=obsidian-github-sync
+Group=obsidian-github-sync
+EnvironmentFile=-/etc/obsidian-github-sync/credentials.env
+ExecStart=/opt/obsidian-github-sync/venv/bin/obsidian-github-project-watch --config /etc/obsidian-github-sync/config.toml
+WorkingDirectory=/opt/obsidian-github-sync/app
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadOnlyPaths=/srv/obsidian-github-sync/vault
+ReadWritePaths=/var/lib/obsidian-github-sync
+
+[Install]
+WantedBy=multi-user.target
