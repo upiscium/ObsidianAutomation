@@ -1,0 +1,28 @@
+[Unit]
+Description=Refresh Obsidian GitHub Sync pull-only Vault mirror
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=obsidian-github-sync
+Group=obsidian-github-sync
+ExecStart=/opt/obsidian-github-sync/venv/bin/obsidian-production-vault-pull \
+  --ai-root /var/lib/obsidian-github-sync/state \
+  --vault-root /srv/obsidian-github-sync/vault \
+  --remote nextcloud-github-sync:ObsidianVault \
+  --rclone-config /etc/obsidian-github-sync/rclone.conf \
+  --filter-file /etc/obsidian-github-sync/vault-pull.filters
+TimeoutStartSec=5min
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ReadOnlyPaths=/etc/obsidian-github-sync
+ReadWritePaths=/srv/obsidian-github-sync/vault /var/lib/obsidian-github-sync/state/24-Locks
