@@ -1,6 +1,7 @@
 [Unit]
 Description=Obsidian GitHub Project status watcher
-After=network-online.target
+Requires=obsidian-github-sync-vault-pull.service
+After=network-online.target obsidian-github-sync-vault-pull.service
 Wants=network-online.target
 
 [Service]
