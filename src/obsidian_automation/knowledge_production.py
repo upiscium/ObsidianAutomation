@@ -10,6 +10,7 @@ from .artifact_lifecycle import ArtifactLifecycleError, _require_sha256
 from .canonical_mutation import MutationValidationError
 from .execution_orchestrator import ExecutionOrchestrationError, _load_context
 from .knowledge_note_policy import KNOWLEDGE_ROOT, validate_knowledge_note_v0
+from .production_io import ProductionIOError, canonical_io_lock
 from .production_orchestrator import (
     ProductionOrchestrationError,
     advance_production_executor,
@@ -63,23 +64,28 @@ def worker_main(argv: Sequence[str] | None = None) -> int:
             digest,
             allowed_roots=[KNOWLEDGE_ROOT],
         )
-        # Reapply the deterministic content/path contract immediately before
-        # the credential-holding transport is allowed to contact Nextcloud.
+        # Reapply the deterministic content/path contract before taking the
+        # global I/O lock or reading the production credential.
         validate_knowledge_note_v0(mutation)
-        password = _read_password(args.password_file)
-        result = process_transport_request(
-            args.ai_root,
-            digest,
-            allowed_roots=[KNOWLEDGE_ROOT],
-            base_url=args.base_url,
-            username=args.username,
-            password=password,
-            timeout=args.timeout,
-        )
+        # Canonical remote effects and pull-only mirror refreshes must never
+        # overlap. The transport then takes its existing per-mutation lock
+        # inside this global lock (global -> mutation lock order).
+        with canonical_io_lock(args.ai_root):
+            password = _read_password(args.password_file)
+            result = process_transport_request(
+                args.ai_root,
+                digest,
+                allowed_roots=[KNOWLEDGE_ROOT],
+                base_url=args.base_url,
+                username=args.username,
+                password=password,
+                timeout=args.timeout,
+            )
     except (
         ArtifactLifecycleError,
         ExecutionOrchestrationError,
         MutationValidationError,
+        ProductionIOError,
         ProductionOrchestrationError,
         WebDAVCreateError,
     ) as exc:
