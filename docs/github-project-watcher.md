@@ -2,22 +2,25 @@
 
 `obsidian-github-project-watch` observes GitHub repositories referenced by Obsidian Project notes and emits deterministic Project status proposals.
 
-v0.1 is intentionally **read-only** with respect to the canonical Vault. It does not patch Project notes. The service reads a local read-only Vault mirror, reads GitHub API state, stores observation state in SQLite, and writes JSON observations to stdout/journald.
+v0.1 is intentionally **read-only** with respect to the canonical Vault. It does not patch Project notes. The service reads a local pull-only Vault mirror, reads GitHub API state, stores observation state in SQLite, and writes JSON observations to stdout/journald.
 
 ## Responsibility boundary
 
 The watcher is an integration service, not an AI service.
 
 ```text
-GitHub API (read-only)
-        ↓
-GitHub Collector
-        ↓
-Repository snapshot + SQLite observation state
-        ↓
-Deterministic Project status policy
-        ↓
-JSON status proposal
+Nextcloud Vault --pull-only--> local Project mirror
+                                  |
+GitHub API (read-only) -----------+
+                                  v
+                         Repository snapshot
+                              + SQLite
+                                  |
+                                  v
+                    Deterministic status policy
+                                  |
+                                  v
+                       JSON status proposal
 ```
 
 AI/LLM processing is not part of the status decision path. A future integration may forward structured GitHub activity to an AI processor for summaries, but that is a separate downstream concern.
@@ -51,8 +54,10 @@ The canonical Project statuses are:
 
 For a non-terminal, non-stopped Project:
 
-- latest Commit within the configured 7-day window -> `running`
-- no Commit within the configured 7-day window -> `planning`
+- latest repository-wide push/force-push activity within the configured 7-day window -> `running`
+- no repository-wide push/force-push activity within the configured 7-day window -> `planning`
+
+The watcher uses GitHub Repository Activity rather than only the default branch commit list, so work pushed to feature branches also counts as current Project activity.
 
 Open Issues and Pull Requests do not override the Commit rule during normal `planning` / `running` operation.
 
@@ -64,10 +69,10 @@ Open Issues and Pull Requests do not override the Commit rule during normal `pla
 
 A terminal status is preserved until activity **after the terminal baseline** is observed.
 
-- new Commit -> `running`
+- new push/force-push Commit activity -> `running`
 - newly-open Issue or Pull Request -> `planning`
 - no new activity -> preserve `done` / `cancelled`
-- Commit wins when Commit and Issue/PR activity occur in the same observation
+- Commit activity wins when Commit and Issue/PR activity occur in the same observation
 
 When a Project first enters `done` or `cancelled`, that observation initializes a new baseline and never reactivates the Project immediately. This prevents old Open Issues or Pull Requests from being mistaken for post-completion activity.
 
@@ -88,7 +93,7 @@ github_token_env = "GITHUB_TOKEN"
 request_timeout_seconds = 15
 ```
 
-A GitHub token is optional for public repositories. For private repositories, set `GITHUB_TOKEN` in `/etc/obsidian-github-sync/credentials.env`. The token should have read-only access only to the repositories and metadata required by the watcher.
+A GitHub token is optional for public repositories. For private repositories, set `GITHUB_TOKEN` in `/etc/obsidian-github-sync/credentials.env`. Use a fine-grained/read-only token limited to the repositories and GitHub metadata required by the watcher.
 
 ## LXC deployment
 
@@ -101,33 +106,72 @@ Recommended layout:
 /opt/obsidian-github-sync/venv/      Python virtualenv
 /etc/obsidian-github-sync/config.toml
 /etc/obsidian-github-sync/credentials.env
+/etc/obsidian-github-sync/rclone.conf
+/etc/obsidian-github-sync/vault-pull.filters
 /var/lib/obsidian-github-sync/state.sqlite3
-/srv/obsidian-github-sync/vault/      read-only local Vault mirror
+/var/lib/obsidian-github-sync/state/24-Locks/
+/srv/obsidian-github-sync/vault/      local pull-only Vault mirror
 ```
 
-Install the package:
+Install runtime packages and the Python package:
 
 ```bash
+apt install -y rclone
 python3 -m venv /opt/obsidian-github-sync/venv
 /opt/obsidian-github-sync/venv/bin/pip install /opt/obsidian-github-sync/app
 ```
 
-Install the example units:
+### Pull-only Vault mirror
+
+The watcher does not need the whole Vault. `examples/github-sync/vault-pull.filters` mirrors only `10-Project/**`.
+
+The pull process reuses `obsidian-production-vault-pull`, which always runs `rclone sync` in the remote-to-local direction. The watcher unit additionally mounts the resulting local mirror read-only through systemd sandboxing.
+
+For the credential boundary, use a dedicated Nextcloud identity whose `ObsidianVault` access is read-only when possible. Do not reuse a canonical writer credential.
+
+Copy the filter and create the local state/mirror directories:
 
 ```bash
+install -d -o obsidian-github-sync -g obsidian-github-sync /srv/obsidian-github-sync/vault
+install -d -o obsidian-github-sync -g obsidian-github-sync /var/lib/obsidian-github-sync/state/24-Locks
+install -m 0644 examples/github-sync/vault-pull.filters /etc/obsidian-github-sync/vault-pull.filters
+```
+
+Configure an rclone WebDAV remote named `nextcloud-github-sync` in `/etc/obsidian-github-sync/rclone.conf`. The example service expects the Vault at:
+
+```text
+nextcloud-github-sync:ObsidianVault
+```
+
+Test the mirror independently before starting the watcher:
+
+```bash
+systemctl start obsidian-github-sync-vault-pull.service
+find /srv/obsidian-github-sync/vault/10-Project -type f -name '*.md' | head
+```
+
+### systemd cycle
+
+Install the pull service, watcher service, and watcher timer:
+
+```bash
+install -m 0644 examples/github-sync/obsidian-github-sync-vault-pull.service /etc/systemd/system/
 install -m 0644 examples/github-sync/obsidian-github-sync.service /etc/systemd/system/
 install -m 0644 examples/github-sync/obsidian-github-sync.timer /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now obsidian-github-sync.timer
 ```
 
-The timer runs every 15 minutes. The service is a `Type=oneshot` job and writes observations to journald.
+The watcher service has `Requires=` and `After=` dependencies on `obsidian-github-sync-vault-pull.service`. Every 15-minute watcher cycle therefore refreshes the Project mirror first; a failed mirror refresh prevents that watcher run from using stale/incomplete input.
+
+The watcher itself sees `/srv/obsidian-github-sync/vault` as read-only and only writes its local SQLite state below `/var/lib/obsidian-github-sync`.
 
 ## Manual dry-run verification
 
-Run one observation manually before enabling the timer:
+Refresh the mirror, then run one observation manually before enabling the timer:
 
 ```bash
+systemctl start obsidian-github-sync-vault-pull.service
 sudo -u obsidian-github-sync \
   /opt/obsidian-github-sync/venv/bin/obsidian-github-project-watch \
   --config /etc/obsidian-github-sync/config.toml
