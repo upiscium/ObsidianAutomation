@@ -15,6 +15,7 @@ from .artifact_lifecycle import (
 )
 from .canonical_mutation import CreateNoteMutation, MutationValidationError
 from .context_bundle import ContextBundle, load_context_bundle
+from .knowledge_note_layout import NOTE_LAYOUT_VERSION, render_knowledge_body
 from .knowledge_note_policy import (
     ALLOWED_CATEGORIES,
     ALLOWED_SOURCE_TYPES,
@@ -238,9 +239,10 @@ def load_and_render_generator_prompt(ai_root: Path, context_sha256: str) -> Gene
 
 
 def _normalized_body(body: str) -> str:
-    # The provider may emit zero or many final newlines. Canonical note assembly
-    # uses exactly one final LF while preserving all other body bytes.
-    return body.rstrip("\n") + "\n"
+    try:
+        return render_knowledge_body(body)
+    except ValueError as exc:
+        raise ArtifactLifecycleError(str(exc)) from exc
 
 
 def assemble_knowledge_note_proposal(
@@ -267,7 +269,11 @@ def assemble_knowledge_note_proposal(
         raise ArtifactLifecycleError("assembled Knowledge Note exceeds policy byte limit")
 
     semantic_digest = sha256_bytes(
-        context_digest.encode("ascii") + b"\0" + normalized.to_json_bytes()
+        NOTE_LAYOUT_VERSION.encode("ascii")
+        + b"\0"
+        + context_digest.encode("ascii")
+        + b"\0"
+        + normalized.to_json_bytes()
     )
     mutation_id = f"knowledge-gen-v0-{semantic_digest}"
     target_path = f"11-Knowledge/{normalized.title}.md"
