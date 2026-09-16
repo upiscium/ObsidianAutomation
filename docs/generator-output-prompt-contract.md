@@ -6,6 +6,8 @@ This contract defines the semantic boundary between an LLM provider and the dete
 
 The model does not produce a canonical mutation directly. It produces a narrowly scoped semantic JSON object. Deterministic code then constructs the existing `create_note` proposal and writes it to the existing untrusted artifact stage.
 
+New proposals use [Knowledge Note layout v1](knowledge-note-layout-v1.md), including the standard metadata editor. The semantic output and prompt contracts remain v0; historical proposal bytes are not rewritten.
+
 ```text
 05-Context/<context_sha>.context.json
         ↓
@@ -102,7 +104,7 @@ other
 
 `body` is Markdown body content only. It must not contain the Knowledge Note YAML frontmatter envelope.
 
-The parser requires UTF-8-encodable text, LF line endings, non-empty content, and bounded size. The assembler normalizes only final newlines to exactly one LF.
+The parser requires UTF-8-encodable text, LF line endings, non-empty content, and bounded size. The assembler normalizes final newlines to exactly one LF and adds the fixed metadata editor. Exact leading copies of the fixed editor are folded into one; other body bytes and quoted examples are preserved. UI-only output is rejected. This is not a general Markdown sanitizer.
 
 ## Deterministic ownership
 
@@ -116,6 +118,7 @@ target root
 type
 status
 maturity
+metadata editor scaffold
 ```
 
 The deterministic assembler fixes them as:
@@ -127,21 +130,22 @@ target root      = 11-Knowledge
 type             = knowledge-note
 status           = active
 maturity         = draft
+layout_version   = knowledge-note-layout-v1
 ```
 
-`mutation_id` is deterministically derived from the exact Context SHA and canonical semantic output bytes:
+For new proposals, `mutation_id` is deterministically derived from the layout version, exact Context SHA, and canonical semantic output bytes:
 
 ```text
-knowledge-gen-v0-<sha256(context_sha || NUL || canonical_semantic_output)>
+knowledge-gen-v0-<sha256(layout_version || NUL || context_sha || NUL || canonical_semantic_output)>
 ```
 
-Therefore identical semantic output against the same Context artifact produces identical proposal bytes. Changing the Context artifact changes the mutation ID even when the semantic output is otherwise identical.
+Therefore identical semantic output against the same Context artifact and layout produces identical proposal bytes. Changing the Context artifact or layout changes the mutation ID even when the semantic output is otherwise identical. The existing ID namespace is preserved, but the layout is domain-separated in its digest. Legacy assembly omitted `layout_version || NUL`; old artifacts retain their original IDs and bytes.
 
 ## Frontmatter assembly
 
-The generated canonical note content is assembled as:
+The generated note proposal content is assembled as:
 
-```text
+````markdown
 ---
 type: knowledge-note
 status: active
@@ -150,8 +154,14 @@ maturity: draft
 source_type: <model source_type>
 ---
 
-<model body>
+```meta-bind-embed
+[[knowledge-meta]]
 ```
+
+<model body>
+````
+
+The metadata editor is added before proposal hashing and Validation/Evaluation/Review, not after approval or during transport. See [layout v1](knowledge-note-layout-v1.md) for compatibility and existing Live Note repair boundaries.
 
 For a blank category the assembler emits the plain empty scalar:
 
@@ -159,7 +169,7 @@ For a blank category the assembler emits the plain empty scalar:
 category:
 ```
 
-The completed in-memory mutation is passed through `validate_knowledge_note_v0()` before proposal persistence. This validates the deterministic content/path contract without granting the Generator direct Vault access.
+The completed in-memory mutation is passed through `validate_knowledge_note_v0()` before proposal persistence. This validates the deterministic content/path contract without granting the Generator direct Vault access. The shared policy is not tightened retroactively to reject legacy proposals without the editor.
 
 The Generator deliberately does not check whether the target filename already exists in the canonical Vault. That check requires canonical visibility and remains the Validator's responsibility.
 
@@ -235,7 +245,7 @@ Before persisting a generated proposal, the Generator:
 1. requires a valid lowercase Context SHA-256;
 2. loads `05-Context/<sha>.context.json` through the existing exact-hash Context loader;
 3. parses/normalizes the semantic output contract;
-4. assembles the deterministic Knowledge Note mutation;
+4. assembles the deterministic Knowledge Note mutation, including its fixed editor;
 5. applies `knowledge-note-v0` policy checks that do not require Vault reads;
 6. persists exact proposal bytes using the existing immutable content-addressed `00-Untrusted` storage.
 
@@ -254,9 +264,9 @@ The subsequent Generation Record binds this exact proposal SHA to the Context SH
 - update/merge/delete/rename mutations;
 - semantic/vector retrieval.
 
-## Next integration step
+## Provider integration boundary
 
-After this contract is accepted, Ollama integration can be implemented as a thin provider adapter:
+The provider adapter follows:
 
 ```text
 load exact Context
