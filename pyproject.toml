@@ -33,6 +33,7 @@ obsidian-production-executor = "obsidian_automation.production_orchestrator:exec
 obsidian-production-webdav-worker = "obsidian_automation.production_orchestrator:worker_main"
 obsidian-production-knowledge-executor = "obsidian_automation.knowledge_production:executor_main"
 obsidian-production-knowledge-webdav-worker = "obsidian_automation.knowledge_production:worker_main"
+obsidian-production-vault-pull = "obsidian_automation.vault_mirror:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

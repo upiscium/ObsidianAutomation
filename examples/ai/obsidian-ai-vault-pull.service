@@ -1,0 +1,23 @@
+[Unit]
+Description=Refresh Obsidian AI pull-only Vault mirror
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=obsidian-ai-sync
+Group=obsidian-ai-sync
+ExecStart=/opt/obsidian-ai/venv/bin/obsidian-production-vault-pull \
+  --ai-root /var/lib/obsidian-ai/state \
+  --vault-root /var/lib/obsidian-ai/vault \
+  --remote nextcloud-ai:ObsidianVault \
+  --rclone-config /etc/obsidian-ai/rclone.conf \
+  --filter-file /etc/obsidian-ai/vault-pull.filters
+TimeoutStartSec=10min
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadOnlyPaths=/etc/obsidian-ai
+ReadWritePaths=/var/lib/obsidian-ai/vault /var/lib/obsidian-ai/state/24-Locks

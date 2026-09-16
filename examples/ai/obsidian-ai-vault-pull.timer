@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodically refresh Obsidian AI pull-only Vault mirror
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+Unit=obsidian-ai-vault-pull.service
+
+[Install]
+WantedBy=timers.target
