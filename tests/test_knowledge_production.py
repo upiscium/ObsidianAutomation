@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -53,19 +54,26 @@ def test_executor_cli_hard_codes_knowledge_root_and_policy(monkeypatch, capsys) 
     assert '"status": "transport_pending"' in capsys.readouterr().out
 
 
-def test_worker_rejects_policy_violation_before_reading_credential_or_transport(
+def test_worker_rejects_policy_violation_before_lock_credential_or_transport(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     mutation = _mutation(status="archived")
     transported = False
     credential_read = False
+    lock_entered = False
 
     monkeypatch.setattr(
         production,
         "_load_context",
         lambda *_args, **_kwargs: (b"mutation", mutation, b"review", object()),
     )
+
+    @contextmanager
+    def fake_lock(_ai_root):
+        nonlocal lock_entered
+        lock_entered = True
+        yield
 
     def fake_read_password(_path):
         nonlocal credential_read
@@ -77,6 +85,7 @@ def test_worker_rejects_policy_violation_before_reading_credential_or_transport(
         transported = True
         raise AssertionError("transport must not run")
 
+    monkeypatch.setattr(production, "canonical_io_lock", fake_lock)
     monkeypatch.setattr(production, "_read_password", fake_read_password)
     monkeypatch.setattr(production, "process_transport_request", fake_process)
 
@@ -96,22 +105,42 @@ def test_worker_rejects_policy_violation_before_reading_credential_or_transport(
     )
 
     assert rc == 2
+    assert lock_entered is False
     assert credential_read is False
     assert transported is False
 
 
-def test_worker_hard_codes_knowledge_root_after_policy_pass(monkeypatch, tmp_path: Path) -> None:
+def test_worker_hard_codes_knowledge_root_inside_canonical_io_lock(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
     mutation = _mutation()
     captured = {}
+    lock_held = False
 
     monkeypatch.setattr(
         production,
         "_load_context",
         lambda *_args, **_kwargs: (b"mutation", mutation, b"review", object()),
     )
-    monkeypatch.setattr(production, "_read_password", lambda _path: "secret")
+
+    @contextmanager
+    def fake_lock(ai_root):
+        nonlocal lock_held
+        assert ai_root == tmp_path
+        assert lock_held is False
+        lock_held = True
+        try:
+            yield
+        finally:
+            lock_held = False
+
+    def fake_read_password(_path):
+        assert lock_held is True
+        return "secret"
 
     def fake_process(ai_root, mutation_sha256, *, allowed_roots, **kwargs):
+        assert lock_held is True
         captured["allowed_roots"] = allowed_roots
         captured["mutation_sha256"] = mutation_sha256
         return SimpleNamespace(
@@ -120,6 +149,8 @@ def test_worker_hard_codes_knowledge_root_after_policy_pass(monkeypatch, tmp_pat
             expected_content_sha256="c" * 64,
         )
 
+    monkeypatch.setattr(production, "canonical_io_lock", fake_lock)
+    monkeypatch.setattr(production, "_read_password", fake_read_password)
     monkeypatch.setattr(production, "process_transport_request", fake_process)
 
     rc = production.worker_main(
@@ -138,5 +169,6 @@ def test_worker_hard_codes_knowledge_root_after_policy_pass(monkeypatch, tmp_pat
     )
 
     assert rc == 0
+    assert lock_held is False
     assert captured["allowed_roots"] == ["11-Knowledge"]
     assert captured["mutation_sha256"] == "c" * 64
