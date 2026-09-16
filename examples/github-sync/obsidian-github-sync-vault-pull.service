@@ -6,7 +6,9 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 User=obsidian-github-mirror
-Group=obsidian-github-vault
+Group=obsidian-github-mirror
+SupplementaryGroups=obsidian-github-vault
+UMask=0027
 ExecStart=/opt/obsidian-github-sync/venv/bin/obsidian-production-vault-pull \
   --ai-root /var/lib/obsidian-github-mirror/state \
   --vault-root /srv/obsidian-github-sync/vault \
