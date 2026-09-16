@@ -5,14 +5,14 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=obsidian-github-sync
-Group=obsidian-github-sync
+User=obsidian-github-mirror
+Group=obsidian-github-vault
 ExecStart=/opt/obsidian-github-sync/venv/bin/obsidian-production-vault-pull \
-  --ai-root /var/lib/obsidian-github-sync/state \
+  --ai-root /var/lib/obsidian-github-mirror/state \
   --vault-root /srv/obsidian-github-sync/vault \
   --remote nextcloud-github-sync:ObsidianVault \
-  --rclone-config /etc/obsidian-github-sync/rclone.conf \
-  --filter-file /etc/obsidian-github-sync/vault-pull.filters
+  --rclone-config /etc/obsidian-github-mirror/rclone.conf \
+  --filter-file /etc/obsidian-github-mirror/vault-pull.filters
 TimeoutStartSec=5min
 
 NoNewPrivileges=yes
@@ -24,5 +24,5 @@ ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
-ReadOnlyPaths=/etc/obsidian-github-sync
-ReadWritePaths=/srv/obsidian-github-sync/vault /var/lib/obsidian-github-sync/state/24-Locks
+ReadOnlyPaths=/etc/obsidian-github-mirror
+ReadWritePaths=/srv/obsidian-github-sync/vault /var/lib/obsidian-github-mirror/state/24-Locks
