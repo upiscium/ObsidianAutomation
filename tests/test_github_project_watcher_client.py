@@ -43,8 +43,11 @@ def test_snapshot_uses_latest_repository_push_across_refs() -> None:
     assert snapshot.open_issues == frozenset({1})
     assert snapshot.open_prs == frozenset({2})
     assert snapshot.observed_at == observed
-    assert any("activity_type=push" in path for path in client.paths)
-    assert any("activity_type=force_push" in path for path in client.paths)
+    activity_paths = [path for path in client.paths if "/activity?" in path]
+    assert len(activity_paths) == 2
+    assert all("time_period=year" in path for path in activity_paths)
+    assert any("activity_type=push" in path for path in activity_paths)
+    assert any("activity_type=force_push" in path for path in activity_paths)
 
 
 def test_pending_transition_is_discarded_when_repository_binding_changes() -> None:
