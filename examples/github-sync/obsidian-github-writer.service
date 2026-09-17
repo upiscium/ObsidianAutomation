@@ -9,6 +9,7 @@ Type=oneshot
 User=obsidian-github-writer
 Group=obsidian-github-writer
 SupplementaryGroups=obsidian-github-pipeline
+UMask=0027
 EnvironmentFile=/etc/obsidian-github-writer/config.env
 ExecStart=/opt/obsidian-github-sync/venv/bin/obsidian-github-project-status-worker \
   --request-dir /var/lib/obsidian-github-pipeline/25-Execution \
