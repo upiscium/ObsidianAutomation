@@ -418,18 +418,6 @@ def decide_status(
     now: datetime,
     active_window_days: int,
 ) -> StatusDecision:
-    if (
-        previous
-        and previous.repository == project.repository
-        and previous.pending_status
-        and project.status == previous.last_status
-    ):
-        return StatusDecision(
-            proposed_status=previous.pending_status,
-            reason=previous.pending_reason or "pending status transition",
-            pending=True,
-        )
-
     if project.status == "stopped":
         return StatusDecision("stopped", "stopped is human-controlled", False)
 
@@ -438,6 +426,12 @@ def decide_status(
             return StatusDecision(project.status, "terminal status baseline initialized", False)
         if _has_new_commit(snapshot, previous):
             return StatusDecision("running", "new commit observed after terminal baseline", True)
+        if previous.pending_status in {"running", "planning"}:
+            return StatusDecision(
+                previous.pending_status,
+                previous.pending_reason or "pending terminal reactivation",
+                True,
+            )
         new_issues = snapshot.open_issues - previous.open_issues
         new_prs = snapshot.open_prs - previous.open_prs
         if new_issues or new_prs:
