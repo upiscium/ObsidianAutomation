@@ -1,12 +1,12 @@
 [Unit]
-Description=Run Obsidian GitHub Project status watcher every 15 minutes
+Description=Run Obsidian GitHub Project status pipeline every 15 minutes
 
 [Timer]
 OnBootSec=2min
 OnUnitActiveSec=15min
 RandomizedDelaySec=30s
 Persistent=true
-Unit=obsidian-github-sync.service
+Unit=obsidian-github-writer.service
 
 [Install]
 WantedBy=timers.target
