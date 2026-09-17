@@ -9,6 +9,7 @@ Type=oneshot
 User=obsidian-github-sync
 Group=obsidian-github-sync
 SupplementaryGroups=obsidian-github-vault obsidian-github-pipeline
+UMask=0027
 EnvironmentFile=-/etc/obsidian-github-sync/credentials.env
 ExecStart=/opt/obsidian-github-sync/venv/bin/obsidian-github-project-watch-enqueue \
   --config /etc/obsidian-github-sync/config.toml \
