@@ -25,6 +25,7 @@ _ITEM_MARKER_RE = re.compile(
     r"^- \[(?P<checked>[ xX])\].*<!-- github:(?P<kind>issue|pr):(?P<number>[1-9][0-9]*) -->\s*$"
 )
 _REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+_WATCH_TRUE = frozenset({"true", "yes", "1", "on"})
 
 
 class ProjectOverviewError(RuntimeError):
@@ -58,6 +59,12 @@ class ProjectOverviewProposal:
     @property
     def project_key(self) -> str:
         return hashlib.sha256(self.project_path.encode("utf-8")).hexdigest()
+
+    @property
+    def project_reference(self) -> str:
+        path = PurePosixPath(self.project_path)
+        target = path.with_suffix("").as_posix()
+        return f"[[{target}|{path.stem}]]"
 
 
 @dataclass(frozen=True)
@@ -205,7 +212,7 @@ def _frontmatter_scalars(text: str) -> dict[str, str]:
         key, raw = line.split(":", 1)
         key = key.strip()
         if key in values:
-            raise ProjectOverviewConflict(f"remote Project has duplicate {key} frontmatter")
+            raise ProjectOverviewConflict(f"remote note has duplicate {key} frontmatter")
         scalar = raw.strip()
         if " #" in scalar:
             scalar = scalar.split(" #", 1)[0].rstrip()
@@ -215,7 +222,24 @@ def _frontmatter_scalars(text: str) -> dict[str, str]:
     return {}
 
 
-def _verify_project_binding(content: bytes, proposal: ProjectOverviewProposal) -> None:
+def _frontmatter_end(text: str) -> int:
+    if not text.startswith("---"):
+        raise ProjectOverviewConflict("existing Status.md has no frontmatter")
+    match = re.search(r"(?m)^---\s*$", text[3:])
+    if match is None:
+        raise ProjectOverviewConflict("existing Status.md frontmatter is not terminated")
+    end = 3 + match.end()
+    if end < len(text) and text[end] == "\r":
+        end += 1
+    if end < len(text) and text[end] == "\n":
+        end += 1
+    return end
+
+
+def _verify_project_binding(
+    content: bytes,
+    proposal: ProjectOverviewProposal,
+) -> str:
     try:
         text = content.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -225,8 +249,38 @@ def _verify_project_binding(content: bytes, proposal: ProjectOverviewProposal) -
         raise ProjectOverviewConflict("remote target is not type: project")
     if values.get("github_repo") != proposal.repository:
         raise ProjectOverviewConflict("remote github_repo no longer matches overview repository")
-    if values.get("github_watch", "").strip().lower() not in {"true", "yes", "1", "on"}:
+    if values.get("github_watch", "").strip().lower() not in _WATCH_TRUE:
         raise ProjectOverviewConflict("remote Project is no longer opted in to GitHub watch")
+    return values.get("workspace", "").strip()
+
+
+def _yaml_quote(value: str) -> str:
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _render_project_note_frontmatter(
+    proposal: ProjectOverviewProposal,
+    *,
+    workspace: str,
+    eol: str,
+) -> str:
+    workspace_line = f"workspace: {_yaml_quote(workspace)}" if workspace else "workspace:"
+    return eol.join(
+        [
+            "---",
+            "type: project-note",
+            f"project: {_yaml_quote(proposal.project_reference)}",
+            workspace_line,
+            "category: list",
+            "lifecycle: active",
+            "aliases: []",
+            "tags: []",
+            f"github_repo: {proposal.repository}",
+            "github_status_managed: true",
+            "---",
+            "",
+        ]
+    )
 
 
 def _escape_title(title: str) -> str:
@@ -286,22 +340,45 @@ def _render_managed(
     return eol.join(lines)
 
 
+def _validate_status_frontmatter(
+    text: str,
+    proposal: ProjectOverviewProposal,
+) -> None:
+    values = _frontmatter_scalars(text)
+    note_type = values.get("type")
+    if note_type == "github-status":
+        if values.get("github_repo") != proposal.repository:
+            raise ProjectOverviewConflict("legacy Status.md github_repo does not match proposal")
+        return
+    if note_type == "project-note":
+        if values.get("github_repo") != proposal.repository:
+            raise ProjectOverviewConflict("Status.md github_repo does not match proposal")
+        if values.get("github_status_managed", "").lower() not in _WATCH_TRUE:
+            raise ProjectOverviewConflict("existing project-note Status.md is not automation-managed")
+        return
+    raise ProjectOverviewConflict(
+        "existing Status.md is neither a legacy generated note nor a managed project-note"
+    )
+
+
 def render_status_note(
     proposal: ProjectOverviewProposal,
     existing: bytes | None,
+    *,
+    workspace: str = "",
 ) -> bytes:
     if existing is None:
-        project_name = PurePosixPath(proposal.project_path).stem.replace('"', '\\"')
+        frontmatter = _render_project_note_frontmatter(
+            proposal,
+            workspace=workspace,
+            eol="\n",
+        )
         managed = _render_managed(proposal, {})
         return (
-            "---\n"
-            "type: github-status\n"
-            f'project: "[[{project_name}]]"\n'
-            f"github_repo: {proposal.repository}\n"
-            "---\n\n"
-            "# GitHub Status\n\n"
-            f"{managed}\n\n"
-            "## Notes\n\n"
+            frontmatter
+            + "# GitHub Status\n\n"
+            + managed
+            + "\n\n## Notes\n\n"
         ).encode("utf-8")
 
     if len(existing) > MAX_NOTE_BYTES:
@@ -310,12 +387,21 @@ def render_status_note(
         text = existing.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ProjectOverviewConflict("existing Status.md is not valid UTF-8") from exc
+
     checked = _checked_items(text)
-    start = text.index(MANAGED_START)
-    end = text.index(MANAGED_END, start) + len(MANAGED_END)
+    _validate_status_frontmatter(text, proposal)
     eol = "\r\n" if "\r\n" in text else "\n"
+    fm_end = _frontmatter_end(text)
+    frontmatter = _render_project_note_frontmatter(
+        proposal,
+        workspace=workspace,
+        eol=eol,
+    )
+    body = text[fm_end:]
+    start = body.index(MANAGED_START)
+    end = body.index(MANAGED_END, start) + len(MANAGED_END)
     managed = _render_managed(proposal, checked, eol=eol)
-    return (text[:start] + managed + text[end:]).encode("utf-8")
+    return (frontmatter + body[:start] + managed + body[end:]).encode("utf-8")
 
 
 def _observe(
@@ -389,7 +475,7 @@ def apply_project_overview(
         raise ProjectOverviewConflict("remote Project does not exist")
     if project.status != 200:
         raise ProjectOverviewError(f"WebDAV Project GET returned HTTP {project.status}")
-    _verify_project_binding(project.body, proposal)
+    workspace = _verify_project_binding(project.body, proposal)
 
     current = _observe(
         base_url=base_url,
@@ -402,7 +488,7 @@ def apply_project_overview(
     if current.status not in {200, 404}:
         raise ProjectOverviewError(f"WebDAV Status.md GET returned HTTP {current.status}")
     before = current.body if current.status == 200 else None
-    desired = render_status_note(proposal, before)
+    desired = render_status_note(proposal, before, workspace=workspace)
     if before is not None and before == desired:
         return _result(proposal, outcome="already_desired", before=before, after=before)
 
@@ -448,7 +534,11 @@ def apply_project_overview(
         transport=transport,
     )
     if after.status == 200 and after.body == desired:
-        outcome = "recovered" if network_error or not (response_status and 200 <= response_status < 300) else expected_outcome
+        outcome = (
+            "recovered"
+            if network_error or not (response_status and 200 <= response_status < 300)
+            else expected_outcome
+        )
         return _result(proposal, outcome=outcome, before=before, after=after.body)
     if response_status == 412:
         raise ProjectOverviewConflict("Status.md CAS precondition failed")
