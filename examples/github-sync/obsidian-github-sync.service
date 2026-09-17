@@ -1,5 +1,5 @@
 [Unit]
-Description=Obsidian GitHub Project status watcher and proposal enqueue
+Description=Obsidian GitHub Project watcher and proposal enqueue
 Requires=obsidian-github-sync-vault-pull.service
 After=network-online.target obsidian-github-sync-vault-pull.service
 Wants=network-online.target
@@ -12,6 +12,9 @@ SupplementaryGroups=obsidian-github-vault obsidian-github-pipeline
 UMask=0027
 EnvironmentFile=-/etc/obsidian-github-sync/credentials.env
 ExecStart=/opt/obsidian-github-sync/venv/bin/obsidian-github-project-watch-enqueue \
+  --config /etc/obsidian-github-sync/config.toml \
+  --request-dir /var/lib/obsidian-github-pipeline/25-Execution
+ExecStart=/opt/obsidian-github-sync/venv/bin/obsidian-github-project-overview-enqueue \
   --config /etc/obsidian-github-sync/config.toml \
   --request-dir /var/lib/obsidian-github-pipeline/25-Execution
 WorkingDirectory=/opt/obsidian-github-sync/app
