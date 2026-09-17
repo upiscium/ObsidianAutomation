@@ -47,6 +47,42 @@ class _PushedAtClient(GitHubClient):
         raise AssertionError(path)
 
 
+class _EmptyActivityClient(GitHubClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.paths: list[str] = []
+
+    def _request_json(self, path: str) -> object:
+        self.paths.append(path)
+        if "activity_type=" in path:
+            return []
+        if path == "/repos/upiscium/Test/commits?per_page=1":
+            return [
+                {
+                    "sha": "bootstrap-sha",
+                    "commit": {
+                        "committer": {"date": "2026-09-13T10:21:52Z"},
+                        "author": {"date": "2026-09-13T10:20:00Z"},
+                    },
+                }
+            ]
+        raise AssertionError(path)
+
+
+class _EmptyRepositoryClient(GitHubClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.paths: list[str] = []
+
+    def _request_json(self, path: str) -> object:
+        self.paths.append(path)
+        if "activity_type=" in path:
+            return []
+        if path == "/repos/upiscium/Test/commits?per_page=1":
+            return []
+        raise AssertionError(path)
+
+
 def test_commit_activity_types_include_direct_and_merge_commits() -> None:
     assert COMMIT_ACTIVITY_TYPES == (
         "push",
@@ -70,6 +106,7 @@ def test_latest_activity_uses_pr_merge_when_it_is_newest_commit() -> None:
         for path in client.paths
         if "/activity?" in path
     )
+    assert "/repos/upiscium/Test/commits?per_page=1" not in client.paths
 
 
 def test_activity_without_timestamp_resolves_after_commit_metadata() -> None:
@@ -90,3 +127,23 @@ def test_documented_pushed_at_is_used_without_commit_lookup() -> None:
     assert sha == "push-sha"
     assert committed_at == datetime(2026, 9, 15, 12, 0, tzinfo=timezone.utc)
     assert not any("/commits/" in path for path in client.paths)
+
+
+def test_empty_activity_falls_back_to_latest_default_branch_commit() -> None:
+    client = _EmptyActivityClient()
+
+    sha, committed_at = client._latest_push("upiscium/Test")
+
+    assert sha == "bootstrap-sha"
+    assert committed_at == datetime(2026, 9, 13, 10, 21, 52, tzinfo=timezone.utc)
+    assert client.paths[-1] == "/repos/upiscium/Test/commits?per_page=1"
+
+
+def test_empty_repository_remains_without_latest_commit() -> None:
+    client = _EmptyRepositoryClient()
+
+    sha, committed_at = client._latest_push("upiscium/Test")
+
+    assert sha is None
+    assert committed_at is None
+    assert client.paths[-1] == "/repos/upiscium/Test/commits?per_page=1"
