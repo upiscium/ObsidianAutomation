@@ -18,11 +18,11 @@ from .core_promotion_transport import (
     _real_http_request,
     _strong_etag,
 )
+from .production_io import ProductionIOError, canonical_io_lock
 from .webdav_create import WebDAVCreateError, _read_password, build_target_url
 
 
-PROPOSAL_VERSION = 1
-RECEIPT_VERSION = 1
+TRANSPORT_RESULT_VERSION = 1
 MAX_PROJECT_BYTES = 4 * 1024 * 1024
 VALID_PROJECT_STATUSES = frozenset({"planning", "running", "stopped", "done", "cancelled"})
 AUTOMATED_TARGET_STATUSES = frozenset({"planning", "running"})
@@ -62,13 +62,13 @@ class RemoteProject:
 
 
 @dataclass(frozen=True)
-class ProjectStatusReceipt:
+class ProjectStatusTransportResult:
     proposal_sha256: str
     project_path: str
     repository: str
     expected_status: str
     desired_status: str
-    result: str
+    outcome: str
     before_content_sha256: str
     after_content_sha256: str
     completed_at: str
@@ -76,13 +76,14 @@ class ProjectStatusReceipt:
     def to_json_bytes(self) -> bytes:
         return _canonical_json_bytes(
             {
-                "receipt_version": RECEIPT_VERSION,
+                "record_version": TRANSPORT_RESULT_VERSION,
+                "stage": "github_project_status_transport",
                 "proposal_sha256": self.proposal_sha256,
                 "project_path": self.project_path,
                 "repository": self.repository,
                 "expected_status": self.expected_status,
                 "desired_status": self.desired_status,
-                "result": self.result,
+                "outcome": self.outcome,
                 "before_content_sha256": self.before_content_sha256,
                 "after_content_sha256": self.after_content_sha256,
                 "completed_at": self.completed_at,
@@ -382,20 +383,20 @@ def _observe_project(
     return RemoteProject(content=response.body, etag=response.etag, status_code=response.status)
 
 
-def _receipt(
+def _transport_result(
     proposal: ProjectStatusProposal,
     *,
-    result: str,
+    outcome: str,
     before: bytes,
     after: bytes,
-) -> ProjectStatusReceipt:
-    return ProjectStatusReceipt(
+) -> ProjectStatusTransportResult:
+    return ProjectStatusTransportResult(
         proposal_sha256=proposal.sha256,
         project_path=proposal.project_path,
         repository=proposal.repository,
         expected_status=proposal.expected_status,
         desired_status=proposal.desired_status,
-        result=result,
+        outcome=outcome,
         before_content_sha256=hashlib.sha256(before).hexdigest(),
         after_content_sha256=hashlib.sha256(after).hexdigest(),
         completed_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -410,7 +411,7 @@ def apply_project_status(
     password: str,
     timeout: float = 30.0,
     transport: HTTPTransport | None = None,
-) -> ProjectStatusReceipt:
+) -> ProjectStatusTransportResult:
     if not username:
         raise ProjectStatusMutationError("WebDAV username must not be empty")
     if not password:
@@ -428,9 +429,9 @@ def apply_project_status(
     )
     disposition, desired = prepare_project_update(proposal, before.content)
     if disposition == "already_desired":
-        return _receipt(
+        return _transport_result(
             proposal,
-            result="already_desired",
+            outcome="already_desired",
             before=before.content,
             after=before.content,
         )
@@ -461,9 +462,7 @@ def apply_project_status(
             response_limit=64 * 1024,
         )
         response_status = response.status
-        if response.status == 412:
-            ambiguous = True
-        elif not 200 <= response.status < 300:
+        if not 200 <= response.status < 300:
             ambiguous = True
     except PromotionTransportNetworkError:
         ambiguous = True
@@ -477,9 +476,9 @@ def apply_project_status(
         transport=transport,
     )
     if after.content == desired:
-        return _receipt(
+        return _transport_result(
             proposal,
-            result="recovered" if ambiguous else "applied",
+            outcome="recovered" if ambiguous else "applied",
             before=before.content,
             after=after.content,
         )
@@ -515,16 +514,18 @@ def _safe_regular_file(path: Path, *, label: str) -> bytes:
         raise ProjectStatusMutationError(f"cannot read {label}") from exc
 
 
-def persist_receipt(path: Path, receipt: ProjectStatusReceipt) -> bytes:
-    data = receipt.to_json_bytes()
+def persist_transport_result(path: Path, result: ProjectStatusTransportResult) -> bytes:
+    data = result.to_json_bytes()
     if path.exists() or path.is_symlink():
-        existing = _safe_regular_file(path, label="receipt")
+        existing = _safe_regular_file(path, label="transport result")
         try:
             value = json.loads(existing)
         except json.JSONDecodeError as exc:
-            raise ProjectStatusMutationError("existing receipt is invalid JSON") from exc
-        if not isinstance(value, dict) or value.get("proposal_sha256") != receipt.proposal_sha256:
-            raise ProjectStatusMutationConflict("receipt path already belongs to another proposal")
+            raise ProjectStatusMutationError("existing transport result is invalid JSON") from exc
+        if not isinstance(value, dict) or value.get("proposal_sha256") != result.proposal_sha256:
+            raise ProjectStatusMutationConflict(
+                "transport-result path already belongs to another proposal"
+            )
         return existing
     path.parent.mkdir(parents=True, exist_ok=True)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
@@ -535,15 +536,15 @@ def persist_receipt(path: Path, receipt: ProjectStatusReceipt) -> bytes:
     try:
         fd = os.open(path, flags, 0o640)
     except FileExistsError:
-        return persist_receipt(path, receipt)
+        return persist_transport_result(path, result)
     except OSError as exc:
-        raise ProjectStatusMutationError("cannot create receipt") from exc
+        raise ProjectStatusMutationError("cannot create transport result") from exc
     try:
         view = memoryview(data)
         while view:
             written = os.write(fd, view)
             if written <= 0:
-                raise ProjectStatusMutationError("short write while persisting receipt")
+                raise ProjectStatusMutationError("short write while persisting transport result")
             view = view[written:]
         os.fsync(fd)
     finally:
@@ -554,13 +555,14 @@ def persist_receipt(path: Path, receipt: ProjectStatusReceipt) -> bytes:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="obsidian-github-project-status-apply",
-        description="Apply one GitHub watcher Project status proposal with WebDAV compare-and-swap.",
+        description="Apply one GitHub watcher Project status request through Sync authority CAS.",
     )
     parser.add_argument("--proposal", type=Path, required=True)
+    parser.add_argument("--state-root", type=Path, required=True)
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--username", required=True)
     parser.add_argument("--password-file", type=Path, required=True)
-    parser.add_argument("--receipt", type=Path)
+    parser.add_argument("--result", type=Path, required=True)
     parser.add_argument("--timeout", type=float, default=30.0)
     return parser
 
@@ -569,30 +571,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
         proposal = parse_watcher_proposal(_safe_regular_file(args.proposal, label="proposal"))
-        if args.receipt is not None and (args.receipt.exists() or args.receipt.is_symlink()):
-            existing = _safe_regular_file(args.receipt, label="receipt")
+        if args.result.exists() or args.result.is_symlink():
+            existing = _safe_regular_file(args.result, label="transport result")
             value = json.loads(existing)
             if not isinstance(value, dict) or value.get("proposal_sha256") != proposal.sha256:
-                raise ProjectStatusMutationConflict("existing receipt does not match proposal")
+                raise ProjectStatusMutationConflict(
+                    "existing transport result does not match proposal"
+                )
             sys.stdout.buffer.write(existing)
             return 0
         password = _read_password(args.password_file)
-        receipt = apply_project_status(
-            proposal,
-            base_url=args.base_url,
-            username=args.username,
-            password=password,
-            timeout=args.timeout,
-        )
-        data = receipt.to_json_bytes()
-        if args.receipt is not None:
-            data = persist_receipt(args.receipt, receipt)
+        with canonical_io_lock(args.state_root):
+            result = apply_project_status(
+                proposal,
+                base_url=args.base_url,
+                username=args.username,
+                password=password,
+                timeout=args.timeout,
+            )
+            data = persist_transport_result(args.result, result)
         sys.stdout.buffer.write(data)
         return 0
     except ProjectStatusMutationConflict as exc:
         print(f"conflict: {exc}", file=sys.stderr)
         return 3
-    except (OSError, WebDAVCreateError, ProjectStatusMutationError) as exc:
+    except (OSError, WebDAVCreateError, ProductionIOError, ProjectStatusMutationError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
