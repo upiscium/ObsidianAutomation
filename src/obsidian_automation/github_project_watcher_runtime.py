@@ -89,6 +89,30 @@ class GitHubClient(watcher.GitHubClient):
         commit_payload = self._request_json(f"/repos/{repo_path}/commits/{sha}")
         return self._timestamp_from_commit_payload(commit_payload)
 
+    def _latest_default_branch_commit(
+        self,
+        repo_path: str,
+    ) -> tuple[str | None, datetime | None]:
+        value = self._request_json(f"/repos/{repo_path}/commits?per_page=1")
+        if not isinstance(value, list):
+            raise watcher.GitHubProjectWatcherError(
+                f"invalid latest commit payload for {repo_path}"
+            )
+        if not value:
+            return None, None
+        first = value[0]
+        if not isinstance(first, dict):
+            raise watcher.GitHubProjectWatcherError(
+                f"invalid latest commit row for {repo_path}"
+            )
+        sha = str(first.get("sha") or "").strip()
+        committed_at = self._timestamp_from_commit_payload(first)
+        if not sha or committed_at is None:
+            raise watcher.GitHubProjectWatcherError(
+                f"latest commit row is missing SHA or timestamp for {repo_path}"
+            )
+        return sha, committed_at
+
     def _latest_push(self, repo_path: str) -> tuple[str | None, datetime | None]:
         candidates: list[tuple[str, datetime]] = []
         for activity_type in COMMIT_ACTIVITY_TYPES:
@@ -118,9 +142,9 @@ class GitHubClient(watcher.GitHubClient):
             if committed_at is not None:
                 candidates.append((sha, committed_at))
 
-        if not candidates:
-            return None, None
-        return max(candidates, key=lambda item: item[1])
+        if candidates:
+            return max(candidates, key=lambda item: item[1])
+        return self._latest_default_branch_commit(repo_path)
 
 
 def main(argv: Iterable[str] | None = None) -> int:

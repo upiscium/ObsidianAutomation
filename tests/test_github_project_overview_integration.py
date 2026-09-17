@@ -18,6 +18,8 @@ class _RuntimeClient(GitHubClient):
         self.paths.append(path)
         if "/activity?" in path:
             return []
+        if path.endswith("/commits?per_page=1"):
+            return []
         if "/issues?state=open" in path:
             return [
                 {"number": 10, "title": "Issue ten"},
