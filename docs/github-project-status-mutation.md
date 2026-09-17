@@ -8,6 +8,8 @@ It is deliberately separate from the AI Knowledge production lifecycle. No LLM d
 
 ## Authority boundary
 
+The existing production authority split is retained:
+
 ```text
 obsidian-github-sync LXC
   GitHub read-only
@@ -16,19 +18,31 @@ obsidian-github-sync LXC
           |
           | future narrow ingress
           v
-AI Writer host / obsidian-ai-sync
+25-Execution exact request
+          |
+          | read-only to Sync
+          v
+AI Writer / obsidian-ai-sync
+  shared canonical I/O lock
   GET canonical Project
   validate binding + expected status
   replace status line only
   PUT + If-Match strong ETag
   exact-byte GET verification
-  durable receipt
+          |
+          +--> 27-Transport exact result
           |
           v
 Nextcloud Live Vault
+
+future Executor/reconciler
+  verifies request/result binding
+  -> final audit receipt in 30-Receipts
 ```
 
-The watcher LXC never receives the Nextcloud writer credential. The writer-side CLI is intended to run only under the existing Sync Transport authority that already owns that credential.
+Only `obsidian-ai-sync` holds the Nextcloud writer credential. The watcher LXC never receives it.
+
+Sync does **not** write a final receipt. It writes only a transport result in the existing Sync-owned `27-Transport` authority. Final receipt creation remains a separate later-stage responsibility, matching the existing production authority model.
 
 ## Input contract
 
@@ -45,6 +59,8 @@ The input is the watcher JSON object itself. A mutation is admissible only when:
 - timestamps, Git SHA and Issue/PR arrays satisfy the watcher contract.
 
 `done` / `cancelled` may appear only as the expected status for a deterministic watcher reactivation. Automation can never set `done`, `cancelled`, or `stopped`.
+
+The canonicalized watcher object is SHA-256 hashed. That digest binds the transport result to the exact request.
 
 ## Canonical preflight
 
@@ -76,43 +92,54 @@ The writer then GETs the Project again and requires exact bytes equal to the des
 
 This prevents a stale watcher mirror from overwriting unrelated Human edits and prevents a race between canonical GET and PUT.
 
-## Receipts
+The effect and Project-mirror refresh are serialized through the existing host-local `canonical-io.lock` by requiring `--state-root` and using `canonical_io_lock`.
 
-`obsidian-github-project-status-apply` emits a JSON receipt containing:
+## Transport result
+
+`obsidian-github-project-status-apply` emits and durably stores a Sync-authored transport result containing:
 
 - exact canonical proposal SHA-256;
 - Project path and repository;
 - expected / desired status;
-- result (`applied`, `recovered`, or `already_desired`);
+- outcome (`applied`, `recovered`, or `already_desired`);
 - before / after content SHA-256;
 - completion timestamp.
 
-With `--receipt`, the receipt is created exclusively. Reprocessing the same proposal may reuse an existing receipt only when its `proposal_sha256` matches.
+The result is intended for `27-Transport`, which is writable by Sync in the existing authority matrix. It is **not** a final success receipt.
+
+`--result` is required and uses exclusive creation. Reprocessing the same proposal may reuse an existing result only when its `proposal_sha256` matches.
+
+If the remote effect succeeds but the process crashes before result persistence, a retry will observe the desired canonical status and can durably record `already_desired` without falsely claiming that the retry performed the original write.
 
 ## CLI
 
+A production invocation on the AI Writer has the form:
+
 ```bash
 obsidian-github-project-status-apply \
-  --proposal /path/to/observation.json \
+  --proposal /var/lib/obsidian-ai/state/25-Execution/<proposal-sha>.github-status.json \
+  --state-root /var/lib/obsidian-ai/state \
   --base-url 'https://nextcloud.example/remote.php/dav/files/<writer>/ObsidianVault' \
   --username '<writer>' \
-  --password-file /etc/obsidian-ai/nextcloud-writer.password \
-  --receipt /var/lib/obsidian-ai/state/30-Receipts/<proposal-sha>.github-status.json
+  --password-file /etc/obsidian-ai/webdav-password \
+  --result /var/lib/obsidian-ai/state/27-Transport/<proposal-sha>.github-status.transport-result.json
 ```
 
 The CLI returns:
 
-- `0`: applied, recovered, or idempotently already desired;
+- `0`: applied, recovered, or idempotently already desired, with durable transport result;
 - `2`: malformed input / unavailable authority / ambiguous non-conflict error;
 - `3`: stale proposal or canonical conflict.
 
-## Canary sequence
+## Manual canary sequence
 
 Do not connect automatic cross-LXC ingress immediately.
 
 1. Capture one real watcher observation from CT 30004.
 2. Transfer that exact JSON manually to the Writer host without granting the watcher writer credentials.
-3. Run the writer-side CLI against a disposable/canary Project first.
-4. Verify only `status:` changed and a receipt is durable.
-5. Verify stale status, `stopped`, repository mismatch and ETag races fail closed.
-6. Only then implement a narrow automatic proposal ingress.
+3. Stage it under a location readable by Sync; for production-equivalent testing use a controlled file under `25-Execution`.
+4. Run the writer-side CLI against a disposable/canary Project first.
+5. Store the transport result under `27-Transport`.
+6. Verify only `status:` changed and the transport result is durable.
+7. Verify stale status, `stopped`, repository mismatch and ETag races fail closed.
+8. Only then implement a narrow automatic proposal ingress plus a separate result reconciler/final receipt stage.
