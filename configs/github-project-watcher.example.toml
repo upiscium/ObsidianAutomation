@@ -1,0 +1,8 @@
+[watcher]
+vault_root = "/srv/obsidian-github-sync/vault"
+state_db = "/var/lib/obsidian-github-sync/state.sqlite3"
+project_folder = "10-Project"
+active_window_days = 7
+github_api_base = "https://api.github.com"
+github_token_env = "GITHUB_TOKEN"
+request_timeout_seconds = 15
