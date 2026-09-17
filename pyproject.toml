@@ -34,7 +34,7 @@ obsidian-production-webdav-worker = "obsidian_automation.production_orchestrator
 obsidian-production-knowledge-executor = "obsidian_automation.knowledge_production:executor_main"
 obsidian-production-knowledge-webdav-worker = "obsidian_automation.knowledge_production:worker_main"
 obsidian-production-vault-pull = "obsidian_automation.vault_mirror:main"
-obsidian-github-project-watch = "obsidian_automation.github_project_watcher:main"
+obsidian-github-project-watch = "obsidian_automation.github_project_watcher_runtime:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
