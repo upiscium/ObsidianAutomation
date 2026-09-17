@@ -1,5 +1,5 @@
 [Unit]
-Description=Obsidian GitHub Project status watcher
+Description=Obsidian GitHub Project status watcher and proposal enqueue
 Requires=obsidian-github-sync-vault-pull.service
 After=network-online.target obsidian-github-sync-vault-pull.service
 Wants=network-online.target
@@ -8,8 +8,11 @@ Wants=network-online.target
 Type=oneshot
 User=obsidian-github-sync
 Group=obsidian-github-sync
+SupplementaryGroups=obsidian-github-vault obsidian-github-pipeline
 EnvironmentFile=-/etc/obsidian-github-sync/credentials.env
-ExecStart=/opt/obsidian-github-sync/venv/bin/obsidian-github-project-watch --config /etc/obsidian-github-sync/config.toml
+ExecStart=/opt/obsidian-github-sync/venv/bin/obsidian-github-project-watch-enqueue \
+  --config /etc/obsidian-github-sync/config.toml \
+  --request-dir /var/lib/obsidian-github-pipeline/25-Execution
 WorkingDirectory=/opt/obsidian-github-sync/app
 NoNewPrivileges=true
 PrivateTmp=true
@@ -21,8 +24,9 @@ ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
-ReadOnlyPaths=/srv/obsidian-github-sync/vault
-ReadWritePaths=/var/lib/obsidian-github-sync
+ReadOnlyPaths=/srv/obsidian-github-sync/vault /etc/obsidian-github-sync
+ReadWritePaths=/var/lib/obsidian-github-sync /var/lib/obsidian-github-pipeline/25-Execution
+InaccessiblePaths=/etc/obsidian-github-mirror /etc/obsidian-github-writer /var/lib/obsidian-github-pipeline/27-Transport
 
 [Install]
 WantedBy=multi-user.target
