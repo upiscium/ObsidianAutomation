@@ -1,14 +1,12 @@
-# GitHub Project status local writer topology
+# GitHub Project local writer topology
 
 ## Purpose
 
-GitHub-backed Project status synchronization is self-contained in the dedicated `obsidian-github-sync` LXC while retaining process-level authority separation.
-
-The LXC contains three Unix identities:
+GitHub-backed Project automation is self-contained in the dedicated `obsidian-github-sync` LXC while keeping observation and canonical-write credentials separated by Unix identity.
 
 ```text
 obsidian-github-mirror
-  Nextcloud read-only mirror credential
+  Nextcloud read-only credential
           |
           v
 /srv/obsidian-github-sync/vault/10-Project
@@ -16,15 +14,16 @@ obsidian-github-mirror
           v
 obsidian-github-sync
   GitHub read-only observation
-  deterministic status proposal
+  deterministic status + overview proposals
           |
           v
 /var/lib/obsidian-github-pipeline/25-Execution
           |
           v
 obsidian-github-writer
-  dedicated Nextcloud 10-Project update credential
-  canonical GET + status-only CAS PUT
+  dedicated canonical 10-Project writer credential
+  status-only Project CAS
+  sibling Status.md create/update CAS
           |
           v
 /var/lib/obsidian-github-pipeline/27-Transport
@@ -34,39 +33,40 @@ The existing AI Writer LXC and `obsidian-ai-sync` authority are not part of this
 
 ## Nextcloud authority
 
-Use a dedicated Nextcloud account such as `obsidian-github-writer`.
-
-Share only the canonical `10-Project` folder to this account with:
+Use the dedicated Nextcloud account `obsidian-github-writer` and share only canonical `10-Project` with:
 
 ```text
 Read   = yes
 Update = yes
-Create = no
+Create = yes
 Delete = no
 Share  = no
 ```
 
-For the Nextcloud share permission bitmask this is `3` (`1 + 2`). Existing Project files should expose update/write capability through WebDAV. Do not grant this account access to unrelated Vault roots.
+The share permission bitmask is `7` (`Read=1 + Update=2 + Create=4`).
 
-The existing mirror account remains read-only. The existing AI Writer credential remains unchanged and create-only for its own pipeline.
+`Update` is required for the existing Project `status:` CAS. `Create` is required only to create a missing sibling `Status.md`; the automation exposes no canonical delete operation. Do not grant access to unrelated Vault roots.
 
-When `10-Project` is shared directly to `obsidian-github-writer`, its DAV root is normally:
+When `10-Project` is shared directly, the DAV root is normally:
 
 ```text
 https://<nextcloud>/remote.php/dav/files/obsidian-github-writer
 ```
 
-and the watcher Project path remains:
+and canonical paths remain:
 
 ```text
 10-Project/<project>/<project>.md
+10-Project/<project>/Status.md
 ```
 
 Verify the actual share mount name before production use.
 
-## Unix identities and shared handoff group
+The mirror account remains read-only. The existing AI Writer credential remains unchanged for its own independent pipeline.
 
-The credential groups remain separate. A third group carries only local request/result handoff access and never contains credentials.
+## Unix identities and handoff group
+
+The credential groups remain separate. `obsidian-github-pipeline` carries only local request/result handoff access and contains no credentials.
 
 ```bash
 groupadd --system obsidian-github-pipeline 2>/dev/null || true
@@ -86,35 +86,31 @@ usermod -aG obsidian-github-pipeline obsidian-github-sync
 usermod -aG obsidian-github-pipeline obsidian-github-writer
 ```
 
-Create the local pipeline roots:
+Local pipeline roots:
 
 ```bash
 install -d -o root -g obsidian-github-pipeline -m 0750 \
   /var/lib/obsidian-github-pipeline
-
 install -d -o obsidian-github-sync -g obsidian-github-pipeline -m 2750 \
   /var/lib/obsidian-github-pipeline/25-Execution
-
 install -d -o obsidian-github-writer -g obsidian-github-pipeline -m 2750 \
   /var/lib/obsidian-github-pipeline/27-Transport
-
 install -d -o obsidian-github-writer -g obsidian-github-writer -m 0750 \
   /var/lib/obsidian-github-pipeline/24-Locks
-
 install -d -o root -g obsidian-github-writer -m 0750 \
   /etc/obsidian-github-writer
 ```
 
-The intended filesystem authority is:
+Intended local authority:
 
-- `obsidian-github-sync`: owner-write to `25-Execution`; group-read only to `27-Transport`;
-- `obsidian-github-writer`: group-read only to `25-Execution`; owner-write to `27-Transport` and `24-Locks`;
-- `obsidian-github-mirror`: no access to pipeline state;
+- `obsidian-github-sync`: owner-write `25-Execution`; cannot write `27-Transport`;
+- `obsidian-github-writer`: read-only `25-Execution`; owner-write `27-Transport` and `24-Locks`;
+- `obsidian-github-mirror`: no pipeline-state access;
 - `obsidian-github-pipeline`: no credential files.
 
 ## Writer credential
 
-Store only the dedicated GitHub writer App Password in:
+Store the dedicated App Password at:
 
 ```text
 /etc/obsidian-github-writer/webdav-password
@@ -127,103 +123,79 @@ chown root:obsidian-github-writer /etc/obsidian-github-writer/webdav-password
 chmod 0640 /etc/obsidian-github-writer/webdav-password
 ```
 
-Copy `examples/github-sync/writer-config.env.example` to:
-
-```text
-/etc/obsidian-github-writer/config.env
-```
-
-and set the real DAV root and username. The file contains no password but should still be bounded to the writer identity:
+Configure `/etc/obsidian-github-writer/config.env` from `examples/github-sync/writer-config.env.example`, then:
 
 ```bash
 chown root:obsidian-github-writer /etc/obsidian-github-writer/config.env
 chmod 0640 /etc/obsidian-github-writer/config.env
 ```
 
-## Proposal queue
+## Proposal types
 
-`obsidian-github-project-watch-enqueue` runs the normal deterministic watcher and writes only `change=true` / `pending=true` observations to the local request directory.
+The watcher side produces two deterministic local request types from one GitHub observation.
 
-Each request is canonicalized and content-addressed:
+### Project status proposal
+
+Only a pending status transition is content-addressed:
 
 ```text
 25-Execution/<proposal-sha256>.github-status.json
 ```
 
-The watcher keeps its normal JSON journal output. If queue persistence fails after SQLite state is updated, the pending proposal is emitted again on the next watcher run and enqueue is retried.
+The status worker fresh-GETs the canonical Project, verifies binding and expected status, changes only the top-level `status:` line with strong ETag `If-Match`, and exact-byte verifies the result.
 
-## Writer worker
+### Project overview desired state
 
-`obsidian-github-project-status-worker` scans queued requests and verifies the filename against the canonical proposal SHA-256 before using the writer credential.
-
-For each new request it performs the existing status-only CAS transport:
-
-1. fresh canonical GET;
-2. Project / repository / `github_watch` / expected status validation;
-3. strong ETag requirement;
-4. replace only top-level `status:` in fresh canonical bytes;
-5. `PUT + If-Match`;
-6. exact-byte GET verification;
-7. durable result in `27-Transport`.
-
-Successful results are content-addressed by the same proposal digest:
+Every watched Project has one stable desired-state request:
 
 ```text
-27-Transport/<proposal-sha256>.github-status.transport-result.json
+25-Execution/<sha256(project-path)>.github-overview.json
 ```
 
-Canonical conflicts are terminal for that exact proposal and are persisted separately as:
-
-```text
-27-Transport/<proposal-sha256>.github-status.rejection.json
-```
-
-Transient transport/authority errors do not create a terminal result, so the service returns failure and the proposal can be retried after the deployment issue is corrected.
+It contains the current open Issue/PR numbers and titles from the same GitHub snapshot already used by the watcher. The overview worker fresh-GETs canonical state and maintains sibling `Status.md` using conditional create/update. See `docs/github-project-overview.md` for the managed-block and checkbox-preservation contract.
 
 ## systemd cycle
 
-Install all four reusable units:
+The timer targets the writer unit. Dependencies impose:
+
+```text
+obsidian-github-sync.timer
+  -> obsidian-github-writer.service
+       -> obsidian-github-sync.service
+            -> obsidian-github-sync-vault-pull.service
+```
+
+One activation therefore performs:
+
+```text
+remote Project mirror refresh
+  -> one GitHub observation
+  -> status + overview local enqueue
+  -> Project status worker
+  -> Status.md overview worker
+```
+
+Install/update the reusable units with:
 
 ```bash
 install -m 0644 \
   examples/github-sync/obsidian-github-sync-vault-pull.service \
   /etc/systemd/system/
-
 install -m 0644 \
   examples/github-sync/obsidian-github-sync.service \
   /etc/systemd/system/
-
 install -m 0644 \
   examples/github-sync/obsidian-github-writer.service \
   /etc/systemd/system/
-
 install -m 0644 \
   examples/github-sync/obsidian-github-sync.timer \
   /etc/systemd/system/
-
 systemctl daemon-reload
-```
-
-The timer targets the writer unit. Dependencies impose the full order:
-
-```text
-obsidian-github-sync.timer
-  -> obsidian-github-writer.service
-       Requires/After obsidian-github-sync.service
-         Requires/After obsidian-github-sync-vault-pull.service
-```
-
-Thus one timer activation performs:
-
-```text
-remote -> local Project mirror refresh
-  -> GitHub observation + durable enqueue
-  -> writer-side canonical CAS
 ```
 
 ## Credential-isolation gate
 
-Before enabling canonical updates, verify all three identities:
+Before enabling canonical updates:
 
 ```bash
 sudo -u obsidian-github-sync \
@@ -241,19 +213,6 @@ sudo -u obsidian-github-writer \
   && echo 'FAIL: writer can read mirror credential' \
   || echo 'PASS: mirror credential isolated from writer'
 
-sudo -u obsidian-github-mirror \
-  test -r /etc/obsidian-github-writer/webdav-password \
-  && echo 'FAIL: mirror can read writer credential' \
-  || echo 'PASS: writer credential isolated from mirror'
-```
-
-Also verify local handoff direction:
-
-```bash
-sudo -u obsidian-github-writer \
-  test -r /var/lib/obsidian-github-pipeline/25-Execution \
-  && echo 'PASS: writer can read requests'
-
 sudo -u obsidian-github-writer \
   test -w /var/lib/obsidian-github-pipeline/25-Execution \
   && echo 'FAIL: writer can rewrite requests' \
@@ -267,29 +226,24 @@ sudo -u obsidian-github-sync \
 
 ## Canary
 
-Before enabling the timer, run one explicit cycle:
+Stop the timer for the first deployment:
 
 ```bash
+systemctl disable --now obsidian-github-sync.timer
 systemctl start obsidian-github-writer.service
 systemctl show obsidian-github-writer.service -p Result -p ExecMainStatus
 journalctl \
   -u obsidian-github-sync-vault-pull.service \
   -u obsidian-github-sync.service \
   -u obsidian-github-writer.service \
-  -n 100 --no-pager
+  -n 120 --no-pager
 ```
 
-For a stale `running -> planning` Project, the first successful cycle should show:
+A first overview cycle for a Project with no `Status.md` should report `outcome=created`. Subsequent cycles with unchanged GitHub and unchanged canonical rendering should settle to `already_desired`.
 
-```text
-mirror refreshed
-project-status-enqueued
-writer completed outcome=applied
-```
+Test at least one checkbox and a note edit before enabling the timer. Both must survive the next overview refresh.
 
-The next cycle should refresh the mirror, observe canonical `planning`, and stop emitting that transition.
-
-Only after this canary passes should the recurring timer be enabled:
+Then enable production recurrence:
 
 ```bash
 systemctl enable --now obsidian-github-sync.timer
@@ -297,8 +251,4 @@ systemctl enable --now obsidian-github-sync.timer
 
 ## Security boundary
 
-This design provides process/Unix-identity isolation inside one LXC, not host-level isolation. Root compromise of the LXC can reach all three credentials. The accepted boundary is therefore:
-
-> the watcher process has no canonical writer credential, while the dedicated writer process has no GitHub or mirror credential.
-
-If host-level compromise isolation becomes a requirement, the writer identity can later be moved into a separate LXC without changing the proposal/result contracts.
+This is process/Unix-identity isolation inside one LXC, not host-level isolation. LXC root can reach all three credentials. The accepted boundary is that the watcher process has no canonical writer credential, while the writer process has no GitHub or mirror credential.

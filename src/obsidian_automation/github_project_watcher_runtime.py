@@ -17,7 +17,38 @@ COMMIT_ACTIVITY_TYPES = (
 
 
 class GitHubClient(watcher.GitHubClient):
-    """Repository-activity client for commit-producing GitHub events."""
+    """Repository-activity client that also retains overview rows from each snapshot."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self._overview_cache: dict[tuple[str, str], tuple[dict[str, object], ...]] = {}
+
+    def _paged(self, path: str) -> list[dict[str, object]]:
+        rows = super()._paged(path)
+        prefix = "/repos/"
+        issue_suffix = "/issues?state=open"
+        pull_suffix = "/pulls?state=open"
+        if path.startswith(prefix) and path.endswith(issue_suffix):
+            repo_path = path[len(prefix) : -len(issue_suffix)]
+            self._overview_cache[(repo_path, "issues")] = tuple(dict(row) for row in rows)
+        elif path.startswith(prefix) and path.endswith(pull_suffix):
+            repo_path = path[len(prefix) : -len(pull_suffix)]
+            self._overview_cache[(repo_path, "pulls")] = tuple(dict(row) for row in rows)
+        return rows
+
+    def overview_rows(
+        self,
+        repository: str,
+    ) -> tuple[tuple[dict[str, object], ...], tuple[dict[str, object], ...]]:
+        repo_path = self._repo_path(repository)
+        try:
+            issues = self._overview_cache[(repo_path, "issues")]
+            pulls = self._overview_cache[(repo_path, "pulls")]
+        except KeyError as exc:
+            raise watcher.GitHubProjectWatcherError(
+                f"overview rows are unavailable before a successful snapshot for {repository}"
+            ) from exc
+        return issues, pulls
 
     @staticmethod
     def _timestamp_from_commit_payload(value: object) -> datetime | None:

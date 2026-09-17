@@ -1,5 +1,5 @@
 [Unit]
-Description=Obsidian GitHub Project status watcher and proposal enqueue
+Description=Obsidian GitHub Project watcher and proposal enqueue
 Requires=obsidian-github-sync-vault-pull.service
 After=network-online.target obsidian-github-sync-vault-pull.service
 Wants=network-online.target

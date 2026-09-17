@@ -1,5 +1,5 @@
 [Unit]
-Description=Apply queued Obsidian GitHub Project status proposals
+Description=Apply queued Obsidian GitHub Project proposals
 Requires=obsidian-github-sync.service
 After=network-online.target obsidian-github-sync.service
 Wants=network-online.target
@@ -12,6 +12,13 @@ SupplementaryGroups=obsidian-github-pipeline
 UMask=0027
 EnvironmentFile=/etc/obsidian-github-writer/config.env
 ExecStart=/opt/obsidian-github-sync/venv/bin/obsidian-github-project-status-worker \
+  --request-dir /var/lib/obsidian-github-pipeline/25-Execution \
+  --result-dir /var/lib/obsidian-github-pipeline/27-Transport \
+  --state-root /var/lib/obsidian-github-pipeline \
+  --base-url ${NEXTCLOUD_BASE_URL} \
+  --username ${NEXTCLOUD_USERNAME} \
+  --password-file /etc/obsidian-github-writer/webdav-password
+ExecStart=/opt/obsidian-github-sync/venv/bin/obsidian-github-project-overview-worker \
   --request-dir /var/lib/obsidian-github-pipeline/25-Execution \
   --result-dir /var/lib/obsidian-github-pipeline/27-Transport \
   --state-root /var/lib/obsidian-github-pipeline \
