@@ -1,0 +1,37 @@
+[Unit]
+Description=Apply queued Obsidian GitHub Project status proposals
+Requires=obsidian-github-sync.service
+After=network-online.target obsidian-github-sync.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=obsidian-github-writer
+Group=obsidian-github-writer
+SupplementaryGroups=obsidian-github-pipeline
+UMask=0027
+EnvironmentFile=/etc/obsidian-github-writer/config.env
+ExecStart=/opt/obsidian-github-sync/venv/bin/obsidian-github-project-status-worker \
+  --request-dir /var/lib/obsidian-github-pipeline/25-Execution \
+  --result-dir /var/lib/obsidian-github-pipeline/27-Transport \
+  --state-root /var/lib/obsidian-github-pipeline \
+  --base-url ${NEXTCLOUD_BASE_URL} \
+  --username ${NEXTCLOUD_USERNAME} \
+  --password-file /etc/obsidian-github-writer/webdav-password
+WorkingDirectory=/opt/obsidian-github-sync/app
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadOnlyPaths=/etc/obsidian-github-writer /var/lib/obsidian-github-pipeline/25-Execution
+ReadWritePaths=/var/lib/obsidian-github-pipeline/24-Locks /var/lib/obsidian-github-pipeline/27-Transport
+InaccessiblePaths=/etc/obsidian-github-sync /etc/obsidian-github-mirror /srv/obsidian-github-sync/vault /var/lib/obsidian-github-sync
+
+[Install]
+WantedBy=multi-user.target
