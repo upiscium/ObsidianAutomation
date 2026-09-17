@@ -6,7 +6,7 @@ import os
 import stat
 import sys
 from pathlib import Path
-from typing import Iterable, TextIO
+from typing import Iterable, Sequence, TextIO
 
 from . import github_project_watcher as watcher
 from .github_project_overview import (
@@ -90,14 +90,11 @@ def enqueue_overview(request_dir: Path, proposal: ProjectOverviewProposal) -> tu
     return target, "updated" if info is not None else "queued"
 
 
-def _collect_repository(
-    client: GitHubClient,
+def overview_items_from_rows(
     repository: str,
+    issue_rows: Sequence[dict[str, object]],
+    pull_rows: Sequence[dict[str, object]],
 ) -> tuple[tuple[OverviewItem, ...], tuple[OverviewItem, ...]]:
-    repo_path = client._repo_path(repository)
-    issue_rows = client._paged(f"/repos/{repo_path}/issues?state=open")
-    pull_rows = client._paged(f"/repos/{repo_path}/pulls?state=open")
-
     issues: list[OverviewItem] = []
     for row in issue_rows:
         if "pull_request" in row:
@@ -125,7 +122,17 @@ def _collect_repository(
     return tuple(sorted(issues)), tuple(sorted(pulls))
 
 
-def _prune_stale(request_dir: Path, active_names: set[str]) -> int:
+def _collect_repository(
+    client: GitHubClient,
+    repository: str,
+) -> tuple[tuple[OverviewItem, ...], tuple[OverviewItem, ...]]:
+    repo_path = client._repo_path(repository)
+    issue_rows = client._paged(f"/repos/{repo_path}/issues?state=open")
+    pull_rows = client._paged(f"/repos/{repo_path}/pulls?state=open")
+    return overview_items_from_rows(repository, issue_rows, pull_rows)
+
+
+def prune_stale_overviews(request_dir: Path, active_names: set[str]) -> int:
     removed = 0
     for path in request_dir.glob("*.github-overview.json"):
         if path.name in active_names:
@@ -144,6 +151,18 @@ def _prune_stale(request_dir: Path, active_names: set[str]) -> int:
     return removed
 
 
+def _assert_unique_status_path(
+    proposal: ProjectOverviewProposal,
+    owners: dict[str, str],
+) -> None:
+    previous = owners.get(proposal.status_path)
+    if previous is not None and previous != proposal.project_path:
+        raise ProjectOverviewQueueError(
+            f"multiple watched Projects target the same Status.md: {previous} and {proposal.project_path}"
+        )
+    owners[proposal.status_path] = proposal.project_path
+
+
 def run_and_enqueue(
     config: watcher.WatcherConfig,
     *,
@@ -152,6 +171,11 @@ def run_and_enqueue(
     stdout: TextIO = sys.stdout,
     stderr: TextIO = sys.stderr,
 ) -> int:
+    """Standalone overview collector, primarily for diagnostics and manual use.
+
+    Production uses ``obsidian-github-project-watch-enqueue`` so the overview is
+    derived from the exact Issue/PR rows already fetched by the status watcher.
+    """
     _require_directory(request_dir)
     projects, warnings = watcher.scan_projects(config.vault_root, config.project_folder)
     for warning in warnings:
@@ -171,6 +195,7 @@ def run_and_enqueue(
     )
     cache: dict[str, tuple[tuple[OverviewItem, ...], tuple[OverviewItem, ...]]] = {}
     active_names: set[str] = set()
+    status_path_owners: dict[str, str] = {}
     failures = 0
 
     for project in projects:
@@ -184,6 +209,7 @@ def run_and_enqueue(
                 issues=issues,
                 pull_requests=pulls,
             )
+            _assert_unique_status_path(proposal, status_path_owners)
             path, result = enqueue_overview(request_dir, proposal)
             active_names.add(path.name)
             print(
@@ -221,7 +247,7 @@ def run_and_enqueue(
     if failures:
         return 1
     try:
-        removed = _prune_stale(request_dir, active_names)
+        removed = prune_stale_overviews(request_dir, active_names)
     except (OSError, ProjectOverviewQueueError) as exc:
         print(
             json.dumps(
