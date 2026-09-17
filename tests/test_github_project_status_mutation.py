@@ -11,7 +11,7 @@ from obsidian_automation.github_project_status_mutation import (
     ProjectStatusMutationError,
     apply_project_status,
     parse_watcher_proposal,
-    persist_receipt,
+    persist_transport_result,
     prepare_project_update,
 )
 
@@ -147,7 +147,7 @@ def test_apply_uses_strong_etag_and_verifies_exact_remote_bytes() -> None:
     proposal = parse_watcher_proposal(_event())
     remote = _WebDAV(_project())
 
-    receipt = apply_project_status(
+    result = apply_project_status(
         proposal,
         base_url="https://nextcloud.example/remote.php/dav/files/writer/ObsidianVault",
         username="writer",
@@ -155,7 +155,7 @@ def test_apply_uses_strong_etag_and_verifies_exact_remote_bytes() -> None:
         transport=remote,
     )
 
-    assert receipt.result == "applied"
+    assert result.outcome == "applied"
     assert remote.methods == ["GET", "PUT", "GET"]
     assert remote.put_headers is not None
     assert remote.put_headers["If-Match"] == '"v1"'
@@ -167,7 +167,7 @@ def test_already_desired_is_idempotent_and_does_not_put() -> None:
     proposal = parse_watcher_proposal(_event())
     remote = _WebDAV(_project(status="planning"))
 
-    receipt = apply_project_status(
+    result = apply_project_status(
         proposal,
         base_url="https://nextcloud.example/dav",
         username="writer",
@@ -175,7 +175,7 @@ def test_already_desired_is_idempotent_and_does_not_put() -> None:
         transport=remote,
     )
 
-    assert receipt.result == "already_desired"
+    assert result.outcome == "already_desired"
     assert remote.methods == ["GET"]
 
 
@@ -228,20 +228,23 @@ def test_conditional_put_conflict_is_not_reported_as_success() -> None:
     assert remote.methods == ["GET", "PUT", "GET"]
 
 
-def test_receipt_persistence_is_bound_to_proposal_hash(tmp_path: Path) -> None:
+def test_transport_result_persistence_is_bound_to_proposal_hash(tmp_path: Path) -> None:
     proposal = parse_watcher_proposal(_event())
     remote = _WebDAV(_project(status="planning"))
-    receipt = apply_project_status(
+    result = apply_project_status(
         proposal,
         base_url="https://nextcloud.example/dav",
         username="writer",
         password="secret",
         transport=remote,
     )
-    path = tmp_path / "receipt.json"
+    path = tmp_path / "transport-result.json"
 
-    first = persist_receipt(path, receipt)
-    second = persist_receipt(path, receipt)
+    first = persist_transport_result(path, result)
+    second = persist_transport_result(path, result)
 
     assert first == second == path.read_bytes()
-    assert json.loads(first)["proposal_sha256"] == proposal.sha256
+    payload = json.loads(first)
+    assert payload["stage"] == "github_project_status_transport"
+    assert payload["proposal_sha256"] == proposal.sha256
+    assert payload["outcome"] == "already_desired"
