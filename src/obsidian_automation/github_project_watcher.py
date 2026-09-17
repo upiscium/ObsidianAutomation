@@ -255,7 +255,7 @@ class GitHubClient:
         candidates: list[tuple[str, datetime]] = []
         for activity_type in ("push", "force_push"):
             value = self._request_json(
-                f"/repos/{repo_path}/activity?activity_type={activity_type}&per_page=1&direction=desc"
+                f"/repos/{repo_path}/activity?activity_type={activity_type}&time_period=year&per_page=1&direction=desc"
             )
             if not isinstance(value, list):
                 raise GitHubProjectWatcherError(
