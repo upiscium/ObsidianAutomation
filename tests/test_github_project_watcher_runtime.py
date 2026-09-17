@@ -16,11 +16,11 @@ class _StubClient(GitHubClient):
     def _request_json(self, path: str) -> object:
         self.paths.append(path)
         if "activity_type=push" in path:
-            return [{"after": "push-sha", "pushed_at": "2026-09-10T12:00:00Z"}]
+            return [{"after": "push-sha", "timestamp": "2026-09-10T12:00:00Z"}]
         if "activity_type=force_push" in path:
             return []
         if "activity_type=pr_merge" in path:
-            return [{"after": "merge-sha", "pushed_at": "2026-09-16T13:00:00Z"}]
+            return [{"after": "merge-sha", "timestamp": "2026-09-16T13:00:00Z"}]
         if "activity_type=merge_queue_merge" in path:
             return []
         raise AssertionError(path)
