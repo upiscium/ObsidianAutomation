@@ -43,8 +43,91 @@ def test_snapshot_uses_latest_repository_push_across_refs() -> None:
     assert snapshot.open_issues == frozenset({1})
     assert snapshot.open_prs == frozenset({2})
     assert snapshot.observed_at == observed
-    assert any("activity_type=push" in path for path in client.paths)
-    assert any("activity_type=force_push" in path for path in client.paths)
+    activity_paths = [path for path in client.paths if "/activity?" in path]
+    assert len(activity_paths) == 2
+    assert all("time_period=year" in path for path in activity_paths)
+    assert any("activity_type=push" in path for path in activity_paths)
+    assert any("activity_type=force_push" in path for path in activity_paths)
+
+
+def test_nonterminal_pending_is_recomputed_from_fresh_snapshot() -> None:
+    now = datetime(2026, 9, 17, 3, 0, tzinfo=timezone.utc)
+    project = ProjectBinding(
+        path="10-Project/Test.md",
+        repository="upiscium/Test",
+        status="running",
+    )
+    previous = ProjectState(
+        project_path=project.path,
+        repository=project.repository,
+        last_status="running",
+        latest_commit_sha="old",
+        latest_commit_at=datetime(2026, 9, 1, tzinfo=timezone.utc),
+        open_issues=frozenset(),
+        open_prs=frozenset(),
+        observed_at=datetime(2026, 9, 17, 2, 45, tzinfo=timezone.utc),
+        pending_status="planning",
+        pending_reason="no commit within 7 days",
+    )
+    snapshot = RepositorySnapshot(
+        repository=project.repository,
+        latest_commit_sha="new",
+        latest_commit_at=datetime(2026, 9, 17, 2, 55, tzinfo=timezone.utc),
+        open_issues=frozenset(),
+        open_prs=frozenset(),
+        observed_at=now,
+    )
+
+    decision = decide_status(
+        project,
+        snapshot,
+        previous,
+        now=now,
+        active_window_days=7,
+    )
+
+    assert decision.proposed_status == "running"
+    assert decision.pending is False
+
+
+def test_terminal_pending_planning_is_upgraded_by_new_commit() -> None:
+    now = datetime(2026, 9, 17, 3, 0, tzinfo=timezone.utc)
+    project = ProjectBinding(
+        path="10-Project/Test.md",
+        repository="upiscium/Test",
+        status="done",
+    )
+    previous = ProjectState(
+        project_path=project.path,
+        repository=project.repository,
+        last_status="done",
+        latest_commit_sha="old",
+        latest_commit_at=datetime(2026, 9, 1, tzinfo=timezone.utc),
+        open_issues=frozenset({1, 2}),
+        open_prs=frozenset(),
+        observed_at=datetime(2026, 9, 17, 2, 45, tzinfo=timezone.utc),
+        pending_status="planning",
+        pending_reason="new open GitHub activity after terminal baseline: issues=2",
+    )
+    snapshot = RepositorySnapshot(
+        repository=project.repository,
+        latest_commit_sha="new",
+        latest_commit_at=datetime(2026, 9, 17, 2, 55, tzinfo=timezone.utc),
+        open_issues=frozenset({1, 2}),
+        open_prs=frozenset(),
+        observed_at=now,
+    )
+
+    decision = decide_status(
+        project,
+        snapshot,
+        previous,
+        now=now,
+        active_window_days=7,
+    )
+
+    assert decision.proposed_status == "running"
+    assert decision.pending is True
 
 
 def test_pending_transition_is_discarded_when_repository_binding_changes() -> None:
