@@ -186,7 +186,7 @@ The watcher does not need the whole Vault. `examples/github-sync/vault-pull.filt
 
 The pull process reuses `obsidian-production-vault-pull`, which always runs `rclone sync` in the remote-to-local direction. The watcher unit additionally exposes the resulting local mirror read-only through systemd sandboxing.
 
-Use a dedicated Nextcloud identity whose `ObsidianVault` access is read-only. Do not reuse a canonical writer credential.
+Use a dedicated Nextcloud identity with read-only access to only the canonical `10-Project` share. Do not reuse a canonical writer credential and do not grant the mirror account the whole Vault when a direct Project-only share is available.
 
 Copy the filter into the mirror-only configuration directory:
 
@@ -196,13 +196,36 @@ install -o root -g obsidian-github-mirror -m 0640 \
   /etc/obsidian-github-mirror/vault-pull.filters
 ```
 
-Configure an rclone WebDAV remote named `nextcloud-github-sync` in `/etc/obsidian-github-mirror/rclone.conf` and set the file to `root:obsidian-github-mirror` mode `0640`. The watcher identity is not a member of that group and therefore cannot read this credential. The example service expects the canonical Vault at:
+Configure an rclone WebDAV remote named `nextcloud-github-sync` in `/etc/obsidian-github-mirror/rclone.conf` and set the file to `root:obsidian-github-mirror` mode `0640`. The watcher identity is not a member of that group and therefore cannot read this credential.
+
+When `10-Project` is shared directly to the mirror account, it appears at the rclone remote root:
 
 ```text
-nextcloud-github-sync:ObsidianVault
+nextcloud-github-sync:
+└── 10-Project/
 ```
 
-Test the mirror independently before starting the watcher:
+The example pull service therefore uses the remote root:
+
+```text
+nextcloud-github-sync:
+```
+
+and `vault-pull.filters` keeps only `10-Project/**`. This preserves the local layout expected by the watcher:
+
+```text
+/srv/obsidian-github-sync/vault/10-Project/...
+```
+
+Test the remote shape before enabling the pipeline:
+
+```bash
+sudo -u obsidian-github-mirror \
+  rclone lsd nextcloud-github-sync: \
+  --config /etc/obsidian-github-mirror/rclone.conf
+```
+
+Then test the mirror independently:
 
 ```bash
 systemctl start obsidian-github-sync-vault-pull.service
