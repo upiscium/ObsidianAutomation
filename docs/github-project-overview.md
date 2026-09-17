@@ -70,19 +70,23 @@ The Nextcloud share permission bitmask is therefore `7` (`Read=1 + Update=2 + Cr
 
 Create authority is used only for sibling `Status.md` files selected from validated `github_watch: true` Project bindings. The writer has no delete operation.
 
-## Local pipeline
+## One GitHub observation, two outputs
 
-The feature is deliberately separate from Project status mutation.
+The normal watcher already fetches the open Issue and Pull Request endpoints in order to implement terminal Project reactivation. The production overview path reuses those exact response rows; it does not make a second Issue/PR collection pass.
 
 ```text
 obsidian-github-sync.service
   -> obsidian-github-project-watch-enqueue
-  -> obsidian-github-project-overview-enqueue
+       -> GitHub snapshot once
+       -> pending Project status proposal, when needed
+       -> current Status.md desired-state request, every watched Project
 
 obsidian-github-writer.service
   -> obsidian-github-project-status-worker
   -> obsidian-github-project-overview-worker
 ```
+
+The standalone `obsidian-github-project-overview-enqueue` CLI remains available for diagnostics, but is not called by the production systemd unit.
 
 The overview queue uses one stable local request file per Project path:
 
@@ -90,9 +94,20 @@ The overview queue uses one stable local request file per Project path:
 25-Execution/<sha256(project-path)>.github-overview.json
 ```
 
-If GitHub Issue/PR content is unchanged, request bytes remain unchanged. When the desired overview changes, the watcher atomically replaces that Project's request. Requests for Projects that no longer opt in are removed from the local handoff directory. This does not delete canonical `Status.md` files.
+If GitHub Issue/PR content is unchanged, request bytes remain unchanged. When the desired overview changes, the watcher atomically replaces that Project's request. Requests for Projects that no longer opt in are removed from the local handoff directory only after a complete successful watcher pass. This does not delete canonical `Status.md` files.
 
 The overview worker intentionally re-evaluates every active request each cycle. This is required because checkbox and free-form edits happen in canonical Obsidian state, not in the GitHub proposal. If the rendered canonical bytes are already correct, the worker returns `already_desired` and performs no PUT.
+
+## Path collision policy
+
+A sibling `Status.md` is unambiguous when each watched Project has its own directory, for example:
+
+```text
+10-Project/Terreate/Terreate.md
+10-Project/Terreate/Status.md
+```
+
+If two watched Project notes would target the same `Status.md` (for example two flat notes directly under `10-Project/`), enqueue fails closed. Automation never chooses one Project arbitrarily or overwrites another Project's overview.
 
 ## Canonical write protocol
 
@@ -113,6 +128,8 @@ Writer results are stored in:
 ```
 
 ## Deployment
+
+Before deploying the code, change the `obsidian-github-writer` share on canonical `10-Project` from Read+Update to Read+Update+Create. Do not grant Delete or Share.
 
 After merging the feature, update the package and systemd units:
 
@@ -135,10 +152,10 @@ install -m 0644 \
 systemctl daemon-reload
 ```
 
-Verify the new CLIs before the canary:
+Verify the relevant CLIs before the canary:
 
 ```bash
-/opt/obsidian-github-sync/venv/bin/obsidian-github-project-overview-enqueue --help
+/opt/obsidian-github-sync/venv/bin/obsidian-github-project-watch-enqueue --help
 /opt/obsidian-github-sync/venv/bin/obsidian-github-project-overview-worker --help
 ```
 
@@ -151,7 +168,7 @@ systemctl disable --now obsidian-github-sync.timer
 systemctl start obsidian-github-writer.service
 ```
 
-The dependency chain should perform mirror refresh, status enqueue, overview enqueue, status mutation and overview apply.
+The dependency chain should perform mirror refresh, one GitHub observation, status/overview enqueue, status mutation if needed, and overview apply.
 
 For a Project without an existing `Status.md`, expect an overview worker event with:
 
@@ -159,7 +176,7 @@ For a Project without an existing `Status.md`, expect an overview worker event w
 {"status":"completed","outcome":"created"}
 ```
 
-Confirm the new note in Nextcloud/Obsidian and toggle at least one Issue checkbox. Run the writer again. The second cycle should preserve the checked state and normally report `already_desired` when GitHub content has not changed.
+Confirm the new note in Nextcloud/Obsidian. Toggle at least one Issue checkbox and optionally add text under `## Notes`, then run the writer again. The next cycle must preserve those edits. If GitHub content is otherwise unchanged, no semantically unnecessary content should be lost; the worker may update once to incorporate the user's checkbox/notes-aware render and should settle to `already_desired` thereafter.
 
 After the canary passes:
 
