@@ -38,9 +38,9 @@ class GitHubClient(watcher.GitHubClient):
                     f"invalid repository activity row for {repo_path}"
                 )
             sha = str(first.get("after") or "").strip()
-            pushed_at = first.get("pushed_at")
-            if sha and isinstance(pushed_at, str):
-                parsed = watcher._parse_timestamp(pushed_at)
+            timestamp = first.get("timestamp")
+            if sha and isinstance(timestamp, str):
+                parsed = watcher._parse_timestamp(timestamp)
                 if parsed is not None:
                     candidates.append((sha, parsed))
 
