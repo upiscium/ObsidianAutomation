@@ -440,3 +440,92 @@ def test_duplicate_live_appearance_snippet_fails_closed(tmp_path: Path) -> None:
 
     assert _git(destination, "rev-parse", "HEAD") == initial
     assert _git(destination, "status", "--porcelain") == ""
+
+
+def test_independent_vault_change_publishes_when_core_drift_converged_on_other_path(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "vault"
+    destination = tmp_path / "core"
+    (source / "98-System").mkdir(parents=True)
+
+    _init_repository(destination)
+    (destination / "98-System").mkdir(parents=True)
+    core_reviewed = destination / "98-System/core-reviewed.md"
+    vault_only = destination / "98-System/vault-only.md"
+    core_reviewed.write_text("old-core\n")
+    vault_only.write_text("old-vault\n")
+    baseline = _commit_all(destination)
+
+    core_reviewed.write_text("reviewed-new\n")
+    manual = _commit_all(destination, "Reviewed Core change (#4)")
+
+    # The reviewed Core path has already converged through Promotion.
+    (source / "98-System/core-reviewed.md").write_text("reviewed-new\n")
+    # An unrelated Live-only edit exists on a path untouched by Core since baseline.
+    (source / "98-System/vault-only.md").write_text("vault-new\n")
+
+    result = publish_projection(
+        source=source,
+        destination=destination,
+        config_path=_write_config(tmp_path),
+        commit_message=PROJECTION_COMMIT_SUBJECT,
+        author_name="Automation",
+        author_email="automation@example.invalid",
+        validate_core=False,
+    )
+
+    assert result.changed is True
+    assert result.changes == (
+        public_publish.Change("UPDATE", "98-System/vault-only.md"),
+    )
+    assert core_reviewed.read_text() == "reviewed-new\n"
+    assert vault_only.read_text() == "vault-new\n"
+    assert _git(destination, "rev-list", "--count", f"{manual}..HEAD") == "1"
+    assert PROJECTION_COMMIT_MARKER in _git(destination, "log", "-1", "--format=%B")
+    assert _git(destination, "rev-parse", "HEAD") != baseline
+
+
+def test_pathwise_conflict_reports_only_overlapping_paths_and_does_not_mutate(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "vault"
+    destination = tmp_path / "core"
+    (source / "98-System").mkdir(parents=True)
+
+    _init_repository(destination)
+    (destination / "98-System").mkdir(parents=True)
+    conflict = destination / "98-System/conflict.md"
+    safe = destination / "98-System/vault-only.md"
+    conflict.write_text("baseline-conflict\n")
+    safe.write_text("baseline-safe\n")
+    _commit_all(destination)
+
+    conflict.write_text("reviewed-core-new\n")
+    manual = _commit_all(destination, "Reviewed Core conflict (#5)")
+
+    # Same path diverged from the generated baseline on both sides.
+    (source / "98-System/conflict.md").write_text("live-new\n")
+    # This unrelated Vault-only edit would otherwise be safe.
+    (source / "98-System/vault-only.md").write_text("vault-new\n")
+
+    with pytest.raises(PublishError) as captured:
+        publish_projection(
+            source=source,
+            destination=destination,
+            config_path=_write_config(tmp_path),
+            commit_message=PROJECTION_COMMIT_SUBJECT,
+            author_name="Automation",
+            author_email="automation@example.invalid",
+            validate_core=False,
+        )
+
+    message = str(captured.value)
+    assert "98-System/conflict.md" in message
+    assert "98-System/vault-only.md" not in message
+    assert "projection_diff_count=2" in message
+    assert "unacknowledged_core_drift_count=1" in message
+    assert _git(destination, "rev-parse", "HEAD") == manual
+    assert conflict.read_text() == "reviewed-core-new\n"
+    assert safe.read_text() == "baseline-safe\n"
+    assert _git(destination, "status", "--porcelain") == ""

@@ -312,13 +312,19 @@ def publish_projection(
         raise PublishError(
             "refusing projection update without a known generated projection baseline"
         )
-    if planned and drift:
-        preview = ", ".join(drift[:8])
-        if len(drift) > 8:
+    planned_paths = {change.path for change in planned}
+    drift_paths = set(drift)
+    conflicts = tuple(sorted(planned_paths & drift_paths, key=str.casefold))
+
+    if conflicts:
+        preview = ", ".join(conflicts[:8])
+        if len(conflicts) > 8:
             preview += ", ..."
         raise PublishError(
-            "refusing to overwrite Core-managed changes that have not yet converged through "
-            f"the Live Vault promotion path: {preview}"
+            "refusing to overwrite Core-managed paths that changed in Core and have not yet "
+            "converged through the Live Vault promotion path: "
+            f"{preview}; projection_diff_count={len(planned_paths)}; "
+            f"unacknowledged_core_drift_count={len(drift_paths)}"
         )
 
     if not planned:
