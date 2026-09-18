@@ -11,6 +11,7 @@ import pytest
 import obsidian_automation.github_project_status_worker as worker
 from obsidian_automation.github_project_status_mutation import (
     ProjectStatusMutationConflict,
+    ProjectStatusMutationRejected,
     ProjectStatusTransportResult,
     parse_watcher_proposal,
 )
@@ -197,6 +198,58 @@ def test_worker_persists_conflict_rejection_and_does_not_retry(
     payload = json.loads(rejection.read_text(encoding="utf-8"))
     assert payload["proposal_sha256"] == proposal.sha256
     assert payload["outcome"] == "rejected_conflict"
+    assert payload["reason"] == "canonical_conflict"
+
+
+def test_worker_persists_deterministic_transport_rejection_and_does_not_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request_dir, result_dir, state_root, password_file = _prepare_worker_dirs(tmp_path)
+    _, proposal = _queue_request(request_dir)
+    calls = 0
+
+    def fake_apply(*args: object, **kwargs: object) -> ProjectStatusTransportResult:
+        nonlocal calls
+        calls += 1
+        raise ProjectStatusMutationRejected(
+            "authority rejected",
+            reason_code="authority_rejection",
+            http_status=403,
+        )
+
+    monkeypatch.setattr(worker, "apply_project_status", fake_apply)
+
+    first_out = io.StringIO()
+    first_rc = worker.run_worker(
+        request_dir=request_dir,
+        result_dir=result_dir,
+        state_root=state_root,
+        base_url="https://nextcloud.example/remote.php/dav/files/obsidian-github-writer",
+        username="obsidian-github-writer",
+        password_file=password_file,
+        stdout=first_out,
+    )
+    second_out = io.StringIO()
+    second_rc = worker.run_worker(
+        request_dir=request_dir,
+        result_dir=result_dir,
+        state_root=state_root,
+        base_url="https://nextcloud.example/remote.php/dav/files/obsidian-github-writer",
+        username="obsidian-github-writer",
+        password_file=password_file,
+        stdout=second_out,
+    )
+
+    assert first_rc == second_rc == 0
+    assert calls == 1
+    rejection = result_dir / f"{proposal.sha256}.github-status.rejection.json"
+    payload = json.loads(rejection.read_text(encoding="utf-8"))
+    assert payload["proposal_sha256"] == proposal.sha256
+    assert payload["outcome"] == "rejected_transport"
+    assert payload["reason"] == "authority_rejection"
+    assert payload["http_status"] == 403
+    assert "rejected_transport" in first_out.getvalue()
+    assert "already_rejected" in second_out.getvalue()
 
 
 def test_worker_rejects_non_content_addressed_request_name(tmp_path: Path) -> None:
