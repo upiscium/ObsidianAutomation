@@ -37,10 +37,17 @@ class ProjectOverviewConflict(ProjectOverviewError):
 
 
 @dataclass(frozen=True, order=True)
+class BoundIssueRef:
+    repository: str
+    number: int
+
+
+@dataclass(frozen=True, order=True)
 class OverviewItem:
     number: int
     title: str
     draft: bool = False
+    bound_issues: tuple[BoundIssueRef, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -119,11 +126,29 @@ def _safe_project_path(value: object) -> str:
     return value
 
 
+def _parse_bound_issue(value: object) -> BoundIssueRef:
+    if not isinstance(value, dict) or set(value) != {"repository", "number"}:
+        raise ProjectOverviewError("bound issue properties do not match contract")
+    repository = value.get("repository")
+    number = value.get("number")
+    if not isinstance(repository, str) or _REPOSITORY_RE.fullmatch(repository) is None:
+        raise ProjectOverviewError("bound issue repository must be owner/name")
+    if type(number) is not int or number < 1:
+        raise ProjectOverviewError("bound issue number must be a positive integer")
+    return BoundIssueRef(repository=repository, number=number)
+
+
 def _parse_item(value: object, *, draft_allowed: bool) -> OverviewItem:
     if not isinstance(value, dict):
         raise ProjectOverviewError("overview item must be an object")
-    expected = {"number", "title", "draft"} if draft_allowed else {"number", "title"}
-    if set(value) != expected:
+    if draft_allowed:
+        allowed = (
+            {"number", "title", "draft"},
+            {"number", "title", "draft", "bound_issues"},
+        )
+        if set(value) not in allowed:
+            raise ProjectOverviewError("overview item properties do not match contract")
+    elif set(value) != {"number", "title"}:
         raise ProjectOverviewError("overview item properties do not match contract")
     number = value.get("number")
     title = value.get("title")
@@ -134,7 +159,25 @@ def _parse_item(value: object, *, draft_allowed: bool) -> OverviewItem:
     draft = value.get("draft", False)
     if type(draft) is not bool:
         raise ProjectOverviewError("pull request draft must be boolean")
-    return OverviewItem(number=number, title=title.strip(), draft=draft)
+
+    raw_bound_issues = value.get("bound_issues", [])
+    if not isinstance(raw_bound_issues, list):
+        raise ProjectOverviewError("pull request bound_issues must be an array")
+    bound_issues = tuple(
+        sorted(
+            (_parse_bound_issue(item) for item in raw_bound_issues),
+            key=lambda item: (item.repository.casefold(), item.number),
+        )
+    )
+    identities = {(item.repository.casefold(), item.number) for item in bound_issues}
+    if len(identities) != len(bound_issues):
+        raise ProjectOverviewError("duplicate bound issue reference")
+    return OverviewItem(
+        number=number,
+        title=title.strip(),
+        draft=draft,
+        bound_issues=bound_issues,
+    )
 
 
 def make_overview_proposal(
@@ -162,7 +205,15 @@ def make_overview_proposal(
             for item in issue_items
         ],
         "pull_requests": [
-            {"number": item.number, "title": item.title, "draft": item.draft}
+            {
+                "number": item.number,
+                "title": item.title,
+                "draft": item.draft,
+                "bound_issues": [
+                    {"repository": bound.repository, "number": bound.number}
+                    for bound in item.bound_issues
+                ],
+            }
             for item in pr_items
         ],
     }
@@ -255,7 +306,48 @@ def _verify_project_binding(
 
 
 def _yaml_quote(value: str) -> str:
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\r", "\\r")
+        .replace("\n", "\\n")
+        .replace("\t", "\\t")
+    )
+    return '"' + escaped + '"'
+
+
+def _render_pull_request_frontmatter(
+    proposal: ProjectOverviewProposal,
+) -> list[str]:
+    if not proposal.pull_requests:
+        return ["github_pull_requests: []"]
+
+    lines = ["github_pull_requests:"]
+    for item in proposal.pull_requests:
+        status = "draft" if item.draft else "ready"
+        url = f"https://github.com/{proposal.repository}/pull/{item.number}"
+        lines.extend(
+            [
+                f"  - number: {item.number}",
+                f"    title: {_yaml_quote(item.title)}",
+                f"    url: {_yaml_quote(url)}",
+                f"    status: {status}",
+            ]
+        )
+        if item.bound_issues:
+            lines.append("    bound_issues:")
+            for bound in item.bound_issues:
+                issue_url = f"https://github.com/{bound.repository}/issues/{bound.number}"
+                lines.extend(
+                    [
+                        f"      - repository: {_yaml_quote(bound.repository)}",
+                        f"        number: {bound.number}",
+                        f"        url: {_yaml_quote(issue_url)}",
+                    ]
+                )
+        else:
+            lines.append("    bound_issues: []")
+    return lines
 
 
 def _render_project_note_frontmatter(
@@ -265,22 +357,21 @@ def _render_project_note_frontmatter(
     eol: str,
 ) -> str:
     workspace_line = f"workspace: {_yaml_quote(workspace)}" if workspace else "workspace:"
-    return eol.join(
-        [
-            "---",
-            "type: project-note",
-            f"project: {_yaml_quote(proposal.project_reference)}",
-            workspace_line,
-            "category: list",
-            "lifecycle: active",
-            "aliases: []",
-            "tags: []",
-            f"github_repo: {proposal.repository}",
-            "github_status_managed: true",
-            "---",
-            "",
-        ]
-    )
+    lines = [
+        "---",
+        "type: project-note",
+        f"project: {_yaml_quote(proposal.project_reference)}",
+        workspace_line,
+        "category: list",
+        "lifecycle: active",
+        "aliases: []",
+        "tags: []",
+        f"github_repo: {proposal.repository}",
+        "github_status_managed: true",
+    ]
+    lines.extend(_render_pull_request_frontmatter(proposal))
+    lines.extend(["---", ""])
+    return eol.join(lines)
 
 
 def _escape_title(title: str) -> str:
