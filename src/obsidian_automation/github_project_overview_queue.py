@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import stat
 import sys
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Iterable, Sequence, TextIO
 
 from . import github_project_watcher as watcher
 from .github_project_overview import (
+    BoundIssueRef,
     OverviewItem,
     ProjectOverviewError,
     ProjectOverviewProposal,
@@ -20,6 +22,52 @@ from .github_project_watcher_runtime import GitHubClient
 
 class ProjectOverviewQueueError(RuntimeError):
     """Raised when Project overview desired state cannot be queued safely."""
+
+
+_CLOSING_REF_RE = re.compile(
+    r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|ref(?:s|erences?)?)(?:\s*:\s*|\s+)"
+    r"(?:"
+    r"https://github\.com/(?P<url_repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/(?P<url_number>[1-9][0-9]*)"
+    r"|(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(?P<repo_number>[1-9][0-9]*)"
+    r"|#(?P<number>[1-9][0-9]*)"
+    r")"
+)
+
+
+def bound_issues_from_body(
+    repository: str,
+    body: object,
+) -> tuple[BoundIssueRef, ...]:
+    if body is None or body == "":
+        return ()
+    if not isinstance(body, str):
+        raise ProjectOverviewQueueError(
+            f"invalid Pull Request body payload for {repository}"
+        )
+
+    refs: dict[tuple[str, int], BoundIssueRef] = {}
+    for match in _CLOSING_REF_RE.finditer(body):
+        if match.group("url_repo") is not None:
+            bound_repository = match.group("url_repo")
+            number = int(match.group("url_number"))
+        elif match.group("repo") is not None:
+            bound_repository = match.group("repo")
+            number = int(match.group("repo_number"))
+        else:
+            bound_repository = repository
+            number = int(match.group("number"))
+        key = (bound_repository.casefold(), number)
+        refs.setdefault(
+            key,
+            BoundIssueRef(repository=bound_repository, number=number),
+        )
+
+    return tuple(
+        sorted(
+            refs.values(),
+            key=lambda item: (item.repository.casefold(), item.number),
+        )
+    )
 
 
 def _require_directory(path: Path) -> None:
@@ -110,14 +158,23 @@ def overview_items_from_rows(
         number = row.get("number")
         title = row.get("title")
         draft = row.get("draft", False)
+        body = row.get("body")
         if (
             type(number) is not int
             or not isinstance(title, str)
             or not title.strip()
             or type(draft) is not bool
+            or (body is not None and not isinstance(body, str))
         ):
             raise ProjectOverviewQueueError(f"invalid open Pull Request payload for {repository}")
-        pulls.append(OverviewItem(number=number, title=title.strip(), draft=draft))
+        pulls.append(
+            OverviewItem(
+                number=number,
+                title=title.strip(),
+                draft=draft,
+                bound_issues=bound_issues_from_body(repository, body),
+            )
+        )
 
     return tuple(sorted(issues)), tuple(sorted(pulls))
 

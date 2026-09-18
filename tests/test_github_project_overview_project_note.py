@@ -39,6 +39,7 @@ def test_new_status_note_uses_obsidian_core_project_note_schema() -> None:
         "tags: []\n"
         "github_repo: upiscium/Terreate\n"
         "github_status_managed: true\n"
+        "github_pull_requests: []\n"
         "---\n"
     )
     assert MANAGED_START in rendered
