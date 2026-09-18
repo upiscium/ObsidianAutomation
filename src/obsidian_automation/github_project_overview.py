@@ -372,7 +372,7 @@ def _render_project_note_frontmatter(
 
 def _notes_body(body: str) -> str:
     matches = list(
-        re.finditer(r"(?m)^## Notes[ \\t]*\\r?$", body)
+        re.finditer(r"(?m)^## Notes[ \t]*\r?$", body)
     )
     if len(matches) != 1:
         raise ProjectOverviewConflict(
