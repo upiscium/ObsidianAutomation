@@ -27,6 +27,7 @@ Closes #12
     assert refs == (
         BoundIssueRef(repository="upiscium/Other", number=3),
         BoundIssueRef(repository="upiscium/Test", number=12),
+        BoundIssueRef(repository="upiscium/Test", number=44),
         BoundIssueRef(repository="upiscium/Test", number=99),
     )
 
