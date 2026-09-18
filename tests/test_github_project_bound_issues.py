@@ -16,7 +16,8 @@ def test_closing_references_extract_bound_issues_without_plain_mentions() -> Non
     refs = bound_issues_from_body(
         "upiscium/Test",
         """
-Closes #12
+Closes: #12
+Refs #44
 Fixes upiscium/Other#3
 Resolves https://github.com/upiscium/Test/issues/99
 Mention only: #777
