@@ -19,13 +19,7 @@ from .webdav_create import WebDAVCreateError, build_target_url
 
 OVERVIEW_RECORD_VERSION = 1
 MAX_NOTE_BYTES = 4 * 1024 * 1024
-STATUS_HEADING = "# GitHub Status"
 NOTES_HEADING = "## Notes"
-_CHECKBOX_PREFIX_RE = re.compile(r"^- \[(?P<checked>[ xX])\]\s+")
-_GITHUB_ITEM_URL_RE = re.compile(
-    r"https://github\.com/(?P<repository>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/"
-    r"(?P<kind>issues|pull)/(?P<number>[1-9][0-9]*)"
-)
 _REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _WATCH_TRUE = frozenset({"true", "yes", "1", "on"})
 
@@ -376,77 +370,15 @@ def _render_project_note_frontmatter(
     return eol.join(lines)
 
 
-def _escape_title(title: str) -> str:
-    compact = " ".join(title.split())
-    return compact.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
-
-
-def _overview_section_bounds(body: str) -> tuple[int, int]:
-    status_matches = list(
-        re.finditer(r"(?m)^# GitHub Status[ \\t]*\\r?$", body)
-    )
-    notes_matches = list(
+def _notes_body(body: str) -> str:
+    matches = list(
         re.finditer(r"(?m)^## Notes[ \\t]*\\r?$", body)
     )
-    if len(status_matches) != 1 or len(notes_matches) != 1:
+    if len(matches) != 1:
         raise ProjectOverviewConflict(
-            "existing Status.md must contain exactly one GitHub Status heading and one Notes heading"
+            "existing Status.md must contain exactly one Notes heading"
         )
-    start = status_matches[0].start()
-    end = notes_matches[0].start()
-    if end <= start:
-        raise ProjectOverviewConflict(
-            "existing Status.md Notes heading must follow GitHub Status"
-        )
-    return start, end
-
-
-def _checked_items(
-    managed: str,
-    proposal: ProjectOverviewProposal,
-) -> dict[tuple[str, int], bool]:
-    checked: dict[tuple[str, int], bool] = {}
-    for line in managed.splitlines():
-        checkbox = _CHECKBOX_PREFIX_RE.match(line)
-        if checkbox is None:
-            continue
-        item = _GITHUB_ITEM_URL_RE.search(line)
-        if item is None:
-            continue
-        if item.group("repository").casefold() != proposal.repository.casefold():
-            continue
-        kind = "issue" if item.group("kind") == "issues" else "pr"
-        key = (kind, int(item.group("number")))
-        checked[key] = checkbox.group("checked").lower() == "x"
-    return checked
-
-
-def _render_managed(
-    proposal: ProjectOverviewProposal,
-    checked: Mapping[tuple[str, int], bool],
-    *,
-    eol: str = "\n",
-) -> str:
-    lines = [STATUS_HEADING, "", "## Issues"]
-    if proposal.issues:
-        for item in proposal.issues:
-            mark = "x" if checked.get(("issue", item.number), False) else " "
-            title = _escape_title(item.title)
-            url = f"https://github.com/{proposal.repository}/issues/{item.number}"
-            lines.append(f"- [{mark}] [#{item.number} {title}]({url})")
-    else:
-        lines.append("- _No open issues._")
-    lines.extend(["", "## Pull Requests"])
-    if proposal.pull_requests:
-        for item in proposal.pull_requests:
-            mark = "x" if checked.get(("pr", item.number), False) else " "
-            title = _escape_title(item.title)
-            url = f"https://github.com/{proposal.repository}/pull/{item.number}"
-            suffix = " *(draft)*" if item.draft else ""
-            lines.append(f"- [{mark}] [#{item.number} {title}]({url}){suffix}")
-    else:
-        lines.append("- _No open pull requests._")
-    return eol.join(lines)
+    return body[matches[0].start():]
 
 
 def _validate_status_frontmatter(
@@ -482,11 +414,8 @@ def render_status_note(
             workspace=workspace,
             eol="\n",
         )
-        managed = _render_managed(proposal, {})
         return (
             frontmatter
-            + managed
-            + "\n\n"
             + NOTES_HEADING
             + "\n\n"
         ).encode("utf-8")
@@ -506,19 +435,8 @@ def render_status_note(
         workspace=workspace,
         eol=eol,
     )
-    body = text[fm_end:]
-    start, end = _overview_section_bounds(body)
-    checked = _checked_items(body[start:end], proposal)
-    managed = _render_managed(proposal, checked, eol=eol)
-    return (
-        frontmatter
-        + body[:start]
-        + managed
-        + eol
-        + eol
-        + body[end:]
-    ).encode("utf-8")
-
+    notes = _notes_body(text[fm_end:])
+    return (frontmatter + notes).encode("utf-8")
 
 def _observe(
     *,
