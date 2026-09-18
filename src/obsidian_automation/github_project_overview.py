@@ -19,10 +19,12 @@ from .webdav_create import WebDAVCreateError, build_target_url
 
 OVERVIEW_RECORD_VERSION = 1
 MAX_NOTE_BYTES = 4 * 1024 * 1024
-MANAGED_START = "<!-- obsidian-github-sync:overview:start -->"
-MANAGED_END = "<!-- obsidian-github-sync:overview:end -->"
-_ITEM_MARKER_RE = re.compile(
-    r"^- \[(?P<checked>[ xX])\].*<!-- github:(?P<kind>issue|pr):(?P<number>[1-9][0-9]*) -->\s*$"
+STATUS_HEADING = "# GitHub Status"
+NOTES_HEADING = "## Notes"
+_CHECKBOX_PREFIX_RE = re.compile(r"^- \[(?P<checked>[ xX])\]\s+")
+_GITHUB_ITEM_URL_RE = re.compile(
+    r"https://github\.com/(?P<repository>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/"
+    r"(?P<kind>issues|pull)/(?P<number>[1-9][0-9]*)"
 )
 _REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _WATCH_TRUE = frozenset({"true", "yes", "1", "on"})
@@ -379,22 +381,43 @@ def _escape_title(title: str) -> str:
     return compact.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
 
 
-def _checked_items(text: str) -> dict[tuple[str, int], bool]:
-    if text.count(MANAGED_START) != 1 or text.count(MANAGED_END) != 1:
+def _overview_section_bounds(body: str) -> tuple[int, int]:
+    status_matches = list(
+        re.finditer(r"(?m)^# GitHub Status[ \\t]*\\r?$", body)
+    )
+    notes_matches = list(
+        re.finditer(r"(?m)^## Notes[ \\t]*\\r?$", body)
+    )
+    if len(status_matches) != 1 or len(notes_matches) != 1:
         raise ProjectOverviewConflict(
-            "existing Status.md must contain exactly one managed overview block"
+            "existing Status.md must contain exactly one GitHub Status heading and one Notes heading"
         )
-    start = text.index(MANAGED_START)
-    end = text.index(MANAGED_END, start)
+    start = status_matches[0].start()
+    end = notes_matches[0].start()
     if end <= start:
-        raise ProjectOverviewConflict("existing Status.md managed overview block is malformed")
+        raise ProjectOverviewConflict(
+            "existing Status.md Notes heading must follow GitHub Status"
+        )
+    return start, end
+
+
+def _checked_items(
+    managed: str,
+    proposal: ProjectOverviewProposal,
+) -> dict[tuple[str, int], bool]:
     checked: dict[tuple[str, int], bool] = {}
-    for line in text[start:end].splitlines():
-        match = _ITEM_MARKER_RE.match(line)
-        if match is None:
+    for line in managed.splitlines():
+        checkbox = _CHECKBOX_PREFIX_RE.match(line)
+        if checkbox is None:
             continue
-        key = (match.group("kind"), int(match.group("number")))
-        checked[key] = match.group("checked").lower() == "x"
+        item = _GITHUB_ITEM_URL_RE.search(line)
+        if item is None:
+            continue
+        if item.group("repository").casefold() != proposal.repository.casefold():
+            continue
+        kind = "issue" if item.group("kind") == "issues" else "pr"
+        key = (kind, int(item.group("number")))
+        checked[key] = checkbox.group("checked").lower() == "x"
     return checked
 
 
@@ -404,15 +427,13 @@ def _render_managed(
     *,
     eol: str = "\n",
 ) -> str:
-    lines = [MANAGED_START, "## Issues"]
+    lines = [STATUS_HEADING, "", "## Issues"]
     if proposal.issues:
         for item in proposal.issues:
             mark = "x" if checked.get(("issue", item.number), False) else " "
             title = _escape_title(item.title)
             url = f"https://github.com/{proposal.repository}/issues/{item.number}"
-            lines.append(
-                f"- [{mark}] [#{item.number} {title}]({url}) <!-- github:issue:{item.number} -->"
-            )
+            lines.append(f"- [{mark}] [#{item.number} {title}]({url})")
     else:
         lines.append("- _No open issues._")
     lines.extend(["", "## Pull Requests"])
@@ -422,12 +443,9 @@ def _render_managed(
             title = _escape_title(item.title)
             url = f"https://github.com/{proposal.repository}/pull/{item.number}"
             suffix = " *(draft)*" if item.draft else ""
-            lines.append(
-                f"- [{mark}] [#{item.number} {title}]({url}){suffix} <!-- github:pr:{item.number} -->"
-            )
+            lines.append(f"- [{mark}] [#{item.number} {title}]({url}){suffix}")
     else:
         lines.append("- _No open pull requests._")
-    lines.append(MANAGED_END)
     return eol.join(lines)
 
 
@@ -467,9 +485,10 @@ def render_status_note(
         managed = _render_managed(proposal, {})
         return (
             frontmatter
-            + "# GitHub Status\n\n"
             + managed
-            + "\n\n## Notes\n\n"
+            + "\n\n"
+            + NOTES_HEADING
+            + "\n\n"
         ).encode("utf-8")
 
     if len(existing) > MAX_NOTE_BYTES:
@@ -479,7 +498,6 @@ def render_status_note(
     except UnicodeDecodeError as exc:
         raise ProjectOverviewConflict("existing Status.md is not valid UTF-8") from exc
 
-    checked = _checked_items(text)
     _validate_status_frontmatter(text, proposal)
     eol = "\r\n" if "\r\n" in text else "\n"
     fm_end = _frontmatter_end(text)
@@ -489,10 +507,17 @@ def render_status_note(
         eol=eol,
     )
     body = text[fm_end:]
-    start = body.index(MANAGED_START)
-    end = body.index(MANAGED_END, start) + len(MANAGED_END)
+    start, end = _overview_section_bounds(body)
+    checked = _checked_items(body[start:end], proposal)
     managed = _render_managed(proposal, checked, eol=eol)
-    return (frontmatter + body[:start] + managed + body[end:]).encode("utf-8")
+    return (
+        frontmatter
+        + body[:start]
+        + managed
+        + eol
+        + eol
+        + body[end:]
+    ).encode("utf-8")
 
 
 def _observe(
