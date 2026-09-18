@@ -25,7 +25,7 @@ class ProjectOverviewQueueError(RuntimeError):
 
 
 _CLOSING_REF_RE = re.compile(
-    r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)(?:\s*:\s*|\s+)"
+    r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|ref(?:s|erences?)?)(?:\s*:\s*|\s+)"
     r"(?:"
     r"https://github\.com/(?P<url_repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/(?P<url_number>[1-9][0-9]*)"
     r"|(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(?P<repo_number>[1-9][0-9]*)"
