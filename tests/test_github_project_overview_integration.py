@@ -30,7 +30,14 @@ class _RuntimeClient(GitHubClient):
                 },
             ]
         if "/pulls?state=open" in path:
-            return [{"number": 20, "title": "PR twenty", "draft": True}]
+            return [
+                {
+                    "number": 20,
+                    "title": "PR twenty",
+                    "draft": True,
+                    "body": "Closes #10",
+                }
+            ]
         raise AssertionError(path)
 
 
@@ -78,7 +85,14 @@ def test_status_queue_reuses_exact_watcher_snapshot_for_overview(tmp_path: Path)
         "project": "10-Project/Test/Test.md",
         "repository": "upiscium/Test",
         "issues": [{"number": 10, "title": "Issue ten"}],
-        "pull_requests": [{"number": 20, "title": "PR twenty", "draft": True}],
+        "pull_requests": [
+            {
+                "number": 20,
+                "title": "PR twenty",
+                "draft": True,
+                "bound_issues": [{"repository": "upiscium/Test", "number": 10}],
+            }
+        ],
     }
     rows = [json.loads(line) for line in stdout.getvalue().splitlines()]
     assert any(row.get("event") == "project-status-observation" for row in rows)
