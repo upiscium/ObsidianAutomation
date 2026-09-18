@@ -1,21 +1,30 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import tempfile
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
 
+from .core_promotion_transport import PromotionTransportError
+from .managed_promotion_transport import (
+    APPEARANCE_PATH,
+    _appearance_projection,
+    _decode_appearance,
+)
 from .public_export import (
     Change,
     ExportConfig,
     ExportError,
+    _assert_safe_destination,
+    _atomic_copy,
     _is_excluded,
     _is_repository_owned,
     _matches_any,
-    apply_plan,
     build_plan,
     load_config,
 )
@@ -107,6 +116,89 @@ def _projection_managed(path: str, config: ExportConfig) -> bool:
         and not _is_excluded(path, config)
         and not _is_repository_owned(path, config)
     )
+
+
+
+def _canonical_public_appearance(path: Path) -> bytes:
+    try:
+        value = _decode_appearance(path.read_bytes(), label="Live Vault appearance")
+    except OSError as exc:
+        raise PublishError(f"cannot read Live Vault appearance: {path}") from exc
+    except PromotionTransportError as exc:
+        raise PublishError(str(exc)) from exc
+
+    projection = _appearance_projection(value)
+    public_value = {
+        "theme": projection.theme,
+        "cssTheme": projection.css_theme,
+        "enabledCssSnippets": list(projection.managed_snippets),
+    }
+    return (json.dumps(public_value, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+
+def _build_publication_plan(
+    source: Path,
+    destination: Path,
+    config: ExportConfig,
+) -> tuple[list[Change], dict[str, Path], dict[str, bytes]]:
+    planned, source_files = build_plan(source, destination, config)
+    overrides: dict[str, bytes] = {}
+
+    appearance_source = source_files.get(APPEARANCE_PATH)
+    if appearance_source is None or not _projection_managed(APPEARANCE_PATH, config):
+        return planned, source_files, overrides
+
+    desired = _canonical_public_appearance(appearance_source)
+    target = _assert_safe_destination(destination, APPEARANCE_PATH)
+    overrides[APPEARANCE_PATH] = desired
+
+    planned = [change for change in planned if change.path != APPEARANCE_PATH]
+    if not target.exists():
+        planned.append(Change("ADD", APPEARANCE_PATH))
+    elif target.read_bytes() != desired:
+        planned.append(Change("UPDATE", APPEARANCE_PATH))
+
+    planned.sort(key=lambda item: (item.path, item.action))
+    return planned, source_files, overrides
+
+
+def _atomic_write_bytes(target: Path, data: bytes) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=".obsidian-publish-", dir=target.parent)
+    temp = Path(temp_name)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, target)
+    finally:
+        if temp.exists():
+            temp.unlink()
+
+
+def _apply_publication_plan(
+    source: Path,
+    destination: Path,
+    config: ExportConfig,
+) -> list[Change]:
+    changes, source_files, overrides = _build_publication_plan(source, destination, config)
+    destination.mkdir(parents=True, exist_ok=True)
+
+    for change in changes:
+        target = _assert_safe_destination(destination, change.path)
+        if change.action == "DELETE":
+            if target.exists() or target.is_symlink():
+                target.unlink()
+        elif change.action in {"ADD", "UPDATE"}:
+            if change.path in overrides:
+                _atomic_write_bytes(target, overrides[change.path])
+            else:
+                _atomic_copy(source_files[change.path], target)
+        else:
+            raise AssertionError(f"unexpected action: {change.action}")
+
+    return changes
 
 
 def _last_projection_commit(repository: Path) -> str | None:
@@ -209,7 +301,7 @@ def publish_projection(
 
     try:
         config = load_config(config_path)
-        planned, _ = build_plan(source, destination, config)
+        planned, _, _ = _build_publication_plan(source, destination, config)
     except ExportError as exc:
         raise PublishError(str(exc)) from exc
 
@@ -249,7 +341,7 @@ def publish_projection(
         return PublishResult(changed=False, commit_sha=None, changes=())
 
     try:
-        changes = tuple(apply_plan(source, destination, config))
+        changes = tuple(_apply_publication_plan(source, destination, config))
     except ExportError as exc:
         raise PublishError(str(exc)) from exc
     if not changes:
