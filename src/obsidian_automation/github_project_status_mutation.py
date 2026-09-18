@@ -37,6 +37,29 @@ class ProjectStatusMutationError(RuntimeError):
 class ProjectStatusMutationConflict(ProjectStatusMutationError):
     """Raised when current canonical state no longer matches the proposal baseline."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason_code: str = "canonical_conflict",
+        http_status: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
+        self.http_status = http_status
+
+
+class ProjectStatusMutationRejected(ProjectStatusMutationError):
+    """Raised when a trustworthy HTTP response deterministically rejects a mutation."""
+
+    def __init__(self, message: str, *, reason_code: str, http_status: int) -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
+        self.http_status = http_status
+
+
+_AMBIGUOUS_HTTP_STATUSES = frozenset({500, 502, 503, 504})
+
 
 @dataclass(frozen=True)
 class ProjectStatusProposal:
@@ -462,8 +485,32 @@ def apply_project_status(
             response_limit=64 * 1024,
         )
         response_status = response.status
-        if not 200 <= response.status < 300:
+        if response.status == 412:
+            raise ProjectStatusMutationConflict(
+                "Project status CAS precondition failed",
+                reason_code="etag_cas_conflict",
+                http_status=response.status,
+            )
+        if response.status in {401, 403}:
+            raise ProjectStatusMutationRejected(
+                f"WebDAV Project status PUT authority rejected with HTTP {response.status}",
+                reason_code="authority_rejection",
+                http_status=response.status,
+            )
+        if 400 <= response.status < 500:
+            raise ProjectStatusMutationRejected(
+                f"WebDAV Project status PUT was rejected with HTTP {response.status}",
+                reason_code="http_client_rejection",
+                http_status=response.status,
+            )
+        if response.status in _AMBIGUOUS_HTTP_STATUSES:
             ambiguous = True
+        elif not 200 <= response.status < 300:
+            raise ProjectStatusMutationRejected(
+                f"WebDAV Project status PUT returned deterministic HTTP {response.status}",
+                reason_code="http_response_rejection",
+                http_status=response.status,
+            )
     except PromotionTransportNetworkError:
         ambiguous = True
 
