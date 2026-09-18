@@ -13,6 +13,7 @@ from typing import Iterable, Mapping, TextIO
 from .github_project_status_mutation import (
     ProjectStatusMutationConflict,
     ProjectStatusMutationError,
+    ProjectStatusMutationRejected,
     ProjectStatusTransportResult,
     apply_project_status,
     parse_watcher_proposal,
@@ -96,21 +97,31 @@ def _existing_artifact_matches(path: Path, proposal_sha256: str) -> bool:
     return True
 
 
-def _persist_conflict(result_dir: Path, proposal_sha256: str, *, project: str) -> Path:
+def _persist_rejection(
+    result_dir: Path,
+    proposal_sha256: str,
+    *,
+    project: str,
+    outcome: str,
+    reason: str,
+    http_status: int | None = None,
+) -> Path:
     path = result_dir / f"{proposal_sha256}.github-status.rejection.json"
-    payload = _canonical_json_bytes(
-        {
-            "record_version": 1,
-            "stage": "github_project_status_transport",
-            "proposal_sha256": proposal_sha256,
-            "project": project,
-            "outcome": "rejected_conflict",
-            "completed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        }
-    )
+    value: dict[str, object] = {
+        "record_version": 1,
+        "stage": "github_project_status_transport",
+        "proposal_sha256": proposal_sha256,
+        "project": project,
+        "outcome": outcome,
+        "reason": reason,
+        "completed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    if http_status is not None:
+        value["http_status"] = http_status
+    payload = _canonical_json_bytes(value)
     if path.exists() or path.is_symlink():
         if not _existing_artifact_matches(path, proposal_sha256):
-            raise ProjectStatusWorkerError("conflict artifact hash mismatch")
+            raise ProjectStatusWorkerError("rejection artifact hash mismatch")
         return path
     _write_exclusive(path, payload)
     return path
@@ -210,11 +221,14 @@ def run_worker(
                         timeout=timeout,
                     )
                     data = persist_transport_result(result_path, result)
-            except ProjectStatusMutationConflict:
-                rejection = _persist_conflict(
+            except ProjectStatusMutationConflict as exc:
+                rejection = _persist_rejection(
                     result_dir,
                     proposal.sha256,
                     project=proposal.project_path,
+                    outcome="rejected_conflict",
+                    reason=exc.reason_code,
+                    http_status=exc.http_status,
                 )
                 print(
                     json.dumps(
@@ -223,6 +237,30 @@ def run_worker(
                             "project": proposal.project_path,
                             "proposal_sha256": proposal.sha256,
                             "status": "rejected_conflict",
+                            "result": rejection.name,
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    file=stdout,
+                )
+                continue
+            except ProjectStatusMutationRejected as exc:
+                rejection = _persist_rejection(
+                    result_dir,
+                    proposal.sha256,
+                    project=proposal.project_path,
+                    outcome="rejected_transport",
+                    reason=exc.reason_code,
+                    http_status=exc.http_status,
+                )
+                print(
+                    json.dumps(
+                        {
+                            "event": "github-project-status-worker",
+                            "project": proposal.project_path,
+                            "proposal_sha256": proposal.sha256,
+                            "status": "rejected_transport",
                             "result": rejection.name,
                         },
                         ensure_ascii=False,
