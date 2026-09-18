@@ -18,8 +18,9 @@ the generated note is:
 
 ## User-facing format
 
-A newly-created note is also a canonical Project Note. Automation owns its
-frontmatter and keeps a structured PR snapshot for Dataview consumers:
+A generated `Status.md` is a canonical Project Note used as a structured data
+source for Dataview consumers. GitHub status is not rendered as a checklist in
+the note body.
 
 ```md
 ---
@@ -43,46 +44,40 @@ github_pull_requests:
         url: "https://github.com/upiscium/Terreate/issues/203"
 ---
 
-# GitHub Status
-
-<!-- obsidian-github-sync:overview:start -->
-## Issues
-- [ ] [#203 Example issue](https://github.com/upiscium/Terreate/issues/203) <!-- github:issue:203 -->
-
-## Pull Requests
-- [ ] [#42 Example PR](https://github.com/upiscium/Terreate/pull/42) <!-- github:pr:42 -->
-<!-- obsidian-github-sync:overview:end -->
-
 ## Notes
+
+human-authored notes
 ```
 
-The HTML comments are machine bindings and should remain intact. They are unobtrusive in Obsidian reading view.
-
-### Review checkboxes
-
-Users may toggle an Issue or Pull Request checkbox from `[ ]` to `[x]` in Obsidian. The next refresh preserves the checkbox state by `(kind, number)` even when the GitHub title changes.
-
-New items start unchecked. Items that are no longer open disappear from the managed block.
+The generated note contains no HTML machine comments and no Issue/PR checkbox
+list. Project Entry views consume `github_pull_requests` from frontmatter and
+render the GitHub Status table through Dataview.
 
 ### Structured Pull Request metadata
 
 `github_pull_requests` contains the currently-open PRs for Project Entry Dataview
-views. `status` is `draft` or `ready`. `bound_issues` is derived from explicit Issue relations in the PR body. GitHub
-closing keywords such as `Closes #203` / `Fixes owner/repository#10` and the
-repository workflow convention `Refs #203` / `References #203` are supported.
-Plain issue mentions are not treated as bindings.
+views. `status` is `draft` or `ready`. `bound_issues` is derived from explicit
+Issue relations in the PR body. GitHub closing keywords such as `Closes #203` /
+`Fixes owner/repository#10` and the repository workflow convention
+`Refs #203` / `References #203` are supported. Plain Issue mentions are not
+treated as bindings.
 
-The production watcher reuses the PR rows already fetched for the normal repository
-snapshot, so this metadata does not add a second GitHub Issue/PR collection pass.
+The production watcher reuses the PR rows already fetched for the normal
+repository snapshot, so this metadata does not add a second GitHub Issue/PR
+collection pass.
 
 ### Free-form notes
 
-Automation owns and rewrites the `Status.md` frontmatter and the region between
-the managed markers. Human-authored body content outside the managed markers,
-including `## Notes`, is preserved.
+Automation owns the entire frontmatter. The only human-authored body region is
+`## Notes` and everything after it. Existing Notes content is preserved during
+refreshes.
 
-If a pre-existing `Status.md` does not contain exactly one valid managed block,
-automation fails closed rather than replacing human content.
+Legacy generated notes that still contain `# GitHub Status`, Issue/PR
+checklists, or HTML comment markers are migrated on the next successful sync:
+the old generated body is removed and only `## Notes` content is retained.
+
+An existing `Status.md` without recognized automation ownership still fails
+closed.
 
 ## Authority
 
@@ -126,7 +121,7 @@ The overview queue uses one stable local request file per Project path:
 
 If GitHub Issue/PR content is unchanged, request bytes remain unchanged. When the desired overview changes, the watcher atomically replaces that Project's request. Requests for Projects that no longer opt in are removed from the local handoff directory only after a complete successful watcher pass. This does not delete canonical `Status.md` files.
 
-The overview worker intentionally re-evaluates every active request each cycle. This is required because checkbox and free-form edits happen in canonical Obsidian state, not in the GitHub proposal. If the rendered canonical bytes are already correct, the worker returns `already_desired` and performs no PUT.
+The overview worker intentionally re-evaluates every active request each cycle because free-form Notes live in canonical Obsidian state, not in the GitHub proposal. If the rendered canonical bytes are already correct, the worker returns `already_desired` and performs no PUT.
 
 ## Path collision policy
 
@@ -147,7 +142,7 @@ For every request the writer:
 2. verifies `type: project`, exact `github_repo`, and enabled `github_watch`;
 3. derives sibling `Status.md` from the validated Project path;
 4. GETs `Status.md`;
-5. preserves checkbox state and all bytes outside the managed block;
+5. preserves the human-authored `## Notes` section while replacing automation-owned frontmatter;
 6. creates a missing note with `PUT + If-None-Match: *`, or updates an existing note with strong ETag `PUT + If-Match`;
 7. GETs `Status.md` again and requires exact desired bytes.
 
@@ -206,7 +201,7 @@ For a Project without an existing `Status.md`, expect an overview worker event w
 {"status":"completed","outcome":"created"}
 ```
 
-Confirm the new note in Nextcloud/Obsidian. Toggle at least one Issue checkbox and optionally add text under `## Notes`, then run the writer again. The next cycle must preserve those edits. If GitHub content is otherwise unchanged, no semantically unnecessary content should be lost; the worker may update once to incorporate the user's checkbox/notes-aware render and should settle to `already_desired` thereafter.
+Confirm the new note in Nextcloud/Obsidian. Add text under `## Notes`, then run the writer again. The next cycle must preserve that text. Existing legacy checklist/comment markup should disappear after the first migration cycle, and a subsequent unchanged cycle should settle to `already_desired`.
 
 After the canary passes:
 
