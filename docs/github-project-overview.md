@@ -18,13 +18,29 @@ the generated note is:
 
 ## User-facing format
 
-A newly-created note has this shape:
+A newly-created note is also a canonical Project Note. Automation owns its
+frontmatter and keeps a structured PR snapshot for Dataview consumers:
 
 ```md
 ---
-type: github-status
-project: "[[Terreate]]"
+type: project-note
+project: "[[10-Project/Terreate/Terreate|Terreate]]"
+workspace: "[[03-Workspace/Example/Example|Example]]"
+category: list
+lifecycle: active
+aliases: []
+tags: []
 github_repo: upiscium/Terreate
+github_status_managed: true
+github_pull_requests:
+  - number: 42
+    title: "Example PR"
+    url: "https://github.com/upiscium/Terreate/pull/42"
+    status: ready
+    bound_issues:
+      - repository: "upiscium/Terreate"
+        number: 203
+        url: "https://github.com/upiscium/Terreate/issues/203"
 ---
 
 # GitHub Status
@@ -48,11 +64,24 @@ Users may toggle an Issue or Pull Request checkbox from `[ ]` to `[x]` in Obsidi
 
 New items start unchecked. Items that are no longer open disappear from the managed block.
 
+### Structured Pull Request metadata
+
+`github_pull_requests` contains the currently-open PRs for Project Entry Dataview
+views. `status` is `draft` or `ready`. `bound_issues` is derived from GitHub
+closing-keyword references in the PR body, such as `Closes #203` or
+`Fixes owner/repository#10`. Plain issue mentions are not treated as bindings.
+
+The production watcher reuses the PR rows already fetched for the normal repository
+snapshot, so this metadata does not add a second GitHub Issue/PR collection pass.
+
 ### Free-form notes
 
-Only the region between the managed markers is generated. Everything outside that region, including `## Notes`, is preserved byte-for-byte.
+Automation owns and rewrites the `Status.md` frontmatter and the region between
+the managed markers. Human-authored body content outside the managed markers,
+including `## Notes`, is preserved.
 
-If a pre-existing `Status.md` does not contain exactly one valid managed block, automation fails closed rather than replacing human content.
+If a pre-existing `Status.md` does not contain exactly one valid managed block,
+automation fails closed rather than replacing human content.
 
 ## Authority
 
