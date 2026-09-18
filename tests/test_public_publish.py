@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -49,6 +50,42 @@ repository_owned = [".git", ".git/**", ".github/**", ".gitignore", "README.md", 
 """
     )
     return config
+
+
+
+def _write_config_with_appearance(path: Path) -> Path:
+    config = path / "public-export-with-appearance.toml"
+    config.write_text(
+        """version = 1
+strict_missing = true
+include = ["98-System/**", ".obsidian/appearance.json"]
+repository_owned = [".git", ".git/**", ".github/**", ".gitignore", "README.md", "LICENSE"]
+"""
+    )
+    return config
+
+
+def _appearance(
+    *,
+    managed: list[str],
+    private: list[str] | None = None,
+    extra: dict[str, object] | None = None,
+) -> dict[str, object]:
+    value: dict[str, object] = {
+        "theme": "obsidian",
+        "cssTheme": "Tokyo Night",
+        "enabledCssSnippets": [*managed, *(private or [])],
+    }
+    value.update(extra or {})
+    return value
+
+
+def _write_json(path: Path, value: dict[str, object], *, compact: bool = False) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if compact:
+        path.write_text(json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n")
+    else:
+        path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
 
 
 def test_noop_projection_creates_no_commit(tmp_path: Path) -> None:
@@ -242,3 +279,164 @@ def test_repository_owned_core_change_does_not_block_vault_projection(tmp_path: 
     assert result.changed is True
     assert (destination / "98-System/view.js").read_text() == "vault-new\n"
     assert (destination / "README.md").read_text() == "reviewed readme\n"
+
+
+def test_semantically_converged_appearance_allows_empty_acknowledgement(tmp_path: Path) -> None:
+    source = tmp_path / "vault"
+    destination = tmp_path / "core"
+    (source / "98-System").mkdir(parents=True)
+    (source / "98-System/view.js").write_text("same\n")
+
+    _init_repository(destination)
+    (destination / "98-System").mkdir(parents=True)
+    (destination / "98-System/view.js").write_text("same\n")
+    core_appearance = destination / ".obsidian/appearance.json"
+    _write_json(core_appearance, _appearance(managed=["obsidian-core"]))
+    _commit_all(destination)
+
+    # Reviewed Core change enables the mobile managed snippet.
+    _write_json(
+        core_appearance,
+        _appearance(managed=["obsidian-core", "obsidian-core-mobile"]),
+    )
+    manual = _commit_all(destination, "Reviewed appearance change (#84)")
+
+    # Promotion converged managed state, but Live preserved a private snippet,
+    # an unknown key and different JSON formatting.
+    _write_json(
+        source / ".obsidian/appearance.json",
+        _appearance(
+            managed=["obsidian-core", "obsidian-core-mobile"],
+            private=["private-local-snippet"],
+            extra={"accentColor": "#123456"},
+        ),
+        compact=True,
+    )
+
+    result = publish_projection(
+        source=source,
+        destination=destination,
+        config_path=_write_config_with_appearance(tmp_path),
+        commit_message=PROJECTION_COMMIT_SUBJECT,
+        author_name="Automation",
+        author_email="automation@example.invalid",
+        validate_core=False,
+    )
+
+    assert result.changed is True
+    assert result.changes == ()
+    assert _git(destination, "rev-list", "--count", f"{manual}..HEAD") == "1"
+    assert _git(destination, "diff", "--name-only", "HEAD^", "HEAD") == ""
+    assert "private-local-snippet" not in core_appearance.read_text()
+    assert "accentColor" not in core_appearance.read_text()
+
+
+def test_publication_writes_only_managed_appearance_projection(tmp_path: Path) -> None:
+    source = tmp_path / "vault"
+    destination = tmp_path / "core"
+    (source / "98-System").mkdir(parents=True)
+    (source / "98-System/view.js").write_text("same\n")
+
+    _init_repository(destination)
+    (destination / "98-System").mkdir(parents=True)
+    (destination / "98-System/view.js").write_text("same\n")
+    core_appearance = destination / ".obsidian/appearance.json"
+    _write_json(core_appearance, _appearance(managed=["obsidian-core"]))
+    _commit_all(destination)
+
+    _write_json(
+        source / ".obsidian/appearance.json",
+        _appearance(
+            managed=["obsidian-core", "obsidian-core-mobile"],
+            private=["private-local-snippet"],
+            extra={"translucency": True},
+        ),
+    )
+
+    result = publish_projection(
+        source=source,
+        destination=destination,
+        config_path=_write_config_with_appearance(tmp_path),
+        commit_message=PROJECTION_COMMIT_SUBJECT,
+        author_name="Automation",
+        author_email="automation@example.invalid",
+        validate_core=False,
+    )
+
+    assert result.changed is True
+    assert result.changes == (public_publish.Change("UPDATE", ".obsidian/appearance.json"),)
+    published = json.loads(core_appearance.read_text())
+    assert published == {
+        "theme": "obsidian",
+        "cssTheme": "Tokyo Night",
+        "enabledCssSnippets": ["obsidian-core", "obsidian-core-mobile"],
+    }
+    assert set(published) == {"theme", "cssTheme", "enabledCssSnippets"}
+
+
+def test_malformed_live_appearance_fails_before_repository_mutation(tmp_path: Path) -> None:
+    source = tmp_path / "vault"
+    destination = tmp_path / "core"
+    (source / "98-System").mkdir(parents=True)
+    (source / "98-System/view.js").write_text("vault-new\n")
+    (source / ".obsidian").mkdir(parents=True)
+    (source / ".obsidian/appearance.json").write_text("{not-json")
+
+    _init_repository(destination)
+    (destination / "98-System").mkdir(parents=True)
+    (destination / "98-System/view.js").write_text("old\n")
+    _write_json(
+        destination / ".obsidian/appearance.json",
+        _appearance(managed=["obsidian-core"]),
+    )
+    initial = _commit_all(destination)
+
+    with pytest.raises(PublishError, match="Live Vault appearance"):
+        publish_projection(
+            source=source,
+            destination=destination,
+            config_path=_write_config_with_appearance(tmp_path),
+            commit_message=PROJECTION_COMMIT_SUBJECT,
+            author_name="Automation",
+            author_email="automation@example.invalid",
+            validate_core=False,
+        )
+
+    assert _git(destination, "rev-parse", "HEAD") == initial
+    assert _git(destination, "status", "--porcelain") == ""
+    assert (destination / "98-System/view.js").read_text() == "old\n"
+
+
+def test_duplicate_live_appearance_snippet_fails_closed(tmp_path: Path) -> None:
+    source = tmp_path / "vault"
+    destination = tmp_path / "core"
+    (source / "98-System").mkdir(parents=True)
+    (source / "98-System/view.js").write_text("same\n")
+
+    _init_repository(destination)
+    (destination / "98-System").mkdir(parents=True)
+    (destination / "98-System/view.js").write_text("same\n")
+    _write_json(
+        destination / ".obsidian/appearance.json",
+        _appearance(managed=["obsidian-core"]),
+    )
+    initial = _commit_all(destination)
+
+    _write_json(
+        source / ".obsidian/appearance.json",
+        _appearance(managed=["obsidian-core", "obsidian-core"]),
+    )
+
+    with pytest.raises(PublishError, match="must not contain duplicates"):
+        publish_projection(
+            source=source,
+            destination=destination,
+            config_path=_write_config_with_appearance(tmp_path),
+            commit_message=PROJECTION_COMMIT_SUBJECT,
+            author_name="Automation",
+            author_email="automation@example.invalid",
+            validate_core=False,
+        )
+
+    assert _git(destination, "rev-parse", "HEAD") == initial
+    assert _git(destination, "status", "--porcelain") == ""
