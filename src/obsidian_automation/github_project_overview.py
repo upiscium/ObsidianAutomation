@@ -19,11 +19,7 @@ from .webdav_create import WebDAVCreateError, build_target_url
 
 OVERVIEW_RECORD_VERSION = 1
 MAX_NOTE_BYTES = 4 * 1024 * 1024
-MANAGED_START = "<!-- obsidian-github-sync:overview:start -->"
-MANAGED_END = "<!-- obsidian-github-sync:overview:end -->"
-_ITEM_MARKER_RE = re.compile(
-    r"^- \[(?P<checked>[ xX])\].*<!-- github:(?P<kind>issue|pr):(?P<number>[1-9][0-9]*) -->\s*$"
-)
+NOTES_HEADING = "## Notes"
 _REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _WATCH_TRUE = frozenset({"true", "yes", "1", "on"})
 
@@ -374,61 +370,15 @@ def _render_project_note_frontmatter(
     return eol.join(lines)
 
 
-def _escape_title(title: str) -> str:
-    compact = " ".join(title.split())
-    return compact.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
-
-
-def _checked_items(text: str) -> dict[tuple[str, int], bool]:
-    if text.count(MANAGED_START) != 1 or text.count(MANAGED_END) != 1:
+def _notes_body(body: str) -> str:
+    matches = list(
+        re.finditer(r"(?m)^## Notes[ \t]*\r?$", body)
+    )
+    if len(matches) != 1:
         raise ProjectOverviewConflict(
-            "existing Status.md must contain exactly one managed overview block"
+            "existing Status.md must contain exactly one Notes heading"
         )
-    start = text.index(MANAGED_START)
-    end = text.index(MANAGED_END, start)
-    if end <= start:
-        raise ProjectOverviewConflict("existing Status.md managed overview block is malformed")
-    checked: dict[tuple[str, int], bool] = {}
-    for line in text[start:end].splitlines():
-        match = _ITEM_MARKER_RE.match(line)
-        if match is None:
-            continue
-        key = (match.group("kind"), int(match.group("number")))
-        checked[key] = match.group("checked").lower() == "x"
-    return checked
-
-
-def _render_managed(
-    proposal: ProjectOverviewProposal,
-    checked: Mapping[tuple[str, int], bool],
-    *,
-    eol: str = "\n",
-) -> str:
-    lines = [MANAGED_START, "## Issues"]
-    if proposal.issues:
-        for item in proposal.issues:
-            mark = "x" if checked.get(("issue", item.number), False) else " "
-            title = _escape_title(item.title)
-            url = f"https://github.com/{proposal.repository}/issues/{item.number}"
-            lines.append(
-                f"- [{mark}] [#{item.number} {title}]({url}) <!-- github:issue:{item.number} -->"
-            )
-    else:
-        lines.append("- _No open issues._")
-    lines.extend(["", "## Pull Requests"])
-    if proposal.pull_requests:
-        for item in proposal.pull_requests:
-            mark = "x" if checked.get(("pr", item.number), False) else " "
-            title = _escape_title(item.title)
-            url = f"https://github.com/{proposal.repository}/pull/{item.number}"
-            suffix = " *(draft)*" if item.draft else ""
-            lines.append(
-                f"- [{mark}] [#{item.number} {title}]({url}){suffix} <!-- github:pr:{item.number} -->"
-            )
-    else:
-        lines.append("- _No open pull requests._")
-    lines.append(MANAGED_END)
-    return eol.join(lines)
+    return body[matches[0].start():]
 
 
 def _validate_status_frontmatter(
@@ -464,12 +414,10 @@ def render_status_note(
             workspace=workspace,
             eol="\n",
         )
-        managed = _render_managed(proposal, {})
         return (
             frontmatter
-            + "# GitHub Status\n\n"
-            + managed
-            + "\n\n## Notes\n\n"
+            + NOTES_HEADING
+            + "\n\n"
         ).encode("utf-8")
 
     if len(existing) > MAX_NOTE_BYTES:
@@ -479,7 +427,6 @@ def render_status_note(
     except UnicodeDecodeError as exc:
         raise ProjectOverviewConflict("existing Status.md is not valid UTF-8") from exc
 
-    checked = _checked_items(text)
     _validate_status_frontmatter(text, proposal)
     eol = "\r\n" if "\r\n" in text else "\n"
     fm_end = _frontmatter_end(text)
@@ -488,12 +435,8 @@ def render_status_note(
         workspace=workspace,
         eol=eol,
     )
-    body = text[fm_end:]
-    start = body.index(MANAGED_START)
-    end = body.index(MANAGED_END, start) + len(MANAGED_END)
-    managed = _render_managed(proposal, checked, eol=eol)
-    return (frontmatter + body[:start] + managed + body[end:]).encode("utf-8")
-
+    notes = _notes_body(text[fm_end:])
+    return (frontmatter + notes).encode("utf-8")
 
 def _observe(
     *,

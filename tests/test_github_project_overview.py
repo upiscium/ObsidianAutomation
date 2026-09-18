@@ -8,8 +8,6 @@ import pytest
 
 from obsidian_automation.core_promotion_transport import HTTPResponse
 from obsidian_automation.github_project_overview import (
-    MANAGED_END,
-    MANAGED_START,
     OverviewItem,
     ProjectOverviewConflict,
     apply_project_overview,
@@ -52,13 +50,10 @@ def test_proposal_is_canonical_and_bound_to_project() -> None:
     assert reparsed.sha256 == proposal.sha256
 
 
-def test_render_preserves_checkbox_and_freeform_notes_while_refreshing_items() -> None:
+def test_render_keeps_only_structured_data_and_freeform_notes() -> None:
     first = _proposal()
     original = render_status_note(first, None).decode()
-    edited = original.replace(
-        "- [ ] [#203 First issue]",
-        "- [x] [#203 First issue]",
-    ).replace("## Notes\n\n", "## Notes\n\nKeep this note.\n")
+    edited = original.replace("## Notes\n\n", "## Notes\n\nKeep this note.\n")
 
     second = _proposal(
         issues=[OverviewItem(203, "Renamed issue"), OverviewItem(999, "New issue")],
@@ -66,17 +61,19 @@ def test_render_preserves_checkbox_and_freeform_notes_while_refreshing_items() -
     )
     refreshed = render_status_note(second, edited.encode()).decode()
 
-    assert "- [x] [#203 Renamed issue]" in refreshed
-    assert "- [ ] [#999 New issue]" in refreshed
-    assert "#210" not in refreshed
-    assert "*(draft)*" not in refreshed
+    assert "github_pull_requests:" in refreshed
+    assert "status: ready" in refreshed
     assert "Keep this note." in refreshed
-    assert refreshed.count(MANAGED_START) == 1
-    assert refreshed.count(MANAGED_END) == 1
+    assert "# GitHub Status" not in refreshed
+    assert "## Issues" not in refreshed
+    assert "## Pull Requests" not in refreshed
+    assert "- [ ]" not in refreshed
+    assert "- [x]" not in refreshed
+    assert "<!--" not in refreshed
 
 
 def test_existing_unmanaged_status_note_fails_closed() -> None:
-    with pytest.raises(ProjectOverviewConflict, match="managed overview block"):
+    with pytest.raises(ProjectOverviewConflict, match="existing Status.md"):
         render_status_note(_proposal(), b"# Existing human Status\n")
 
 
@@ -144,12 +141,15 @@ def test_apply_creates_then_updates_status_note_with_cas() -> None:
     assert remote.status is not None
 
     remote.status = remote.status.replace(
-        b"- [ ] [#203 First issue]",
-        b"- [x] [#203 First issue]",
-    ).replace(b"## Notes\n\n", b"## Notes\n\nHuman note.\n")
+        b"## Notes\n\n",
+        b"## Notes\n\nHuman note.\n",
+    )
     remote.status_etag = '"s3"'
 
-    changed = _proposal(issues=[OverviewItem(203, "Updated title")], prs=[])
+    changed = _proposal(
+        issues=[OverviewItem(203, "Updated title")],
+        prs=[OverviewItem(42, "Open PR", draft=False)],
+    )
     updated = apply_project_overview(
         changed,
         base_url="https://nextcloud.example/remote.php/dav/files/writer",
@@ -159,8 +159,10 @@ def test_apply_creates_then_updates_status_note_with_cas() -> None:
     )
     assert updated.outcome == "updated"
     assert remote.status is not None
-    assert b"- [x] [#203 Updated title]" in remote.status
+    assert b"status: ready" in remote.status
     assert b"Human note." in remote.status
+    assert b"<!--" not in remote.status
+    assert b"- [ ]" not in remote.status
 
     unchanged = apply_project_overview(
         changed,
