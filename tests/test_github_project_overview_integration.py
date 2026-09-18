@@ -35,7 +35,7 @@ class _RuntimeClient(GitHubClient):
                     "number": 20,
                     "title": "PR twenty",
                     "draft": True,
-                    "body": "Closes #10",
+                    "body": "Refs #10",
                 }
             ]
         raise AssertionError(path)
