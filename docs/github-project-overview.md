@@ -67,9 +67,10 @@ New items start unchecked. Items that are no longer open disappear from the mana
 ### Structured Pull Request metadata
 
 `github_pull_requests` contains the currently-open PRs for Project Entry Dataview
-views. `status` is `draft` or `ready`. `bound_issues` is derived from GitHub
-closing-keyword references in the PR body, such as `Closes #203` or
-`Fixes owner/repository#10`. Plain issue mentions are not treated as bindings.
+views. `status` is `draft` or `ready`. `bound_issues` is derived from explicit Issue relations in the PR body. GitHub
+closing keywords such as `Closes #203` / `Fixes owner/repository#10` and the
+repository workflow convention `Refs #203` / `References #203` are supported.
+Plain issue mentions are not treated as bindings.
 
 The production watcher reuses the PR rows already fetched for the normal repository
 snapshot, so this metadata does not add a second GitHub Issue/PR collection pass.
