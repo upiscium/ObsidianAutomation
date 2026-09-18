@@ -150,6 +150,19 @@ projection contains no file diff against Core. The acknowledgement advances the 
 projection baseline without rewriting any content, so later independent Vault edits can again
 publish normally.
 
+### Managed appearance exception
+
+`.obsidian/appearance.json` is compared and published by managed semantic projection rather
+than raw Live-Vault bytes. Core owns only `theme`, `cssTheme`, and the Core-managed snippet
+subset. Unmanaged snippets, unknown Live keys, JSON formatting, key order, and final-newline
+differences remain Live-only state and do not block convergence acknowledgement.
+
+When managed appearance state changes, the publisher writes a canonical public object containing
+only those three managed keys. It never copies private/unmanaged appearance state into
+`ObsidianCore`. The generic `obsidian-public-export` command remains exact-byte; this exception
+belongs only to the guarded Gitea publication path and mirrors the semantic Core-to-Live
+Promotion boundary.
+
 This is not an approval mechanism. It only prevents the Vault -> Core projection from racing
 with the separate Core -> Live Vault Promotion transaction.
 
