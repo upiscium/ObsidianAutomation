@@ -38,8 +38,8 @@ deployment receipts:
   /var/lib/obsidian-ai/deployments
 ```
 
-Private Generator/Evaluator files contain only deployment-specific provider
-settings such as `OLLAMA_BASE_URL`. The reviewed Git revision is kept in the
+Private Generator/Evaluator files contain only deployment-specific
+OpenAI-compatible provider settings. The reviewed Git revision is kept in the
 separate updater-owned revision file.
 
 ## Required production identities
@@ -106,8 +106,15 @@ Create the two private files separately from repository code:
 Each file has the deployment-specific form:
 
 ```text
-OLLAMA_BASE_URL=https://...
+OPENAI_BASE_URL=https://.../v1
+# optional when the endpoint requires bearer authentication
+OPENAI_API_KEY=...
 ```
+
+The base URL may be supplied as either the authority root or the `/v1` root;
+the worker normalizes it to `/v1`. Remote plain HTTP is rejected; HTTP is
+accepted only for loopback endpoints. The API key is never passed on the command
+line or persisted in recipe/status/receipt artifacts.
 
 Do not put tokens, Nextcloud credentials, arbitrary commands, model names, or
 the reviewed revision into the job recipe through these files. Provider model
@@ -221,7 +228,7 @@ The safe profile verifies:
 - Validator/Reader/Status network isolation where applicable;
 - absence of Executor/WebDAV/Execution/Transport/Receipt authority markers.
 
-It does not contact Ollama or Nextcloud.
+It does not contact the OpenAI-compatible provider or Nextcloud.
 
 ## Limited operational status
 
@@ -276,12 +283,20 @@ Example:
 ```bash
 TARGET=<deployed-review-sha>
 
-sudo /opt/obsidian-ai/venv/bin/obsidian-pre-review-production-canary   --scratch-root /var/tmp/obsidian-pre-review-canary-$TARGET   --generator-base-url <generator-ollama-url>   --evaluator-base-url <evaluator-ollama-url>   --generator-model <reviewed-generator-model>   --evaluator-model <reviewed-evaluator-model>   --deployed-revision "$TARGET"
+sudo /opt/obsidian-ai/venv/bin/obsidian-pre-review-production-canary   --scratch-root /var/tmp/obsidian-pre-review-canary-$TARGET   --generator-base-url <generator-openai-compatible-url>   --evaluator-base-url <evaluator-openai-compatible-url>   --generator-model <reviewed-generator-model>   --evaluator-model <reviewed-evaluator-model>   --deployed-revision "$TARGET"
+```
+
+If bearer authentication is required, export the credentials only for the
+manual canary invocation:
+
+```bash
+export OPENAI_GENERATOR_API_KEY='...'
+export OPENAI_EVALUATOR_API_KEY='...'
 ```
 
 The canary covers:
 
-1. real-provider Generator -> Validator -> Reader -> Evaluator progression;
+1. real OpenAI-compatible Generator -> Validator -> Reader -> Evaluator progression;
 2. stop at `awaiting_human_review`;
 3. no Review/Execution/Transport/Receipt artifact;
 4. duplicate submit idempotency;
