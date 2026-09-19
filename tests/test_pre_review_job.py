@@ -338,3 +338,18 @@ def test_public_cli_and_json_schemas_are_pinned() -> None:
         == "orchestration_metadata_only"
     )
     assert status_schema["additionalProperties"] is False
+
+
+def test_database_symlink_is_rejected_without_touching_target(tmp_path: Path) -> None:
+    root, context_sha = _state(tmp_path)
+    jobs = root / "02-Jobs"
+    jobs.mkdir()
+    (jobs / "recipes").mkdir()
+    outside = tmp_path / "outside.db"
+    outside.write_bytes(b"PRIVATE-CANARY")
+    (jobs / "pre-review-jobs.sqlite3").symlink_to(outside)
+
+    with pytest.raises(PreReviewJobError, match="not a regular file"):
+        submit_job(root, context_sha256=context_sha, recipe=_parsed_recipe())
+
+    assert outside.read_bytes() == b"PRIVATE-CANARY"
