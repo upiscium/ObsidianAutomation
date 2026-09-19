@@ -25,7 +25,7 @@ from .context_bundle import load_context_bundle
 from .generation_artifact import validate_model_config
 
 
-JOB_STAGE = "02-Jobs"
+ORCHESTRATION_STAGE = "02-Orchestration"
 RECIPE_STAGE = "recipes"
 DB_NAME = "pre-review-jobs.sqlite3"
 PIPELINE_NAME = "knowledge-pre-review-v0"
@@ -237,7 +237,7 @@ def parse_recipe_roundtrip_guard(data: bytes) -> PreReviewRecipe:
 def _job_root(ai_root: Path, *, create: bool) -> Path:
     root = ai_root.absolute()
     _require_safe_directory(root, create=False)
-    jobs = root / JOB_STAGE
+    jobs = root / ORCHESTRATION_STAGE
     _require_safe_directory(jobs, create=create)
     recipes = jobs / RECIPE_STAGE
     _require_safe_directory(recipes, create=create)
