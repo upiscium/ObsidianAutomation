@@ -45,7 +45,7 @@
           "additionalProperties": false,
           "required": ["adapter_version", "identity_binding", "options"],
           "properties": {
-            "adapter_version": {"const": "openai-chat-completions-json-v0"},
+            "adapter_version": {"const": "openai-chat-completions-json-schema-v1"},
             "identity_binding": {"const": "identifier-only"},
             "options": {"type": "object"}
           }
@@ -99,7 +99,7 @@
           "additionalProperties": false,
           "required": ["adapter_version", "identity_binding", "strategy", "options"],
           "properties": {
-            "adapter_version": {"const": "openai-evaluator-chat-completions-json-v0"},
+            "adapter_version": {"const": "openai-evaluator-chat-completions-json-schema-v1"},
             "identity_binding": {"const": "identifier-only"},
             "strategy": {"const": "groundedness-plus-pairwise-candidates-v0"},
             "options": {"type": "object"}

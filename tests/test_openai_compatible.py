@@ -13,6 +13,12 @@ from obsidian_automation.openai_compatible import (
 
 
 MODEL = "qwen3:14b"
+SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["ok"],
+    "properties": {"ok": {"type": "boolean"}},
+}
 
 
 def test_base_url_normalizes_v1_and_rejects_remote_plain_http() -> None:
@@ -34,6 +40,9 @@ def test_options_cannot_override_protocol_fields() -> None:
 
     with pytest.raises(ArtifactLifecycleError, match="must not override"):
         validated_options({"messages": []})
+
+    with pytest.raises(ArtifactLifecycleError, match="must not override"):
+        validated_options({"response_format": {"type": "json_object"}})
 
 
 def test_chat_content_uses_bounded_openai_compatible_contract() -> None:
@@ -59,6 +68,8 @@ def test_chat_content_uses_bounded_openai_compatible_contract() -> None:
         model=MODEL,
         system_prompt="system",
         user_prompt="user",
+        output_schema=SCHEMA,
+        schema_name="test_result",
         options={"temperature": 0},
         timeout=30,
         api_key="secret-value",
@@ -79,6 +90,14 @@ def test_chat_content_uses_bounded_openai_compatible_contract() -> None:
             {"role": "user", "content": "user"},
         ],
         "stream": False,
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "test_result",
+                "strict": True,
+                "schema": SCHEMA,
+            },
+        },
         "temperature": 0,
     }
     assert "secret-value" not in repr(observed["payload"])
@@ -104,6 +123,8 @@ def test_chat_content_rejects_response_model_mismatch() -> None:
             model=MODEL,
             system_prompt="system",
             user_prompt="user",
+            output_schema=SCHEMA,
+            schema_name="test_result",
             options={"temperature": 0},
             timeout=30,
             transport=transport,
@@ -128,6 +149,8 @@ def test_chat_content_fails_closed_on_invalid_response(response) -> None:
             model=MODEL,
             system_prompt="system",
             user_prompt="user",
+            output_schema=SCHEMA,
+            schema_name="test_result",
             options={"temperature": 0},
             timeout=30,
             transport=transport,

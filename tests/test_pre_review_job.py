@@ -48,7 +48,7 @@ def _recipe(*, generator_model: str = "gemma3:12b") -> dict[str, object]:
         "model_identifier": generator_model,
         "model_revision": f"identifier:{generator_model}",
         "model_config": {
-            "adapter_version": "openai-chat-completions-json-v0",
+            "adapter_version": "openai-chat-completions-json-schema-v1",
             "identity_binding": "identifier-only",
             "options": {"temperature": 0},
         },
@@ -59,7 +59,7 @@ def _recipe(*, generator_model: str = "gemma3:12b") -> dict[str, object]:
         "model_identifier": "gemma3:12b-eval",
         "model_revision": "identifier:gemma3:12b-eval",
         "model_config": {
-            "adapter_version": "openai-evaluator-chat-completions-json-v0",
+            "adapter_version": "openai-evaluator-chat-completions-json-schema-v1",
             "identity_binding": "identifier-only",
             "strategy": "groundedness-plus-pairwise-candidates-v0",
             "options": {"temperature": 0},

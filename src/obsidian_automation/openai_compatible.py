@@ -18,9 +18,11 @@ DEFAULT_TIMEOUT_SECONDS = 120.0
 MAX_TIMEOUT_SECONDS = 600.0
 MAX_HTTP_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_OPTIONS_BYTES = 12 * 1024
+MAX_OUTPUT_SCHEMA_BYTES = 64 * 1024
 DEFAULT_OPTIONS: Mapping[str, object] = {"temperature": 0}
-_RESERVED_OPTIONS = {"model", "messages", "stream"}
+_RESERVED_OPTIONS = {"model", "messages", "stream", "response_format"}
 _IMPLEMENTATION_REVISION_RE = re.compile(r"^[0-9a-f]{40,64}$")
+_SCHEMA_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 class OpenAICompatibleProviderError(RuntimeError):
@@ -143,7 +145,7 @@ def validated_options(options: Mapping[str, object] | None) -> dict[str, object]
     value = dict(DEFAULT_OPTIONS if options is None else options)
     if _RESERVED_OPTIONS.intersection(value):
         raise ArtifactLifecycleError(
-            "OpenAI-compatible options must not override model/messages/stream"
+            "OpenAI-compatible options must not override model/messages/stream/response_format"
         )
     try:
         encoded = json.dumps(
@@ -162,6 +164,44 @@ def validated_options(options: Mapping[str, object] | None) -> dict[str, object]
             f"OpenAI-compatible options exceed {MAX_OPTIONS_BYTES} canonical bytes"
         )
     return value
+
+
+def structured_response_format(
+    *,
+    schema_name: str,
+    output_schema: Mapping[str, object],
+) -> dict[str, object]:
+    if not isinstance(schema_name, str) or _SCHEMA_NAME_RE.fullmatch(schema_name) is None:
+        raise ArtifactLifecycleError(
+            "structured output schema name must match [A-Za-z0-9_-]{1,64}"
+        )
+    if not isinstance(output_schema, dict):
+        raise ArtifactLifecycleError("structured output schema must be a JSON object")
+    try:
+        encoded = json.dumps(
+            output_schema,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError, UnicodeEncodeError) as exc:
+        raise ArtifactLifecycleError(
+            "structured output schema must contain strict JSON values"
+        ) from exc
+    if len(encoded) > MAX_OUTPUT_SCHEMA_BYTES:
+        raise ArtifactLifecycleError(
+            f"structured output schema exceeds {MAX_OUTPUT_SCHEMA_BYTES} canonical bytes"
+        )
+    schema = json.loads(encoded.decode("utf-8"))
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": schema_name,
+            "strict": True,
+            "schema": schema,
+        },
+    }
 
 
 def _direct_opener():
@@ -240,12 +280,18 @@ def chat_content(
     model: str,
     system_prompt: str,
     user_prompt: str,
+    output_schema: Mapping[str, object],
+    schema_name: str,
     options: Mapping[str, object],
     timeout: float,
     api_key: str | None = None,
     transport: JSONTransport | None = None,
 ) -> tuple[OpenAICompatibleModelIdentity, bytes]:
     identity = identity_for_requested_model(model)
+    response_format = structured_response_format(
+        schema_name=schema_name,
+        output_schema=output_schema,
+    )
     request = transport or request_json
     response = request(
         base_url,
@@ -258,6 +304,7 @@ def chat_content(
                 {"role": "user", "content": user_prompt},
             ],
             "stream": False,
+            "response_format": response_format,
             **dict(options),
         },
         timeout=timeout,

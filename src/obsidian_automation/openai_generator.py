@@ -31,7 +31,7 @@ from .openai_compatible import (
 )
 
 
-ADAPTER_VERSION = "openai-chat-completions-json-v0"
+ADAPTER_VERSION = "openai-chat-completions-json-schema-v1"
 
 
 @dataclass(frozen=True)
@@ -81,6 +81,8 @@ def generate_knowledge_note_with_openai_compatible(
         model=model,
         system_prompt=prompt.system,
         user_prompt=prompt.user,
+        output_schema=prompt.output_schema,
+        schema_name="knowledge_note_generator",
         options=inference_options,
         timeout=timeout_value,
         api_key=api_key,

@@ -75,15 +75,16 @@ Recipe v0 supports only the currently deployed pipeline contracts:
 
 - Generator prompt `knowledge-note-generator-v0`;
 - Generator provider `openai-compatible`;
-- Generator adapter `openai-chat-completions-json-v0`;
+- Generator adapter `openai-chat-completions-json-schema-v1`;
 - Validator policy `knowledge-note-v0`;
 - Evaluation Context policy `bm25-topk-recall-v0` with `top_k=5`;
 - Evaluator prompt `knowledge-note-evaluator-v3`;
 - Evaluator provider `openai-compatible`;
-- Evaluator adapter `openai-evaluator-chat-completions-json-v0`;
+- Evaluator adapter `openai-evaluator-chat-completions-json-schema-v1`;
 - Evaluator strategy `groundedness-plus-pairwise-candidates-v0`.
 
 The canonical provider boundary is the OpenAI-compatible Chat Completions API.
+Generator and Evaluator send their existing role-owned JSON Schema via adapter-owned `response_format`; recipe options cannot override that field. Returned content is still validated locally before durable adoption.
 Workers use only a bounded `POST /v1/chat/completions` contract and validate the
 returned JSON locally. Provider-native structured-output, tool-calling, reasoning,
 or Ollama-native endpoints are not part of the pre-review contract.
