@@ -289,6 +289,21 @@ def _db_path(ai_root: Path, *, create_dirs: bool) -> Path:
 
 def _connect_rw(ai_root: Path) -> sqlite3.Connection:
     path = _db_path(ai_root, create_dirs=True)
+    if not os.path.lexists(path):
+        flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        try:
+            fd = os.open(path, flags, 0o600)
+        except FileExistsError:
+            pass
+        except OSError as exc:
+            raise PreReviewJobError("cannot safely create pre-review job database") from exc
+        else:
+            os.close(fd)
+    path = _db_path(ai_root, create_dirs=True)
     conn = sqlite3.connect(path, timeout=10.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
