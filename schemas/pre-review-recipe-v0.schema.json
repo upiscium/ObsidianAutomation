@@ -91,7 +91,7 @@
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"
         },
-        "provider": {"const": "ollama"},
+        "provider": {"const": "openai-compatible"},
         "model_identifier": {"type": "string", "minLength": 1, "maxLength": 512},
         "model_revision": {"type": "string", "minLength": 1, "maxLength": 512},
         "model_config": {
