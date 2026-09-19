@@ -71,6 +71,26 @@ The following are Gitea repository configuration, not LXC files:
 
 Do not copy these repository Actions values into the new host filesystem.
 
+The Publisher-side inventory also covers Core Promotion when deployed on the
+existing writer host:
+
+```text
+/etc/obsidian-core-promotion/promotion.env
+/etc/obsidian-core-promotion/public-export.toml
+/etc/obsidian-core-promotion/nextcloud.password
+/var/lib/obsidian-core-promotion
+/etc/systemd/system/obsidian-core-promotion.service
+/etc/systemd/system/obsidian-core-promotion.timer
+```
+
+Core Promotion configuration/credential entries are conditional because older
+Publisher hosts may not have the promotion service deployed. If either the
+promotion service/timer or its state root is present, treat `promotion.env`,
+`public-export.toml`, `nextcloud.password`, and the durable state root as one
+migration boundary. The state root must be copied only while the old promotion
+timer/service is quiesced. The public Git cache inside the state root is
+rebuildable, but checkpoint/plans/receipts are not.
+
 ## AI boundary
 
 The initial manifest includes:
@@ -101,12 +121,17 @@ The initial manifest includes:
 /etc/obsidian-github-sync/credentials.env
 /etc/obsidian-github-mirror/rclone.conf
 /etc/obsidian-github-mirror/vault-pull.filters
+/etc/obsidian-github-writer/config.env
 /etc/obsidian-github-writer/webdav-password
 /var/lib/obsidian-github-sync
 /var/lib/obsidian-github-pipeline
 /var/lib/obsidian-github-mirror
 /srv/obsidian-github-sync/vault
 ```
+
+The writer `config.env` is required by the production writer unit and contains
+the non-secret Nextcloud base URL / username binding; it must migrate or be
+recreated alongside the writer password.
 
 Rebuildable mirrors should normally be rebuilt on the new LXC. Durable queue /
 SQLite / request-result state requires a quiesced migration if continuity is
