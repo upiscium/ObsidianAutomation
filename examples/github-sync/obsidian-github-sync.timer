@@ -6,7 +6,7 @@ OnBootSec=2min
 OnUnitActiveSec=15min
 RandomizedDelaySec=30s
 Persistent=true
-Unit=obsidian-github-writer.service
+Unit=obsidian-github-compactor.service
 
 [Install]
 WantedBy=timers.target
