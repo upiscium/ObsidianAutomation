@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+
+import obsidian_automation.context_selection as selection_module
 
 from obsidian_automation.artifact_lifecycle import ArtifactLifecycleError
 from obsidian_automation.context_bundle import load_context_bundle
@@ -176,3 +179,56 @@ def test_policy_rejects_invalid_top_k(tmp_path: Path) -> None:
 
     with pytest.raises(ArtifactLifecycleError, match="top_k"):
         select_context_candidates(index, (), query="anything", top_k=0)
+
+
+def test_retrieval_holds_read_view_only_while_touching_mirror(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    vault, state = _roots(tmp_path)
+    content = _note("# Stable\nalpha beta gamma")
+    (vault / "11-Knowledge" / "Stable.md").write_text(content, encoding="utf-8")
+    index_sha, _ = store_knowledge_index(state, build_knowledge_index(vault))
+
+    held = False
+    original_verify = selection_module.verify_index_current
+    original_build = selection_module.build_context_bundle
+    original_store = selection_module.store_context_bundle
+
+    @contextmanager
+    def fake_lock(observed_root):
+        nonlocal held
+        assert observed_root == state
+        held = True
+        try:
+            yield state / "24-Locks" / "read-view" / "mirror-read.lock"
+        finally:
+            held = False
+
+    def checked_verify(*args, **kwargs):
+        assert held is True
+        return original_verify(*args, **kwargs)
+
+    def checked_build(*args, **kwargs):
+        assert held is True
+        return original_build(*args, **kwargs)
+
+    def checked_store(*args, **kwargs):
+        assert held is False
+        return original_store(*args, **kwargs)
+
+    monkeypatch.setattr(selection_module, "mirror_read_lock", fake_lock)
+    monkeypatch.setattr(selection_module, "verify_index_current", checked_verify)
+    monkeypatch.setattr(selection_module, "build_context_bundle", checked_build)
+    monkeypatch.setattr(selection_module, "store_context_bundle", checked_store)
+
+    result = selection_module.retrieve_context(
+        state,
+        vault,
+        index_sha256=index_sha,
+        query="alpha beta gamma",
+        top_k=5,
+    )
+
+    assert result["context_sha256"]
+    assert held is False
