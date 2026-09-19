@@ -139,7 +139,10 @@ def run_generator_worker(
     if work is None:
         return _idle("generation")
 
-    recipe = load_recipe(ai_root, work.recipe_sha256)
+    try:
+        recipe = load_recipe(ai_root, work.recipe_sha256)
+    except (ArtifactLifecycleError, OSError):
+        return _block(ai_root, work, reason_code="generator_recipe_unreadable")
     component = recipe.generator
     try:
         _component_preflight(
@@ -221,7 +224,10 @@ def run_validator_worker(
     if work is None:
         return _idle("validation")
 
-    selected = stage_output(ai_root, work.generation_id, "generation")
+    try:
+        selected = stage_output(ai_root, work.generation_id, "generation")
+    except (ArtifactLifecycleError, OSError):
+        return _block(ai_root, work, reason_code="generation_output_unreadable")
     if selected is None:
         return _block(ai_root, work, reason_code="missing_generation_output")
     proposal_sha = str(selected["proposal_sha256"])
@@ -302,8 +308,11 @@ def run_reader_worker(
     if work is None:
         return _idle("evaluation_context")
 
-    recipe = load_recipe(ai_root, work.recipe_sha256)
-    selected = stage_output(ai_root, work.generation_id, "validation")
+    try:
+        recipe = load_recipe(ai_root, work.recipe_sha256)
+        selected = stage_output(ai_root, work.generation_id, "validation")
+    except (ArtifactLifecycleError, OSError):
+        return _block(ai_root, work, reason_code="reader_input_metadata_unreadable")
     if selected is None:
         return _block(ai_root, work, reason_code="missing_validation_output")
 
@@ -370,9 +379,12 @@ def run_evaluator_worker(
     if work is None:
         return _idle("evaluation")
 
-    recipe = load_recipe(ai_root, work.recipe_sha256)
+    try:
+        recipe = load_recipe(ai_root, work.recipe_sha256)
+        selected = stage_output(ai_root, work.generation_id, "evaluation_context")
+    except (ArtifactLifecycleError, OSError):
+        return _block(ai_root, work, reason_code="evaluator_input_metadata_unreadable")
     component = recipe.evaluator
-    selected = stage_output(ai_root, work.generation_id, "evaluation_context")
     if selected is None:
         return _block(ai_root, work, reason_code="missing_evaluation_context_output")
 
