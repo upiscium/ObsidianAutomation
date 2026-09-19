@@ -94,6 +94,21 @@ This prevents a stale watcher mirror from overwriting unrelated Human edits and 
 
 The effect and Project-mirror refresh are serialized through the existing host-local `canonical-io.lock` by requiring `--state-root` and using `canonical_io_lock`.
 
+## HTTP outcome classification
+
+A trustworthy HTTP response is not treated as a lost-response ambiguity.
+
+- `401` / `403`: deterministic authority rejection (`authority_rejection`);
+- `412`: deterministic ETag CAS conflict (`etag_cas_conflict`);
+- other `4xx`: deterministic client/WebDAV rejection (`http_client_rejection`);
+- `500` / `502` / `503` / `504`: ambiguous/transient response where the remote effect may still need post-GET recovery;
+- network failure before a trustworthy response: ambiguous and eligible for post-GET recovery;
+- other non-2xx responses: deterministic transport rejection (`http_response_rejection`).
+
+Deterministic rejections do not use a post-GET to reinterpret an explicit server rejection as success. The local writer persists a terminal `*.github-status.rejection.json` artifact so the same content-addressed request is not retried every cycle. The artifact contains only bounded metadata such as `outcome`, a fixed `reason` code, and optional numeric `http_status`; response bodies, credentials, URLs, and other secret-bearing transport details are not persisted.
+
+Ambiguous/transient outcomes still perform a fresh canonical GET. Exact desired bytes yield `recovered`; unchanged before-bytes remain an ambiguous failure and are retryable; divergent bytes fail closed as a conflict.
+
 ## Transport result
 
 `obsidian-github-project-status-apply` emits and durably stores a Sync-authored transport result containing:
@@ -128,7 +143,7 @@ obsidian-github-project-status-apply \
 The CLI returns:
 
 - `0`: applied, recovered, or idempotently already desired, with durable transport result;
-- `2`: malformed input / unavailable authority / ambiguous non-conflict error;
+- `2`: malformed input, deterministic transport rejection, unavailable authority, or ambiguous non-conflict error;
 - `3`: stale proposal or canonical conflict.
 
 ## Manual canary sequence
