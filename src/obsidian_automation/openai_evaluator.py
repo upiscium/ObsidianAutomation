@@ -35,11 +35,25 @@ from .openai_compatible import (
     validated_options,
     validated_timeout,
 )
-from .ollama_evaluator import EVALUATION_STRATEGY, _expected_prompt_order
 from .ollama_generator import _validated_implementation_revision
 
 
 ADAPTER_VERSION = "openai-evaluator-chat-completions-json-v0"
+EVALUATION_STRATEGY = "groundedness-plus-pairwise-candidates-v0"
+
+
+def _expected_prompt_order(evaluation_context: object) -> tuple[tuple[str, str | None], ...]:
+    candidates = getattr(evaluation_context, "candidates", None)
+    if not isinstance(candidates, tuple):
+        raise ArtifactLifecycleError("evaluator context candidates are invalid")
+    expected: list[tuple[str, str | None]] = [("groundedness", None)]
+    for candidate in candidates:
+        path = getattr(candidate, "path", None)
+        if not isinstance(path, str):
+            raise ArtifactLifecycleError("evaluator context candidate path is invalid")
+        expected.extend((("redundancy", path), ("consistency", path)))
+    return tuple(expected)
+
 
 
 @dataclass(frozen=True)
