@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pre-review-job-status-v0.schema.json",
+  "title": "Pre-review job status v0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "record_version",
+    "authority",
+    "job_id",
+    "context_sha256",
+    "recipe_sha256",
+    "created_at",
+    "generation_count",
+    "current_generation"
+  ],
+  "properties": {
+    "record_version": {"const": 1},
+    "authority": {"const": "orchestration_metadata_only"},
+    "job_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "context_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "recipe_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "created_at": {"type": "string", "minLength": 1},
+    "generation_count": {"type": "integer", "minimum": 1},
+    "current_generation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "generation_id",
+        "generation_index",
+        "state",
+        "created_at",
+        "updated_at"
+      ],
+      "properties": {
+        "generation_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "generation_index": {"type": "integer", "minimum": 1},
+        "state": {
+          "enum": [
+            "queued",
+            "generating",
+            "validating",
+            "building_evaluation_context",
+            "evaluating",
+            "awaiting_human_review",
+            "retryable_failure",
+            "deterministic_reject"
+          ]
+        },
+        "created_at": {"type": "string", "minLength": 1},
+        "updated_at": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}
