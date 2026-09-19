@@ -19,6 +19,7 @@ UNIT_NAMES = (
     "obsidian-github-sync.service",
     "obsidian-github-sync.timer",
     "obsidian-github-writer.service",
+    "obsidian-github-compactor.service",
 )
 
 
