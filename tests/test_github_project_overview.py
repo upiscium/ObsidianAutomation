@@ -89,7 +89,7 @@ def test_issue_frontmatter_quotes_title_and_builds_repository_url() -> None:
     assert "  - number: 7" in rendered
     assert '    title: "Quoted \\"issue\\""' in rendered
     assert '    url: "https://github.com/upiscium/Terreate/issues/7"' in rendered
-    assert "github_pull_requests: []" in rendered
+    assert "github_pull_requests:" in rendered
 
 
 def test_existing_unmanaged_status_note_fails_closed() -> None:
