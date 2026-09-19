@@ -11,7 +11,7 @@ import obsidian_automation.vault_mirror as mirror
 
 def _fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     ai_root = tmp_path / "state"
-    (ai_root / "24-Locks").mkdir(parents=True)
+    (ai_root / "24-Locks" / "read-view").mkdir(parents=True)
     vault_root = tmp_path / "vault"
     vault_root.mkdir()
     config = tmp_path / "rclone.conf"
@@ -54,31 +54,44 @@ def test_pull_mirror_uses_fixed_remote_to_local_sync_command(tmp_path: Path) -> 
         "--delete-after",
     ]
     assert (ai_root / "24-Locks" / "canonical-io.lock").is_file()
+    assert (ai_root / "24-Locks" / "read-view" / "mirror-read.lock").is_file()
 
 
-def test_pull_mirror_holds_canonical_io_lock_while_rclone_runs(
+def test_pull_mirror_holds_canonical_and_read_view_locks_while_rclone_runs(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     ai_root, vault_root, config, filters = _fixture(tmp_path)
-    lock_held = False
+    held: list[str] = []
 
     @contextmanager
-    def fake_lock(observed_ai_root):
-        nonlocal lock_held
+    def fake_canonical_lock(observed_ai_root):
         assert observed_ai_root == ai_root
-        lock_held = True
+        held.append("canonical")
         try:
             yield
         finally:
-            lock_held = False
+            assert held[-1] == "canonical"
+            held.pop()
+
+    @contextmanager
+    def fake_read_view_lock(observed_ai_root):
+        assert observed_ai_root == ai_root
+        assert held == ["canonical"]
+        held.append("read-view")
+        try:
+            yield
+        finally:
+            assert held[-1] == "read-view"
+            held.pop()
 
     def fake_runner(_command, *, check):
         assert check is False
-        assert lock_held is True
+        assert held == ["canonical", "read-view"]
         return SimpleNamespace(returncode=0)
 
-    monkeypatch.setattr(mirror, "canonical_io_lock", fake_lock)
+    monkeypatch.setattr(mirror, "canonical_io_lock", fake_canonical_lock)
+    monkeypatch.setattr(mirror, "mirror_read_lock", fake_read_view_lock)
 
     mirror.refresh_pull_only_mirror(
         ai_root,
@@ -89,7 +102,7 @@ def test_pull_mirror_holds_canonical_io_lock_while_rclone_runs(
         runner=fake_runner,
     )
 
-    assert lock_held is False
+    assert held == []
 
 
 def test_pull_mirror_fails_closed_on_rclone_error(tmp_path: Path) -> None:

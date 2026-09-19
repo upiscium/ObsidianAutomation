@@ -30,6 +30,7 @@ from .context_bundle import (
     build_context_bundle,
     store_context_bundle,
 )
+from .production_io import ProductionIOError, mirror_read_lock
 
 
 INDEX_STAGE = "04-Index"
@@ -595,22 +596,23 @@ def retrieve_context(
             f"top_k must be an integer in 1..{MAX_TOP_K}"
         )
     index = load_knowledge_index(ai_root, index_sha256)
-    verify_index_current(vault_root, index)
     ranked = rank_documents(index, query)
     selected = _select_with_context_limit(index, ranked, top_k=top_k)
 
-    bundle = build_context_bundle(
-        vault_root,
-        query=query,
-        source_paths=[item.path for item in selected],
-    )
-    indexed_by_path = {doc.path: doc for doc in index.documents}
-    for source in bundle.sources:
-        expected = indexed_by_path[source.path].content_sha256
-        if source.content_sha256 != expected:
-            raise ArtifactLifecycleError(
-                "Knowledge source changed during context construction"
-            )
+    with mirror_read_lock(ai_root):
+        verify_index_current(vault_root, index)
+        bundle = build_context_bundle(
+            vault_root,
+            query=query,
+            source_paths=[item.path for item in selected],
+        )
+        indexed_by_path = {doc.path: doc for doc in index.documents}
+        for source in bundle.sources:
+            expected = indexed_by_path[source.path].content_sha256
+            if source.content_sha256 != expected:
+                raise ArtifactLifecycleError(
+                    "Knowledge source changed during context construction"
+                )
     context_sha, context_path = store_context_bundle(ai_root, bundle)
 
     return {
@@ -636,9 +638,10 @@ def index_main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--vault-root", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
-        index = build_knowledge_index(args.vault_root)
+        with mirror_read_lock(args.ai_root):
+            index = build_knowledge_index(args.vault_root)
         digest, path = store_knowledge_index(args.ai_root, index)
-    except (ArtifactLifecycleError, OSError) as exc:
+    except (ArtifactLifecycleError, ProductionIOError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     print(
@@ -670,7 +673,7 @@ def retrieve_main(argv: Sequence[str] | None = None) -> int:
             query=args.query,
             top_k=args.top_k,
         )
-    except (ArtifactLifecycleError, OSError) as exc:
+    except (ArtifactLifecycleError, ProductionIOError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))

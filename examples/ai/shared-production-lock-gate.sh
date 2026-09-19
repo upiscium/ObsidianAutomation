@@ -16,10 +16,13 @@ REVIEWER_USER=${REVIEWER_USER:-obsidian-ai-reviewer}
 VALIDATOR_USER=${VALIDATOR_USER:-obsidian-ai-validator}
 READER_USER=${READER_USER:-obsidian-ai-reader}
 GENERATOR_USER=${GENERATOR_USER:-obsidian-ai-generator}
+EVALUATOR_USER=${EVALUATOR_USER:-obsidian-ai-evaluator}
 
 LOCK_DIR="$AI_ROOT/24-Locks"
 DIGEST=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 LOCK_PATH="$LOCK_DIR/$DIGEST.lock"
+READ_VIEW_LOCK_DIR="$LOCK_DIR/read-view"
+READ_VIEW_LOCK_PATH="$READ_VIEW_LOCK_DIR/mirror-read.lock"
 
 [[ -d "$LOCK_DIR" && ! -L "$LOCK_DIR" ]] || {
   echo "ERROR: unsafe or missing lock directory: $LOCK_DIR" >&2
@@ -47,7 +50,7 @@ cp -a "$REPO_ROOT/src/obsidian_automation" "$PYTHON_ROOT/obsidian_automation"
 chmod -R a+rX "$PYTHON_ROOT/obsidian_automation"
 
 cleanup() {
-  rm -f -- "$LOCK_PATH"
+  rm -f -- "$LOCK_PATH" "$READ_VIEW_LOCK_PATH"
   rm -rf -- "$PYTHON_ROOT"
 }
 trap cleanup EXIT
@@ -91,6 +94,54 @@ PY
 
   rm -f -- "$output"
 }
+
+probe_read_view_lock() {
+  local user=$1 expected=$2 label=$3
+  local output
+  output=$(mktemp)
+
+  if runuser -u "$user" -- env \
+    PYTHONPATH="$PYTHON_ROOT" \
+    python3 - "$AI_ROOT" >"$output" 2>&1 <<'PY'
+import sys
+from pathlib import Path
+
+from obsidian_automation.production_io import mirror_read_lock
+
+with mirror_read_lock(Path(sys.argv[1])):
+    pass
+PY
+  then
+    if [[ $expected == allow ]]; then
+      pass "$label"
+    else
+      fail "$label (unexpected mirror read-view lock succeeded)"
+      cat "$output" >&2
+    fi
+  else
+    if [[ $expected == deny ]]; then
+      pass "$label"
+    else
+      fail "$label (expected mirror read-view lock failed)"
+      cat "$output" >&2
+    fi
+  fi
+
+  rm -f -- "$output"
+}
+
+[[ -d "$READ_VIEW_LOCK_DIR" && ! -L "$READ_VIEW_LOCK_DIR" ]] || {
+  echo "ERROR: unsafe or missing read-view lock directory: $READ_VIEW_LOCK_DIR" >&2
+  exit 1
+}
+
+probe_read_view_lock "$SYNC_USER" allow "Sync opens mirror read-view lock"
+probe_read_view_lock "$READER_USER" allow "Reader opens mirror read-view lock"
+probe_read_view_lock "$GENERATOR_USER" deny "Generator cannot open mirror read-view lock"
+probe_read_view_lock "$VALIDATOR_USER" deny "Validator cannot open mirror read-view lock"
+probe_read_view_lock "$EVALUATOR_USER" deny "Evaluator cannot open mirror read-view lock"
+probe_read_view_lock "$REVIEWER_USER" deny "Reviewer cannot open mirror read-view lock"
+probe_read_view_lock "$EXECUTOR_USER" deny "Executor cannot open mirror read-view lock"
 
 # The first actor creates the per-mutation lock. The next two actors must be
 # able to open that exact inode; this reproduces the production handoff from

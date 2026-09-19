@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
 
-from .production_io import ProductionIOError, canonical_io_lock
+from .production_io import ProductionIOError, canonical_io_lock, mirror_read_lock
 
 
 class MirrorRefreshError(RuntimeError):
@@ -81,13 +81,18 @@ def refresh_pull_only_mirror(
         "--delete-after",
     ]
 
+    # Lock order is canonical I/O -> mirror read-view. Reader never acquires
+    # canonical I/O, so the two-lock refresh path cannot form a cycle with
+    # Reader operations. The read-view lock prevents rclone from mutating local
+    # mirror bytes while Reader derives an Index/Context from them.
     with canonical_io_lock(ai_root):
-        try:
-            completed = runner(command, check=False)
-        except OSError as exc:
-            raise MirrorRefreshError(f"cannot execute rclone: {exc}") from exc
-        if completed.returncode != 0:
-            raise MirrorRefreshError(f"rclone pull-only mirror refresh failed with exit code {completed.returncode}")
+        with mirror_read_lock(ai_root):
+            try:
+                completed = runner(command, check=False)
+            except OSError as exc:
+                raise MirrorRefreshError(f"cannot execute rclone: {exc}") from exc
+            if completed.returncode != 0:
+                raise MirrorRefreshError(f"rclone pull-only mirror refresh failed with exit code {completed.returncode}")
 
     return MirrorRefreshResult(remote=source, vault_root=destination)
 

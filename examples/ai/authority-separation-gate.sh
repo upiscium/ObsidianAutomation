@@ -31,6 +31,7 @@ EVALUATION_CONTEXT="$AI_ROOT/14-Evaluation-Context"
 EVALUATION="$AI_ROOT/15-Evaluation"
 REVIEW="$AI_ROOT/20-Review"
 LOCKS="$AI_ROOT/24-Locks"
+READ_VIEW_LOCKS="$LOCKS/read-view"
 EXECUTION="$AI_ROOT/25-Execution"
 TRANSPORT="$AI_ROOT/27-Transport"
 RECEIPTS="$AI_ROOT/30-Receipts"
@@ -68,7 +69,7 @@ done
 for directory in \
   "$KNOWLEDGE" "$UNTRUSTED" "$INDEX" "$CONTEXT" "$VALIDATION" \
   "$EVALUATION_REQUEST" "$EVALUATION_CONTEXT" "$EVALUATION" \
-  "$REVIEW" "$LOCKS" "$EXECUTION" "$TRANSPORT" "$RECEIPTS"; do
+  "$REVIEW" "$LOCKS" "$READ_VIEW_LOCKS" "$EXECUTION" "$TRANSPORT" "$RECEIPTS"; do
   [[ -d "$directory" && ! -L "$directory" ]] || {
     echo "ERROR: unsafe or missing fixture directory: $directory" >&2
     exit 1
@@ -201,9 +202,16 @@ probe_write "$REVIEWER_USER" "$REVIEW" allow "Reviewer writes Review / recovery"
 probe_write "$SYNC_USER" "$LOCKS" allow "Sync writes shared operational Locks"
 probe_write "$REVIEWER_USER" "$LOCKS" allow "Reviewer writes shared operational Locks"
 probe_write "$EXECUTOR_USER" "$LOCKS" allow "Executor writes shared operational Locks"
+probe_write "$SYNC_USER" "$READ_VIEW_LOCKS" allow "Sync writes mirror read-view Locks"
+probe_write "$READER_USER" "$READ_VIEW_LOCKS" allow "Reader writes mirror read-view Locks"
 probe_write "$EXECUTOR_USER" "$EXECUTION" allow "Executor writes Execution request"
 probe_write "$SYNC_USER" "$TRANSPORT" allow "Sync writes Transport result"
 probe_write "$EXECUTOR_USER" "$RECEIPTS" allow "Executor writes Receipts"
+
+
+for user in "$GENERATOR_USER" "$VALIDATOR_USER" "$EVALUATOR_USER" "$REVIEWER_USER" "$EXECUTOR_USER"; do
+  probe_write "$user" "$READ_VIEW_LOCKS" deny "$user cannot write mirror read-view Locks"
+done
 
 # Reader writes only derived retrieval state and cannot write semantic authority stages.
 for directory in "$KNOWLEDGE" "$UNTRUSTED" "$VALIDATION" "$EVALUATION_REQUEST" "$EVALUATION" "$REVIEW" "$LOCKS" "$EXECUTION" "$TRANSPORT" "$RECEIPTS"; do

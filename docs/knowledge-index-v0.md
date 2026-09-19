@@ -33,6 +33,10 @@ The index and ranking carry no Validation, Human approval, Execution, Transport,
 
 Generator never receives index access. It receives only exact Context Bundle bytes selected by Reader.
 
+Reader also has narrow operational access to
+`24-Locks/read-view/mirror-read.lock`. It does not gain access to
+`canonical-io.lock` or per-mutation production locks.
+
 ## Corpus policy
 
 v0 scans only Markdown files below `11-Knowledge`.
@@ -121,7 +125,14 @@ There is intentionally no mutable `current` pointer in v0. Callers must explicit
 
 Retrieval never silently uses a stale index.
 
-Before ranking, Reader rebuilds the current active corpus inventory and compares ordered `(path, content_sha256)` pairs against the selected index artifact.
+Before selected source bytes are accepted, Reader acquires the host-local
+mirror read-view lock, rebuilds the current active corpus inventory, and
+compares ordered `(path, content_sha256)` pairs against the selected index
+artifact.
+
+Index creation itself scans `11-Knowledge` under the same read-view lock.
+Therefore neither Index construction nor stale verification/source re-read can
+span an rclone mirror refresh.
 
 Any of these conditions cause fail-closed `Knowledge index is stale`:
 
@@ -132,6 +143,10 @@ Any of these conditions cause fail-closed `Knowledge index is stale`:
 - path changed.
 
 The caller must build a new index and retry.
+
+The read-view lock is host-local only. It does not prove that the local mirror
+is current with Nextcloud or exclude remote edits on another host. See
+[Host-local mirror read view](mirror-read-view.md).
 
 This verification is intentionally conservative. v0 optimizes for auditability and correctness rather than indexing throughput.
 

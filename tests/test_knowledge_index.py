@@ -24,6 +24,7 @@ def _roots(tmp_path: Path) -> tuple[Path, Path]:
     state = tmp_path / "state"
     (state / INDEX_STAGE).mkdir(parents=True)
     (state / "05-Context").mkdir()
+    (state / "24-Locks" / "read-view").mkdir(parents=True)
     return vault, state
 
 

@@ -34,6 +34,7 @@ from .knowledge_index import (
     rank_documents,
     verify_index_current,
 )
+from .production_io import ProductionIOError, mirror_read_lock
 
 
 EVALUATION_REQUEST_STAGE = "12-Evaluation-Request"
@@ -341,30 +342,34 @@ def build_evaluation_context(
     request_digest = _require_sha256(request_sha256, label="request_sha256")
     request = load_evaluation_request(ai_root, request_digest)
     index = load_knowledge_index(ai_root, index_sha256)
-    verify_index_current(vault_root, index)
     ranked = rank_documents(index, request.query)
     selected = _select_recall_candidates(index, ranked, top_k=top_k)
-    bundle = build_context_bundle(
-        vault_root,
-        query=request.query,
-        source_paths=[item.path for item in selected],
-        created_at=created_at,
-    )
-    ranked_by_path = {item.path: item for item in selected}
-    indexed_by_path = {doc.path: doc for doc in index.documents}
-    candidates: list[EvaluationCandidate] = []
-    for source in bundle.sources:
-        expected = indexed_by_path[source.path].content_sha256
-        if source.content_sha256 != expected:
-            raise ArtifactLifecycleError("Knowledge source changed during evaluation context construction")
-        candidates.append(
-            EvaluationCandidate(
-                path=source.path,
-                content_sha256=source.content_sha256,
-                score=format(ranked_by_path[source.path].score, ".12g"),
-                content=source.content,
-            )
+
+    with mirror_read_lock(ai_root):
+        verify_index_current(vault_root, index)
+        bundle = build_context_bundle(
+            vault_root,
+            query=request.query,
+            source_paths=[item.path for item in selected],
+            created_at=created_at,
         )
+        ranked_by_path = {item.path: item for item in selected}
+        indexed_by_path = {doc.path: doc for doc in index.documents}
+        candidates: list[EvaluationCandidate] = []
+        for source in bundle.sources:
+            expected = indexed_by_path[source.path].content_sha256
+            if source.content_sha256 != expected:
+                raise ArtifactLifecycleError(
+                    "Knowledge source changed during evaluation context construction"
+                )
+            candidates.append(
+                EvaluationCandidate(
+                    path=source.path,
+                    content_sha256=source.content_sha256,
+                    score=format(ranked_by_path[source.path].score, ".12g"),
+                    content=source.content,
+                )
+            )
     timestamp = bundle.created_at
     return EvaluationContext(
         request_sha256=request_digest,
@@ -687,7 +692,7 @@ def request_main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         digest, path, request = create_evaluation_request(args.ai_root, args.proposal_sha256)
-    except (ArtifactLifecycleError, OSError) as exc:
+    except (ArtifactLifecycleError, ProductionIOError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     print(json.dumps({"request_sha256": digest, "path": str(path), "proposal_sha256": request.proposal_sha256, "mutation_sha256": request.mutation_sha256, "query": request.query}, ensure_ascii=False, sort_keys=True))
@@ -709,7 +714,7 @@ def context_main(argv: Sequence[str] | None = None) -> int:
             index_sha256=args.index_sha256,
         )
         digest, path = store_evaluation_context(args.ai_root, context)
-    except (ArtifactLifecycleError, OSError) as exc:
+    except (ArtifactLifecycleError, ProductionIOError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     print(json.dumps({"evaluation_context_sha256": digest, "path": str(path), "proposal_sha256": context.proposal_sha256, "mutation_sha256": context.mutation_sha256, "candidate_count": len(context.candidates), "selection_policy": EVALUATION_CONTEXT_POLICY_VERSION, "candidates": [{"path": candidate.path, "score": candidate.score} for candidate in context.candidates]}, ensure_ascii=False, sort_keys=True))

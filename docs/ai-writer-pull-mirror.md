@@ -26,7 +26,21 @@ global canonical I/O lock
   -> per-mutation production lock
 ```
 
-The mirror helper takes only the global lock.
+The mirror helper takes the global lock and then the narrow host-local mirror
+read-view lock:
+
+```text
+canonical_io_lock
+  -> mirror_read_lock
+      -> rclone sync
+```
+
+Reader never acquires `canonical_io_lock`. It acquires only
+`24-Locks/read-view/mirror-read.lock` while scanning/verifying local mirror
+bytes. See [Host-local mirror read view](mirror-read-view.md).
+
+This extra lock does not claim remote freshness; it only prevents this host's
+rclone refresh from changing the local mirror during a Reader operation.
 
 ## Pull-only helper
 
@@ -88,8 +102,9 @@ Before enabling the timer in production:
 1. run one manual helper refresh;
 2. verify the expected canonical target exists in the local mirror;
 3. compare the local content SHA-256 against the canonical remote content SHA-256;
-4. confirm `canonical-io.lock` is owned/accessible only according to the existing `24-Locks` ACL policy;
-5. enable and start the timer;
-6. verify a later timer run exits successfully.
+4. confirm `canonical-io.lock` remains inaccessible to Reader;
+5. confirm `24-Locks/read-view` is writable only by Sync and Reader;
+6. enable and start the timer;
+7. verify a later timer run exits successfully.
 
 When testing serialization, hold the global lock during a synthetic transport or refresh and confirm the other operation cannot enter its I/O section concurrently.
