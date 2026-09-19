@@ -312,6 +312,25 @@ def _yaml_quote(value: str) -> str:
     return '"' + escaped + '"'
 
 
+def _render_issue_frontmatter(
+    proposal: ProjectOverviewProposal,
+) -> list[str]:
+    if not proposal.issues:
+        return ["github_issues: []"]
+
+    lines = ["github_issues:"]
+    for item in proposal.issues:
+        url = f"https://github.com/{proposal.repository}/issues/{item.number}"
+        lines.extend(
+            [
+                f"  - number: {item.number}",
+                f"    title: {_yaml_quote(item.title)}",
+                f"    url: {_yaml_quote(url)}",
+            ]
+        )
+    return lines
+
+
 def _render_pull_request_frontmatter(
     proposal: ProjectOverviewProposal,
 ) -> list[str]:
@@ -365,6 +384,7 @@ def _render_project_note_frontmatter(
         f"github_repo: {proposal.repository}",
         "github_status_managed: true",
     ]
+    lines.extend(_render_issue_frontmatter(proposal))
     lines.extend(_render_pull_request_frontmatter(proposal))
     lines.extend(["---", ""])
     return eol.join(lines)
