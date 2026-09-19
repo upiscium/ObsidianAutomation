@@ -93,7 +93,7 @@
         },
         "provider": {"const": "openai-compatible"},
         "model_identifier": {"type": "string", "minLength": 1, "maxLength": 512},
-        "model_revision": {"type": "string", "minLength": 1, "maxLength": 512},
+        "model_revision": {"type": "string", "pattern": "^identifier:.{1,500}$"},
         "model_config": {
           "type": "object",
           "additionalProperties": false,
