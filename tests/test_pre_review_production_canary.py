@@ -23,6 +23,14 @@ def _transport(base_url: str, **kwargs):
     payload = kwargs["payload"]
     model = payload["model"]
     messages = payload["messages"]
+    response_format = payload["response_format"]
+    assert response_format["type"] == "json_schema"
+    schema_contract = response_format["json_schema"]
+    assert schema_contract["strict"] is True
+    assert isinstance(schema_contract["name"], str) and schema_contract["name"]
+    schema = schema_contract["schema"]
+    assert schema["type"] == "object"
+    assert schema["additionalProperties"] is False
     user_payload = json.loads(messages[1]["content"])
 
     if "dimension" in user_payload:
