@@ -35,6 +35,7 @@ LIVE_UNITS = (
     "obsidian-github-sync-vault-pull.service",
     "obsidian-github-sync.service",
     "obsidian-github-writer.service",
+    "obsidian-github-compactor.service",
 )
 
 
@@ -180,9 +181,9 @@ def run_safe_smokes() -> tuple[str, ...]:
 
 
 def run_live_smoke(*, runner: CommandRunner = _default_runner) -> tuple[str, ...]:
-    started = runner(("systemctl", "start", "obsidian-github-writer.service"))
+    started = runner(("systemctl", "start", "obsidian-github-compactor.service"))
     if started.returncode != 0:
-        raise ProductionSmokeError("production writer cycle failed to start or complete")
+        raise ProductionSmokeError("production compactor cycle failed to start or complete")
 
     completed: list[str] = []
     for unit in LIVE_UNITS:
