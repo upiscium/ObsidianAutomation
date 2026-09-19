@@ -10,6 +10,7 @@ Type=oneshot
 User=obsidian-ai-evaluator
 Group=obsidian-ai-evaluator
 EnvironmentFile=/etc/obsidian-ai/pre-review-evaluator.env
+EnvironmentFile=/etc/obsidian-ai/pre-review-revision.env
 ExecStart=/opt/obsidian-ai/venv/bin/obsidian-pre-review-evaluator-worker \
   --ai-root /var/lib/obsidian-ai/state \
   --ollama-base-url ${OLLAMA_BASE_URL} \
