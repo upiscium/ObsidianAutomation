@@ -112,6 +112,38 @@ Rebuildable mirrors should normally be rebuilt on the new LXC. Durable queue /
 SQLite / request-result state requires a quiesced migration if continuity is
 needed.
 
+
+## Consolidated authority provisioning
+
+Before any credential or durable state is migrated, the target-owned bootstrap creates the local authority boundary for the consolidated writer LXC.
+
+Provisioned identities include:
+
+- `gitea-runner`;
+- `obsidian-core-promoter`;
+- `obsidian-ai-sync/reader/generator/validator/evaluator/status/reviewer/executor`;
+- `obsidian-github-mirror/sync/writer/compactor`.
+
+GitHub handoff groups remain separate from credential groups:
+
+- `obsidian-github-vault` — mirror read handoff only;
+- `obsidian-github-pipeline` — local request/result handoff only.
+
+The provisioner creates only empty directory roots and POSIX ACLs. It does not create `rclone.conf`, WebDAV passwords, provider env files, GitHub tokens, promotion passwords, systemd units, or timers.
+
+AI lifecycle authority preserves the existing stage separation: Generator writes Untrusted, Reader writes Index/Context, Validator writes Validation/Evaluation Request, Evaluator writes Evaluation, Reviewer writes Review, Executor writes Execution/Receipts, and Sync writes Transport/Vault mirror. Status receives orchestration metadata/status projection access only.
+
+Top-level AI `vault` and `state` roots intentionally receive no default ACL entries; default ACLs begin at the known stage directories so a future unknown directory does not inherit broad authority accidentally.
+
+At this phase the bootstrap receipt must show:
+
+```json
+{
+  "authority_provisioning": "passed",
+  "host_activation": "not_attempted"
+}
+```
+
 ## Secret transfer
 
 Do not paste credential values into GitHub, chat, shell history, or command-line
