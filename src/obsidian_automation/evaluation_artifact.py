@@ -714,7 +714,7 @@ def context_main(argv: Sequence[str] | None = None) -> int:
             index_sha256=args.index_sha256,
         )
         digest, path = store_evaluation_context(args.ai_root, context)
-    except (ArtifactLifecycleError, OSError) as exc:
+    except (ArtifactLifecycleError, ProductionIOError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     print(json.dumps({"evaluation_context_sha256": digest, "path": str(path), "proposal_sha256": context.proposal_sha256, "mutation_sha256": context.mutation_sha256, "candidate_count": len(context.candidates), "selection_policy": EVALUATION_CONTEXT_POLICY_VERSION, "candidates": [{"path": candidate.path, "score": candidate.score} for candidate in context.candidates]}, ensure_ascii=False, sort_keys=True))
