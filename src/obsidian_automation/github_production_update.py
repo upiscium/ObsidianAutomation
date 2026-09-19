@@ -51,6 +51,7 @@ class DeploymentReceipt:
     target_sha: str
     timer_was_enabled: bool | None
     timer_was_active: bool | None
+    bootstrap_pre_disabled_timer: bool
     safe_smoke: str
     live_smoke: str
     result: str
@@ -67,6 +68,7 @@ class DeploymentReceipt:
                     "target_sha": self.target_sha,
                     "timer_was_enabled": self.timer_was_enabled,
                     "timer_was_active": self.timer_was_active,
+                    "bootstrap_pre_disabled_timer": self.bootstrap_pre_disabled_timer,
                     "safe_smoke": self.safe_smoke,
                     "live_smoke": self.live_smoke,
                     "result": self.result,
@@ -346,6 +348,7 @@ def execute_update(
     receipt_dir: Path = DEFAULT_RECEIPT_DIR,
     runner: CommandRunner = _default_runner,
     require_root: bool = True,
+    bootstrap_pre_disabled_timer: bool = False,
 ) -> tuple[DeploymentReceipt, Path]:
     stage = "preflight"
     previous_sha: str | None = None
@@ -394,7 +397,17 @@ def execute_update(
             raise ProductionUpdateError("current production HEAD is not a supported Git digest")
 
         _validate_target(target_sha, app_root=app_root, runner=runner)
-        timer_was_enabled, timer_was_active = _timer_state(runner)
+        observed_timer_enabled, observed_timer_active = _timer_state(runner)
+        if bootstrap_pre_disabled_timer:
+            if observed_timer_enabled or observed_timer_active:
+                raise ProductionUpdateError(
+                    "bootstrap pre-disabled timer mode requires the timer to be disabled and inactive"
+                )
+            timer_was_enabled = True
+            timer_was_active = True
+        else:
+            timer_was_enabled = observed_timer_enabled
+            timer_was_active = observed_timer_active
 
         stage = "stop_timer"
         _run(
@@ -481,6 +494,7 @@ def execute_update(
             target_sha=target_sha,
             timer_was_enabled=timer_was_enabled,
             timer_was_active=timer_was_active,
+            bootstrap_pre_disabled_timer=bootstrap_pre_disabled_timer,
             safe_smoke=safe_smoke,
             live_smoke=live_smoke,
             result="success",
@@ -499,6 +513,7 @@ def execute_update(
             target_sha=target_sha,
             timer_was_enabled=timer_was_enabled,
             timer_was_active=timer_was_active,
+            bootstrap_pre_disabled_timer=bootstrap_pre_disabled_timer,
             safe_smoke=safe_smoke,
             live_smoke=live_smoke,
             result="failed",
@@ -527,6 +542,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--venv-root", type=Path, default=DEFAULT_VENV_ROOT)
     parser.add_argument("--systemd-dir", type=Path, default=DEFAULT_SYSTEMD_DIR)
     parser.add_argument("--receipt-dir", type=Path, default=DEFAULT_RECEIPT_DIR)
+    parser.add_argument(
+        "--bootstrap-pre-disabled-timer",
+        action="store_true",
+        help=(
+            "First-install only: assert the operator disabled/stopped a previously "
+            "enabled+active timer before installing this updater, and restore that "
+            "enabled+active state after a successful transaction."
+        ),
+    )
     return parser
 
 
@@ -539,6 +563,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             venv_root=args.venv_root,
             systemd_dir=args.systemd_dir,
             receipt_dir=args.receipt_dir,
+            bootstrap_pre_disabled_timer=args.bootstrap_pre_disabled_timer,
         )
     except ProductionUpdateError as exc:
         print(
