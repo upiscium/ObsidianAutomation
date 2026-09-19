@@ -15,6 +15,7 @@ READER_USER=${READER_USER:-obsidian-ai-reader}
 GENERATOR_USER=${GENERATOR_USER:-obsidian-ai-generator}
 VALIDATOR_USER=${VALIDATOR_USER:-obsidian-ai-validator}
 EVALUATOR_USER=${EVALUATOR_USER:-obsidian-ai-evaluator}
+STATUS_USER=${STATUS_USER:-obsidian-ai-status}
 REVIEWER_USER=${REVIEWER_USER:-obsidian-ai-reviewer}
 EXECUTOR_USER=${EXECUTOR_USER:-obsidian-ai-executor}
 
@@ -24,6 +25,7 @@ STATE_MARKER="$AI_ROOT/.obsidian-ai-disposable-state"
 KNOWLEDGE="$VAULT_ROOT/11-Knowledge"
 UNTRUSTED="$AI_ROOT/00-Untrusted"
 ORCHESTRATION="$AI_ROOT/02-Orchestration"
+STATUS_DIR="$ORCHESTRATION/status"
 INDEX="$AI_ROOT/04-Index"
 CONTEXT="$AI_ROOT/05-Context"
 VALIDATION="$AI_ROOT/10-Validation"
@@ -59,6 +61,7 @@ for user in \
   "$GENERATOR_USER" \
   "$VALIDATOR_USER" \
   "$EVALUATOR_USER" \
+  "$STATUS_USER" \
   "$REVIEWER_USER" \
   "$EXECUTOR_USER"; do
   id "$user" >/dev/null 2>&1 || {
@@ -68,7 +71,7 @@ for user in \
 done
 
 for directory in \
-  "$KNOWLEDGE" "$UNTRUSTED" "$ORCHESTRATION" "$INDEX" "$CONTEXT" "$VALIDATION" \
+  "$KNOWLEDGE" "$UNTRUSTED" "$ORCHESTRATION" "$STATUS_DIR" "$INDEX" "$CONTEXT" "$VALIDATION" \
   "$EVALUATION_REQUEST" "$EVALUATION_CONTEXT" "$EVALUATION" \
   "$REVIEW" "$LOCKS" "$READ_VIEW_LOCKS" "$EXECUTION" "$TRANSPORT" "$RECEIPTS"; do
   [[ -d "$directory" && ! -L "$directory" ]] || {
@@ -130,6 +133,7 @@ lock_seed="$LOCKS/.authority-gate-lock"
 execution_seed="$EXECUTION/.authority-gate-execution"
 transport_seed="$TRANSPORT/.authority-gate-transport"
 receipts_seed="$RECEIPTS/.authority-gate-receipt"
+status_seed="$STATUS_DIR/.authority-gate-status"
 
 create_seed "$SYNC_USER" "$knowledge_seed"
 create_seed "$GENERATOR_USER" "$untrusted_seed"
@@ -144,6 +148,7 @@ create_seed "$EXECUTOR_USER" "$lock_seed"
 create_seed "$EXECUTOR_USER" "$execution_seed"
 create_seed "$SYNC_USER" "$transport_seed"
 create_seed "$EXECUTOR_USER" "$receipts_seed"
+create_seed "$STATUS_USER" "$status_seed"
 
 # Positive reads.
 probe_read "$READER_USER" "$knowledge_seed" allow "Reader reads canonical Knowledge"
@@ -167,6 +172,8 @@ probe_read "$REVIEWER_USER" "$receipts_seed" allow "Reviewer reads Receipts"
 probe_read "$EXECUTOR_USER" "$validation_seed" allow "Executor reads Validation"
 probe_read "$EXECUTOR_USER" "$review_seed" allow "Executor reads Review"
 probe_read "$EXECUTOR_USER" "$transport_seed" allow "Executor reads Transport result"
+probe_read "$STATUS_USER" "$status_seed" allow "Status identity reads aggregate status projection"
+probe_read "$REVIEWER_USER" "$status_seed" allow "Reviewer reads aggregate status projection"
 probe_read "$SYNC_USER" "$validation_seed" allow "Sync reads Validation"
 probe_read "$SYNC_USER" "$review_seed" allow "Sync reads Review"
 probe_read "$SYNC_USER" "$execution_seed" allow "Sync reads Execution request"
@@ -189,6 +196,9 @@ probe_read "$EXECUTOR_USER" "$untrusted_seed" deny "Executor cannot read Untrust
 probe_read "$SYNC_USER" "$untrusted_seed" deny "Sync cannot read Untrusted proposals"
 probe_read "$SYNC_USER" "$evaluation_seed" deny "Sync cannot read Evaluation"
 probe_read "$SYNC_USER" "$receipts_seed" deny "Sync cannot read Receipts"
+for path in "$knowledge_seed" "$untrusted_seed" "$index_seed" "$context_seed" "$validation_seed" "$evaluation_request_seed" "$evaluation_context_seed" "$evaluation_seed" "$review_seed" "$execution_seed" "$transport_seed" "$receipts_seed"; do
+  probe_read "$STATUS_USER" "$path" deny "Status identity denied semantic/authority artifact: ${path}"
+done
 
 # Positive writes: one semantic writer per stage; Locks are deliberately shared operational state.
 probe_write "$SYNC_USER" "$KNOWLEDGE" allow "Sync writes local Vault mirror"
@@ -200,6 +210,8 @@ probe_write "$READER_USER" "$ORCHESTRATION" allow "Reader writes orchestration m
 probe_write "$GENERATOR_USER" "$ORCHESTRATION" allow "Generator writes orchestration metadata"
 probe_write "$VALIDATOR_USER" "$ORCHESTRATION" allow "Validator writes orchestration metadata"
 probe_write "$EVALUATOR_USER" "$ORCHESTRATION" allow "Evaluator writes orchestration metadata"
+probe_write "$STATUS_USER" "$STATUS_DIR" allow "Status identity writes aggregate status projection"
+probe_write "$REVIEWER_USER" "$STATUS_DIR" deny "Reviewer cannot rewrite aggregate status projection"
 probe_write "$VALIDATOR_USER" "$VALIDATION" allow "Validator writes Validation"
 probe_write "$VALIDATOR_USER" "$EVALUATION_REQUEST" allow "Validator writes Evaluation Request"
 probe_write "$EVALUATOR_USER" "$EVALUATION" allow "Evaluator writes Evaluation"
