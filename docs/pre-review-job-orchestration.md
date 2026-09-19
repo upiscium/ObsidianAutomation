@@ -2,12 +2,12 @@
 
 ## Scope
 
-This is Wave A of #64. It defines durable orchestration metadata for moving an
-explicitly submitted immutable Context toward Human Review. It does **not** yet
-start Generator, Validator, Reader, or Evaluator workers.
+This contract is the durable pre-review control plane for #64. It accepts one
+explicit immutable Context and coordinates identity-scoped Generator, Validator,
+Reader, and Evaluator workers until the selected generation reaches Human Review.
 
-It also does not approve, reject, execute, transport, or write canonical Vault
-content.
+It never approves, rejects on behalf of a Human, executes, transports, or writes
+canonical Vault content.
 
 ## Authority boundary
 
@@ -71,7 +71,15 @@ The immutable recipe pins only bounded processing identity:
 - Evaluator prompt version/hash;
 - Evaluator provider/model identity and model configuration.
 
-Recipe v0 supports only the existing `ollama` adapters.
+Recipe v0 supports only the currently deployed pipeline contracts:
+
+- Generator prompt `knowledge-note-generator-v0`;
+- Generator adapter `ollama-chat-structured-v0`;
+- Validator policy `knowledge-note-v0`;
+- Evaluation Context policy `bm25-topk-recall-v0` with `top_k=5`;
+- Evaluator prompt `knowledge-note-evaluator-v3`;
+- Evaluator adapter `ollama-evaluator-chat-structured-v2`;
+- Evaluator strategy `groundedness-plus-pairwise-candidates-v0`.
 
 The recipe deliberately has no field for:
 
@@ -101,18 +109,29 @@ queued
                       -> awaiting_human_review
 ```
 
-Any active processing state may enter `retryable_failure` or
+Any active processing state may enter `retryable_failure`, `blocked`, or
 `deterministic_reject`.
 
-`retryable_failure` requires an explicit retry transition back to `queued`.
-`deterministic_reject` and `awaiting_human_review` are terminal for that
-generation. A new model generation after deterministic rejection requires the
-explicit `regenerate` operation.
+Transient failures are retried at the **same failed stage**, never by silently
+restarting Generator. The automatic worker path allows at most three attempts
+per stage. A fourth claim converts the generation to `retry_exhausted`.
+
+`blocked` represents recipe/runtime/binding drift that requires operator
+attention. `deterministic_reject` is reserved for deterministic Validator
+rejection. `deterministic_reject`, `retry_exhausted`, `blocked`, and
+`awaiting_human_review` stop automatic progress.
+
+Explicit `retry` restores the failed stage. Explicit `regenerate` creates a
+new generation under the same job.
+
+Each successful stage stores only a selected bounded SHA binding in the
+`stage_outputs` table. Downstream workers consume that selected output and
+re-validate the immutable artifact itself; they never scan artifact directories
+and guess which output to adopt.
 
 This metadata never writes a Human Review artifact. Both `proceed` and
-`do_not_proceed` Evaluation outcomes will eventually terminate orchestration at
-`awaiting_human_review`; recommendation interpretation remains outside this
-Wave A persistence layer.
+`do_not_proceed` Evaluation outcomes terminate orchestration at
+`awaiting_human_review`. Recommendation interpretation remains Human-owned.
 
 ## CLI
 
@@ -150,22 +169,47 @@ Context text, proposal text, credentials, provider endpoints, or Review content.
 ## Persistence
 
 `pre-review-jobs.sqlite3` uses SQLite transactions, foreign keys and
-`synchronous=FULL`. The database file is mode 0600.
+`synchronous=FULL`. The database file is mode 0660 so the narrow
+Generator/Validator/Reader/Evaluator operational ACL can share metadata without
+sharing semantic artifact authority.
 
 Recipes remain immutable content-addressed JSON files so a job can always prove
 which fixed recipe it references even if future deployment defaults change.
 
-## Deferred to later #64 slices
+## Identity worker chain
 
-This PR intentionally does not add:
+The reusable worker entrypoints are:
 
-- systemd worker units or new production identities;
-- automatic Generator -> Validator -> Reader -> Evaluator execution;
-- retry timers/backoff;
-- durable mirror-success projection or lock-wait metrics;
-- Human Review queue limits/backpressure;
-- immutable read-view coordination;
-- notification delivery;
-- production deployment or acceptance.
+```text
+obsidian-pre-review-generator-worker
+obsidian-pre-review-validator-worker
+obsidian-pre-review-reader-worker
+obsidian-pre-review-evaluator-worker
+```
 
-Those are subsequent Wave A/B/C/D slices built on this contract.
+The example systemd chain starts the Evaluator service and pulls dependencies in
+this order:
+
+```text
+Generator -> Validator -> Reader -> Evaluator
+```
+
+Every service runs as its matching existing Linux identity. There is no root
+or all-artifact orchestration runner.
+
+A worker invocation processes at most one generation/stage. A service restart
+may find a prior `running` attempt left by a crash; it marks that attempt
+`interrupted` and starts a new attempt without adopting unselected artifacts.
+
+Generator backpressure stops new generation claims when eight current
+generations are already `awaiting_human_review`.
+
+## Deferred to Wave D
+
+- production ACL rollout and exact-revision package installation;
+- enabling the example timer;
+- production crash/resume/provider/backpressure acceptance;
+- role-limited operational status projection and notifications;
+- any post-Human-review automatic execution or transport.
+
+The example timer is intentionally not enabled by repository code.

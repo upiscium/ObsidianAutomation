@@ -165,6 +165,152 @@ probe_lock "$VALIDATOR_USER" deny "Validator cannot open production mutation loc
 probe_lock "$READER_USER" deny "Reader cannot open production mutation lock"
 probe_lock "$GENERATOR_USER" deny "Generator cannot open production mutation lock"
 
+# The shared pre-review SQLite file is created by Reader but must remain
+# writable by the four machine-stage identities only. Exercise the actual
+# SQLite transaction path across identities so a mode/ACL mask regression
+# cannot hide behind directory-only probes.
+if runuser -u "$READER_USER" -- env PYTHONPATH="$PYTHON_ROOT" python3 - "$AI_ROOT" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+from obsidian_automation.context_bundle import ContextBundle, store_context_bundle
+from obsidian_automation.evaluator_contract import (
+    EVALUATOR_PROMPT_TEMPLATE_VERSION,
+    prompt_template_sha256 as evaluator_prompt_sha256,
+)
+from obsidian_automation.generator_contract import (
+    PROMPT_TEMPLATE_VERSION,
+    prompt_template_sha256 as generator_prompt_sha256,
+)
+from obsidian_automation.ollama_evaluator import ADAPTER_VERSION as EVAL_ADAPTER, EVALUATION_STRATEGY
+from obsidian_automation.ollama_generator import ADAPTER_VERSION as GEN_ADAPTER
+from obsidian_automation.pre_review_job import parse_recipe, submit_job
+
+root = Path(sys.argv[1])
+context_sha, _ = store_context_bundle(
+    root,
+    ContextBundle(
+        query="authority fixture pre-review job",
+        created_at="2026-09-19T00:00:00Z",
+        sources=(),
+    ),
+)
+recipe = {
+    "record_version": 1,
+    "pipeline": "knowledge-pre-review-v0",
+    "generator": {
+        "implementation_revision": "a" * 40,
+        "prompt_template_version": PROMPT_TEMPLATE_VERSION,
+        "prompt_template_sha256": generator_prompt_sha256(),
+        "provider": "ollama",
+        "model_identifier": "fixture-generator",
+        "model_revision": "fixture-generator-revision",
+        "model_config": {
+            "adapter_version": GEN_ADAPTER,
+            "think": False,
+            "options": {"temperature": 0},
+        },
+    },
+    "validator": {"policy": "knowledge-note-v0"},
+    "evaluation_context": {
+        "selection_policy": "bm25-topk-recall-v0",
+        "top_k": 5,
+    },
+    "evaluator": {
+        "implementation_revision": "a" * 40,
+        "prompt_template_version": EVALUATOR_PROMPT_TEMPLATE_VERSION,
+        "prompt_template_sha256": evaluator_prompt_sha256(),
+        "provider": "ollama",
+        "model_identifier": "fixture-evaluator",
+        "model_revision": "fixture-evaluator-revision",
+        "model_config": {
+            "adapter_version": EVAL_ADAPTER,
+            "think": False,
+            "strategy": EVALUATION_STRATEGY,
+            "options": {"temperature": 0},
+        },
+    },
+}
+parsed = parse_recipe((json.dumps(recipe, separators=(",", ":")) + "\n").encode())
+result = submit_job(root, context_sha256=context_sha, recipe=parsed)
+assert result["created"] is True
+PY
+then
+  pass "Reader creates shared pre-review SQLite job"
+else
+  fail "Reader creates shared pre-review SQLite job"
+fi
+
+run_stage() {
+  local user=$1 stage=$2 label=$3
+  if runuser -u "$user" -- env PYTHONPATH="$PYTHON_ROOT" python3 - "$AI_ROOT" "$stage" <<'PY'
+import sys
+from pathlib import Path
+
+from obsidian_automation.pre_review_job import (
+    claim_next_attempt,
+    complete_attempt,
+    stage_output,
+)
+
+root = Path(sys.argv[1])
+stage = sys.argv[2]
+work = claim_next_attempt(root, stage)
+assert work is not None
+
+if stage == "generation":
+    output = {
+        "proposal_sha256": "1" * 64,
+        "generation_sha256": "2" * 64,
+    }
+elif stage == "validation":
+    previous = stage_output(root, work.generation_id, "generation")
+    assert previous is not None
+    output = {
+        **previous,
+        "mutation_sha256": "3" * 64,
+        "request_sha256": "4" * 64,
+    }
+elif stage == "evaluation_context":
+    previous = stage_output(root, work.generation_id, "validation")
+    assert previous is not None
+    output = {
+        **previous,
+        "index_sha256": "5" * 64,
+        "evaluation_context_sha256": "6" * 64,
+    }
+elif stage == "evaluation":
+    previous = stage_output(root, work.generation_id, "evaluation_context")
+    assert previous is not None
+    output = {
+        **previous,
+        "evaluation_sha256": "7" * 64,
+        "recommendation": "manual_review",
+    }
+else:
+    raise AssertionError(stage)
+
+complete_attempt(root, work.attempt_id, outcome="succeeded", output=output)
+PY
+  then
+    pass "$label"
+  else
+    fail "$label"
+  fi
+}
+
+run_stage "$GENERATOR_USER" generation "Generator updates Reader-created orchestration DB"
+run_stage "$VALIDATOR_USER" validation "Validator updates shared orchestration DB"
+run_stage "$READER_USER" evaluation_context "Reader updates shared orchestration DB"
+run_stage "$EVALUATOR_USER" evaluation "Evaluator updates shared orchestration DB"
+
+ORCHESTRATION_DB="$AI_ROOT/02-Orchestration/pre-review-jobs.sqlite3"
+[[ -f "$ORCHESTRATION_DB" && ! -L "$ORCHESTRATION_DB" ]] || {
+  fail "Pre-review orchestration DB is a safe regular file"
+}
+getfacl -p "$ORCHESTRATION_DB"
+
 if (( failures != 0 )); then
   echo "Shared production lock Gate FAILED: $failures probe(s) failed." >&2
   exit 1

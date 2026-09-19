@@ -1,0 +1,24 @@
+[Unit]
+Description=Obsidian pre-review Evaluator worker
+Requires=obsidian-pre-review-reader.service
+After=network-online.target obsidian-pre-review-reader.service
+Wants=network-online.target
+ConditionPathExists=/etc/obsidian-ai/pre-review-evaluator.env
+
+[Service]
+Type=oneshot
+User=obsidian-ai-evaluator
+Group=obsidian-ai-evaluator
+EnvironmentFile=/etc/obsidian-ai/pre-review-evaluator.env
+ExecStart=/opt/obsidian-ai/venv/bin/obsidian-pre-review-evaluator-worker \
+  --ai-root /var/lib/obsidian-ai/state \
+  --ollama-base-url ${OLLAMA_BASE_URL} \
+  --deployed-revision ${OBSIDIAN_AUTOMATION_REVISION}
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/var/lib/obsidian-ai/state/00-Untrusted /var/lib/obsidian-ai/state/05-Context /var/lib/obsidian-ai/state/10-Validation /var/lib/obsidian-ai/state/14-Evaluation-Context
+ReadWritePaths=/var/lib/obsidian-ai/state/02-Orchestration /var/lib/obsidian-ai/state/15-Evaluation
+UMask=0007
+TimeoutStartSec=15min
