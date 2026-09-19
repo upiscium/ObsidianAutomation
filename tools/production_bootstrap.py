@@ -400,7 +400,6 @@ def _prepare_offline_build_backend(
             str(pip),
             "install",
             "--no-index",
-            "--no-deps",
             "--find-links",
             str(wheelhouse),
             "setuptools>=75",
