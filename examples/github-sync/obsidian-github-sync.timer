@@ -1,9 +1,9 @@
 [Unit]
-Description=Run Obsidian GitHub Project status pipeline every 15 minutes
+Description=Run Obsidian GitHub Project status pipeline every 5 minutes
 
 [Timer]
 OnBootSec=2min
-OnUnitActiveSec=15min
+OnUnitActiveSec=5min
 RandomizedDelaySec=30s
 Persistent=true
 Unit=obsidian-github-compactor.service
