@@ -39,7 +39,24 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - run: sudo apt-get update && sudo apt-get install -y acl
-      - name: Create authority fixture users
+      - name: Run consolidated authority provisioner twice
+        run: |
+          sudo python3 tools/provision_automation_authority.py > /tmp/authority-first.json
+          sudo python3 tools/provision_automation_authority.py > /tmp/authority-second.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          for name in ("authority-first.json", "authority-second.json"):
+              value = json.loads((Path("/tmp") / name).read_text())
+              assert value["status"] == "completed"
+              assert value["result"] == "passed"
+              assert value["credentials_installed"] is False
+              assert value["systemd_units_installed"] is False
+              assert value["recurring_services_activated"] is False
+          print("PASS: consolidated authority provisioning is idempotent")
+          PY
+      - name: Verify authority fixture users
         run: |
           for user in \
             obsidian-ai-sync \
@@ -51,12 +68,7 @@ jobs:
             obsidian-ai-reviewer \
             obsidian-ai-executor
           do
-            sudo useradd \
-              --system \
-              --user-group \
-              --no-create-home \
-              --shell /usr/sbin/nologin \
-              "$user"
+            id "$user"
           done
       - name: Run separate Vault/state Authority separation Gate
         run: |
