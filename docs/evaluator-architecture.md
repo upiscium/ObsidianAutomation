@@ -155,7 +155,7 @@ no direct access:
   04-Index
   12-Evaluation-Request
   20-Review
-  24-Locks except traverse-only parent access and rw access to 24-Locks/read-view
+  24-Locks (including 24-Locks/read-view)
   25-Execution
   27-Transport
   30-Receipts
