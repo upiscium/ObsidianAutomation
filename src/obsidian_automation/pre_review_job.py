@@ -571,16 +571,16 @@ def start_attempt(ai_root: Path, generation_id: str, stage: str) -> dict[str, ob
         ).fetchone()
         if generation is None:
             raise PreReviewJobError("generation does not exist")
-        if generation["state"] != expected_state:
-            raise PreReviewJobError(
-                f"attempt stage {stage_name} requires generation state {expected_state}"
-            )
         running = conn.execute(
             "SELECT attempt_id FROM attempts WHERE generation_id = ? AND status = 'running' LIMIT 1",
             (digest,),
         ).fetchone()
         if running is not None:
             raise PreReviewJobError("generation already has a running attempt")
+        if generation["state"] != expected_state:
+            raise PreReviewJobError(
+                f"attempt stage {stage_name} requires generation state {expected_state}"
+            )
         row = conn.execute(
             "SELECT COALESCE(MAX(attempt_index), 0) AS last_index FROM attempts "
             "WHERE generation_id = ? AND stage = ?",
