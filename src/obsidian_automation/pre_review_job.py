@@ -528,15 +528,25 @@ def allocate_attempt(ai_root: Path, generation_id: str, stage: str) -> dict[str,
     if stage_name not in {"generation", "validation", "evaluation_context", "evaluation"}:
         raise PreReviewJobError("attempt stage is invalid")
     now = _utc_now()
+    required_state = {
+        "generation": "generating",
+        "validation": "validating",
+        "evaluation_context": "building_evaluation_context",
+        "evaluation": "evaluating",
+    }[stage_name]
     conn = _connect(ai_root)
     try:
         conn.execute("BEGIN IMMEDIATE")
         generation = conn.execute(
-            "SELECT generation_id FROM generations WHERE generation_id = ?",
+            "SELECT generation_id, state FROM generations WHERE generation_id = ?",
             (digest,),
         ).fetchone()
         if generation is None:
             raise PreReviewJobError("generation does not exist")
+        if generation["state"] != required_state:
+            raise PreReviewJobError(
+                f"attempt stage {stage_name} requires generation state {required_state}"
+            )
         row = conn.execute(
             "SELECT COALESCE(MAX(attempt_index), 0) AS last_index FROM attempts "
             "WHERE generation_id = ? AND stage = ?",
