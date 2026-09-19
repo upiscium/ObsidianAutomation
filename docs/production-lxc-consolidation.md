@@ -61,6 +61,8 @@ metadata may still be operationally private.
 The new host should normally register a fresh Gitea Runner rather than copying
 opaque runner registration state.
 
+The existing Publisher LXC runs `gitea-runner.service`; cutover must stop that old unit before starting the newly registered runner on the consolidated LXC.
+
 The following are Gitea repository configuration, not LXC files:
 
 - `OBSIDIAN_CORE_DEPLOY_KEY`;

@@ -109,3 +109,8 @@ def test_cli_output_is_value_free(tmp_path: Path, capsys) -> None:
     value = json.loads(captured.out)
     assert value["values_read"] is False
     assert value["role"] == "github-sync"
+
+
+def test_publisher_manifest_uses_production_runner_unit_name() -> None:
+    by_id = {entry.logical_id: entry for entry in ROLE_MANIFESTS["publisher"]}
+    assert by_id["gitea_runner_unit"].path == "/etc/systemd/system/gitea-runner.service"
