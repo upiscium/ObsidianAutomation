@@ -13,6 +13,8 @@ def test_timer_targets_compactor_and_compactor_depends_on_writer() -> None:
     service = (EXAMPLES / "obsidian-github-compactor.service").read_text(encoding="utf-8")
 
     assert "Unit=obsidian-github-compactor.service" in timer
+    assert "OnUnitActiveSec=5min" in timer
+    assert "OnUnitActiveSec=15min" not in timer
     assert "Requires=obsidian-github-writer.service" in service
     assert "After=obsidian-github-writer.service" in service
     assert "User=obsidian-github-compactor" in service
