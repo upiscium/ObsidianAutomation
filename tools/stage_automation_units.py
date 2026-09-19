@@ -349,14 +349,20 @@ def _install_units(
     return tuple(installed)
 
 
-def _write_revision_env(path: Path, target_sha: str) -> None:
+def _write_revision_env(
+    path: Path,
+    target_sha: str,
+    *,
+    chown_root: bool,
+) -> None:
     _require_dir(path.parent, "revision_env_parent")
     _atomic_install(
         f"OBSIDIAN_AUTOMATION_REVISION={target_sha}\n".encode("utf-8"),
         path,
         0o644,
     )
-    os.chown(path, 0, 0)
+    if chown_root:
+        os.chown(path, 0, 0)
 
 
 def _leave_inert(runner: Runner) -> None:
@@ -399,7 +405,11 @@ def stage_units(
     _verify_source(source_root, target_sha, runner)
     _preflight_inert(runner)
     installed = _install_units(source_root, systemd_dir)
-    _write_revision_env(revision_env, target_sha)
+    _write_revision_env(
+        revision_env,
+        target_sha,
+        chown_root=require_root,
+    )
 
     _run(
         runner,
