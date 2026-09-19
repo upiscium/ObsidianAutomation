@@ -78,6 +78,7 @@ def test_github_inventory_marks_required_missing_without_contents(tmp_path: Path
         "github_sync_config",
         "github_mirror_rclone",
         "github_mirror_filters",
+        "github_writer_config",
         "github_writer_password",
         "github_sync_state",
         "github_pipeline_state",
@@ -114,3 +115,78 @@ def test_cli_output_is_value_free(tmp_path: Path, capsys) -> None:
 def test_publisher_manifest_uses_production_runner_unit_name() -> None:
     by_id = {entry.logical_id: entry for entry in ROLE_MANIFESTS["publisher"]}
     assert by_id["gitea_runner_unit"].path == "/etc/systemd/system/gitea-runner.service"
+
+
+def test_publisher_manifest_includes_core_promotion_private_boundary() -> None:
+    by_id = {entry.logical_id: entry for entry in ROLE_MANIFESTS["publisher"]}
+
+    assert by_id["core_promotion_env"].path == (
+        "/etc/obsidian-core-promotion/promotion.env"
+    )
+    assert by_id["core_promotion_policy"].path == (
+        "/etc/obsidian-core-promotion/public-export.toml"
+    )
+    assert by_id["core_promotion_password"].path == (
+        "/etc/obsidian-core-promotion/nextcloud.password"
+    )
+    assert by_id["core_promotion_state"].path == (
+        "/var/lib/obsidian-core-promotion"
+    )
+    assert by_id["core_promotion_service"].path == (
+        "/etc/systemd/system/obsidian-core-promotion.service"
+    )
+    assert by_id["core_promotion_timer"].path == (
+        "/etc/systemd/system/obsidian-core-promotion.timer"
+    )
+
+
+def test_publisher_core_promotion_inventory_is_value_free(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "/etc/obsidian-core-promotion/promotion.env",
+        SECRET,
+    )
+    _write(
+        tmp_path,
+        "/etc/obsidian-core-promotion/public-export.toml",
+        SECRET,
+    )
+    _write(
+        tmp_path,
+        "/etc/obsidian-core-promotion/nextcloud.password",
+        SECRET,
+    )
+    state = tmp_path / "var/lib/obsidian-core-promotion"
+    state.mkdir(parents=True)
+
+    report = inspect_role("publisher", root=tmp_path)
+    encoded = json.dumps(report, sort_keys=True)
+
+    assert SECRET not in encoded
+    assert "PRIVATE-CREDENTIAL" not in encoded
+
+    by_id = {item["logical_id"]: item for item in report["items"]}
+    assert by_id["core_promotion_env"]["exists"] is True
+    assert by_id["core_promotion_policy"]["exists"] is True
+    assert by_id["core_promotion_password"]["exists"] is True
+    assert by_id["core_promotion_state"]["file_type"] == "directory"
+
+
+def test_github_writer_config_is_required_and_value_free(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "/etc/obsidian-github-writer/config.env",
+        SECRET,
+    )
+
+    report = inspect_role("github-sync", root=tmp_path)
+    encoded = json.dumps(report, sort_keys=True)
+    by_id = {item["logical_id"]: item for item in report["items"]}
+
+    assert SECRET not in encoded
+    assert by_id["github_writer_config"]["exists"] is True
+    assert by_id["github_writer_config"]["required"] is True
+    assert by_id["github_writer_config"]["expected_fields"] == [
+        "NEXTCLOUD_BASE_URL",
+        "NEXTCLOUD_USERNAME",
+    ]
