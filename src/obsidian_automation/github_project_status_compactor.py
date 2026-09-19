@@ -53,19 +53,43 @@ def _require_directory(path: Path, *, label: str) -> None:
 
 
 def _read_regular(path: Path, *, label: str) -> tuple[bytes, os.stat_result]:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+
     try:
-        info = path.lstat()
+        fd = os.open(path, flags)
     except FileNotFoundError as exc:
         raise ProjectStatusCompactorError(f"{label} does not exist") from exc
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
-        raise ProjectStatusCompactorError(f"{label} must be a regular non-symlink file")
-    if info.st_size > MAX_ARTIFACT_BYTES:
-        raise ProjectStatusCompactorError(f"{label} exceeds maximum supported size")
-    try:
-        data = path.read_bytes()
     except OSError as exc:
-        raise ProjectStatusCompactorError(f"cannot read {label}") from exc
-    return data, info
+        raise ProjectStatusCompactorError(f"cannot open {label} safely") from exc
+
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ProjectStatusCompactorError(
+                f"{label} must be a regular non-symlink file"
+            )
+        if info.st_size > MAX_ARTIFACT_BYTES:
+            raise ProjectStatusCompactorError(f"{label} exceeds maximum supported size")
+
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(fd, min(64 * 1024, MAX_ARTIFACT_BYTES + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > MAX_ARTIFACT_BYTES:
+                raise ProjectStatusCompactorError(
+                    f"{label} exceeds maximum supported size"
+                )
+        return b"".join(chunks), info
+    finally:
+        os.close(fd)
 
 
 def _decode_object(data: bytes, *, label: str) -> dict[str, object]:
