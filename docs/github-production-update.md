@@ -170,10 +170,26 @@ Verify:
 /opt/obsidian-github-sync/venv/bin/obsidian-github-production-smoke --profile safe
 ```
 
-Then run the updater once against that same exact SHA. Because the transaction
-is idempotent at the Git checkout/package level, this first self-hosted run
-validates unit installation, live smoke, receipt persistence, and timer
-restoration.
+The outer bootstrap intentionally leaves the timer disabled/inactive while code
+and the venv are being replaced. If that timer was enabled+active immediately
+before this one-time bootstrap stop, run the updater once against the same exact
+SHA with:
+
+```bash
+/opt/obsidian-github-sync/venv/bin/obsidian-github-production-update \
+  --target-sha <same-merge-commit> \
+  --bootstrap-pre-disabled-timer
+```
+
+This flag is **first-install only**. It requires the timer to currently be
+disabled and inactive, records that the operator pre-disabled an originally
+enabled+active timer for bootstrap safety, and restores enabled+active only
+after the full transaction passes. It must not be used for normal deployments.
+
+Because the transaction is idempotent at the Git checkout/package level, this
+first self-hosted run validates unit installation, live smoke, receipt
+persistence, and timer restoration without briefly re-enabling the timer before
+the updater has taken control.
 
 ## Normal operation
 
