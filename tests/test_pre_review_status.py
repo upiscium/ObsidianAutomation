@@ -15,11 +15,11 @@ from obsidian_automation.generator_contract import (
     PROMPT_TEMPLATE_VERSION,
     prompt_template_sha256 as generator_prompt_sha256,
 )
-from obsidian_automation.ollama_evaluator import (
+from obsidian_automation.openai_evaluator import (
     ADAPTER_VERSION as EVALUATOR_ADAPTER_VERSION,
     EVALUATION_STRATEGY,
 )
-from obsidian_automation.ollama_generator import ADAPTER_VERSION as GENERATOR_ADAPTER_VERSION
+from obsidian_automation.openai_generator import ADAPTER_VERSION as GENERATOR_ADAPTER_VERSION
 from obsidian_automation.pre_review_job import (
     complete_attempt,
     parse_recipe,
@@ -46,12 +46,12 @@ def _recipe():
             "implementation_revision": REVISION,
             "prompt_template_version": PROMPT_TEMPLATE_VERSION,
             "prompt_template_sha256": generator_prompt_sha256(),
-            "provider": "ollama",
+            "provider": "openai-compatible",
             "model_identifier": "generator",
-            "model_revision": "generator-revision",
+            "model_revision": "identifier:generator",
             "model_config": {
                 "adapter_version": GENERATOR_ADAPTER_VERSION,
-                "think": False,
+                "identity_binding": "identifier-only",
                 "options": {"temperature": 0},
             },
         },
@@ -64,12 +64,12 @@ def _recipe():
             "implementation_revision": REVISION,
             "prompt_template_version": EVALUATOR_PROMPT_TEMPLATE_VERSION,
             "prompt_template_sha256": evaluator_prompt_sha256(),
-            "provider": "ollama",
+            "provider": "openai-compatible",
             "model_identifier": "evaluator",
-            "model_revision": "evaluator-revision",
+            "model_revision": "identifier:evaluator",
             "model_config": {
                 "adapter_version": EVALUATOR_ADAPTER_VERSION,
-                "think": False,
+                "identity_binding": "identifier-only",
                 "strategy": EVALUATION_STRATEGY,
                 "options": {"temperature": 0},
             },
