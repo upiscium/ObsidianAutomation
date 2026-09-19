@@ -8,6 +8,8 @@ import pytest
 from obsidian_automation.pre_review_production_update import (
     CommandResult,
     PreReviewProductionUpdateError,
+    MIRROR_SERVICE_UNIT,
+    MIRROR_TIMER_UNIT,
     REQUIRED_UNITS,
     TIMER_UNIT,
     execute_update,
@@ -56,12 +58,16 @@ class Runner:
         enabled: bool = False,
         active: bool = False,
         fail_install: bool = False,
+        mirror_enabled: bool = True,
+        mirror_active: bool = True,
     ) -> None:
         self.systemd_dir = systemd_dir
         self.timer_exists = timer_exists
         self.enabled = enabled
         self.active = active
         self.fail_install = fail_install
+        self.mirror_enabled = mirror_enabled
+        self.mirror_active = mirror_active
         self.head = PREVIOUS
         self.commands: list[tuple[str, ...]] = []
 
@@ -83,6 +89,48 @@ class Runner:
             return CommandResult(0, "", "")
         if "reset" in command and "--hard" in command:
             self.head = command[-1]
+            return CommandResult(0, "", "")
+
+        if command == ("systemctl", "is-enabled", MIRROR_TIMER_UNIT):
+            return CommandResult(
+                0 if self.mirror_enabled else 1,
+                ("enabled" if self.mirror_enabled else "disabled") + "\n",
+                "",
+            )
+        if command == ("systemctl", "is-active", MIRROR_TIMER_UNIT):
+            return CommandResult(
+                0 if self.mirror_active else 3,
+                ("active" if self.mirror_active else "inactive") + "\n",
+                "",
+            )
+        if command == ("systemctl", "disable", "--now", MIRROR_TIMER_UNIT):
+            self.mirror_enabled = False
+            self.mirror_active = False
+            return CommandResult(0, "", "")
+        if command == ("systemctl", "enable", "--now", MIRROR_TIMER_UNIT):
+            self.mirror_enabled = True
+            self.mirror_active = True
+            return CommandResult(0, "", "")
+        if command == ("systemctl", "enable", MIRROR_TIMER_UNIT):
+            self.mirror_enabled = True
+            return CommandResult(0, "", "")
+        if command == ("systemctl", "disable", MIRROR_TIMER_UNIT):
+            self.mirror_enabled = False
+            return CommandResult(0, "", "")
+        if command == ("systemctl", "start", MIRROR_TIMER_UNIT):
+            self.mirror_active = True
+            return CommandResult(0, "", "")
+        if command == ("systemctl", "stop", MIRROR_TIMER_UNIT):
+            self.mirror_active = False
+            return CommandResult(0, "", "")
+        if command == ("systemctl", "stop", MIRROR_SERVICE_UNIT):
+            return CommandResult(0, "", "")
+        if (
+            len(command) == 3
+            and command[:2] == ("systemctl", "stop")
+            and command[2].startswith("obsidian-pre-review-")
+            and command[2].endswith(".service")
+        ):
             return CommandResult(0, "", "")
 
         if command == ("systemctl", "is-enabled", TIMER_UNIT):
@@ -159,6 +207,8 @@ def test_first_install_leaves_new_timer_disabled_and_installs_exact_revision(
     assert receipt.disposable_canary == "pending_manual_acceptance"
     assert runner.enabled is False
     assert runner.active is False
+    assert runner.mirror_enabled is True
+    assert runner.mirror_active is True
     assert runner.head == TARGET
 
     assert revision_env.read_text(encoding="utf-8") == (
@@ -211,6 +261,8 @@ def test_existing_enabled_active_timer_is_restored_after_safe_update(
     assert receipt.first_install_left_disabled is False
     assert runner.enabled is True
     assert runner.active is True
+    assert runner.mirror_enabled is True
+    assert runner.mirror_active is True
     assert ("systemctl", "enable", "--now", TIMER_UNIT) in runner.commands
 
 
@@ -270,6 +322,8 @@ def test_failure_after_timer_stop_leaves_timer_disabled_and_persists_safe_receip
 
     assert runner.enabled is False
     assert runner.active is False
+    assert runner.mirror_enabled is False
+    assert runner.mirror_active is False
     paths = list(receipts.glob("*.pre-review.json"))
     assert len(paths) == 1
     text = paths[0].read_text(encoding="utf-8")
@@ -311,5 +365,68 @@ def test_dirty_checkout_fails_before_timer_is_touched(tmp_path: Path) -> None:
         )
 
     assert ("systemctl", "disable", "--now", TIMER_UNIT) not in base.commands
+    assert ("systemctl", "disable", "--now", MIRROR_TIMER_UNIT) not in base.commands
     assert base.enabled is True
     assert base.active is True
+    assert base.mirror_enabled is True
+    assert base.mirror_active is True
+
+
+def test_bootstrap_pre_disabled_mirror_is_logically_restored(
+    tmp_path: Path,
+) -> None:
+    app, venv, systemd, receipts, revision_env = _layout(tmp_path)
+    runner = Runner(
+        systemd_dir=systemd,
+        timer_exists=False,
+        mirror_enabled=False,
+        mirror_active=False,
+    )
+
+    receipt, _ = execute_update(
+        target_sha=TARGET,
+        app_root=app,
+        venv_root=venv,
+        systemd_dir=systemd,
+        receipt_dir=receipts,
+        revision_env=revision_env,
+        runner=runner,
+        require_root=False,
+        bootstrap_mirror_pre_disabled=True,
+    )
+
+    assert receipt.bootstrap_mirror_pre_disabled is True
+    assert receipt.mirror_timer_was_enabled is True
+    assert receipt.mirror_timer_was_active is True
+    assert runner.mirror_enabled is True
+    assert runner.mirror_active is True
+    assert runner.enabled is False
+    assert runner.active is False
+
+
+def test_bootstrap_pre_disabled_mode_rejects_running_mirror(
+    tmp_path: Path,
+) -> None:
+    app, venv, systemd, receipts, revision_env = _layout(tmp_path)
+    runner = Runner(
+        systemd_dir=systemd,
+        timer_exists=False,
+        mirror_enabled=True,
+        mirror_active=True,
+    )
+
+    with pytest.raises(
+        PreReviewProductionUpdateError,
+        match="pre-disabled",
+    ):
+        execute_update(
+            target_sha=TARGET,
+            app_root=app,
+            venv_root=venv,
+            systemd_dir=systemd,
+            receipt_dir=receipts,
+            revision_env=revision_env,
+            runner=runner,
+            require_root=False,
+            bootstrap_mirror_pre_disabled=True,
+        )
