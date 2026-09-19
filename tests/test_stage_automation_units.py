@@ -249,3 +249,26 @@ def test_stage_requires_exact_clean_target(tmp_path: Path) -> None:
         assert str(exc) == "source_root_not_exact_target"
     else:
         raise AssertionError("wrong target source was not rejected")
+
+
+def test_real_unit_sources_render_to_consolidated_paths() -> None:
+    for unit, relative in stage.SOURCE_LAYOUT.items():
+        source = Path(relative)
+        assert source.is_file(), unit
+        rendered = stage._render_unit(source.read_text(encoding="utf-8"))
+
+        assert all(prefix not in rendered for prefix in stage.LEGACY_PREFIXES)
+        if unit.endswith(".service"):
+            assert stage.CONSOLIDATED_VENV_BIN in rendered
+
+    for unit in (
+        "obsidian-github-sync.service",
+        "obsidian-github-writer.service",
+        "obsidian-github-compactor.service",
+    ):
+        source = Path(stage.SOURCE_LAYOUT[unit])
+        rendered = stage._render_unit(source.read_text(encoding="utf-8"))
+        assert (
+            f"WorkingDirectory={stage.CONSOLIDATED_APP_ROOT}"
+            in rendered
+        )
