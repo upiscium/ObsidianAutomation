@@ -390,7 +390,8 @@ def test_systemd_chain_uses_distinct_fixed_identities_and_stays_disabled_by_defa
         "validator": Path("examples/ai/obsidian-pre-review-validator.service").read_text(),
         "reader": Path("examples/ai/obsidian-pre-review-reader.service").read_text(),
         "evaluator": Path("examples/ai/obsidian-pre-review-evaluator.service").read_text(),
-        "timer": Path("examples/ai/obsidian-pre-review-evaluator.timer").read_text(),
+        "status": Path("examples/ai/obsidian-pre-review-status.service").read_text(),
+        "timer": Path("examples/ai/obsidian-pre-review.timer").read_text(),
     }
 
     assert "User=obsidian-ai-generator" in units["generator"]
@@ -401,6 +402,9 @@ def test_systemd_chain_uses_distinct_fixed_identities_and_stays_disabled_by_defa
     assert "Requires=obsidian-pre-review-generator.service" in units["validator"]
     assert "Requires=obsidian-pre-review-validator.service" in units["reader"]
     assert "Requires=obsidian-pre-review-reader.service" in units["evaluator"]
+    assert "Requires=obsidian-pre-review-evaluator.service" in units["status"]
+    assert "User=obsidian-ai-status" in units["status"]
+    assert "Unit=obsidian-pre-review-status.service" in units["timer"]
 
     assert "PrivateNetwork=true" in units["validator"]
     assert "PrivateNetwork=true" in units["reader"]

@@ -47,6 +47,7 @@ jobs:
             obsidian-ai-generator \
             obsidian-ai-validator \
             obsidian-ai-evaluator \
+            obsidian-ai-status \
             obsidian-ai-reviewer \
             obsidian-ai-executor
           do
@@ -67,6 +68,9 @@ jobs:
             VAULT_ROOT=/tmp/obsidian-ai-vault-fixture \
             AI_ROOT=/tmp/obsidian-ai-state-fixture \
             bash examples/ai/apply-authority-fixture-acls.sh
+          sudo env \
+            AI_ROOT=/tmp/obsidian-ai-state-fixture \
+            bash examples/ai/bootstrap-pre-review-authority.sh
           sudo env \
             VAULT_ROOT=/tmp/obsidian-ai-vault-fixture \
             AI_ROOT=/tmp/obsidian-ai-state-fixture \
