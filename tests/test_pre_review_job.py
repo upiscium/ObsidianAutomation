@@ -250,7 +250,7 @@ def test_generation_attempts_advance_state_machine_transactionally(tmp_path: Pat
         output=_stage_output("evaluation"),
     )["state"] == "awaiting_human_review"
 
-    with pytest.raises(PreReviewJobError, match="requires generation state"):
+    with pytest.raises(PreReviewJobError, match="selected successful output"):
         start_attempt(root, generation, "generation")
 
 
