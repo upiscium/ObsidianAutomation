@@ -37,6 +37,10 @@ def test_new_status_note_uses_obsidian_core_project_note_schema() -> None:
         "tags: []\n"
         "github_repo: upiscium/Terreate\n"
         "github_status_managed: true\n"
+        "github_issues:\n"
+        "  - number: 203\n"
+        '    title: "Issue"\n'
+        '    url: "https://github.com/upiscium/Terreate/issues/203"\n'
         "github_pull_requests: []\n"
         "---\n"
     )
@@ -96,6 +100,7 @@ def test_managed_project_note_with_old_html_markers_is_cleaned() -> None:
         "tags: []\n"
         "github_repo: upiscium/Terreate\n"
         "github_status_managed: true\n"
+        "github_issues: []\n"
         "github_pull_requests: []\n"
         "---\n\n"
         "# GitHub Status\n\n"
