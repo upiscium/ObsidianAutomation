@@ -250,18 +250,18 @@ def parse_recipe_roundtrip_guard(data: bytes) -> PreReviewRecipe:
     )
 
 
-def _job_root(ai_root: Path) -> Path:
+def _job_root(ai_root: Path, *, create: bool) -> Path:
     root = ai_root.absolute()
     _require_safe_directory(root, create=False)
     jobs = root / JOB_STAGE
-    _require_safe_directory(jobs, create=True)
+    _require_safe_directory(jobs, create=create)
     recipes = jobs / RECIPE_STAGE
-    _require_safe_directory(recipes, create=True)
+    _require_safe_directory(recipes, create=create)
     return jobs
 
 
-def _db_path(ai_root: Path) -> Path:
-    path = _job_root(ai_root) / DB_NAME
+def _db_path(ai_root: Path, *, create_dirs: bool) -> Path:
+    path = _job_root(ai_root, create=create_dirs) / DB_NAME
     try:
         st = path.lstat()
     except FileNotFoundError:
@@ -274,7 +274,7 @@ def _db_path(ai_root: Path) -> Path:
 
 
 def _connect_rw(ai_root: Path) -> sqlite3.Connection:
-    path = _db_path(ai_root)
+    path = _db_path(ai_root, create_dirs=True)
     conn = sqlite3.connect(path, timeout=10.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -330,7 +330,7 @@ def _connect_rw(ai_root: Path) -> sqlite3.Connection:
 
 
 def _connect_ro(ai_root: Path) -> sqlite3.Connection:
-    path = _db_path(ai_root)
+    path = _db_path(ai_root, create_dirs=False)
     if not path.exists():
         raise PreReviewJobError("pre-review job database does not exist")
     try:
@@ -347,7 +347,7 @@ def _connect_ro(ai_root: Path) -> sqlite3.Connection:
 
 
 def store_recipe(ai_root: Path, recipe: PreReviewRecipe) -> tuple[str, Path]:
-    root = _job_root(ai_root)
+    root = _job_root(ai_root, create=True)
     data = recipe.to_json_bytes()
     digest = sha256_bytes(data)
     path = root / RECIPE_STAGE / f"{digest}.recipe.json"
@@ -356,7 +356,7 @@ def store_recipe(ai_root: Path, recipe: PreReviewRecipe) -> tuple[str, Path]:
 
 def load_recipe(ai_root: Path, recipe_sha256: str) -> PreReviewRecipe:
     digest = _require_sha256(recipe_sha256, label="recipe_sha256")
-    path = _job_root(ai_root) / RECIPE_STAGE / f"{digest}.recipe.json"
+    path = _job_root(ai_root, create=False) / RECIPE_STAGE / f"{digest}.recipe.json"
     data = _read_exact_file(path)
     if sha256_bytes(data) != digest:
         raise PreReviewJobError("recipe artifact hash mismatch")
