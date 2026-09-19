@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from obsidian_automation.artifact_lifecycle import ArtifactLifecycleError
 from obsidian_automation.context_bundle import ContextBundle, store_context_bundle
 from obsidian_automation.pre_review_job import (
     PreReviewJobError,
@@ -150,6 +151,11 @@ def test_recipe_change_creates_distinct_job(tmp_path: Path) -> None:
 def test_regenerate_is_explicit_and_creates_next_generation(tmp_path: Path) -> None:
     root, context_sha = _state(tmp_path)
     first = submit_job(root, context_sha256=context_sha, recipe=_parsed_recipe())
+    generation = str(first["generation_id"])
+
+    for stage in ("generation", "validation", "evaluation_context", "evaluation"):
+        attempt = start_attempt(root, generation, stage)
+        complete_attempt(root, str(attempt["attempt_id"]), outcome="succeeded")
 
     regenerated = regenerate_job(root, str(first["job_id"]))
     assert regenerated["generation_index"] == 2
@@ -265,12 +271,12 @@ def test_attempt_identity_is_separate_and_stage_bound(tmp_path: Path) -> None:
 
 def test_submit_rejects_missing_or_tampered_context(tmp_path: Path) -> None:
     root, context_sha = _state(tmp_path)
-    with pytest.raises(Exception):
+    with pytest.raises(ArtifactLifecycleError):
         submit_job(root, context_sha256="d" * 64, recipe=_parsed_recipe())
 
     path = root / "05-Context" / f"{context_sha}.context.json"
     path.write_text("{}\n", encoding="utf-8")
-    with pytest.raises(Exception):
+    with pytest.raises(ArtifactLifecycleError):
         submit_job(root, context_sha256=context_sha, recipe=_parsed_recipe())
 
 
@@ -300,7 +306,7 @@ def test_status_on_uninitialized_root_is_non_mutating(tmp_path: Path) -> None:
     root = tmp_path / "state"
     root.mkdir()
 
-    with pytest.raises(Exception):
+    with pytest.raises(ArtifactLifecycleError):
         job_status(root, "e" * 64)
 
     assert not (root / "02-Jobs").exists()
