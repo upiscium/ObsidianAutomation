@@ -74,12 +74,33 @@ The immutable recipe pins only bounded processing identity:
 Recipe v0 supports only the currently deployed pipeline contracts:
 
 - Generator prompt `knowledge-note-generator-v0`;
-- Generator adapter `ollama-chat-structured-v0`;
+- Generator provider `openai-compatible`;
+- Generator adapter `openai-chat-completions-json-v0`;
 - Validator policy `knowledge-note-v0`;
 - Evaluation Context policy `bm25-topk-recall-v0` with `top_k=5`;
 - Evaluator prompt `knowledge-note-evaluator-v3`;
-- Evaluator adapter `ollama-evaluator-chat-structured-v2`;
+- Evaluator provider `openai-compatible`;
+- Evaluator adapter `openai-evaluator-chat-completions-json-v0`;
 - Evaluator strategy `groundedness-plus-pairwise-candidates-v0`.
+
+The canonical provider boundary is the OpenAI-compatible Chat Completions API.
+Workers use only a bounded `POST /v1/chat/completions` contract and validate the
+returned JSON locally. Provider-native structured-output, tool-calling, reasoning,
+or Ollama-native endpoints are not part of the pre-review contract.
+
+OpenAI-compatible APIs do not standardize an immutable model digest. Recipe v0
+therefore makes the weaker provenance explicit:
+
+```text
+model_identifier = <requested and returned model identifier>
+model_revision = identifier:<model_identifier>
+model_config.identity_binding = identifier-only
+```
+
+Every response must return the exact pinned model identifier. The
+`identifier-only` binding is not represented as an immutable model revision.
+A future provider adapter may introduce a stronger binding only when the
+provider exposes a verifiable immutable revision.
 
 The recipe deliberately has no field for:
 
@@ -92,9 +113,11 @@ The recipe deliberately has no field for:
 - arbitrary filesystem paths.
 
 Endpoints and credentials remain deployment configuration owned by the relevant
-worker identity. A future worker must verify that its actual implementation,
-prompt, policy, resolved model revision and model configuration match the pinned
-recipe before accepting durable output.
+worker identity. `OPENAI_BASE_URL` is private deployment configuration, and an
+optional `OPENAI_API_KEY` is supplied only through the worker environment; neither
+is admitted into recipes, status projections, or deployment receipts. A worker
+must verify its implementation, prompt, policy, response model identity and model
+configuration against the pinned recipe before accepting durable output.
 
 ## State machine
 

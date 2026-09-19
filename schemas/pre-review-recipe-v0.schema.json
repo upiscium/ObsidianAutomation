@@ -37,16 +37,16 @@
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"
         },
-        "provider": {"const": "ollama"},
+        "provider": {"const": "openai-compatible"},
         "model_identifier": {"type": "string", "minLength": 1, "maxLength": 512},
-        "model_revision": {"type": "string", "minLength": 1, "maxLength": 512},
+        "model_revision": {"type": "string", "pattern": "^identifier:.{1,500}$"},
         "model_config": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["adapter_version", "think", "options"],
+          "required": ["adapter_version", "identity_binding", "options"],
           "properties": {
-            "adapter_version": {"const": "ollama-chat-structured-v0"},
-            "think": {"const": false},
+            "adapter_version": {"const": "openai-chat-completions-json-v0"},
+            "identity_binding": {"const": "identifier-only"},
             "options": {"type": "object"}
           }
         }
@@ -91,16 +91,16 @@
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"
         },
-        "provider": {"const": "ollama"},
+        "provider": {"const": "openai-compatible"},
         "model_identifier": {"type": "string", "minLength": 1, "maxLength": 512},
-        "model_revision": {"type": "string", "minLength": 1, "maxLength": 512},
+        "model_revision": {"type": "string", "pattern": "^identifier:.{1,500}$"},
         "model_config": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["adapter_version", "think", "strategy", "options"],
+          "required": ["adapter_version", "identity_binding", "strategy", "options"],
           "properties": {
-            "adapter_version": {"const": "ollama-evaluator-chat-structured-v2"},
-            "think": {"const": false},
+            "adapter_version": {"const": "openai-evaluator-chat-completions-json-v0"},
+            "identity_binding": {"const": "identifier-only"},
             "strategy": {"const": "groundedness-plus-pairwise-candidates-v0"},
             "options": {"type": "object"}
           }

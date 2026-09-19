@@ -24,7 +24,6 @@ from obsidian_automation.pre_review_job import (
 
 REV = "a" * 40
 PROMPT_SHA = "b" * 64
-MODEL_REV = "sha256:" + "c" * 64
 
 
 def _state(tmp_path: Path) -> tuple[Path, str]:
@@ -45,12 +44,12 @@ def _recipe(*, generator_model: str = "gemma3:12b") -> dict[str, object]:
         "implementation_revision": REV,
         "prompt_template_version": "knowledge-note-generator-v0",
         "prompt_template_sha256": PROMPT_SHA,
-        "provider": "ollama",
+        "provider": "openai-compatible",
         "model_identifier": generator_model,
-        "model_revision": MODEL_REV,
+        "model_revision": f"identifier:{generator_model}",
         "model_config": {
-            "adapter_version": "ollama-chat-structured-v0",
-            "think": False,
+            "adapter_version": "openai-chat-completions-json-v0",
+            "identity_binding": "identifier-only",
             "options": {"temperature": 0},
         },
     }
@@ -58,9 +57,10 @@ def _recipe(*, generator_model: str = "gemma3:12b") -> dict[str, object]:
         **component,
         "prompt_template_version": "knowledge-note-evaluator-v3",
         "model_identifier": "gemma3:12b-eval",
+        "model_revision": "identifier:gemma3:12b-eval",
         "model_config": {
-            "adapter_version": "ollama-evaluator-chat-structured-v2",
-            "think": False,
+            "adapter_version": "openai-evaluator-chat-completions-json-v0",
+            "identity_binding": "identifier-only",
             "strategy": "groundedness-plus-pairwise-candidates-v0",
             "options": {"temperature": 0},
         },
@@ -115,7 +115,7 @@ def _stage_output(stage: str) -> dict[str, object]:
 def test_recipe_is_bounded_and_excludes_execution_configuration() -> None:
     value = _recipe()
     parsed = _parsed_recipe()
-    assert parsed.generator.provider == "ollama"
+    assert parsed.generator.provider == "openai-compatible"
     assert parsed.validator_policy == "knowledge-note-v0"
     assert parsed.evaluation_context_top_k == 5
 
@@ -132,7 +132,7 @@ def test_recipe_is_bounded_and_excludes_execution_configuration() -> None:
 def test_recipe_rejects_unknown_provider_and_unbounded_top_k() -> None:
     value = _recipe()
     value["generator"]["provider"] = "shell"
-    with pytest.raises(PreReviewJobError, match="provider must be ollama"):
+    with pytest.raises(PreReviewJobError, match="provider must be openai-compatible"):
         parse_recipe((json.dumps(value) + "\n").encode())
 
     value = _recipe()
@@ -141,8 +141,13 @@ def test_recipe_rejects_unknown_provider_and_unbounded_top_k() -> None:
         parse_recipe((json.dumps(value) + "\n").encode())
 
     value = _recipe()
-    value["generator"]["model_config"]["think"] = True
-    with pytest.raises(PreReviewJobError, match="think must be false"):
+    value["generator"]["model_config"]["identity_binding"] = "claimed-immutable"
+    with pytest.raises(PreReviewJobError, match="identity_binding"):
+        parse_recipe((json.dumps(value) + "\n").encode())
+
+    value = _recipe()
+    value["generator"]["model_revision"] = "sha256:" + "c" * 64
+    with pytest.raises(PreReviewJobError, match="identifier-only binding"):
         parse_recipe((json.dumps(value) + "\n").encode())
 
     value = _recipe()

@@ -12,32 +12,14 @@ from obsidian_automation.pre_review_production_canary import (
 
 
 GEN_MODEL = "gemma3:12b"
-GEN_DIGEST = "b" * 64
 EVAL_MODEL = "gemma3:12b-eval"
-EVAL_DIGEST = "c" * 64
 REVISION = "a" * 40
 
 
 def _transport(base_url: str, **kwargs):
-    assert base_url == "https://ollama.example.invalid"
-    path = kwargs["path"]
-    if path == "/api/tags":
-        return {
-            "models": [
-                {
-                    "name": GEN_MODEL,
-                    "model": GEN_MODEL,
-                    "digest": GEN_DIGEST,
-                },
-                {
-                    "name": EVAL_MODEL,
-                    "model": EVAL_MODEL,
-                    "digest": EVAL_DIGEST,
-                },
-            ]
-        }
-
-    assert path == "/api/chat"
+    assert base_url == "https://openai.example.invalid/v1"
+    assert kwargs["path"] == "/chat/completions"
+    assert kwargs["api_key"] is None
     payload = kwargs["payload"]
     model = payload["model"]
     messages = payload["messages"]
@@ -62,15 +44,18 @@ def _transport(base_url: str, **kwargs):
 
     return {
         "model": model,
-        "done": True,
-        "message": {
-            "role": "assistant",
-            "content": json.dumps(
-                content,
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ),
-        },
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": json.dumps(
+                        content,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                }
+            }
+        ],
     }
 
 
@@ -81,8 +66,8 @@ def test_disposable_canary_covers_wave_d_acceptance_without_canonical_write(
 
     result = run_canary(
         scratch_root=scratch,
-        generator_base_url="https://ollama.example.invalid",
-        evaluator_base_url="https://ollama.example.invalid",
+        generator_base_url="https://openai.example.invalid/v1",
+        evaluator_base_url="https://openai.example.invalid/v1",
         generator_model=GEN_MODEL,
         evaluator_model=EVAL_MODEL,
         deployed_revision=REVISION,
@@ -114,8 +99,8 @@ def test_canary_refuses_production_state_path() -> None:
     with pytest.raises(PreReviewCanaryError, match="below /tmp or /var/tmp|overlap"):
         run_canary(
             scratch_root=Path("/var/lib/obsidian-ai/state/canary"),
-            generator_base_url="https://ollama.example.invalid",
-        evaluator_base_url="https://ollama.example.invalid",
+            generator_base_url="https://openai.example.invalid/v1",
+        evaluator_base_url="https://openai.example.invalid/v1",
             generator_model=GEN_MODEL,
             evaluator_model=EVAL_MODEL,
             deployed_revision=REVISION,
@@ -130,8 +115,8 @@ def test_canary_refuses_existing_scratch_root(tmp_path: Path) -> None:
     with pytest.raises(PreReviewCanaryError, match="must not already exist"):
         run_canary(
             scratch_root=scratch,
-            generator_base_url="https://ollama.example.invalid",
-        evaluator_base_url="https://ollama.example.invalid",
+            generator_base_url="https://openai.example.invalid/v1",
+        evaluator_base_url="https://openai.example.invalid/v1",
             generator_model=GEN_MODEL,
             evaluator_model=EVAL_MODEL,
             deployed_revision=REVISION,

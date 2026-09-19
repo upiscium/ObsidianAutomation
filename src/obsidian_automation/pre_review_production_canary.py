@@ -21,17 +21,18 @@ from .generator_contract import (
     PROMPT_TEMPLATE_VERSION,
     prompt_template_sha256 as generator_prompt_sha256,
 )
-from .ollama_evaluator import (
+from .openai_compatible import (
+    DEFAULT_OPTIONS,
+    JSONTransport,
+    OpenAICompatibleProviderError,
+    PROVIDER_NAME,
+    identifier_revision,
+)
+from .openai_evaluator import (
     ADAPTER_VERSION as EVALUATOR_ADAPTER_VERSION,
     EVALUATION_STRATEGY,
 )
-from .ollama_generator import (
-    ADAPTER_VERSION as GENERATOR_ADAPTER_VERSION,
-    DEFAULT_OPTIONS,
-    JSONTransport,
-    OllamaProviderError,
-    resolve_ollama_model,
-)
+from .openai_generator import ADAPTER_VERSION as GENERATOR_ADAPTER_VERSION
 from .pre_review_job import (
     PreReviewJobError,
     claim_next_attempt,
@@ -112,9 +113,7 @@ def _recipe(
     *,
     deployed_revision: str,
     generator_identifier: str,
-    generator_revision: str,
     evaluator_identifier: str,
-    evaluator_revision: str,
 ):
     value = {
         "record_version": 1,
@@ -123,12 +122,12 @@ def _recipe(
             "implementation_revision": deployed_revision,
             "prompt_template_version": PROMPT_TEMPLATE_VERSION,
             "prompt_template_sha256": generator_prompt_sha256(),
-            "provider": "ollama",
+            "provider": PROVIDER_NAME,
             "model_identifier": generator_identifier,
-            "model_revision": generator_revision,
+            "model_revision": identifier_revision(generator_identifier),
             "model_config": {
                 "adapter_version": GENERATOR_ADAPTER_VERSION,
-                "think": False,
+                "identity_binding": "identifier-only",
                 "options": dict(DEFAULT_OPTIONS),
             },
         },
@@ -141,12 +140,12 @@ def _recipe(
             "implementation_revision": deployed_revision,
             "prompt_template_version": EVALUATOR_PROMPT_TEMPLATE_VERSION,
             "prompt_template_sha256": evaluator_prompt_sha256(),
-            "provider": "ollama",
+            "provider": PROVIDER_NAME,
             "model_identifier": evaluator_identifier,
-            "model_revision": evaluator_revision,
+            "model_revision": identifier_revision(evaluator_identifier),
             "model_config": {
                 "adapter_version": EVALUATOR_ADAPTER_VERSION,
-                "think": False,
+                "identity_binding": "identifier-only",
                 "strategy": EVALUATION_STRATEGY,
                 "options": {"temperature": 0},
             },
@@ -213,27 +212,15 @@ def _run_live_pipeline(
     generator_model: str,
     evaluator_model: str,
     deployed_revision: str,
+    generator_api_key: str | None,
+    evaluator_api_key: str | None,
     transport: JSONTransport | None,
 ) -> dict[str, object]:
     vault, state = _area(root, "live")
-    generator_identity = resolve_ollama_model(
-        generator_base_url,
-        generator_model,
-        transport=transport,
-        timeout=120.0,
-    )
-    evaluator_identity = resolve_ollama_model(
-        evaluator_base_url,
-        evaluator_model,
-        transport=transport,
-        timeout=120.0,
-    )
     recipe = _recipe(
         deployed_revision=deployed_revision,
-        generator_identifier=generator_identity.identifier,
-        generator_revision=generator_identity.digest,
-        evaluator_identifier=evaluator_identity.identifier,
-        evaluator_revision=evaluator_identity.digest,
+        generator_identifier=generator_model,
+        evaluator_identifier=evaluator_model,
     )
     context_sha = _context(
         state,
@@ -254,6 +241,7 @@ def _run_live_pipeline(
         state,
         base_url=generator_base_url,
         deployed_revision=deployed_revision,
+        api_key=generator_api_key,
         transport=transport,
     )
     validated = run_validator_worker(state, vault)
@@ -262,6 +250,7 @@ def _run_live_pipeline(
         state,
         base_url=evaluator_base_url,
         deployed_revision=deployed_revision,
+        api_key=evaluator_api_key,
         transport=transport,
     )
     states = [
@@ -342,13 +331,14 @@ def _run_provider_failure(
     recipe,
     generator_base_url: str,
     deployed_revision: str,
+    generator_api_key: str | None,
 ) -> dict[str, object]:
     _vault, state = _area(root, "provider-failure")
     context_sha = _context(state, "provider failure canary")
     submitted = submit_job(state, context_sha256=context_sha, recipe=recipe)
 
     def fail_transport(*_args, **_kwargs):
-        raise OllamaProviderError("injected canary provider failure")
+        raise OpenAICompatibleProviderError("injected canary provider failure")
 
     attempts = 0
     for _ in range(3):
@@ -357,6 +347,7 @@ def _run_provider_failure(
             base_url=generator_base_url,
             deployed_revision=deployed_revision,
             max_attempts=3,
+            api_key=generator_api_key,
             transport=fail_transport,
         )
         if result.get("status") != "retryable_failure":
@@ -367,6 +358,7 @@ def _run_provider_failure(
         base_url=generator_base_url,
         deployed_revision=deployed_revision,
         max_attempts=3,
+        api_key=generator_api_key,
         transport=fail_transport,
     )
     if idle.get("status") != "idle":
@@ -446,6 +438,8 @@ def run_canary(
     generator_model: str,
     evaluator_model: str,
     deployed_revision: str,
+    generator_api_key: str | None = None,
+    evaluator_api_key: str | None = None,
     transport: JSONTransport | None = None,
 ) -> dict[str, object]:
     if len(deployed_revision) not in {40, 64} or any(
@@ -454,24 +448,10 @@ def run_canary(
         raise PreReviewCanaryError("deployed revision must be a full lowercase Git digest")
     root = _safe_scratch_root(scratch_root)
     try:
-        generator_identity = resolve_ollama_model(
-            generator_base_url,
-            generator_model,
-            transport=transport,
-            timeout=120.0,
-        )
-        evaluator_identity = resolve_ollama_model(
-            evaluator_base_url,
-            evaluator_model,
-            transport=transport,
-            timeout=120.0,
-        )
         recipe = _recipe(
             deployed_revision=deployed_revision,
-            generator_identifier=generator_identity.identifier,
-            generator_revision=generator_identity.digest,
-            evaluator_identifier=evaluator_identity.identifier,
-            evaluator_revision=evaluator_identity.digest,
+            generator_identifier=generator_model,
+            evaluator_identifier=evaluator_model,
         )
 
         result = {
@@ -485,6 +465,8 @@ def run_canary(
                 generator_model=generator_model,
                 evaluator_model=evaluator_model,
                 deployed_revision=deployed_revision,
+                generator_api_key=generator_api_key,
+                evaluator_api_key=evaluator_api_key,
                 transport=transport,
             ),
             "crash_resume": _run_crash_resume(root, recipe),
@@ -493,6 +475,7 @@ def run_canary(
                 recipe=recipe,
                 generator_base_url=generator_base_url,
                 deployed_revision=deployed_revision,
+                generator_api_key=generator_api_key,
             ),
             "backpressure": _run_backpressure(root, recipe),
             "mirror_conflict": _run_mirror_conflict(root),
@@ -524,8 +507,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             generator_model=args.generator_model,
             evaluator_model=args.evaluator_model,
             deployed_revision=args.deployed_revision,
+            generator_api_key=os.environ.get("OPENAI_GENERATOR_API_KEY"),
+            evaluator_api_key=os.environ.get("OPENAI_EVALUATOR_API_KEY"),
         )
-    except (ArtifactLifecycleError, PreReviewJobError, OllamaProviderError, PreReviewCanaryError, OSError) as exc:
+    except (ArtifactLifecycleError, PreReviewJobError, OpenAICompatibleProviderError, PreReviewCanaryError, OSError) as exc:
         print(
             json.dumps(
                 {
