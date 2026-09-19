@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+
+import obsidian_automation.evaluation_artifact as evaluation_module
 
 from obsidian_automation.artifact_lifecycle import ArtifactLifecycleError, store_untrusted_proposal
 from obsidian_automation.context_bundle import build_context_bundle, store_context_bundle
@@ -235,3 +238,53 @@ def test_evaluation_record_cannot_cross_bind_another_mutation(tmp_path: Path) ->
             recommendation="manual_review",
             findings=[],
         )
+
+
+def test_evaluation_context_holds_read_view_only_while_touching_mirror(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    vault, state, proposal_sha, _ = _accepted_fixture(tmp_path)
+    request_sha, _, _ = create_evaluation_request(state, proposal_sha)
+    index_sha, _ = store_knowledge_index(state, build_knowledge_index(vault))
+
+    held = False
+    original_verify = evaluation_module.verify_index_current
+    original_build = evaluation_module.build_context_bundle
+
+    @contextmanager
+    def fake_lock(observed_root):
+        nonlocal held
+        assert observed_root == state
+        held = True
+        try:
+            yield state / "24-Locks" / "read-view" / "mirror-read.lock"
+        finally:
+            held = False
+
+    def checked_verify(*args, **kwargs):
+        assert held is True
+        return original_verify(*args, **kwargs)
+
+    def checked_build(*args, **kwargs):
+        assert held is True
+        return original_build(*args, **kwargs)
+
+    monkeypatch.setattr(evaluation_module, "mirror_read_lock", fake_lock)
+    monkeypatch.setattr(evaluation_module, "verify_index_current", checked_verify)
+    monkeypatch.setattr(evaluation_module, "build_context_bundle", checked_build)
+
+    context = evaluation_module.build_evaluation_context(
+        state,
+        vault,
+        request_sha256=request_sha,
+        index_sha256=index_sha,
+        created_at="2026-09-19T00:00:00Z",
+    )
+
+    assert context.candidates
+    assert held is False
+    # Persisting the immutable derived artifact is intentionally outside the
+    # mirror lock; no mirror bytes are read at this point.
+    evaluation_module.store_evaluation_context(state, context)
+    assert held is False
