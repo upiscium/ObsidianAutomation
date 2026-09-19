@@ -23,6 +23,8 @@ DEFAULT_AI_ROOT="$VAULT_ROOT/20-AI"
 STATE_MARKER="$AI_ROOT/.obsidian-ai-disposable-state"
 KNOWLEDGE="$VAULT_ROOT/11-Knowledge"
 UNTRUSTED="$AI_ROOT/00-Untrusted"
+ORCHESTRATION="$AI_ROOT/02-Orchestration"
+ORCHESTRATION_RECIPES="$ORCHESTRATION/recipes"
 INDEX="$AI_ROOT/04-Index"
 CONTEXT="$AI_ROOT/05-Context"
 EVALUATION_REQUEST="$AI_ROOT/12-Evaluation-Request"
@@ -98,7 +100,7 @@ done
 
 install -d -o root -g root -m 0700 "$AI_ROOT"
 for directory in \
-  "$UNTRUSTED" "$INDEX" "$CONTEXT" "$VALIDATION" \
+  "$UNTRUSTED" "$ORCHESTRATION" "$INDEX" "$CONTEXT" "$VALIDATION" \
   "$EVALUATION_REQUEST" "$EVALUATION_CONTEXT" "$EVALUATION" \
   "$REVIEW" "$LOCKS" "$EXECUTION" "$TRANSPORT" "$RECEIPTS"; do
   install -d -o root -g root -m 0700 "$directory"
@@ -135,6 +137,20 @@ apply_directory_acl() {
 
 apply_directory_acl "$UNTRUSTED" \
   "u:$GENERATOR_USER:rwx" \
+  "u:$VALIDATOR_USER:r-x" \
+  "u:$EVALUATOR_USER:r-x"
+
+install -d -o root -g root -m 0700 "$ORCHESTRATION_RECIPES"
+setfacl -b "$ORCHESTRATION_RECIPES"
+setfacl -k "$ORCHESTRATION_RECIPES" || true
+apply_directory_acl "$ORCHESTRATION" \
+  "u:$READER_USER:rwx" \
+  "u:$GENERATOR_USER:rwx" \
+  "u:$VALIDATOR_USER:rwx" \
+  "u:$EVALUATOR_USER:rwx"
+apply_directory_acl "$ORCHESTRATION_RECIPES" \
+  "u:$READER_USER:rwx" \
+  "u:$GENERATOR_USER:r-x" \
   "u:$VALIDATOR_USER:r-x" \
   "u:$EVALUATOR_USER:r-x"
 
