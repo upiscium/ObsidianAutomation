@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pre-review-operational-status-v0.schema.json",
+  "title": "Pre-review operational status v0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "record_version",
+    "authority",
+    "generated_at",
+    "pipeline_health",
+    "reasons",
+    "current_jobs",
+    "states",
+    "review_wait",
+    "backpressure"
+  ],
+  "properties": {
+    "record_version": {"const": 1},
+    "authority": {"const": "orchestration_status_projection_only"},
+    "generated_at": {"type": "string", "minLength": 1},
+    "pipeline_health": {"enum": ["OK", "WARNING", "CRITICAL"]},
+    "reasons": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "current_jobs": {"type": "integer", "minimum": 0},
+    "states": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "queued",
+        "generating",
+        "validating",
+        "building_evaluation_context",
+        "evaluating",
+        "awaiting_human_review",
+        "retryable_failure",
+        "retry_exhausted",
+        "blocked",
+        "deterministic_reject"
+      ],
+      "properties": {
+        "queued": {"type": "integer", "minimum": 0},
+        "generating": {"type": "integer", "minimum": 0},
+        "validating": {"type": "integer", "minimum": 0},
+        "building_evaluation_context": {"type": "integer", "minimum": 0},
+        "evaluating": {"type": "integer", "minimum": 0},
+        "awaiting_human_review": {"type": "integer", "minimum": 0},
+        "retryable_failure": {"type": "integer", "minimum": 0},
+        "retry_exhausted": {"type": "integer", "minimum": 0},
+        "blocked": {"type": "integer", "minimum": 0},
+        "deterministic_reject": {"type": "integer", "minimum": 0}
+      }
+    },
+    "review_wait": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "count",
+        "oldest_age_seconds",
+        "reminder_after_seconds",
+        "reminder_due"
+      ],
+      "properties": {
+        "count": {"type": "integer", "minimum": 0},
+        "oldest_age_seconds": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "reminder_after_seconds": {"type": "integer", "minimum": 1},
+        "reminder_due": {"type": "boolean"}
+      }
+    },
+    "backpressure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["threshold", "active"],
+      "properties": {
+        "threshold": {"type": "integer", "minimum": 1},
+        "active": {"type": "boolean"}
+      }
+    }
+  }
+}
