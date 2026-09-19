@@ -30,9 +30,11 @@ from .evaluation_artifact import (
 from .evaluator_contract import EVALUATOR_PROMPT_TEMPLATE_VERSION
 from .generator_contract import PROMPT_TEMPLATE_VERSION
 from .knowledge_note_policy import POLICY_NAME
-from .ollama_evaluator import EVALUATION_STRATEGY
 from .openai_compatible import IDENTITY_BINDING, PROVIDER_NAME, identifier_revision
-from .openai_evaluator import ADAPTER_VERSION as EVALUATOR_ADAPTER_VERSION
+from .openai_evaluator import (
+    ADAPTER_VERSION as EVALUATOR_ADAPTER_VERSION,
+    EVALUATION_STRATEGY,
+)
 from .openai_generator import ADAPTER_VERSION as GENERATOR_ADAPTER_VERSION
 
 
