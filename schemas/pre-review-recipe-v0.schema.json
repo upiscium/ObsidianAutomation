@@ -74,7 +74,18 @@
           "maxLength": 512
         },
         "model_config": {
-          "type": "object"
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["adapter_version", "think", "options"],
+          "properties": {
+            "adapter_version": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "think": {"const": false},
+            "options": {"type": "object"}
+          }
         }
       }
     }
