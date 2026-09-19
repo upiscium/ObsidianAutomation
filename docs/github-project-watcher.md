@@ -68,12 +68,26 @@ The canonical Project statuses are:
 
 For a non-terminal, non-stopped Project:
 
-- latest repository-wide push/force-push activity within the configured 7-day window -> `running`
-- no repository-wide push/force-push activity within the configured 7-day window -> `planning`
+- latest default-branch commit within the configured 7-day window -> `running`
+- no recent default-branch commit within the configured 7-day window -> `planning`
 
-The watcher uses GitHub Repository Activity rather than only the default branch commit list, so work pushed to feature branches also counts as current Project activity.
+Feature-branch-only pushes do not change Project status. The watcher deliberately uses the
+current default-branch head so one commit-list request replaces multiple repository
+activity-type requests.
 
 Open Issues and Pull Requests do not override the Commit rule during normal `planning` / `running` operation.
+
+For a single-page repository snapshot, GitHub reads are serialized and bounded to three
+REST requests:
+
+```text
+GET /repos/<owner>/<repo>/commits?per_page=1
+GET /repos/<owner>/<repo>/issues?state=open&per_page=100&page=1
+GET /repos/<owner>/<repo>/pulls?state=open&per_page=100&page=1
+```
+
+Issue/PR pagination can add requests only when a repository has more than 100 matching
+open items. Requests remain serial to avoid increasing secondary-rate-limit pressure.
 
 ### stopped
 
@@ -82,8 +96,10 @@ Open Issues and Pull Requests do not override the Commit rule during normal `pla
 ### done / cancelled
 
 A terminal status is preserved until activity **after the terminal baseline** is observed.
+A default-branch HEAD SHA change counts as Commit activity even if a force-push moves the
+branch to a commit with an older timestamp.
 
-- new push/force-push Commit activity -> `running`
+- changed default-branch HEAD SHA -> `running`
 - newly-open Issue or Pull Request -> `planning`
 - no new activity -> preserve `done` / `cancelled`
 - Commit activity wins when Commit and Issue/PR activity occur in the same observation
