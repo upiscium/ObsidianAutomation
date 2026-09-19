@@ -474,6 +474,7 @@ def execute_update(
             was_active=bool(timer_was_active),
         )
 
+        stage = "persist_receipt"
         completed_at = _utc_now()
         receipt = DeploymentReceipt(
             previous_sha=previous_sha,
