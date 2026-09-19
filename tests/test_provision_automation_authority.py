@@ -144,3 +144,18 @@ def test_result_contract_explicitly_reports_no_activation() -> None:
     assert '"credentials_installed": False' in source
     assert '"systemd_units_installed": False' in source
     assert '"recurring_services_activated": False' in source
+
+
+def test_github_mirror_read_view_lock_directory_is_provisioned() -> None:
+    directories = {
+        path: (owner, group, mode)
+        for path, owner, group, mode in authority.DIRECTORIES
+    }
+
+    assert directories[
+        "/var/lib/obsidian-github-mirror/state/24-Locks/read-view"
+    ] == (
+        "obsidian-github-mirror",
+        "obsidian-github-mirror",
+        0o700,
+    )
