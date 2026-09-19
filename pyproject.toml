@@ -29,6 +29,7 @@ obsidian-knowledge-evaluation-request = "obsidian_automation.evaluation_artifact
 obsidian-knowledge-evaluation-context = "obsidian_automation.evaluation_artifact:context_main"
 obsidian-knowledge-evaluate = "obsidian_automation.ollama_evaluator:main"
 obsidian-knowledge-review = "obsidian_automation.knowledge_review:main"
+obsidian-pre-review-job = "obsidian_automation.pre_review_job:main"
 obsidian-production-executor = "obsidian_automation.production_orchestrator:executor_main"
 obsidian-production-webdav-worker = "obsidian_automation.production_orchestrator:worker_main"
 obsidian-production-knowledge-executor = "obsidian_automation.knowledge_production:executor_main"
