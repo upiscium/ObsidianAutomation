@@ -23,6 +23,18 @@ from .artifact_lifecycle import (
 )
 from .context_bundle import load_context_bundle
 from .generation_artifact import validate_model_config
+from .evaluation_artifact import (
+    DEFAULT_EVALUATION_TOP_K,
+    EVALUATION_CONTEXT_POLICY_VERSION,
+)
+from .evaluator_contract import EVALUATOR_PROMPT_TEMPLATE_VERSION
+from .generator_contract import PROMPT_TEMPLATE_VERSION
+from .knowledge_note_policy import POLICY_NAME
+from .ollama_evaluator import (
+    ADAPTER_VERSION as EVALUATOR_ADAPTER_VERSION,
+    EVALUATION_STRATEGY,
+)
+from .ollama_generator import ADAPTER_VERSION as GENERATOR_ADAPTER_VERSION
 
 
 ORCHESTRATION_STAGE = "02-Orchestration"
@@ -70,6 +82,18 @@ class PreReviewRecipe:
         )
 
 
+@dataclass(frozen=True)
+class StageWorkItem:
+    job_id: str
+    generation_id: str
+    generation_index: int
+    context_sha256: str
+    recipe_sha256: str
+    attempt_id: str
+    attempt_index: int
+    stage: str
+
+
 class PreReviewJobError(ArtifactLifecycleError):
     """Raised when pre-review orchestration metadata is invalid or unsafe."""
 
@@ -108,7 +132,14 @@ def _component_payload(component: RecipeComponent) -> dict[str, object]:
     }
 
 
-def _parse_component(value: object, *, label: str) -> RecipeComponent:
+def _parse_component(
+    value: object,
+    *,
+    label: str,
+    prompt_version: str,
+    adapter_version: str,
+    evaluator: bool,
+) -> RecipeComponent:
     required = {
         "implementation_revision",
         "prompt_template_version",
@@ -123,32 +154,38 @@ def _parse_component(value: object, *, label: str) -> RecipeComponent:
     provider = _metadata(value["provider"], label=f"{label}.provider")
     if provider != "ollama":
         raise PreReviewJobError(f"{label}.provider must be ollama in v0")
+    if value["prompt_template_version"] != prompt_version:
+        raise PreReviewJobError(
+            f"{label}.prompt_template_version must be {prompt_version}"
+        )
+
     model_config = value["model_config"]
-    if not isinstance(model_config, dict) or set(model_config) != {
-        "adapter_version",
-        "think",
-        "options",
-    }:
+    expected_config = {"adapter_version", "think", "options"}
+    if evaluator:
+        expected_config.add("strategy")
+    if not isinstance(model_config, dict) or set(model_config) != expected_config:
         raise PreReviewJobError(
             f"{label}.model_config properties do not match Ollama v0 contract"
         )
+    if model_config["adapter_version"] != adapter_version:
+        raise PreReviewJobError(
+            f"{label}.model_config.adapter_version must be {adapter_version}"
+        )
     if model_config["think"] is not False:
         raise PreReviewJobError(f"{label}.model_config.think must be false")
-    _metadata(
-        model_config["adapter_version"],
-        label=f"{label}.model_config.adapter_version",
-    )
     if not isinstance(model_config["options"], dict):
         raise PreReviewJobError(f"{label}.model_config.options must be an object")
+    if evaluator and model_config["strategy"] != EVALUATION_STRATEGY:
+        raise PreReviewJobError(
+            f"{label}.model_config.strategy must be {EVALUATION_STRATEGY}"
+        )
+
     return RecipeComponent(
         implementation_revision=_implementation_revision(
             value["implementation_revision"],
             label=f"{label}.implementation_revision",
         ),
-        prompt_template_version=_metadata(
-            value["prompt_template_version"],
-            label=f"{label}.prompt_template_version",
-        ),
+        prompt_template_version=prompt_version,
         prompt_template_sha256=_require_sha256(
             value["prompt_template_sha256"],
             label=f"{label}.prompt_template_sha256",
@@ -189,6 +226,8 @@ def parse_recipe(data: bytes) -> PreReviewRecipe:
     if not isinstance(validator, dict) or set(validator) != {"policy"}:
         raise PreReviewJobError("validator properties do not match contract")
     validator_policy = _metadata(validator["policy"], label="validator.policy")
+    if validator_policy != POLICY_NAME:
+        raise PreReviewJobError(f"validator.policy must be {POLICY_NAME}")
 
     evaluation_context = value["evaluation_context"]
     if not isinstance(evaluation_context, dict) or set(evaluation_context) != {
@@ -201,15 +240,33 @@ def parse_recipe(data: bytes) -> PreReviewRecipe:
         label="evaluation_context.selection_policy",
     )
     top_k = evaluation_context["top_k"]
-    if type(top_k) is not int or not 1 <= top_k <= 50:
-        raise PreReviewJobError("evaluation_context.top_k must be an integer in [1, 50]")
+    if selection_policy != EVALUATION_CONTEXT_POLICY_VERSION:
+        raise PreReviewJobError(
+            "evaluation_context.selection_policy must match runtime policy"
+        )
+    if type(top_k) is not int or top_k != DEFAULT_EVALUATION_TOP_K:
+        raise PreReviewJobError(
+            f"evaluation_context.top_k must be {DEFAULT_EVALUATION_TOP_K}"
+        )
 
     recipe = PreReviewRecipe(
-        generator=_parse_component(value["generator"], label="generator"),
+        generator=_parse_component(
+            value["generator"],
+            label="generator",
+            prompt_version=PROMPT_TEMPLATE_VERSION,
+            adapter_version=GENERATOR_ADAPTER_VERSION,
+            evaluator=False,
+        ),
         validator_policy=validator_policy,
         evaluation_context_policy=selection_policy,
         evaluation_context_top_k=top_k,
-        evaluator=_parse_component(value["evaluator"], label="evaluator"),
+        evaluator=_parse_component(
+            value["evaluator"],
+            label="evaluator",
+            prompt_version=EVALUATOR_PROMPT_TEMPLATE_VERSION,
+            adapter_version=EVALUATOR_ADAPTER_VERSION,
+            evaluator=True,
+        ),
     )
     canonical = recipe.to_json_bytes()
     if parse_recipe_roundtrip_guard(canonical) != recipe:
@@ -223,14 +280,26 @@ def parse_recipe_roundtrip_guard(data: bytes) -> PreReviewRecipe:
     validator = value["validator"]
     evaluation_context = value["evaluation_context"]
     return PreReviewRecipe(
-        generator=_parse_component(value["generator"], label="generator"),
+        generator=_parse_component(
+            value["generator"],
+            label="generator",
+            prompt_version=PROMPT_TEMPLATE_VERSION,
+            adapter_version=GENERATOR_ADAPTER_VERSION,
+            evaluator=False,
+        ),
         validator_policy=_metadata(validator["policy"], label="validator.policy"),
         evaluation_context_policy=_metadata(
             evaluation_context["selection_policy"],
             label="evaluation_context.selection_policy",
         ),
         evaluation_context_top_k=int(evaluation_context["top_k"]),
-        evaluator=_parse_component(value["evaluator"], label="evaluator"),
+        evaluator=_parse_component(
+            value["evaluator"],
+            label="evaluator",
+            prompt_version=EVALUATOR_PROMPT_TEMPLATE_VERSION,
+            adapter_version=EVALUATOR_ADAPTER_VERSION,
+            evaluator=True,
+        ),
     )
 
 
@@ -266,7 +335,7 @@ def _connect_rw(ai_root: Path) -> sqlite3.Connection:
         if hasattr(os, "O_CLOEXEC"):
             flags |= os.O_CLOEXEC
         try:
-            fd = os.open(path, flags, 0o600)
+            fd = os.open(path, flags, 0o660)
         except FileExistsError:
             pass
         except OSError as exc:
@@ -311,6 +380,14 @@ def _connect_rw(ai_root: Path) -> sqlite3.Connection:
             reason_code TEXT,
             UNIQUE(generation_id, stage, attempt_index)
         );
+        CREATE TABLE IF NOT EXISTS stage_outputs (
+            generation_id TEXT NOT NULL REFERENCES generations(generation_id),
+            stage TEXT NOT NULL,
+            attempt_id TEXT NOT NULL UNIQUE REFERENCES attempts(attempt_id),
+            output_json TEXT NOT NULL,
+            recorded_at TEXT NOT NULL,
+            PRIMARY KEY(generation_id, stage)
+        );
         """
     )
     row = conn.execute("SELECT value FROM metadata WHERE key = 'schema_version'").fetchone()
@@ -321,7 +398,7 @@ def _connect_rw(ai_root: Path) -> sqlite3.Connection:
         conn.close()
         raise PreReviewJobError("unsupported pre-review job database schema")
     try:
-        os.chmod(path, 0o600)
+        os.chmod(path, 0o660)
     except OSError:
         conn.close()
         raise
