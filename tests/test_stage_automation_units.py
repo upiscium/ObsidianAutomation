@@ -38,7 +38,7 @@ class FakeRunner:
             return stage.CommandResult(0, "not-found\n", "")
 
         if args[:2] == ("systemctl", "is-enabled"):
-            return stage.CommandResult(1, "not-found\n", "")
+            return stage.CommandResult(1, "disabled\n", "")
 
         if args[:2] == ("systemctl", "is-active"):
             return stage.CommandResult(3, "inactive\n", "")
