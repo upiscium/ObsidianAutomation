@@ -283,7 +283,7 @@ def test_submit_rejects_missing_or_tampered_context(tmp_path: Path) -> None:
 def test_database_is_private_and_schema_is_versioned(tmp_path: Path) -> None:
     root, context_sha = _state(tmp_path)
     submitted = submit_job(root, context_sha256=context_sha, recipe=_parsed_recipe())
-    db = root / "02-Jobs" / "pre-review-jobs.sqlite3"
+    db = root / "02-Orchestration" / "pre-review-jobs.sqlite3"
 
     assert db.is_file()
     assert db.stat().st_mode & 0o777 == 0o600
@@ -309,7 +309,7 @@ def test_status_on_uninitialized_root_is_non_mutating(tmp_path: Path) -> None:
     with pytest.raises(ArtifactLifecycleError):
         job_status(root, "e" * 64)
 
-    assert not (root / "02-Jobs").exists()
+    assert not (root / "02-Orchestration").exists()
 
 
 def test_completed_attempt_cannot_be_reused(tmp_path: Path) -> None:
@@ -348,7 +348,7 @@ def test_public_cli_and_json_schemas_are_pinned() -> None:
 
 def test_database_symlink_is_rejected_without_touching_target(tmp_path: Path) -> None:
     root, context_sha = _state(tmp_path)
-    jobs = root / "02-Jobs"
+    jobs = root / "02-Orchestration"
     jobs.mkdir()
     (jobs / "recipes").mkdir()
     outside = tmp_path / "outside.db"
