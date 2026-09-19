@@ -18,7 +18,7 @@ The job database is scheduling/progress metadata only.
         |
         | explicit submit
         v
-02-Jobs/
+02-Orchestration/
   recipes/<sha>.recipe.json
   pre-review-jobs.sqlite3
 ```
