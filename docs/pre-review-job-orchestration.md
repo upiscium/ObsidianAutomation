@@ -204,12 +204,19 @@ may find a prior `running` attempt left by a crash; it marks that attempt
 Generator backpressure stops new generation claims when eight current
 generations are already `awaiting_human_review`.
 
-## Deferred to Wave D
+## Production rollout
 
-- production ACL rollout and exact-revision package installation;
-- enabling the example timer;
-- production crash/resume/provider/backpressure acceptance;
-- role-limited operational status projection and notifications;
-- any post-Human-review automatic execution or transport.
+Wave D adds:
 
-The example timer is intentionally not enabled by repository code.
+- exact-SHA non-editable package deployment;
+- production ACL bootstrap for orchestration/read-view/status boundaries;
+- a credential-free aggregate status projection;
+- a disposable real-provider canary covering duplicate submit, crash/resume,
+  provider failure, backpressure, and mirror serialization;
+- first-install protection that leaves the pre-review timer disabled until
+  manual acceptance passes.
+
+See [Pre-review production rollout and acceptance](pre-review-production.md).
+
+Post-Human-review automatic execution/transport remains intentionally
+disconnected from this pipeline.
