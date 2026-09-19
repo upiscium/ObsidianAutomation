@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import io
 import json
+import ssl
+import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from obsidian_automation.github_project_watcher import (
+    GitHubClient,
+    GitHubProjectWatcherError,
     ProjectBinding,
     ProjectState,
     RepositorySnapshot,
@@ -281,3 +285,66 @@ def test_run_once_fetches_shared_repository_once_and_emits_json(tmp_path: Path) 
     assert len(rows) == 2
     assert all(row["proposed_status"] == "running" for row in rows)
     assert stderr.getvalue() == ""
+
+
+class _HTTPResponseFixture:
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self) -> bytes:
+        return self.data
+
+
+def test_github_client_retries_ssl_eof_once_with_tls12(monkeypatch) -> None:
+    calls: list[object | None] = []
+
+    def fake_urlopen(request, **kwargs):
+        context = kwargs.get("context")
+        calls.append(context)
+        if len(calls) == 1:
+            raise urllib.error.URLError(
+                ssl.SSLEOFError(
+                    8,
+                    "EOF occurred in violation of protocol",
+                )
+            )
+        assert isinstance(context, ssl.SSLContext)
+        assert context.maximum_version is ssl.TLSVersion.TLSv1_2
+        return _HTTPResponseFixture(b'{"ok":true}')
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    client = GitHubClient()
+    value = client._request_json("/repos/upiscium/Test")
+
+    assert value == {"ok": True}
+    assert calls[0] is None
+    assert len(calls) == 2
+
+
+def test_github_client_does_not_downgrade_non_tls_eof_error(monkeypatch) -> None:
+    calls = 0
+
+    def fake_urlopen(request, **kwargs):
+        nonlocal calls
+        calls += 1
+        raise urllib.error.URLError("temporary DNS failure")
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    client = GitHubClient()
+    try:
+        client._request_json("/repos/upiscium/Test")
+    except GitHubProjectWatcherError as exc:
+        assert "temporary DNS failure" in str(exc)
+        assert "TLS 1.2 compatibility retry" not in str(exc)
+    else:
+        raise AssertionError("non-TLS transport failure was not propagated")
+
+    assert calls == 1
