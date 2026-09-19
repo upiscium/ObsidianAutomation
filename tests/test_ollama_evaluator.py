@@ -67,6 +67,7 @@ def _roots(tmp_path: Path) -> tuple[Path, Path]:
     (vault / "11-Knowledge").mkdir(parents=True)
     state = tmp_path / "state"
     state.mkdir()
+    (state / "24-Locks" / "read-view").mkdir(parents=True)
     for stage in (
         "00-Untrusted",
         "04-Index",
