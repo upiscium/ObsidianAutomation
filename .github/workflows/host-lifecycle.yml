@@ -1,0 +1,20 @@
+name: Host lifecycle acceptance
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  source-fixture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Archive public source for isolated acceptance
+        run: git archive --format=tar HEAD > /tmp/obsidian-public-source.tar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: public-source-fixture
+          path: /tmp/obsidian-public-source.tar
+          retention-days: 1
