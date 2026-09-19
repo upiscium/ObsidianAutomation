@@ -14,6 +14,8 @@ REQUIRED_UNITS = {
     "obsidian-pre-review-generator.service": (
         "User=obsidian-ai-generator",
         "obsidian-pre-review-generator-worker",
+        "EnvironmentFile=/etc/obsidian-ai/pre-review-generator.env",
+        "EnvironmentFile=/etc/obsidian-ai/pre-review-revision.env",
     ),
     "obsidian-pre-review-validator.service": (
         "User=obsidian-ai-validator",
@@ -29,6 +31,8 @@ REQUIRED_UNITS = {
         "User=obsidian-ai-evaluator",
         "Requires=obsidian-pre-review-reader.service",
         "obsidian-pre-review-evaluator-worker",
+        "EnvironmentFile=/etc/obsidian-ai/pre-review-evaluator.env",
+        "EnvironmentFile=/etc/obsidian-ai/pre-review-revision.env",
     ),
     "obsidian-pre-review-status.service": (
         "User=obsidian-ai-status",
