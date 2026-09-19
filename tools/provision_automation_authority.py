@@ -111,6 +111,7 @@ DIRECTORIES: tuple[tuple[str, str, str, int], ...] = (
     ("/var/lib/obsidian-github-mirror", "obsidian-github-mirror", "obsidian-github-mirror", 0o700),
     ("/var/lib/obsidian-github-mirror/state", "obsidian-github-mirror", "obsidian-github-mirror", 0o700),
     ("/var/lib/obsidian-github-mirror/state/24-Locks", "obsidian-github-mirror", "obsidian-github-mirror", 0o700),
+    ("/var/lib/obsidian-github-mirror/state/24-Locks/read-view", "obsidian-github-mirror", "obsidian-github-mirror", 0o700),
     ("/srv/obsidian-github-sync", "root", "obsidian-github-vault", 0o750),
     ("/srv/obsidian-github-sync/vault", "obsidian-github-mirror", "obsidian-github-vault", 0o2750),
 )
