@@ -77,6 +77,21 @@ def test_render_keeps_only_structured_data_and_freeform_notes() -> None:
     assert "<!--" not in refreshed
 
 
+def test_issue_frontmatter_quotes_title_and_builds_repository_url() -> None:
+    proposal = _proposal(
+        issues=[OverviewItem(7, 'Quoted "issue"')],
+        prs=[],
+    )
+
+    rendered = render_status_note(proposal, None).decode()
+
+    assert "github_issues:" in rendered
+    assert "  - number: 7" in rendered
+    assert '    title: "Quoted \\"issue\\""' in rendered
+    assert '    url: "https://github.com/upiscium/Terreate/issues/7"' in rendered
+    assert "github_pull_requests: []" in rendered
+
+
 def test_existing_unmanaged_status_note_fails_closed() -> None:
     with pytest.raises(ProjectOverviewConflict, match="existing Status.md"):
         render_status_note(_proposal(), b"# Existing human Status\n")
