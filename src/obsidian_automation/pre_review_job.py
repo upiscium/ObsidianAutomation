@@ -328,6 +328,7 @@ def _db_path(ai_root: Path, *, create_dirs: bool) -> Path:
 
 def _connect_rw(ai_root: Path) -> sqlite3.Connection:
     path = _db_path(ai_root, create_dirs=True)
+    created = False
     if not os.path.lexists(path):
         flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
         if hasattr(os, "O_NOFOLLOW"):
@@ -342,6 +343,7 @@ def _connect_rw(ai_root: Path) -> sqlite3.Connection:
             raise PreReviewJobError("cannot safely create pre-review job database") from exc
         else:
             os.close(fd)
+            created = True
     path = _db_path(ai_root, create_dirs=True)
     conn = sqlite3.connect(path, timeout=10.0)
     conn.row_factory = sqlite3.Row
@@ -397,11 +399,12 @@ def _connect_rw(ai_root: Path) -> sqlite3.Connection:
     elif row["value"] != "1":
         conn.close()
         raise PreReviewJobError("unsupported pre-review job database schema")
-    try:
-        os.chmod(path, 0o660)
-    except OSError:
-        conn.close()
-        raise
+    if created:
+        try:
+            os.chmod(path, 0o660)
+        except OSError:
+            conn.close()
+            raise
     return conn
 
 
