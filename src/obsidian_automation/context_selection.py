@@ -19,6 +19,7 @@ from .knowledge_index import (
     verify_index_current,
 )
 from .retrieval_coverage import QueryCoverage, coverage_by_path
+from .production_io import ProductionIOError, mirror_read_lock
 
 
 CONTEXT_SELECTION_POLICY_VERSION = "bm25-coverage-relative-v0"
@@ -96,7 +97,6 @@ def retrieve_context(
 
     digest = _require_sha256(index_sha256, label="index_sha256")
     index = load_knowledge_index(ai_root, digest)
-    verify_index_current(vault_root, index)
 
     ranked = rank_documents(index, query)
     selection = select_context_candidates(
@@ -106,19 +106,21 @@ def retrieve_context(
         top_k=top_k,
     )
 
-    bundle = build_context_bundle(
-        vault_root,
-        query=query,
-        source_paths=[item.path for item in selection.selected],
-    )
+    with mirror_read_lock(ai_root):
+        verify_index_current(vault_root, index)
+        bundle = build_context_bundle(
+            vault_root,
+            query=query,
+            source_paths=[item.path for item in selection.selected],
+        )
 
-    indexed_by_path = {doc.path: doc for doc in index.documents}
-    for source in bundle.sources:
-        expected = indexed_by_path[source.path].content_sha256
-        if source.content_sha256 != expected:
-            raise ArtifactLifecycleError(
-                "Knowledge source changed during context construction"
-            )
+        indexed_by_path = {doc.path: doc for doc in index.documents}
+        for source in bundle.sources:
+            expected = indexed_by_path[source.path].content_sha256
+            if source.content_sha256 != expected:
+                raise ArtifactLifecycleError(
+                    "Knowledge source changed during context construction"
+                )
 
     context_sha, context_path = store_context_bundle(ai_root, bundle)
 
@@ -167,7 +169,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             query=args.query,
             top_k=args.top_k,
         )
-    except (ArtifactLifecycleError, OSError) as exc:
+    except (ArtifactLifecycleError, ProductionIOError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
