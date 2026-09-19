@@ -16,6 +16,7 @@ REQUIRED_UNITS = {
         "obsidian-pre-review-generator-worker",
         "EnvironmentFile=/etc/obsidian-ai/pre-review-generator.env",
         "EnvironmentFile=/etc/obsidian-ai/pre-review-revision.env",
+        "--openai-base-url",
     ),
     "obsidian-pre-review-validator.service": (
         "User=obsidian-ai-validator",
@@ -33,6 +34,7 @@ REQUIRED_UNITS = {
         "obsidian-pre-review-evaluator-worker",
         "EnvironmentFile=/etc/obsidian-ai/pre-review-evaluator.env",
         "EnvironmentFile=/etc/obsidian-ai/pre-review-revision.env",
+        "--openai-base-url",
     ),
     "obsidian-pre-review-status.service": (
         "User=obsidian-ai-status",
@@ -102,6 +104,8 @@ def validate_units(systemd_dir: Path) -> tuple[str, ...]:
         checked.append(name)
 
     forbidden = (
+        "--ollama-base-url",
+        "OLLAMA_BASE_URL",
         "obsidian-production-webdav-worker",
         "obsidian-production-knowledge-webdav-worker",
         "obsidian-production-executor",
