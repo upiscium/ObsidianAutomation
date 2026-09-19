@@ -156,26 +156,21 @@ Writer results are stored in:
 
 Before deploying the code, change the `obsidian-github-writer` share on canonical `10-Project` from Read+Update to Read+Update+Create. Do not grant Delete or Share.
 
-After merging the feature, update the package and systemd units:
+For current production deployments, use the exact-SHA transaction documented in
+`docs/github-production-update.md`:
 
 ```bash
-cd /opt/obsidian-github-sync/app
-git fetch origin
-git checkout main
-git reset --hard origin/main
-
-/opt/obsidian-github-sync/venv/bin/pip install \
-  --no-deps --force-reinstall /opt/obsidian-github-sync/app
-
-install -m 0644 \
-  examples/github-sync/obsidian-github-sync.service \
-  /etc/systemd/system/
-install -m 0644 \
-  examples/github-sync/obsidian-github-writer.service \
-  /etc/systemd/system/
-
-systemctl daemon-reload
+obsidian-github-production-update \
+  --target-sha <reviewed-merge-commit>
 ```
+
+The updater owns timer suspension, exact target checkout, package reinstall,
+repository-managed systemd unit installation, safe/live smoke checks, timer
+restoration, and the deployment receipt. Do not replace the reviewed SHA with
+`origin/main`.
+
+The manual checkout / reinstall sequence is retained only for the one-time
+bootstrap that first installs the updater itself.
 
 Verify the relevant CLIs before the canary:
 
