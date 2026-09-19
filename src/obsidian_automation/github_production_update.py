@@ -25,6 +25,7 @@ _REQUIRED_UNITS = frozenset(
         "obsidian-github-sync-vault-pull.service",
         "obsidian-github-sync.service",
         "obsidian-github-writer.service",
+        "obsidian-github-compactor.service",
         "obsidian-github-sync.timer",
     }
 )
