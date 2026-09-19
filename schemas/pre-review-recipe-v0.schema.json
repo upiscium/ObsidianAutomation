@@ -15,7 +15,43 @@
   "properties": {
     "record_version": {"const": 1},
     "pipeline": {"const": "knowledge-pre-review-v0"},
-    "generator": {"$ref": "#/$defs/generator"},
+    "generator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "implementation_revision",
+        "prompt_template_version",
+        "prompt_template_sha256",
+        "provider",
+        "model_identifier",
+        "model_revision",
+        "model_config"
+      ],
+      "properties": {
+        "implementation_revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40,64}$"
+        },
+        "prompt_template_version": {"const": "knowledge-note-generator-v0"},
+        "prompt_template_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "provider": {"const": "ollama"},
+        "model_identifier": {"type": "string", "minLength": 1, "maxLength": 512},
+        "model_revision": {"type": "string", "minLength": 1, "maxLength": 512},
+        "model_config": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["adapter_version", "think", "options"],
+          "properties": {
+            "adapter_version": {"const": "ollama-chat-structured-v0"},
+            "think": {"const": false},
+            "options": {"type": "object"}
+          }
+        }
+      }
+    },
     "validator": {
       "type": "object",
       "additionalProperties": false,
@@ -33,10 +69,7 @@
         "top_k": {"const": 5}
       }
     },
-    "evaluator": {"$ref": "#/$defs/evaluator"}
-  },
-  "$defs": {
-    "common": {
+    "evaluator": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -53,63 +86,26 @@
           "type": "string",
           "pattern": "^[0-9a-f]{40,64}$"
         },
+        "prompt_template_version": {"const": "knowledge-note-evaluator-v3"},
         "prompt_template_sha256": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"
         },
         "provider": {"const": "ollama"},
-        "model_identifier": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 512
-        },
-        "model_revision": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 512
+        "model_identifier": {"type": "string", "minLength": 1, "maxLength": 512},
+        "model_revision": {"type": "string", "minLength": 1, "maxLength": 512},
+        "model_config": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["adapter_version", "think", "strategy", "options"],
+          "properties": {
+            "adapter_version": {"const": "ollama-evaluator-chat-structured-v2"},
+            "think": {"const": false},
+            "strategy": {"const": "groundedness-plus-pairwise-candidates-v0"},
+            "options": {"type": "object"}
+          }
         }
       }
-    },
-    "generator": {
-      "allOf": [
-        {"$ref": "#/$defs/common"},
-        {
-          "properties": {
-            "prompt_template_version": {"const": "knowledge-note-generator-v0"},
-            "model_config": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["adapter_version", "think", "options"],
-              "properties": {
-                "adapter_version": {"const": "ollama-chat-structured-v0"},
-                "think": {"const": false},
-                "options": {"type": "object"}
-              }
-            }
-          }
-        }
-      ]
-    },
-    "evaluator": {
-      "allOf": [
-        {"$ref": "#/$defs/common"},
-        {
-          "properties": {
-            "prompt_template_version": {"const": "knowledge-note-evaluator-v3"},
-            "model_config": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["adapter_version", "think", "strategy", "options"],
-              "properties": {
-                "adapter_version": {"const": "ollama-evaluator-chat-structured-v2"},
-                "think": {"const": false},
-                "strategy": {"const": "groundedness-plus-pairwise-candidates-v0"},
-                "options": {"type": "object"}
-              }
-            }
-          }
-        }
-      ]
     }
   }
 }
