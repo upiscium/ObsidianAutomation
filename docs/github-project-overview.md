@@ -33,6 +33,10 @@ aliases: []
 tags: []
 github_repo: upiscium/Terreate
 github_status_managed: true
+github_issues:
+  - number: 203
+    title: "Example Issue"
+    url: "https://github.com/upiscium/Terreate/issues/203"
 github_pull_requests:
   - number: 42
     title: "Example PR"
@@ -50,8 +54,17 @@ human-authored notes
 ```
 
 The generated note contains no HTML machine comments and no Issue/PR checkbox
-list. Project Entry views consume `github_pull_requests` from frontmatter and
-render the GitHub Status table through Dataview.
+list. Project Entry views consume `github_issues` and `github_pull_requests`
+from frontmatter and render the GitHub Status tables through Dataview.
+
+### Structured Issue metadata
+
+`github_issues` contains the currently-open Issues from the watcher snapshot.
+Each row contains the Issue number, title and canonical GitHub URL. The list is
+written as `github_issues: []` when no open Issues exist.
+
+The same watcher snapshot already contains these Issue rows, so rendering this
+field does not add another GitHub API request.
 
 ### Structured Pull Request metadata
 

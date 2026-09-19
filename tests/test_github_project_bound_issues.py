@@ -57,6 +57,7 @@ def test_pull_request_metadata_is_rendered_for_dataview() -> None:
         workspace="[[03-Workspace/Lab/Lab|Lab]]",
     ).decode("utf-8")
 
+    assert "github_issues: []" in note
     assert "github_pull_requests:" in note
     assert "  - number: 42" in note
     assert '    title: "Quoted \\"title\\""' in note
