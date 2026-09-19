@@ -148,6 +148,7 @@ def test_update_deploys_exact_target_runs_smokes_and_restores_timer(tmp_path: Pa
     assert receipt.target_sha == TARGET
     assert receipt.safe_smoke == "passed"
     assert receipt.live_smoke == "passed"
+    assert receipt.bootstrap_pre_disabled_timer is False
     assert receipt_path.is_file()
     assert runner.current_sha == TARGET
     assert runner.enabled is True
@@ -173,6 +174,63 @@ def test_update_deploys_exact_target_runs_smokes_and_restores_timer(tmp_path: Pa
         assert (systemd_dir / name).read_bytes() == (
             app_root / "examples" / "github-sync" / name
         ).read_bytes()
+
+
+def test_bootstrap_pre_disabled_timer_restores_original_enabled_active_state(
+    tmp_path: Path,
+) -> None:
+    app_root, venv_root, systemd_dir, receipt_dir = _layout(tmp_path)
+    runner = FakeRunner(app_root, venv_root, enabled=False, active=False)
+
+    receipt, _ = execute_update(
+        target_sha=TARGET,
+        app_root=app_root,
+        venv_root=venv_root,
+        systemd_dir=systemd_dir,
+        receipt_dir=receipt_dir,
+        runner=runner,
+        require_root=False,
+        bootstrap_pre_disabled_timer=True,
+    )
+
+    assert receipt.result == "success"
+    assert receipt.bootstrap_pre_disabled_timer is True
+    assert receipt.timer_was_enabled is True
+    assert receipt.timer_was_active is True
+    assert runner.enabled is True
+    assert runner.active is True
+    assert ("systemctl", "enable", "--now", "obsidian-github-sync.timer") in runner.calls
+
+    payload = _receipt_payload(receipt_dir)
+    assert payload["bootstrap_pre_disabled_timer"] is True
+    assert payload["timer_was_enabled"] is True
+    assert payload["timer_was_active"] is True
+
+
+def test_bootstrap_pre_disabled_timer_rejects_nonstopped_timer(tmp_path: Path) -> None:
+    app_root, venv_root, systemd_dir, receipt_dir = _layout(tmp_path)
+    runner = FakeRunner(app_root, venv_root, enabled=True, active=True)
+
+    with pytest.raises(ProductionUpdateError, match="disabled and inactive"):
+        execute_update(
+            target_sha=TARGET,
+            app_root=app_root,
+            venv_root=venv_root,
+            systemd_dir=systemd_dir,
+            receipt_dir=receipt_dir,
+            runner=runner,
+            require_root=False,
+            bootstrap_pre_disabled_timer=True,
+        )
+
+    assert ("systemctl", "disable", "--now", "obsidian-github-sync.timer") not in runner.calls
+    assert runner.enabled is True
+    assert runner.active is True
+
+    payload = _receipt_payload(receipt_dir)
+    assert payload["result"] == "failed"
+    assert payload["failed_stage"] == "preflight"
+    assert payload["bootstrap_pre_disabled_timer"] is True
 
 
 def test_success_preserves_disabled_inactive_timer_state(tmp_path: Path) -> None:
