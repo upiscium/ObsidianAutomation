@@ -273,7 +273,7 @@ def _db_path(ai_root: Path) -> Path:
     return path
 
 
-def _connect(ai_root: Path) -> sqlite3.Connection:
+def _connect_rw(ai_root: Path) -> sqlite3.Connection:
     path = _db_path(ai_root)
     conn = sqlite3.connect(path, timeout=10.0)
     conn.row_factory = sqlite3.Row
@@ -326,6 +326,23 @@ def _connect(ai_root: Path) -> sqlite3.Connection:
     except OSError:
         conn.close()
         raise
+    return conn
+
+
+def _connect_ro(ai_root: Path) -> sqlite3.Connection:
+    path = _db_path(ai_root)
+    if not path.exists():
+        raise PreReviewJobError("pre-review job database does not exist")
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=10.0)
+    except sqlite3.Error as exc:
+        raise PreReviewJobError("cannot open pre-review job database read-only") from exc
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    row = conn.execute("SELECT value FROM metadata WHERE key = 'schema_version'").fetchone()
+    if row is None or row["value"] != "1":
+        conn.close()
+        raise PreReviewJobError("unsupported pre-review job database schema")
     return conn
 
 
@@ -396,7 +413,7 @@ def submit_job(
     job_id = _job_id(context_digest, recipe_digest)
     now = _utc_now()
 
-    conn = _connect(ai_root)
+    conn = _connect_rw(ai_root)
     try:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
@@ -447,7 +464,7 @@ def submit_job(
 def regenerate_job(ai_root: Path, job_id: str) -> dict[str, object]:
     digest = _require_sha256(job_id, label="job_id")
     now = _utc_now()
-    conn = _connect(ai_root)
+    conn = _connect_rw(ai_root)
     try:
         conn.execute("BEGIN IMMEDIATE")
         job = conn.execute("SELECT job_id FROM jobs WHERE job_id = ?", (digest,)).fetchone()
@@ -516,7 +533,7 @@ def start_attempt(ai_root: Path, generation_id: str, stage: str) -> dict[str, ob
     expected_state, active_state = _STAGE_START[stage_name]
     now = _utc_now()
 
-    conn = _connect(ai_root)
+    conn = _connect_rw(ai_root)
     try:
         conn.execute("BEGIN IMMEDIATE")
         generation = conn.execute(
@@ -587,7 +604,7 @@ def complete_attempt(
         normalized_reason = _metadata(reason_code, label="reason_code")
     now = _utc_now()
 
-    conn = _connect(ai_root)
+    conn = _connect_rw(ai_root)
     try:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
@@ -644,7 +661,7 @@ def complete_attempt(
 def retry_generation(ai_root: Path, generation_id: str) -> dict[str, object]:
     digest = _require_sha256(generation_id, label="generation_id")
     now = _utc_now()
-    conn = _connect(ai_root)
+    conn = _connect_rw(ai_root)
     try:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
@@ -683,7 +700,7 @@ def retry_generation(ai_root: Path, generation_id: str) -> dict[str, object]:
 
 def job_status(ai_root: Path, job_id: str) -> dict[str, object]:
     digest = _require_sha256(job_id, label="job_id")
-    conn = _connect(ai_root)
+    conn = _connect_ro(ai_root)
     try:
         job = conn.execute(
             "SELECT job_id, context_sha256, recipe_sha256, created_at FROM jobs WHERE job_id = ?",
