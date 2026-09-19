@@ -19,7 +19,8 @@ installed standalone launcher
 
 The launcher and target bootstrap use only the Python standard library. A future
 target may change its internal deployment implementation while keeping this
-source-handoff contract.
+source-handoff contract. Package build dependencies are installed only from the
+Debian local wheelhouse; production bootstrap does not depend on PyPI availability.
 
 ## Canonical writer-side paths
 
@@ -37,6 +38,18 @@ Publisher / AI / GitHub Sync production paths remain unchanged until controlled
 migration.
 
 ## Fresh host
+
+Install the local build wheelhouse packages first:
+
+```bash
+apt-get update
+apt-get install -y python3-setuptools-whl python3-wheel-whl
+```
+
+On Debian 13 these provide the build backend wheels under `/usr/share/python-wheels`.
+The bootstrap installs `setuptools>=75` and `wheel` into the production venv with
+`pip --no-index --find-links /usr/share/python-wheels`, then installs
+ObsidianAutomation with `--no-build-isolation --no-index --no-deps`.
 
 The initial bootstrap is intentionally source-side. Obtain an exact reviewed
 ObsidianAutomation checkout in a temporary directory and run its bootstrap file:
@@ -84,6 +97,7 @@ currently installed package updater.
 - symlinked bootstrap/launcher sources are rejected;
 - package installation is non-editable;
 - launcher replacement is atomic;
+- target-child failures propagate only a bounded validated bootstrap error code/message; arbitrary child stderr is not relayed;
 - raw command stderr/stdout is not persisted in receipts;
 - no credential values are read or created by this bootstrap foundation.
 

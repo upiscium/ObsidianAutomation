@@ -28,12 +28,13 @@ import tempfile
 from typing import Callable, Iterable, Sequence
 
 
-BOOTSTRAP_CONTRACT = 1
+BOOTSTRAP_CONTRACT = 2
 DEFAULT_REPOSITORY_URL = "https://github.com/upiscium/ObsidianAutomation.git"
 DEFAULT_APP_ROOT = Path("/opt/obsidian-automation/app")
 DEFAULT_VENV_ROOT = Path("/opt/obsidian-automation/venv")
 DEFAULT_LAUNCHER_PATH = Path("/usr/local/sbin/obsidian-automation-update")
 DEFAULT_RECEIPT_DIR = Path("/var/lib/obsidian-automation/deployments")
+DEFAULT_WHEELHOUSE = Path("/usr/share/python-wheels")
 SUPPORTED_PROFILES = ("automation",)
 _SHA_RE = re.compile(r"^[0-9a-f]{40,64}$")
 
@@ -322,6 +323,7 @@ def _target_command(
     venv_root: Path,
     launcher_path: Path,
     receipt_dir: Path,
+    wheelhouse: Path,
 ) -> tuple[str, ...]:
     return (
         python_executable,
@@ -343,6 +345,67 @@ def _target_command(
         str(launcher_path),
         "--receipt-dir",
         str(receipt_dir),
+        "--wheelhouse",
+        str(wheelhouse),
+    )
+
+
+def _validated_child_failure(stderr: str) -> str | None:
+    lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+    if not lines:
+        return None
+    try:
+        value = json.loads(lines[-1])
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(value, dict):
+        return None
+    if value.get("event") != "obsidian-automation-source-bootstrap":
+        return None
+    if value.get("status") != "failed":
+        return None
+    message = value.get("message")
+    if not isinstance(message, str) or len(message) > 512:
+        return None
+    if re.fullmatch(r"[A-Za-z0-9_ .:/=-]+", message) is None:
+        return None
+    return message
+
+
+def _run_target_apply(
+    runner: Runner,
+    argv: Sequence[str],
+) -> CommandResult:
+    result = runner(tuple(str(item) for item in argv))
+    if result.returncode != 0:
+        child = _validated_child_failure(result.stderr)
+        if child is not None:
+            raise BootstrapError(f"target_owned:{child}")
+        raise BootstrapError(
+            f"target-owned bootstrap apply failed with exit status {result.returncode}"
+        )
+    return result
+
+
+def _prepare_offline_build_backend(
+    *,
+    pip: Path,
+    wheelhouse: Path,
+    runner: Runner,
+) -> None:
+    _require_directory(wheelhouse, label="build_wheelhouse")
+    _run(
+        runner,
+        (
+            str(pip),
+            "install",
+            "--no-index",
+            "--find-links",
+            str(wheelhouse),
+            "setuptools>=75",
+            "wheel",
+        ),
+        label="install offline build backend",
     )
 
 
@@ -355,6 +418,7 @@ def handoff_to_target(
     venv_root: Path = DEFAULT_VENV_ROOT,
     launcher_path: Path = DEFAULT_LAUNCHER_PATH,
     receipt_dir: Path = DEFAULT_RECEIPT_DIR,
+    wheelhouse: Path = DEFAULT_WHEELHOUSE,
     runner: Runner = _default_runner,
     python_executable: str = sys.executable,
     require_root: bool = True,
@@ -395,7 +459,7 @@ def handoff_to_target(
         source_script = temporary / "tools" / "production_bootstrap.py"
         if not source_script.is_file() or source_script.is_symlink():
             raise BootstrapError("target_bootstrap_script_missing_or_unsafe")
-        _run(
+        _run_target_apply(
             runner,
             _target_command(
                 python_executable=python_executable,
@@ -407,8 +471,8 @@ def handoff_to_target(
                 venv_root=venv_root,
                 launcher_path=launcher_path,
                 receipt_dir=receipt_dir,
+                wheelhouse=wheelhouse,
             ),
-            label="target-owned bootstrap apply",
         )
     finally:
         if temporary.exists():
@@ -435,6 +499,7 @@ def apply_from_target(
     venv_root: Path = DEFAULT_VENV_ROOT,
     launcher_path: Path = DEFAULT_LAUNCHER_PATH,
     receipt_dir: Path = DEFAULT_RECEIPT_DIR,
+    wheelhouse: Path = DEFAULT_WHEELHOUSE,
     runner: Runner = _default_runner,
     python_executable: str = sys.executable,
     require_root: bool = True,
@@ -532,12 +597,21 @@ def apply_from_target(
         if not pip.is_file() or pip.is_symlink():
             raise BootstrapError("production_pip_missing_or_unsafe")
 
+        stage = "prepare_build_backend"
+        _prepare_offline_build_backend(
+            pip=pip,
+            wheelhouse=wheelhouse,
+            runner=runner,
+        )
+
         stage = "install_package"
         _run(
             runner,
             (
                 str(pip),
                 "install",
+                "--no-index",
+                "--no-build-isolation",
                 "--no-deps",
                 "--force-reinstall",
                 str(app_root),
@@ -611,6 +685,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--venv-root", type=Path, default=DEFAULT_VENV_ROOT)
     parser.add_argument("--launcher-path", type=Path, default=DEFAULT_LAUNCHER_PATH)
     parser.add_argument("--receipt-dir", type=Path, default=DEFAULT_RECEIPT_DIR)
+    parser.add_argument("--wheelhouse", type=Path, default=DEFAULT_WHEELHOUSE)
     parser.add_argument("--apply-from-target", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--source-root", type=Path, help=argparse.SUPPRESS)
     return parser
@@ -630,6 +705,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 venv_root=args.venv_root,
                 launcher_path=args.launcher_path,
                 receipt_dir=args.receipt_dir,
+                wheelhouse=args.wheelhouse,
             )
             print(
                 json.dumps(
@@ -654,6 +730,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             venv_root=args.venv_root,
             launcher_path=args.launcher_path,
             receipt_dir=args.receipt_dir,
+            wheelhouse=args.wheelhouse,
         )
         return 0
     except BootstrapError as exc:
