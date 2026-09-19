@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sqlite3
+import ssl
 import sys
 import tomllib
 import urllib.error
@@ -207,6 +208,24 @@ class GitHubClient:
         self.token = token.strip() if token else None
         self.timeout_seconds = timeout_seconds
 
+    def _urlopen_bytes(
+        self,
+        request: urllib.request.Request,
+        *,
+        context: ssl.SSLContext | None = None,
+    ) -> bytes:
+        kwargs: dict[str, object] = {"timeout": self.timeout_seconds}
+        if context is not None:
+            kwargs["context"] = context
+        with urllib.request.urlopen(request, **kwargs) as response:
+            return response.read()
+
+    @staticmethod
+    def _tls12_compat_context() -> ssl.SSLContext:
+        context = ssl.create_default_context()
+        context.maximum_version = ssl.TLSVersion.TLSv1_2
+        return context
+
     def _request_json(self, path: str) -> object:
         request = urllib.request.Request(
             f"{self.api_base}{path}",
@@ -218,15 +237,34 @@ class GitHubClient:
             },
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                data = response.read()
+            data = self._urlopen_bytes(request)
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:400]
             raise GitHubProjectWatcherError(
                 f"GitHub API returned HTTP {exc.code} for {path}: {detail}"
             ) from exc
         except urllib.error.URLError as exc:
-            raise GitHubProjectWatcherError(f"GitHub API request failed for {path}: {exc.reason}") from exc
+            if not isinstance(exc.reason, ssl.SSLEOFError):
+                raise GitHubProjectWatcherError(
+                    f"GitHub API request failed for {path}: {exc.reason}"
+                ) from exc
+            try:
+                data = self._urlopen_bytes(
+                    request,
+                    context=self._tls12_compat_context(),
+                )
+            except urllib.error.HTTPError as fallback_exc:
+                detail = fallback_exc.read().decode("utf-8", errors="replace")[:400]
+                raise GitHubProjectWatcherError(
+                    f"GitHub API returned HTTP {fallback_exc.code} for {path} "
+                    "after TLS 1.2 compatibility retry: "
+                    f"{detail}"
+                ) from fallback_exc
+            except urllib.error.URLError as fallback_exc:
+                raise GitHubProjectWatcherError(
+                    f"GitHub API request failed for {path} after TLS 1.2 "
+                    f"compatibility retry: {fallback_exc.reason}"
+                ) from fallback_exc
         try:
             return json.loads(data)
         except json.JSONDecodeError as exc:
