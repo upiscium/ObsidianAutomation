@@ -16,8 +16,6 @@ class _RuntimeClient(GitHubClient):
 
     def _request_json(self, path: str) -> object:
         self.paths.append(path)
-        if "/activity?" in path:
-            return []
         if path.endswith("/commits?per_page=1"):
             return []
         if "/issues?state=open" in path:
@@ -77,6 +75,9 @@ def test_status_queue_reuses_exact_watcher_snapshot_for_overview(tmp_path: Path)
     assert stderr.getvalue() == ""
     assert sum("/issues?state=open" in path for path in client.paths) == 1
     assert sum("/pulls?state=open" in path for path in client.paths) == 1
+    assert sum("/commits?per_page=1" in path for path in client.paths) == 1
+    assert len(client.paths) == 3
+    assert not any("/activity?" in path for path in client.paths)
     overview_files = list(request_dir.glob("*.github-overview.json"))
     assert len(overview_files) == 1
     payload = json.loads(overview_files[0].read_text(encoding="utf-8"))
