@@ -289,32 +289,53 @@ class GitHubClient:
                 return rows
             page += 1
 
-    def _latest_push(self, repo_path: str) -> tuple[str | None, datetime | None]:
-        candidates: list[tuple[str, datetime]] = []
-        for activity_type in ("push", "force_push"):
-            value = self._request_json(
-                f"/repos/{repo_path}/activity?activity_type={activity_type}&time_period=year&per_page=1&direction=desc"
-            )
-            if not isinstance(value, list):
-                raise GitHubProjectWatcherError(
-                    f"invalid repository activity payload for {repo_path}"
-                )
-            if not value:
+    @staticmethod
+    def _timestamp_from_commit_payload(value: object) -> datetime | None:
+        if not isinstance(value, dict):
+            return None
+        commit = value.get("commit")
+        if not isinstance(commit, dict):
+            return None
+        for identity_key in ("committer", "author"):
+            identity = commit.get(identity_key)
+            if not isinstance(identity, dict):
                 continue
-            first = value[0]
-            if not isinstance(first, dict):
-                raise GitHubProjectWatcherError(
-                    f"invalid repository activity row for {repo_path}"
-                )
-            sha = str(first.get("after") or "").strip()
-            pushed_at = first.get("pushed_at")
-            if sha and isinstance(pushed_at, str):
-                parsed = _parse_timestamp(pushed_at)
+            date_value = identity.get("date")
+            if isinstance(date_value, str):
+                parsed = _parse_timestamp(date_value)
                 if parsed is not None:
-                    candidates.append((sha, parsed))
-        if not candidates:
+                    return parsed
+        return None
+
+    def _latest_default_branch_commit(
+        self,
+        repo_path: str,
+    ) -> tuple[str | None, datetime | None]:
+        value = self._request_json(f"/repos/{repo_path}/commits?per_page=1")
+        if not isinstance(value, list):
+            raise GitHubProjectWatcherError(
+                f"invalid latest commit payload for {repo_path}"
+            )
+        if not value:
             return None, None
-        return max(candidates, key=lambda item: item[1])
+        first = value[0]
+        if not isinstance(first, dict):
+            raise GitHubProjectWatcherError(
+                f"invalid latest commit row for {repo_path}"
+            )
+        sha = str(first.get("sha") or "").strip()
+        committed_at = self._timestamp_from_commit_payload(first)
+        if not sha or committed_at is None:
+            raise GitHubProjectWatcherError(
+                f"latest commit row is missing SHA or timestamp for {repo_path}"
+            )
+        return sha, committed_at
+
+    def _latest_push(self, repo_path: str) -> tuple[str | None, datetime | None]:
+        # Status automation only needs the current default-branch head, not
+        # repository-wide activity classification. One commit-list request
+        # replaces multiple activity-type requests and keeps polling bounded.
+        return self._latest_default_branch_commit(repo_path)
 
     def snapshot(self, repository: str, *, observed_at: datetime | None = None) -> RepositorySnapshot:
         repo_path = self._repo_path(repository)
@@ -441,11 +462,12 @@ class StateStore:
 
 
 def _has_new_commit(snapshot: RepositorySnapshot, previous: ProjectState) -> bool:
-    if not snapshot.latest_commit_sha or snapshot.latest_commit_sha == previous.latest_commit_sha:
-        return False
-    if snapshot.latest_commit_at is None or previous.latest_commit_at is None:
-        return True
-    return snapshot.latest_commit_at >= previous.latest_commit_at
+    # A changed default-branch HEAD is new terminal-state activity even when a
+    # force-push moves the branch back to an older commit timestamp.
+    return bool(
+        snapshot.latest_commit_sha
+        and snapshot.latest_commit_sha != previous.latest_commit_sha
+    )
 
 
 def decide_status(
