@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -294,7 +295,11 @@ def _receipt_path(receipt_dir: Path, target_sha: str, *, completed_at: str) -> P
         .replace(".", "")
         .replace("+", "")
     )
-    return receipt_dir / f"{stamp}-{target_sha[:12]}.json"
+    if _SHA_RE.fullmatch(target_sha) is not None:
+        target_label = target_sha[:12]
+    else:
+        target_label = hashlib.sha256(target_sha.encode("utf-8")).hexdigest()[:12]
+    return receipt_dir / f"{stamp}-{target_label}.json"
 
 
 def _persist_receipt(receipt_dir: Path, receipt: DeploymentReceipt) -> Path:
