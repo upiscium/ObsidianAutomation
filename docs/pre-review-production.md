@@ -131,6 +131,7 @@ editable install and do not move production HEAD yet:
 TARGET=<reviewed-merge-commit>
 APP=/opt/obsidian-ai/ObsidianAutomation
 BOOT=$(mktemp -d /var/tmp/obsidian-pre-review-bootstrap.XXXXXX)
+rmdir "$BOOT"
 
 git -C "$APP" fetch origin main
 git -C "$APP" worktree add --detach "$BOOT" "$TARGET"
