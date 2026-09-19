@@ -208,7 +208,8 @@ def _assert_post_review_stages_empty(state: Path) -> None:
 def _run_live_pipeline(
     root: Path,
     *,
-    base_url: str,
+    generator_base_url: str,
+    evaluator_base_url: str,
     generator_model: str,
     evaluator_model: str,
     deployed_revision: str,
@@ -216,13 +217,13 @@ def _run_live_pipeline(
 ) -> dict[str, object]:
     vault, state = _area(root, "live")
     generator_identity = resolve_ollama_model(
-        base_url,
+        generator_base_url,
         generator_model,
         transport=transport,
         timeout=120.0,
     )
     evaluator_identity = resolve_ollama_model(
-        base_url,
+        evaluator_base_url,
         evaluator_model,
         transport=transport,
         timeout=120.0,
@@ -251,7 +252,7 @@ def _run_live_pipeline(
 
     generated = run_generator_worker(
         state,
-        base_url=base_url,
+        base_url=generator_base_url,
         deployed_revision=deployed_revision,
         transport=transport,
     )
@@ -259,7 +260,7 @@ def _run_live_pipeline(
     read = run_reader_worker(state, vault)
     evaluated = run_evaluator_worker(
         state,
-        base_url=base_url,
+        base_url=evaluator_base_url,
         deployed_revision=deployed_revision,
         transport=transport,
     )
@@ -339,7 +340,7 @@ def _run_provider_failure(
     root: Path,
     *,
     recipe,
-    base_url: str,
+    generator_base_url: str,
     deployed_revision: str,
 ) -> dict[str, object]:
     _vault, state = _area(root, "provider-failure")
@@ -353,7 +354,7 @@ def _run_provider_failure(
     for _ in range(3):
         result = run_generator_worker(
             state,
-            base_url=base_url,
+            base_url=generator_base_url,
             deployed_revision=deployed_revision,
             max_attempts=3,
             transport=fail_transport,
@@ -363,7 +364,7 @@ def _run_provider_failure(
         attempts += 1
     idle = run_generator_worker(
         state,
-        base_url=base_url,
+        base_url=generator_base_url,
         deployed_revision=deployed_revision,
         max_attempts=3,
         transport=fail_transport,
@@ -440,7 +441,8 @@ def _run_mirror_conflict(root: Path) -> dict[str, object]:
 def run_canary(
     *,
     scratch_root: Path,
-    base_url: str,
+    generator_base_url: str,
+    evaluator_base_url: str,
     generator_model: str,
     evaluator_model: str,
     deployed_revision: str,
@@ -453,13 +455,13 @@ def run_canary(
     root = _safe_scratch_root(scratch_root)
     try:
         generator_identity = resolve_ollama_model(
-            base_url,
+            generator_base_url,
             generator_model,
             transport=transport,
             timeout=120.0,
         )
         evaluator_identity = resolve_ollama_model(
-            base_url,
+            evaluator_base_url,
             evaluator_model,
             transport=transport,
             timeout=120.0,
@@ -478,7 +480,8 @@ def run_canary(
             "scratch_root": str(root),
             "live_pipeline": _run_live_pipeline(
                 root,
-                base_url=base_url,
+                generator_base_url=generator_base_url,
+                evaluator_base_url=evaluator_base_url,
                 generator_model=generator_model,
                 evaluator_model=evaluator_model,
                 deployed_revision=deployed_revision,
@@ -488,7 +491,7 @@ def run_canary(
             "provider_failure": _run_provider_failure(
                 root,
                 recipe=recipe,
-                base_url=base_url,
+                generator_base_url=generator_base_url,
                 deployed_revision=deployed_revision,
             ),
             "backpressure": _run_backpressure(root, recipe),
@@ -505,7 +508,8 @@ def run_canary(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="obsidian-pre-review-production-canary")
     parser.add_argument("--scratch-root", type=Path, required=True)
-    parser.add_argument("--ollama-base-url", required=True)
+    parser.add_argument("--generator-base-url", required=True)
+    parser.add_argument("--evaluator-base-url", required=True)
     parser.add_argument("--generator-model", required=True)
     parser.add_argument("--evaluator-model", required=True)
     parser.add_argument("--deployed-revision", required=True)
@@ -515,7 +519,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         result = run_canary(
             scratch_root=args.scratch_root,
-            base_url=args.ollama_base_url,
+            generator_base_url=args.generator_base_url,
+            evaluator_base_url=args.evaluator_base_url,
             generator_model=args.generator_model,
             evaluator_model=args.evaluator_model,
             deployed_revision=args.deployed_revision,
