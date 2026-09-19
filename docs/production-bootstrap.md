@@ -69,12 +69,11 @@ The current v1 foundation:
 5. resets the production checkout to the exact target;
 6. creates the production venv if absent;
 7. force-reinstalls the package non-editably;
-8. atomically installs/replaces `obsidian-automation-update`;
-9. writes a secret-free bootstrap receipt.
+8. provisions the consolidated local Unix identities, empty directory roots, and POSIX ACL authority matrix;
+9. atomically installs/replaces `obsidian-automation-update`;
+10. writes a secret-free bootstrap receipt.
 
-It does **not yet enable or migrate production services**. The receipt records
-`host_activation=not_attempted`. Declarative identities, ACLs, subsystem units,
-timer-state transactions, and cutover are subsequent host-lifecycle stages.
+The authority stage creates no credential files and installs/enables no systemd production units. The receipt records `authority_provisioning=passed` and still records `host_activation=not_attempted`. Unit installation, timer-state transactions, private credential placement, durable-state migration, and cutover remain subsequent host-lifecycle stages.
 
 ## Subsequent self-update
 
@@ -87,7 +86,9 @@ sudo obsidian-automation-update \
 ```
 
 The installed launcher still executes the target commit's bootstrap, not the
-currently installed package updater.
+currently installed package updater. Authority provisioning is idempotently
+re-applied on each update so local ownership and ACL boundaries converge to the
+reviewed target policy.
 
 ## Fail-closed rules
 
@@ -99,6 +100,7 @@ currently installed package updater.
 - launcher replacement is atomic;
 - target-child failures propagate only a bounded validated bootstrap error code/message; arbitrary child stderr is not relayed;
 - raw command stderr/stdout is not persisted in receipts;
+- the authority provisioner creates no credential files and installs no systemd production units;
 - no credential values are read or created by this bootstrap foundation.
 
 This bootstrap is not permission to run duplicate production writers. New-host

@@ -28,7 +28,7 @@ import tempfile
 from typing import Callable, Iterable, Sequence
 
 
-BOOTSTRAP_CONTRACT = 2
+BOOTSTRAP_CONTRACT = 3
 DEFAULT_REPOSITORY_URL = "https://github.com/upiscium/ObsidianAutomation.git"
 DEFAULT_APP_ROOT = Path("/opt/obsidian-automation/app")
 DEFAULT_VENV_ROOT = Path("/opt/obsidian-automation/venv")
@@ -60,6 +60,7 @@ class BootstrapReceipt:
     profile: str
     launcher_sha256: str
     package_install: str
+    authority_provisioning: str
     host_activation: str
     result: str
     failed_stage: str | None
@@ -77,6 +78,7 @@ class BootstrapReceipt:
                     "profile": self.profile,
                     "launcher_sha256": self.launcher_sha256,
                     "package_install": self.package_install,
+                    "authority_provisioning": self.authority_provisioning,
                     "host_activation": self.host_activation,
                     "result": self.result,
                     "failed_stage": self.failed_stage,
@@ -507,6 +509,7 @@ def apply_from_target(
     stage = "preflight"
     previous_sha: str | None = None
     package_install = "not_run"
+    authority_provisioning = "not_run"
     host_activation = "not_attempted"
     launcher_sha = "not_installed"
 
@@ -620,6 +623,17 @@ def apply_from_target(
         )
         package_install = "passed"
 
+        stage = "provision_authority"
+        authority_script = source_root / "tools" / "provision_automation_authority.py"
+        if not authority_script.is_file() or authority_script.is_symlink():
+            raise BootstrapError("target_authority_provisioner_missing_or_unsafe")
+        _run(
+            runner,
+            (python_executable, str(authority_script)),
+            label="provision consolidated authority",
+        )
+        authority_provisioning = "passed"
+
         stage = "install_launcher"
         source_launcher = source_root / "tools" / "production_bootstrap.py"
         if not source_launcher.is_file() or source_launcher.is_symlink():
@@ -640,6 +654,7 @@ def apply_from_target(
             profile=profile,
             launcher_sha256=launcher_sha,
             package_install=package_install,
+            authority_provisioning=authority_provisioning,
             host_activation=host_activation,
             result="success",
             failed_stage=None,
@@ -656,6 +671,7 @@ def apply_from_target(
             profile=profile,
             launcher_sha256=launcher_sha,
             package_install=package_install,
+            authority_provisioning=authority_provisioning,
             host_activation=host_activation,
             result="failed",
             failed_stage=stage,

@@ -73,6 +73,10 @@ def _tree(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path]:
         "#!/usr/bin/env python3\nprint('target bootstrap')\n",
         encoding="utf-8",
     )
+    (source / "tools/provision_automation_authority.py").write_text(
+        "#!/usr/bin/env python3\nprint('authority provisioned')\n",
+        encoding="utf-8",
+    )
     app.mkdir()
     (venv / "bin").mkdir(parents=True)
     wheelhouse.mkdir()
@@ -146,6 +150,7 @@ def test_apply_from_target_replaces_launcher_and_writes_secret_free_receipt(
     assert receipt.previous_sha == PREVIOUS
     assert receipt.target_sha == TARGET
     assert receipt.package_install == "passed"
+    assert receipt.authority_provisioning == "passed"
     assert receipt.host_activation == "not_attempted"
     assert launcher.read_bytes() == (
         source / "tools/production_bootstrap.py"
@@ -153,7 +158,7 @@ def test_apply_from_target_replaces_launcher_and_writes_secret_free_receipt(
     assert stat.S_IMODE(launcher.stat().st_mode) == 0o755
 
     value = json.loads(path.read_text(encoding="utf-8"))
-    assert value["bootstrap_contract"] == 2
+    assert value["bootstrap_contract"] == 3
     assert value["target_sha"] == TARGET
     raw = path.read_text(encoding="utf-8")
     for forbidden in (
@@ -183,6 +188,14 @@ def test_apply_from_target_replaces_launcher_and_writes_secret_free_receipt(
     assert "--no-build-isolation" in project_install
     assert "--no-deps" in project_install
     assert "--force-reinstall" in project_install
+
+    assert any(
+        command[:2] == (
+            "/usr/bin/python3",
+            str(source / "tools/provision_automation_authority.py"),
+        )
+        for command in runner.commands
+    )
 
 
 def test_apply_refuses_source_root_not_at_exact_target(tmp_path: Path) -> None:
@@ -226,6 +239,7 @@ def test_receipt_contract_has_no_freeform_command_output() -> None:
         profile="automation",
         launcher_sha256="c" * 64,
         package_install="passed",
+        authority_provisioning="passed",
         host_activation="not_attempted",
         result="success",
         failed_stage=None,
@@ -241,6 +255,7 @@ def test_receipt_contract_has_no_freeform_command_output() -> None:
         "profile",
         "launcher_sha256",
         "package_install",
+        "authority_provisioning",
         "host_activation",
         "result",
         "failed_stage",
