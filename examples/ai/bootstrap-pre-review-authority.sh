@@ -23,7 +23,7 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
-for command in setfacl getfacl install id getent useradd runuser; do
+for command in setfacl getfacl install id getent groupadd useradd runuser find; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "required command is missing: $command" >&2
     exit 1
