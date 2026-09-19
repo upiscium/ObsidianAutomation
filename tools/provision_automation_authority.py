@@ -389,8 +389,17 @@ def _require_access(
 
 
 def _apply_ai_acls(runner: Runner) -> None:
+    no_default_acl = {
+        "/var/lib/obsidian-ai/vault",
+        "/var/lib/obsidian-ai/state",
+    }
     for path, entries in AI_ACLS.items():
-        _reset_acl_dir(runner, path, entries)
+        _reset_acl_dir(
+            runner,
+            path,
+            entries,
+            defaults=path not in no_default_acl,
+        )
 
     _require_access(
         runner,
