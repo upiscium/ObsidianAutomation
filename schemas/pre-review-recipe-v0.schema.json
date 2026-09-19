@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pre-review-recipe-v0.schema.json",
+  "title": "Knowledge pre-review recipe v0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "record_version",
+    "pipeline",
+    "generator",
+    "validator",
+    "evaluation_context",
+    "evaluator"
+  ],
+  "properties": {
+    "record_version": {"const": 1},
+    "pipeline": {"const": "knowledge-pre-review-v0"},
+    "generator": {"$ref": "#/$defs/component"},
+    "validator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy"],
+      "properties": {
+        "policy": {"type": "string", "minLength": 1, "maxLength": 512}
+      }
+    },
+    "evaluation_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["selection_policy", "top_k"],
+      "properties": {
+        "selection_policy": {"type": "string", "minLength": 1, "maxLength": 512},
+        "top_k": {"type": "integer", "minimum": 1, "maximum": 50}
+      }
+    },
+    "evaluator": {"$ref": "#/$defs/component"}
+  },
+  "$defs": {
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "implementation_revision",
+        "prompt_template_version",
+        "prompt_template_sha256",
+        "provider",
+        "model_identifier",
+        "model_revision",
+        "model_config"
+      ],
+      "properties": {
+        "implementation_revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40,64}$"
+        },
+        "prompt_template_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "prompt_template_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "provider": {"const": "ollama"},
+        "model_identifier": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "model_revision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "model_config": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["adapter_version", "think", "options"],
+          "properties": {
+            "adapter_version": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "think": {"const": false},
+            "options": {"type": "object"}
+          }
+        }
+      }
+    }
+  }
+}
