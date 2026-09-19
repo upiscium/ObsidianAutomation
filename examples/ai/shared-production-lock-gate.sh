@@ -183,8 +183,8 @@ from obsidian_automation.generator_contract import (
     PROMPT_TEMPLATE_VERSION,
     prompt_template_sha256 as generator_prompt_sha256,
 )
-from obsidian_automation.ollama_evaluator import ADAPTER_VERSION as EVAL_ADAPTER, EVALUATION_STRATEGY
-from obsidian_automation.ollama_generator import ADAPTER_VERSION as GEN_ADAPTER
+from obsidian_automation.openai_evaluator import ADAPTER_VERSION as EVAL_ADAPTER, EVALUATION_STRATEGY
+from obsidian_automation.openai_generator import ADAPTER_VERSION as GEN_ADAPTER
 from obsidian_automation.pre_review_job import parse_recipe, submit_job
 
 root = Path(sys.argv[1])
@@ -203,12 +203,12 @@ recipe = {
         "implementation_revision": "a" * 40,
         "prompt_template_version": PROMPT_TEMPLATE_VERSION,
         "prompt_template_sha256": generator_prompt_sha256(),
-        "provider": "ollama",
+        "provider": "openai-compatible",
         "model_identifier": "fixture-generator",
-        "model_revision": "fixture-generator-revision",
+        "model_revision": "identifier:fixture-generator",
         "model_config": {
             "adapter_version": GEN_ADAPTER,
-            "think": False,
+            "identity_binding": "identifier-only",
             "options": {"temperature": 0},
         },
     },
@@ -221,12 +221,12 @@ recipe = {
         "implementation_revision": "a" * 40,
         "prompt_template_version": EVALUATOR_PROMPT_TEMPLATE_VERSION,
         "prompt_template_sha256": evaluator_prompt_sha256(),
-        "provider": "ollama",
+        "provider": "openai-compatible",
         "model_identifier": "fixture-evaluator",
-        "model_revision": "fixture-evaluator-revision",
+        "model_revision": "identifier:fixture-evaluator",
         "model_config": {
             "adapter_version": EVAL_ADAPTER,
-            "think": False,
+            "identity_binding": "identifier-only",
             "strategy": EVALUATION_STRATEGY,
             "options": {"temperature": 0},
         },
