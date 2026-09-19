@@ -20,6 +20,7 @@ AI Writer host/LXC
 ├── obsidian-ai-generator
 ├── obsidian-ai-validator
 ├── obsidian-ai-evaluator
+├── obsidian-ai-status
 ├── <human reviewer account>
 └── obsidian-ai-executor
 
@@ -57,6 +58,10 @@ Recommended layout:
 │   └── 11-Knowledge/
 └── state/                   # local-only; never rclone-sync this tree
     ├── 00-Untrusted/
+    ├── 02-Orchestration/
+    │   ├── recipes/
+    │   ├── pre-review-jobs.sqlite3
+    │   └── status/pre-review-status.json
     ├── 04-Index/
     ├── 05-Context/
     ├── 10-Validation/
@@ -81,6 +86,23 @@ This separation is required. A Nextcloud pull must never be able to delete local
 `12-Evaluation-Request` is a bounded Validator -> Reader bridge. It exists so Reader does not need read access to Generator proposals or Validation. Validator deterministically projects the accepted proposal/mutation binding, target path, and retrieval query. Reader is read-only on this stage.
 
 `14-Evaluation-Context` is a non-authoritative Reader -> Evaluator boundary. Reader uses canonical Knowledge plus Reader-private Index to produce exact candidate bytes for redundancy/consistency evaluation. Evaluator may read but not rewrite it.
+
+## Pre-review operational metadata
+
+`02-Orchestration` is non-authoritative scheduling/progress metadata shared only
+by Reader, Generator, Validator, and Evaluator. Successful stage rows store
+selected hashes, not semantic artifact bodies. Validation, Evaluation, Human
+Review, Execution, Transport, and Receipt artifacts remain authoritative in
+their existing stages.
+
+`obsidian-ai-status` may read only the orchestration metadata database and
+write `02-Orchestration/status/pre-review-status.json`. The projection contains
+aggregate counts/health/reminder/backpressure only. It does not contain job IDs,
+Context/Proposal/mutation/recipe hashes, content, endpoints, credentials, or
+Review decisions.
+
+The Human reviewer may read the aggregate status projection but cannot rewrite
+it. Sync and Executor do not receive orchestration write authority.
 
 ## Reader / Generator sequence
 
@@ -196,6 +218,16 @@ Therefore:
 
 Human reviewer does not receive canonical write permission through this mechanism. Human editing through normal Obsidian remains a separate existing authority path.
 
+Additional pre-review operational permissions:
+
+| Resource | Sync | Reader | Generator | Validator | Evaluator | Status | Human reviewer | Executor |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `02-Orchestration` DB | - | rw | rw | rw | rw | r | - | - |
+| `02-Orchestration/recipes` | - | rw | r | r | r | - | - | - |
+| `02-Orchestration/status` | - | - | - | - | - | rw | r | - |
+| `24-Locks/read-view` | rw | rw | - | - | - | - | - | - |
+
+
 ## Evaluator-specific isolation
 
 Evaluator cannot read canonical Knowledge or `04-Index`. This prevents the LLM evaluation stage from independently expanding its knowledge visibility beyond Reader-selected exact artifacts.
@@ -235,6 +267,8 @@ Production acceptance requires proving at OS level that:
 - Executor cannot write the Vault mirror, Index, Context, Untrusted, Validation, Evaluation Request/Context/Evaluation, Review, or Transport; it writes only Locks, Execution, and Receipts.
 - Sync can write the local Vault mirror, Locks, and Transport results, but cannot forge Index, Context, Untrusted, Validation, Evaluation, Review, Execution, or Receipts.
 - no identity other than Sync can read the Nextcloud writer credential.
+- Status cannot read Context, Untrusted, Validation, Evaluation, Review, Execution, Transport, Receipts, or provider/Nextcloud credentials.
+- Reader/Generator/Validator/Evaluator may update orchestration metadata but Status/Reviewer/Sync/Executor cannot turn that metadata into semantic authority.
 
 ## Health marker
 
@@ -249,12 +283,12 @@ The historical `.rclone-bisync` namespace name is retained for compatibility, bu
 ## Production deployment sequence
 
 1. Create the dedicated unprivileged AI Writer LXC.
-2. Create separate Linux identities for Sync, Reader, Generator, Validator, Evaluator, Reviewer, and Executor.
+2. Create separate Linux identities for Sync, Reader, Generator, Validator, Evaluator, Status, Reviewer, and Executor.
 3. Create separate `vault` and `state` roots.
 4. Create all lifecycle stage directories, including `12-Evaluation-Request`, `14-Evaluation-Context`, and `15-Evaluation`.
 5. Apply and verify the POSIX ACL matrix.
 6. Initialize the Vault mirror with Nextcloud -> local pull only.
-7. Install all tools at one immutable ObsidianAutomation revision.
+7. Install all tools at one exact reviewed ObsidianAutomation revision using the non-editable production updater described in `pre-review-production.md`.
 8. Only after local Gates pass, install the Nextcloud writer credential readable solely by `obsidian-ai-sync`.
 9. Run disposable Generator/Validator/Evaluator and remote conditional-create E2Es before enabling real automatic flow.
 10. Keep the Phase 1 Snapshot LXC unchanged and read-only.
