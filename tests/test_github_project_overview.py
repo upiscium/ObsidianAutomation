@@ -61,6 +61,11 @@ def test_render_keeps_only_structured_data_and_freeform_notes() -> None:
     )
     refreshed = render_status_note(second, edited.encode()).decode()
 
+    assert "github_issues:" in refreshed
+    assert "  - number: 203" in refreshed
+    assert '    title: "Renamed issue"' in refreshed
+    assert '    url: "https://github.com/upiscium/Terreate/issues/203"' in refreshed
+    assert "  - number: 999" in refreshed
     assert "github_pull_requests:" in refreshed
     assert "status: ready" in refreshed
     assert "Keep this note." in refreshed
