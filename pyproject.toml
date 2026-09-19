@@ -40,6 +40,8 @@ obsidian-github-project-status-apply = "obsidian_automation.github_project_statu
 obsidian-github-project-status-worker = "obsidian_automation.github_project_status_worker:main"
 obsidian-github-project-overview-enqueue = "obsidian_automation.github_project_overview_queue:main"
 obsidian-github-project-overview-worker = "obsidian_automation.github_project_overview_worker:main"
+obsidian-github-production-smoke = "obsidian_automation.github_production_smoke:main"
+obsidian-github-production-update = "obsidian_automation.github_production_update:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
