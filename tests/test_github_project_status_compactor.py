@@ -4,6 +4,9 @@ import io
 import json
 from pathlib import Path
 
+import pytest
+
+import obsidian_automation.github_project_status_compactor as compactor
 from obsidian_automation.github_project_status_compactor import compact_status_requests
 from obsidian_automation.github_project_status_mutation import parse_watcher_proposal
 
@@ -204,6 +207,39 @@ def test_compactor_rejects_symlink_request_and_terminal_artifact(tmp_path: Path)
     rc = compact_status_requests(request_dir=request_dir, result_dir=result_dir)
     assert rc == 1
     assert request.exists()
+
+
+def test_compactor_keeps_request_if_it_changes_before_unlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_dir, result_dir = _dirs(tmp_path)
+    request, proposal = _queue(request_dir)
+    (result_dir / f"{proposal.sha256}.github-status.transport-result.json").write_bytes(
+        _terminal_payload(proposal.sha256, outcome="applied")
+    )
+    original_terminal = compactor._terminal_artifact
+
+    def mutate_after_terminal_validation(
+        directory: Path,
+        proposal_sha256: str,
+    ) -> Path | None:
+        terminal = original_terminal(directory, proposal_sha256)
+        request.write_bytes(request.read_bytes() + b" ")
+        return terminal
+
+    monkeypatch.setattr(compactor, "_terminal_artifact", mutate_after_terminal_validation)
+    stderr = io.StringIO()
+
+    rc = compact_status_requests(
+        request_dir=request_dir,
+        result_dir=result_dir,
+        stderr=stderr,
+    )
+
+    assert rc == 1
+    assert request.exists()
+    assert "changed before compaction" in stderr.getvalue()
 
 
 def test_compactor_ignores_overview_requests(tmp_path: Path) -> None:
