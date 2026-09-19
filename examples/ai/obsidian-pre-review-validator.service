@@ -1,0 +1,21 @@
+[Unit]
+Description=Obsidian pre-review Validator worker
+Requires=obsidian-pre-review-generator.service
+After=obsidian-pre-review-generator.service
+
+[Service]
+Type=oneshot
+User=obsidian-ai-validator
+Group=obsidian-ai-validator
+ExecStart=/opt/obsidian-ai/venv/bin/obsidian-pre-review-validator-worker \
+  --ai-root /var/lib/obsidian-ai/state \
+  --vault-root /var/lib/obsidian-ai/vault
+NoNewPrivileges=true
+PrivateNetwork=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/var/lib/obsidian-ai/vault /var/lib/obsidian-ai/state/00-Untrusted
+ReadWritePaths=/var/lib/obsidian-ai/state/02-Orchestration /var/lib/obsidian-ai/state/10-Validation /var/lib/obsidian-ai/state/12-Evaluation-Request
+UMask=0007
+TimeoutStartSec=5min
