@@ -30,11 +30,10 @@ from .evaluation_artifact import (
 from .evaluator_contract import EVALUATOR_PROMPT_TEMPLATE_VERSION
 from .generator_contract import PROMPT_TEMPLATE_VERSION
 from .knowledge_note_policy import POLICY_NAME
-from .ollama_evaluator import (
-    ADAPTER_VERSION as EVALUATOR_ADAPTER_VERSION,
-    EVALUATION_STRATEGY,
-)
-from .ollama_generator import ADAPTER_VERSION as GENERATOR_ADAPTER_VERSION
+from .ollama_evaluator import EVALUATION_STRATEGY
+from .openai_compatible import IDENTITY_BINDING, PROVIDER_NAME, identifier_revision
+from .openai_evaluator import ADAPTER_VERSION as EVALUATOR_ADAPTER_VERSION
+from .openai_generator import ADAPTER_VERSION as GENERATOR_ADAPTER_VERSION
 
 
 ORCHESTRATION_STAGE = "02-Orchestration"
@@ -152,27 +151,44 @@ def _parse_component(
     if not isinstance(value, dict) or set(value) != required:
         raise PreReviewJobError(f"{label} properties do not match contract")
     provider = _metadata(value["provider"], label=f"{label}.provider")
-    if provider != "ollama":
-        raise PreReviewJobError(f"{label}.provider must be ollama in v0")
+    if provider != PROVIDER_NAME:
+        raise PreReviewJobError(
+            f"{label}.provider must be {PROVIDER_NAME} in v0"
+        )
     if value["prompt_template_version"] != prompt_version:
         raise PreReviewJobError(
             f"{label}.prompt_template_version must be {prompt_version}"
         )
 
+    model_identifier = _metadata(
+        value["model_identifier"],
+        label=f"{label}.model_identifier",
+    )
+    model_revision = _metadata(
+        value["model_revision"],
+        label=f"{label}.model_revision",
+    )
+    if model_revision != identifier_revision(model_identifier):
+        raise PreReviewJobError(
+            f"{label}.model_revision must explicitly use identifier-only binding"
+        )
+
     model_config = value["model_config"]
-    expected_config = {"adapter_version", "think", "options"}
+    expected_config = {"adapter_version", "identity_binding", "options"}
     if evaluator:
         expected_config.add("strategy")
     if not isinstance(model_config, dict) or set(model_config) != expected_config:
         raise PreReviewJobError(
-            f"{label}.model_config properties do not match Ollama v0 contract"
+            f"{label}.model_config properties do not match OpenAI-compatible v0 contract"
         )
     if model_config["adapter_version"] != adapter_version:
         raise PreReviewJobError(
             f"{label}.model_config.adapter_version must be {adapter_version}"
         )
-    if model_config["think"] is not False:
-        raise PreReviewJobError(f"{label}.model_config.think must be false")
+    if model_config["identity_binding"] != IDENTITY_BINDING:
+        raise PreReviewJobError(
+            f"{label}.model_config.identity_binding must be {IDENTITY_BINDING}"
+        )
     if not isinstance(model_config["options"], dict):
         raise PreReviewJobError(f"{label}.model_config.options must be an object")
     if evaluator and model_config["strategy"] != EVALUATION_STRATEGY:
@@ -191,14 +207,8 @@ def _parse_component(
             label=f"{label}.prompt_template_sha256",
         ),
         provider=provider,
-        model_identifier=_metadata(
-            value["model_identifier"],
-            label=f"{label}.model_identifier",
-        ),
-        model_revision=_metadata(
-            value["model_revision"],
-            label=f"{label}.model_revision",
-        ),
+        model_identifier=model_identifier,
+        model_revision=model_revision,
         model_config=validate_model_config(model_config),
     )
 
