@@ -1,0 +1,23 @@
+[Unit]
+Description=Obsidian pre-review Generator worker
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/obsidian-ai/pre-review-generator.env
+
+[Service]
+Type=oneshot
+User=obsidian-ai-generator
+Group=obsidian-ai-generator
+EnvironmentFile=/etc/obsidian-ai/pre-review-generator.env
+ExecStart=/opt/obsidian-ai/venv/bin/obsidian-pre-review-generator-worker \
+  --ai-root /var/lib/obsidian-ai/state \
+  --ollama-base-url ${OLLAMA_BASE_URL} \
+  --deployed-revision ${OBSIDIAN_AUTOMATION_REVISION}
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/var/lib/obsidian-ai/state/05-Context
+ReadWritePaths=/var/lib/obsidian-ai/state/00-Untrusted /var/lib/obsidian-ai/state/02-Orchestration
+UMask=0007
+TimeoutStartSec=15min
