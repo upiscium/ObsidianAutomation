@@ -99,6 +99,16 @@ def test_recipe_rejects_unknown_provider_and_unbounded_top_k() -> None:
         parse_recipe((json.dumps(value) + "\n").encode())
 
     value = _recipe()
+    value["generator"]["model_config"]["endpoint"] = "https://private.example"
+    with pytest.raises(PreReviewJobError, match="model_config properties"):
+        parse_recipe((json.dumps(value) + "\n").encode())
+
+    value = _recipe()
+    value["generator"]["model_config"]["think"] = True
+    with pytest.raises(PreReviewJobError, match="think must be false"):
+        parse_recipe((json.dumps(value) + "\n").encode())
+
+    value = _recipe()
     value["evaluation_context"]["top_k"] = 1000
     with pytest.raises(PreReviewJobError, match="top_k"):
         parse_recipe((json.dumps(value) + "\n").encode())
