@@ -9,6 +9,7 @@ Type=oneshot
 User=obsidian-ai-generator
 Group=obsidian-ai-generator
 EnvironmentFile=/etc/obsidian-ai/pre-review-generator.env
+EnvironmentFile=/etc/obsidian-ai/pre-review-revision.env
 ExecStart=/opt/obsidian-ai/venv/bin/obsidian-pre-review-generator-worker \
   --ai-root /var/lib/obsidian-ai/state \
   --ollama-base-url ${OLLAMA_BASE_URL} \
