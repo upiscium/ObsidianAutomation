@@ -31,6 +31,7 @@ EVALUATION="$AI_ROOT/15-Evaluation"
 VALIDATION="$AI_ROOT/10-Validation"
 REVIEW="$AI_ROOT/20-Review"
 LOCKS="$AI_ROOT/24-Locks"
+READ_VIEW_LOCKS="$LOCKS/read-view"
 EXECUTION="$AI_ROOT/25-Execution"
 TRANSPORT="$AI_ROOT/27-Transport"
 RECEIPTS="$AI_ROOT/30-Receipts"
@@ -171,8 +172,16 @@ apply_directory_acl "$REVIEW" \
 
 apply_directory_acl "$LOCKS" \
   "u:$SYNC_USER:rwx" \
+  "u:$READER_USER:--x" \
   "u:$REVIEWER_USER:rwx" \
   "u:$EXECUTOR_USER:rwx"
+
+install -d -o root -g root -m 0700 "$READ_VIEW_LOCKS"
+setfacl -b "$READ_VIEW_LOCKS"
+setfacl -k "$READ_VIEW_LOCKS" || true
+apply_directory_acl "$READ_VIEW_LOCKS" \
+  "u:$SYNC_USER:rwx" \
+  "u:$READER_USER:rwx"
 
 apply_directory_acl "$EXECUTION" \
   "u:$SYNC_USER:r-x" \
