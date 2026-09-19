@@ -81,7 +81,8 @@ def test_disposable_canary_covers_wave_d_acceptance_without_canonical_write(
 
     result = run_canary(
         scratch_root=scratch,
-        base_url="https://ollama.example.invalid",
+        generator_base_url="https://ollama.example.invalid",
+        evaluator_base_url="https://ollama.example.invalid",
         generator_model=GEN_MODEL,
         evaluator_model=EVAL_MODEL,
         deployed_revision=REVISION,
@@ -113,7 +114,8 @@ def test_canary_refuses_production_state_path() -> None:
     with pytest.raises(PreReviewCanaryError, match="below /tmp or /var/tmp|overlap"):
         run_canary(
             scratch_root=Path("/var/lib/obsidian-ai/state/canary"),
-            base_url="https://ollama.example.invalid",
+            generator_base_url="https://ollama.example.invalid",
+        evaluator_base_url="https://ollama.example.invalid",
             generator_model=GEN_MODEL,
             evaluator_model=EVAL_MODEL,
             deployed_revision=REVISION,
@@ -128,7 +130,8 @@ def test_canary_refuses_existing_scratch_root(tmp_path: Path) -> None:
     with pytest.raises(PreReviewCanaryError, match="must not already exist"):
         run_canary(
             scratch_root=scratch,
-            base_url="https://ollama.example.invalid",
+            generator_base_url="https://ollama.example.invalid",
+        evaluator_base_url="https://ollama.example.invalid",
             generator_model=GEN_MODEL,
             evaluator_model=EVAL_MODEL,
             deployed_revision=REVISION,
