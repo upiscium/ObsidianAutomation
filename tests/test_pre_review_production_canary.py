@@ -12,9 +12,9 @@ from obsidian_automation.pre_review_production_canary import (
 
 
 GEN_MODEL = "gemma3:12b"
-GEN_DIGEST = "g" * 64
+GEN_DIGEST = "b" * 64
 EVAL_MODEL = "gemma3:12b-eval"
-EVAL_DIGEST = "e" * 64
+EVAL_DIGEST = "c" * 64
 REVISION = "a" * 40
 
 
