@@ -557,6 +557,8 @@ def regenerate_job(ai_root: Path, job_id: str) -> dict[str, object]:
             "awaiting_human_review",
             "deterministic_reject",
             "retryable_failure",
+            "retry_exhausted",
+            "blocked",
         }:
             raise PreReviewJobError(
                 "regeneration requires the current generation to be stopped"
@@ -600,12 +602,126 @@ _STAGE_SUCCESS = {
     "evaluation": "awaiting_human_review",
 }
 
+_STAGE_PREVIOUS = {
+    "generation": None,
+    "validation": "generation",
+    "evaluation_context": "validation",
+    "evaluation": "evaluation_context",
+}
+
+_STAGE_OUTPUT_FIELDS = {
+    "generation": (
+        "proposal_sha256",
+        "generation_sha256",
+    ),
+    "validation": (
+        "proposal_sha256",
+        "generation_sha256",
+        "mutation_sha256",
+        "request_sha256",
+    ),
+    "evaluation_context": (
+        "proposal_sha256",
+        "generation_sha256",
+        "mutation_sha256",
+        "request_sha256",
+        "index_sha256",
+        "evaluation_context_sha256",
+    ),
+    "evaluation": (
+        "proposal_sha256",
+        "generation_sha256",
+        "mutation_sha256",
+        "request_sha256",
+        "index_sha256",
+        "evaluation_context_sha256",
+        "evaluation_sha256",
+        "recommendation",
+    ),
+}
+
+
+def _validated_stage(stage: str) -> str:
+    value = _metadata(stage, label="stage")
+    if value not in _STAGE_START:
+        raise PreReviewJobError("attempt stage is invalid")
+    return value
+
+
+def _validated_stage_output(stage: str, output: Mapping[str, object]) -> dict[str, object]:
+    fields = _STAGE_OUTPUT_FIELDS[stage]
+    value = dict(output)
+    if set(value) != set(fields):
+        raise PreReviewJobError(f"{stage} output properties do not match contract")
+    normalized: dict[str, object] = {}
+    for field in fields:
+        item = value[field]
+        if field == "recommendation":
+            if item not in {"proceed", "manual_review", "do_not_proceed"}:
+                raise PreReviewJobError("evaluation recommendation is invalid")
+            normalized[field] = item
+        else:
+            normalized[field] = _require_sha256(item, label=field)
+    return normalized
+
+
+def _load_stage_output_conn(
+    conn: sqlite3.Connection,
+    generation_id: str,
+    stage: str,
+) -> dict[str, object] | None:
+    row = conn.execute(
+        "SELECT output_json FROM stage_outputs WHERE generation_id = ? AND stage = ?",
+        (generation_id, stage),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        data = row["output_json"].encode("utf-8")
+    except (AttributeError, UnicodeEncodeError) as exc:
+        raise PreReviewJobError("stored stage output is not valid UTF-8") from exc
+    value = _decode_json_object(data, label="pre-review stage output")
+    return _validated_stage_output(stage, value)
+
+
+def stage_output(
+    ai_root: Path,
+    generation_id: str,
+    stage: str,
+) -> dict[str, object] | None:
+    digest = _require_sha256(generation_id, label="generation_id")
+    stage_name = _validated_stage(stage)
+    conn = _connect_ro(ai_root)
+    try:
+        return _load_stage_output_conn(conn, digest, stage_name)
+    finally:
+        conn.close()
+
+
+def _validate_output_chain(
+    conn: sqlite3.Connection,
+    generation_id: str,
+    stage: str,
+    output: Mapping[str, object],
+) -> dict[str, object]:
+    normalized = _validated_stage_output(stage, output)
+    previous_stage = _STAGE_PREVIOUS[stage]
+    if previous_stage is None:
+        return normalized
+    previous = _load_stage_output_conn(conn, generation_id, previous_stage)
+    if previous is None:
+        raise PreReviewJobError(f"{stage} output requires {previous_stage} output")
+    for key, value in previous.items():
+        if normalized.get(key) != value:
+            raise PreReviewJobError(
+                f"{stage} output is not bound to selected {previous_stage} output"
+            )
+    return normalized
+
 
 def start_attempt(ai_root: Path, generation_id: str, stage: str) -> dict[str, object]:
     digest = _require_sha256(generation_id, label="generation_id")
-    stage_name = _metadata(stage, label="stage")
-    if stage_name not in _STAGE_START:
-        raise PreReviewJobError("attempt stage is invalid")
+    stage_name = _validated_stage(stage)
     expected_state, active_state = _STAGE_START[stage_name]
     now = _utc_now()
 
@@ -624,6 +740,8 @@ def start_attempt(ai_root: Path, generation_id: str, stage: str) -> dict[str, ob
         ).fetchone()
         if running is not None:
             raise PreReviewJobError("generation already has a running attempt")
+        if _load_stage_output_conn(conn, digest, stage_name) is not None:
+            raise PreReviewJobError("stage already has a selected successful output")
         if generation["state"] != expected_state:
             raise PreReviewJobError(
                 f"attempt stage {stage_name} requires generation state {expected_state}"
@@ -668,15 +786,25 @@ def complete_attempt(
     *,
     outcome: str,
     reason_code: str | None = None,
+    output: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     digest = _require_sha256(attempt_id, label="attempt_id")
-    if outcome not in {"succeeded", "retryable_failure", "deterministic_reject"}:
+    if outcome not in {
+        "succeeded",
+        "retryable_failure",
+        "deterministic_reject",
+        "blocked",
+    }:
         raise PreReviewJobError("attempt outcome is invalid")
     if outcome == "succeeded":
         if reason_code is not None:
             raise PreReviewJobError("successful attempt must not contain reason_code")
+        if output is None:
+            raise PreReviewJobError("successful attempt requires selected stage output")
         normalized_reason = None
     else:
+        if output is not None:
+            raise PreReviewJobError("failed attempt must not select stage output")
         normalized_reason = _metadata(reason_code, label="reason_code")
     now = _utc_now()
 
@@ -698,18 +826,37 @@ def complete_attempt(
         if row["state"] != active_state:
             raise PreReviewJobError("generation state does not match running attempt")
 
+        normalized_output: dict[str, object] | None = None
         if outcome == "succeeded":
+            assert output is not None
+            normalized_output = _validate_output_chain(
+                conn,
+                row["generation_id"],
+                stage,
+                output,
+            )
+            if _load_stage_output_conn(conn, row["generation_id"], stage) is not None:
+                raise PreReviewJobError("stage already has a selected successful output")
             target_state = _STAGE_SUCCESS[stage]
         elif outcome == "retryable_failure":
             target_state = "retryable_failure"
-        else:
+        elif outcome == "deterministic_reject":
             target_state = "deterministic_reject"
+        else:
+            target_state = "blocked"
 
         conn.execute(
             "UPDATE attempts SET status = ?, completed_at = ?, reason_code = ? "
             "WHERE attempt_id = ?",
             (outcome, now, normalized_reason, digest),
         )
+        if normalized_output is not None:
+            output_json = _canonical_json_bytes(normalized_output).decode("utf-8")
+            conn.execute(
+                "INSERT INTO stage_outputs(generation_id, stage, attempt_id, output_json, recorded_at) "
+                "VALUES(?, ?, ?, ?, ?)",
+                (row["generation_id"], stage, digest, output_json, now),
+            )
         conn.execute(
             "UPDATE generations SET state = ?, updated_at = ? WHERE generation_id = ?",
             (target_state, now, row["generation_id"]),
@@ -731,7 +878,23 @@ def complete_attempt(
         "outcome": outcome,
         "state": target_state,
         "reason_code": normalized_reason,
+        "output": normalized_output,
     }
+
+
+def _latest_attempt_conn(
+    conn: sqlite3.Connection,
+    generation_id: str,
+) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT attempt_id, stage, attempt_index, status, completed_at, reason_code "
+        "FROM attempts WHERE generation_id = ? ORDER BY rowid DESC LIMIT 1",
+        (generation_id,),
+    ).fetchone()
+
+
+def _resume_state_for_stage(stage: str) -> str:
+    return _STAGE_START[stage][0]
 
 
 def retry_generation(ai_root: Path, generation_id: str) -> dict[str, object]:
@@ -746,17 +909,29 @@ def retry_generation(ai_root: Path, generation_id: str) -> dict[str, object]:
         ).fetchone()
         if row is None:
             raise PreReviewJobError("generation does not exist")
-        if row["state"] != "retryable_failure":
-            raise PreReviewJobError("only retryable_failure generation can be retried")
+        if row["state"] not in {
+            "retryable_failure",
+            "retry_exhausted",
+            "blocked",
+        }:
+            raise PreReviewJobError(
+                "only retryable, exhausted, or blocked generation can be retried"
+            )
         running = conn.execute(
             "SELECT attempt_id FROM attempts WHERE generation_id = ? AND status = 'running' LIMIT 1",
             (digest,),
         ).fetchone()
         if running is not None:
             raise PreReviewJobError("generation still has a running attempt")
+        latest = _latest_attempt_conn(conn, digest)
+        if latest is None:
+            raise PreReviewJobError("generation has no attempt to retry")
+        resume_state = _resume_state_for_stage(latest["stage"])
+        if _load_stage_output_conn(conn, digest, latest["stage"]) is not None:
+            raise PreReviewJobError("cannot retry a stage with selected successful output")
         conn.execute(
-            "UPDATE generations SET state = 'queued', updated_at = ? WHERE generation_id = ?",
-            (now, digest),
+            "UPDATE generations SET state = ?, updated_at = ? WHERE generation_id = ?",
+            (resume_state, now, digest),
         )
         conn.commit()
     except Exception:
@@ -769,9 +944,222 @@ def retry_generation(ai_root: Path, generation_id: str) -> dict[str, object]:
         "job_id": row["job_id"],
         "generation_id": digest,
         "generation_index": row["generation_index"],
-        "previous_state": "retryable_failure",
-        "state": "queued",
+        "previous_state": row["state"],
+        "state": resume_state,
+        "stage": latest["stage"],
     }
+
+
+def awaiting_human_review_count(ai_root: Path) -> int:
+    conn = _connect_ro(ai_root)
+    try:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM generations g
+            WHERE g.state = 'awaiting_human_review'
+              AND NOT EXISTS (
+                SELECT 1 FROM generations newer
+                WHERE newer.job_id = g.job_id
+                  AND newer.generation_index > g.generation_index
+              )
+            """
+        ).fetchone()
+        return int(row["count"])
+    finally:
+        conn.close()
+
+
+def _recover_running_stage_attempts(
+    conn: sqlite3.Connection,
+    *,
+    stage: str,
+    now: str,
+) -> None:
+    rows = conn.execute(
+        """
+        SELECT a.attempt_id, a.generation_id
+        FROM attempts a
+        JOIN generations g ON g.generation_id = a.generation_id
+        WHERE a.stage = ?
+          AND a.status = 'running'
+          AND NOT EXISTS (
+            SELECT 1 FROM generations newer
+            WHERE newer.job_id = g.job_id
+              AND newer.generation_index > g.generation_index
+          )
+        """,
+        (stage,),
+    ).fetchall()
+    for row in rows:
+        if _load_stage_output_conn(conn, row["generation_id"], stage) is not None:
+            raise PreReviewJobError(
+                "running attempt unexpectedly has a selected stage output"
+            )
+        conn.execute(
+            "UPDATE attempts SET status = 'interrupted', completed_at = ?, reason_code = 'worker_restart' "
+            "WHERE attempt_id = ?",
+            (now, row["attempt_id"]),
+        )
+        conn.execute(
+            "UPDATE generations SET state = 'retryable_failure', updated_at = ? "
+            "WHERE generation_id = ?",
+            (now, row["generation_id"]),
+        )
+
+
+def claim_next_attempt(
+    ai_root: Path,
+    stage: str,
+    *,
+    max_attempts: int = 3,
+    max_awaiting_review: int = 8,
+    recover_running: bool = False,
+) -> StageWorkItem | None:
+    stage_name = _validated_stage(stage)
+    if type(max_attempts) is not int or not 1 <= max_attempts <= 10:
+        raise PreReviewJobError("max_attempts must be an integer in [1, 10]")
+    if type(max_awaiting_review) is not int or not 1 <= max_awaiting_review <= 100:
+        raise PreReviewJobError(
+            "max_awaiting_review must be an integer in [1, 100]"
+        )
+    expected_state, active_state = _STAGE_START[stage_name]
+    now = _utc_now()
+
+    conn = _connect_rw(ai_root)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if recover_running:
+            _recover_running_stage_attempts(conn, stage=stage_name, now=now)
+
+        if stage_name == "generation":
+            count_row = conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM generations g
+                WHERE g.state = 'awaiting_human_review'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM generations newer
+                    WHERE newer.job_id = g.job_id
+                      AND newer.generation_index > g.generation_index
+                  )
+                """
+            ).fetchone()
+            if int(count_row["count"]) >= max_awaiting_review:
+                conn.commit()
+                return None
+
+        while True:
+            candidate = conn.execute(
+                """
+                SELECT
+                    g.generation_id,
+                    g.generation_index,
+                    g.state,
+                    g.job_id,
+                    j.context_sha256,
+                    j.recipe_sha256
+                FROM generations g
+                JOIN jobs j ON j.job_id = g.job_id
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM generations newer
+                    WHERE newer.job_id = g.job_id
+                      AND newer.generation_index > g.generation_index
+                )
+                  AND (
+                    g.state = ?
+                    OR (
+                        g.state = 'retryable_failure'
+                        AND (
+                            SELECT a.stage
+                            FROM attempts a
+                            WHERE a.generation_id = g.generation_id
+                            ORDER BY a.rowid DESC
+                            LIMIT 1
+                        ) = ?
+                    )
+                  )
+                ORDER BY g.created_at, g.generation_id
+                LIMIT 1
+                """,
+                (expected_state, stage_name),
+            ).fetchone()
+            if candidate is None:
+                conn.commit()
+                return None
+
+            if _load_stage_output_conn(
+                conn, candidate["generation_id"], stage_name
+            ) is not None:
+                raise PreReviewJobError(
+                    "claim candidate already has selected successful output"
+                )
+
+            attempt_count = conn.execute(
+                "SELECT COUNT(*) AS count FROM attempts "
+                "WHERE generation_id = ? AND stage = ?",
+                (candidate["generation_id"], stage_name),
+            ).fetchone()
+            next_index = int(attempt_count["count"]) + 1
+
+            if candidate["state"] == "retryable_failure":
+                if int(attempt_count["count"]) >= max_attempts:
+                    conn.execute(
+                        "UPDATE generations SET state = 'retry_exhausted', updated_at = ? "
+                        "WHERE generation_id = ?",
+                        (now, candidate["generation_id"]),
+                    )
+                    continue
+                conn.execute(
+                    "UPDATE generations SET state = ?, updated_at = ? "
+                    "WHERE generation_id = ?",
+                    (expected_state, now, candidate["generation_id"]),
+                )
+
+            running = conn.execute(
+                "SELECT attempt_id FROM attempts "
+                "WHERE generation_id = ? AND status = 'running' LIMIT 1",
+                (candidate["generation_id"],),
+            ).fetchone()
+            if running is not None:
+                raise PreReviewJobError("generation already has a running attempt")
+
+            attempt_id = _attempt_id(
+                candidate["generation_id"], stage_name, next_index
+            )
+            conn.execute(
+                "INSERT INTO attempts(attempt_id, generation_id, stage, attempt_index, status, started_at) "
+                "VALUES(?, ?, ?, ?, 'running', ?)",
+                (
+                    attempt_id,
+                    candidate["generation_id"],
+                    stage_name,
+                    next_index,
+                    now,
+                ),
+            )
+            if active_state != expected_state:
+                conn.execute(
+                    "UPDATE generations SET state = ?, updated_at = ? "
+                    "WHERE generation_id = ?",
+                    (active_state, now, candidate["generation_id"]),
+                )
+            conn.commit()
+            return StageWorkItem(
+                job_id=candidate["job_id"],
+                generation_id=candidate["generation_id"],
+                generation_index=int(candidate["generation_index"]),
+                context_sha256=candidate["context_sha256"],
+                recipe_sha256=candidate["recipe_sha256"],
+                attempt_id=attempt_id,
+                attempt_index=next_index,
+                stage=stage_name,
+            )
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def job_status(ai_root: Path, job_id: str) -> dict[str, object]:
