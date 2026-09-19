@@ -34,36 +34,6 @@ MAX_RECIPE_BYTES = 64 * 1024
 MAX_METADATA_CHARS = 512
 _IMPLEMENTATION_REVISION_RE = re.compile(r"^[0-9a-f]{40,64}$")
 
-GENERATION_STATES = frozenset(
-    {
-        "queued",
-        "generating",
-        "validating",
-        "building_evaluation_context",
-        "evaluating",
-        "awaiting_human_review",
-        "retryable_failure",
-        "deterministic_reject",
-    }
-)
-
-ALLOWED_TRANSITIONS = {
-    "queued": frozenset({"generating"}),
-    "generating": frozenset({"validating", "retryable_failure", "deterministic_reject"}),
-    "validating": frozenset(
-        {"building_evaluation_context", "retryable_failure", "deterministic_reject"}
-    ),
-    "building_evaluation_context": frozenset(
-        {"evaluating", "retryable_failure", "deterministic_reject"}
-    ),
-    "evaluating": frozenset(
-        {"awaiting_human_review", "retryable_failure", "deterministic_reject"}
-    ),
-    "retryable_failure": frozenset({"queued"}),
-    "awaiting_human_review": frozenset(),
-    "deterministic_reject": frozenset(),
-}
-
 
 @dataclass(frozen=True)
 class RecipeComponent:
