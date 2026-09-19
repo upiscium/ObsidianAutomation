@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import re
 from dataclasses import dataclass
 from typing import Callable, Mapping
 from urllib.error import HTTPError, URLError
@@ -19,6 +20,7 @@ MAX_HTTP_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_OPTIONS_BYTES = 12 * 1024
 DEFAULT_OPTIONS: Mapping[str, object] = {"temperature": 0}
 _RESERVED_OPTIONS = {"model", "messages", "stream"}
+_IMPLEMENTATION_REVISION_RE = re.compile(r"^[0-9a-f]{40,64}$")
 
 
 class OpenAICompatibleProviderError(RuntimeError):
@@ -93,6 +95,14 @@ def validated_base_url(value: str) -> str:
     authority_host = f"[{host}]" if ":" in host else host
     authority = authority_host if port is None else f"{authority_host}:{port}"
     return f"{parsed.scheme}://{authority}/v1"
+
+
+def validated_implementation_revision(value: str) -> str:
+    if not isinstance(value, str) or _IMPLEMENTATION_REVISION_RE.fullmatch(value) is None:
+        raise ArtifactLifecycleError(
+            "implementation revision must be a lowercase 40..64 character hexadecimal commit digest"
+        )
+    return value
 
 
 def validated_timeout(timeout: float) -> float:
