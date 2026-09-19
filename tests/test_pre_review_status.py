@@ -259,3 +259,24 @@ def test_status_store_rejects_symlink_destination(tmp_path: Path) -> None:
         store_status(linked, status)
 
     assert target.read_text(encoding="utf-8") == "PRIVATE"
+
+
+def test_operational_status_schema_excludes_job_and_artifact_identity() -> None:
+    schema_path = Path("schemas/pre-review-operational-status-v0.schema.json")
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+
+    assert schema["additionalProperties"] is False
+    assert (
+        schema["properties"]["authority"]["const"]
+        == "orchestration_status_projection_only"
+    )
+    text = schema_path.read_text(encoding="utf-8")
+    for forbidden in (
+        "job_id",
+        "context_sha256",
+        "proposal_sha256",
+        "mutation_sha256",
+        "recipe_sha256",
+        "evaluation_sha256",
+    ):
+        assert forbidden not in text
