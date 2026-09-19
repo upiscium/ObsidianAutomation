@@ -244,7 +244,7 @@ systemctl daemon-reload
 systemctl enable --now obsidian-github-sync.timer
 ```
 
-The watcher service has `Requires=` and `After=` dependencies on `obsidian-github-sync-vault-pull.service`. Every 15-minute watcher cycle therefore refreshes the Project mirror first; a failed mirror refresh prevents that watcher run from using stale/incomplete input.
+The watcher service has `Requires=` and `After=` dependencies on `obsidian-github-sync-vault-pull.service`. Every 5-minute watcher cycle therefore refreshes the Project mirror first; a failed mirror refresh prevents that watcher run from using stale/incomplete input.
 
 The watcher itself sees `/srv/obsidian-github-sync/vault` as read-only and only writes its local SQLite state below `/var/lib/obsidian-github-sync`.
 
