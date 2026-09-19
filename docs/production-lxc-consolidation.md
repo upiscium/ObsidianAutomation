@@ -249,6 +249,51 @@ The migration procedure must:
 
 Do not bulk-copy `/etc`, service-user homes, venvs, or old repository checkouts.
 
+## Inert production unit staging
+
+After private config/credential migration passes, stage the production systemd
+units on the new consolidated LXC while it is still non-serving.
+
+The staging tool reads the reviewed canonical unit examples from the exact target
+checkout and installs 15 units:
+
+- AI Vault mirror + pre-review pipeline: 8 units;
+- GitHub Sync pipeline: 5 units;
+- Core Promotion: 2 units.
+
+Runtime paths are rewritten only from the legacy per-LXC prefixes to:
+
+```text
+/opt/obsidian-automation/venv/bin
+/opt/obsidian-automation/app
+```
+
+The tool also recreates the derived AI revision binding:
+
+```text
+/etc/obsidian-ai/pre-review-revision.env
+```
+
+with the exact reviewed deployment SHA.
+
+This command is deliberately **staging-only**. It refuses to operate if any
+managed production timer is enabled/active or any managed service is active.
+After installation it reloads systemd and requires all four recurring timers to
+remain disabled/inactive:
+
+- `obsidian-ai-vault-pull.timer`;
+- `obsidian-pre-review.timer`;
+- `obsidian-github-sync.timer`;
+- `obsidian-core-promotion.timer`.
+
+No production service is started. Gitea Runner is not part of this unit staging
+because the new runner is registered separately and remains inactive until the
+Publisher cutover.
+
+Once the new host has passed this inert staging gate, a later cutover transaction
+may quiesce old writers, transfer durable state, run canaries, and enable the new
+timers.
+
 ## Cutover
 
 Never run equivalent canonical writers on old and new LXCs simultaneously.
