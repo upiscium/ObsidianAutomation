@@ -453,11 +453,22 @@ def regenerate_job(ai_root: Path, job_id: str) -> dict[str, object]:
         job = conn.execute("SELECT job_id FROM jobs WHERE job_id = ?", (digest,)).fetchone()
         if job is None:
             raise PreReviewJobError("job does not exist")
-        row = conn.execute(
-            "SELECT COALESCE(MAX(generation_index), 0) AS last_index FROM generations WHERE job_id = ?",
+        latest = conn.execute(
+            "SELECT generation_index, state FROM generations WHERE job_id = ? "
+            "ORDER BY generation_index DESC LIMIT 1",
             (digest,),
         ).fetchone()
-        index = int(row["last_index"]) + 1
+        if latest is None:
+            raise PreReviewJobError("job has no generation")
+        if latest["state"] not in {
+            "awaiting_human_review",
+            "deterministic_reject",
+            "retryable_failure",
+        }:
+            raise PreReviewJobError(
+                "regeneration requires the current generation to be stopped"
+            )
+        index = int(latest["generation_index"]) + 1
         generation_id = _generation_id(digest, index)
         conn.execute(
             "INSERT INTO generations(generation_id, job_id, generation_index, state, created_at, updated_at) "
@@ -479,61 +490,32 @@ def regenerate_job(ai_root: Path, job_id: str) -> dict[str, object]:
     }
 
 
-def transition_generation(
-    ai_root: Path,
-    generation_id: str,
-    target_state: str,
-) -> dict[str, object]:
-    digest = _require_sha256(generation_id, label="generation_id")
-    if target_state not in GENERATION_STATES:
-        raise PreReviewJobError("target generation state is invalid")
-    now = _utc_now()
-    conn = _connect(ai_root)
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute(
-            "SELECT state, job_id, generation_index FROM generations WHERE generation_id = ?",
-            (digest,),
-        ).fetchone()
-        if row is None:
-            raise PreReviewJobError("generation does not exist")
-        current = row["state"]
-        if target_state not in ALLOWED_TRANSITIONS[current]:
-            raise PreReviewJobError(
-                f"generation transition is not allowed: {current} -> {target_state}"
-            )
-        conn.execute(
-            "UPDATE generations SET state = ?, updated_at = ? WHERE generation_id = ?",
-            (target_state, now, digest),
-        )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-    return {
-        "record_version": RECORD_VERSION,
-        "job_id": row["job_id"],
-        "generation_id": digest,
-        "generation_index": row["generation_index"],
-        "previous_state": current,
-        "state": target_state,
-    }
+_STAGE_START = {
+    "generation": ("queued", "generating"),
+    "validation": ("validating", "validating"),
+    "evaluation_context": (
+        "building_evaluation_context",
+        "building_evaluation_context",
+    ),
+    "evaluation": ("evaluating", "evaluating"),
+}
+
+_STAGE_SUCCESS = {
+    "generation": "validating",
+    "validation": "building_evaluation_context",
+    "evaluation_context": "evaluating",
+    "evaluation": "awaiting_human_review",
+}
 
 
-def allocate_attempt(ai_root: Path, generation_id: str, stage: str) -> dict[str, object]:
+def start_attempt(ai_root: Path, generation_id: str, stage: str) -> dict[str, object]:
     digest = _require_sha256(generation_id, label="generation_id")
     stage_name = _metadata(stage, label="stage")
-    if stage_name not in {"generation", "validation", "evaluation_context", "evaluation"}:
+    if stage_name not in _STAGE_START:
         raise PreReviewJobError("attempt stage is invalid")
+    expected_state, active_state = _STAGE_START[stage_name]
     now = _utc_now()
-    required_state = {
-        "generation": "generating",
-        "validation": "validating",
-        "evaluation_context": "building_evaluation_context",
-        "evaluation": "evaluating",
-    }[stage_name]
+
     conn = _connect(ai_root)
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -543,10 +525,16 @@ def allocate_attempt(ai_root: Path, generation_id: str, stage: str) -> dict[str,
         ).fetchone()
         if generation is None:
             raise PreReviewJobError("generation does not exist")
-        if generation["state"] != required_state:
+        if generation["state"] != expected_state:
             raise PreReviewJobError(
-                f"attempt stage {stage_name} requires generation state {required_state}"
+                f"attempt stage {stage_name} requires generation state {expected_state}"
             )
+        running = conn.execute(
+            "SELECT attempt_id FROM attempts WHERE generation_id = ? AND status = 'running' LIMIT 1",
+            (digest,),
+        ).fetchone()
+        if running is not None:
+            raise PreReviewJobError("generation already has a running attempt")
         row = conn.execute(
             "SELECT COALESCE(MAX(attempt_index), 0) AS last_index FROM attempts "
             "WHERE generation_id = ? AND stage = ?",
@@ -559,6 +547,124 @@ def allocate_attempt(ai_root: Path, generation_id: str, stage: str) -> dict[str,
             "VALUES(?, ?, ?, ?, 'running', ?)",
             (attempt_id, digest, stage_name, index, now),
         )
+        if active_state != expected_state:
+            conn.execute(
+                "UPDATE generations SET state = ?, updated_at = ? WHERE generation_id = ?",
+                (active_state, now, digest),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    return {
+        "record_version": RECORD_VERSION,
+        "generation_id": digest,
+        "attempt_id": attempt_id,
+        "stage": stage_name,
+        "attempt_index": index,
+        "status": "running",
+    }
+
+
+def complete_attempt(
+    ai_root: Path,
+    attempt_id: str,
+    *,
+    outcome: str,
+    reason_code: str | None = None,
+) -> dict[str, object]:
+    digest = _require_sha256(attempt_id, label="attempt_id")
+    if outcome not in {"succeeded", "retryable_failure", "deterministic_reject"}:
+        raise PreReviewJobError("attempt outcome is invalid")
+    if outcome == "succeeded":
+        if reason_code is not None:
+            raise PreReviewJobError("successful attempt must not contain reason_code")
+        normalized_reason = None
+    else:
+        normalized_reason = _metadata(reason_code, label="reason_code")
+    now = _utc_now()
+
+    conn = _connect(ai_root)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT a.generation_id, a.stage, a.status, g.state, g.job_id, g.generation_index "
+            "FROM attempts a JOIN generations g ON g.generation_id = a.generation_id "
+            "WHERE a.attempt_id = ?",
+            (digest,),
+        ).fetchone()
+        if row is None:
+            raise PreReviewJobError("attempt does not exist")
+        if row["status"] != "running":
+            raise PreReviewJobError("attempt is already completed")
+        stage = row["stage"]
+        active_state = _STAGE_START[stage][1]
+        if row["state"] != active_state:
+            raise PreReviewJobError("generation state does not match running attempt")
+
+        if outcome == "succeeded":
+            target_state = _STAGE_SUCCESS[stage]
+        elif outcome == "retryable_failure":
+            target_state = "retryable_failure"
+        else:
+            target_state = "deterministic_reject"
+
+        conn.execute(
+            "UPDATE attempts SET status = ?, completed_at = ?, reason_code = ? "
+            "WHERE attempt_id = ?",
+            (outcome, now, normalized_reason, digest),
+        )
+        conn.execute(
+            "UPDATE generations SET state = ?, updated_at = ? WHERE generation_id = ?",
+            (target_state, now, row["generation_id"]),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    return {
+        "record_version": RECORD_VERSION,
+        "job_id": row["job_id"],
+        "generation_id": row["generation_id"],
+        "generation_index": row["generation_index"],
+        "attempt_id": digest,
+        "stage": stage,
+        "outcome": outcome,
+        "state": target_state,
+        "reason_code": normalized_reason,
+    }
+
+
+def retry_generation(ai_root: Path, generation_id: str) -> dict[str, object]:
+    digest = _require_sha256(generation_id, label="generation_id")
+    now = _utc_now()
+    conn = _connect(ai_root)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT state, job_id, generation_index FROM generations WHERE generation_id = ?",
+            (digest,),
+        ).fetchone()
+        if row is None:
+            raise PreReviewJobError("generation does not exist")
+        if row["state"] != "retryable_failure":
+            raise PreReviewJobError("only retryable_failure generation can be retried")
+        running = conn.execute(
+            "SELECT attempt_id FROM attempts WHERE generation_id = ? AND status = 'running' LIMIT 1",
+            (digest,),
+        ).fetchone()
+        if running is not None:
+            raise PreReviewJobError("generation still has a running attempt")
+        conn.execute(
+            "UPDATE generations SET state = 'queued', updated_at = ? WHERE generation_id = ?",
+            (now, digest),
+        )
         conn.commit()
     except Exception:
         conn.rollback()
@@ -567,11 +673,11 @@ def allocate_attempt(ai_root: Path, generation_id: str, stage: str) -> dict[str,
         conn.close()
     return {
         "record_version": RECORD_VERSION,
+        "job_id": row["job_id"],
         "generation_id": digest,
-        "attempt_id": attempt_id,
-        "stage": stage_name,
-        "attempt_index": index,
-        "status": "running",
+        "generation_index": row["generation_index"],
+        "previous_state": "retryable_failure",
+        "state": "queued",
     }
 
 
