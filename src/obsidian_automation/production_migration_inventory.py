@@ -46,7 +46,7 @@ ROLE_MANIFESTS: dict[str, tuple[ManifestEntry, ...]] = {
         ),
         ManifestEntry(
             "gitea_runner_unit",
-            "/etc/systemd/system/act_runner.service",
+            "/etc/systemd/system/gitea-runner.service",
             "deployment_config",
             "recreate_from_reviewed_config",
         ),
