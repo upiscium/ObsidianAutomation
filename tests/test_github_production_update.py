@@ -175,6 +175,51 @@ def test_update_deploys_exact_target_runs_smokes_and_restores_timer(tmp_path: Pa
         ).read_bytes()
 
 
+def test_success_preserves_disabled_inactive_timer_state(tmp_path: Path) -> None:
+    app_root, venv_root, systemd_dir, receipt_dir = _layout(tmp_path)
+    runner = FakeRunner(app_root, venv_root, enabled=False, active=False)
+
+    receipt, _ = execute_update(
+        target_sha=TARGET,
+        app_root=app_root,
+        venv_root=venv_root,
+        systemd_dir=systemd_dir,
+        receipt_dir=receipt_dir,
+        runner=runner,
+        require_root=False,
+    )
+
+    assert receipt.result == "success"
+    assert receipt.timer_was_enabled is False
+    assert receipt.timer_was_active is False
+    assert runner.enabled is False
+    assert runner.active is False
+    assert ("systemctl", "enable", "--now", "obsidian-github-sync.timer") not in runner.calls
+    assert ("systemctl", "enable", "obsidian-github-sync.timer") not in runner.calls
+    assert ("systemctl", "start", "obsidian-github-sync.timer") not in runner.calls
+
+
+def test_invalid_target_uses_safe_receipt_filename(tmp_path: Path) -> None:
+    app_root, venv_root, systemd_dir, receipt_dir = _layout(tmp_path)
+    runner = FakeRunner(app_root, venv_root)
+
+    with pytest.raises(ProductionUpdateError, match="target SHA"):
+        execute_update(
+            target_sha="../unsafe-target",
+            app_root=app_root,
+            venv_root=venv_root,
+            systemd_dir=systemd_dir,
+            receipt_dir=receipt_dir,
+            runner=runner,
+            require_root=False,
+        )
+
+    receipts = list(receipt_dir.glob("*.json"))
+    assert len(receipts) == 1
+    assert receipts[0].parent == receipt_dir
+    assert ".." not in receipts[0].name
+
+
 def test_dirty_checkout_fails_before_timer_is_touched(tmp_path: Path) -> None:
     app_root, venv_root, systemd_dir, receipt_dir = _layout(tmp_path)
     runner = FakeRunner(app_root, venv_root, dirty=True)
