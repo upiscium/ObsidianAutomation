@@ -70,6 +70,83 @@ jobs:
           do
             id "$user"
           done
+      - name: Exercise private config stream transfer and readability gates
+        run: |
+          set -o pipefail
+          SRC=/tmp/private-config-source
+
+          sudo install -d -m 0700 "$SRC"
+
+          write_private() {
+            path="$1"
+            sudo install -d -m 0700 "$SRC$(dirname "$path")"
+            printf '%s\n' 'PRIVATE-MIGRATION-CANARY-never-print-this' \
+              | sudo tee "$SRC$path" >/dev/null
+          }
+
+          for path in \
+            /etc/obsidian-core-promotion/promotion.env \
+            /etc/obsidian-core-promotion/public-export.toml \
+            /etc/obsidian-core-promotion/nextcloud.password \
+            /etc/obsidian-ai/rclone.conf \
+            /etc/obsidian-ai/vault-pull.filters \
+            /etc/obsidian-ai/webdav-password \
+            /etc/obsidian-ai/pre-review-generator.env \
+            /etc/obsidian-ai/pre-review-evaluator.env \
+            /etc/obsidian-github-sync/config.toml \
+            /etc/obsidian-github-sync/credentials.env \
+            /etc/obsidian-github-mirror/rclone.conf \
+            /etc/obsidian-github-mirror/vault-pull.filters \
+            /etc/obsidian-github-writer/config.env \
+            /etc/obsidian-github-writer/webdav-password
+          do
+            write_private "$path"
+          done
+
+          for role in publisher ai github-sync
+          do
+            sudo python3 tools/private_config_transfer.py export \
+              --role "$role" \
+              --source-root "$SRC" \
+              | sudo python3 tools/private_config_transfer.py install \
+                  --role "$role" \
+                  > "/tmp/$role-install.json"
+
+            sudo python3 tools/private_config_transfer.py verify \
+              --role "$role" \
+              > "/tmp/$role-verify.json"
+
+            # Retry must converge without replacing differing secret bytes.
+            sudo python3 tools/private_config_transfer.py export \
+              --role "$role" \
+              --source-root "$SRC" \
+              | sudo python3 tools/private_config_transfer.py install \
+                  --role "$role" \
+                  > "/tmp/$role-install-replay.json"
+          done
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          canary = "PRIVATE-MIGRATION-CANARY-never-print-this"
+          for path in Path("/tmp").glob("*-install*.json"):
+              raw = path.read_text()
+              assert canary not in raw
+              value = json.loads(raw)
+              assert value["status"] == "completed"
+              assert value["values_printed"] is False
+
+          for path in Path("/tmp").glob("*-verify.json"):
+              raw = path.read_text()
+              assert canary not in raw
+              value = json.loads(raw)
+              assert value["status"] == "completed"
+              assert value["result"] == "passed"
+              assert value["values_printed"] is False
+
+          print("PASS: private config transfer is narrow, idempotent, and value-free")
+          PY
       - name: Run separate Vault/state Authority separation Gate
         run: |
           sudo install -d -m 0700 /tmp/obsidian-ai-vault-fixture
