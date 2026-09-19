@@ -73,6 +73,13 @@ Unlike production generation retrieval, Evaluation candidate retrieval deliberat
 
 The Evaluation Context contains exact Markdown bytes and content SHA-256 values for each candidate. It is non-authoritative derived state.
 
+Reader ranks the immutable Index without a lock, then acquires the host-local
+mirror read-view lock for the current-index verification and candidate source
+re-read. The lock is released before the immutable Evaluation Context is handed
+to Evaluator and is never held during LLM inference. This prevents one local
+rclone refresh from splitting the retrieval view without claiming remote Vault
+freshness.
+
 ## Evaluator assessment contract
 
 Evaluation Record v0 binds:
@@ -148,7 +155,7 @@ no direct access:
   04-Index
   12-Evaluation-Request
   20-Review
-  24-Locks
+  24-Locks except traverse-only parent access and rw access to 24-Locks/read-view
   25-Execution
   27-Transport
   30-Receipts
