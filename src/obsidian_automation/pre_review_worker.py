@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -19,14 +20,12 @@ from .generation_artifact import load_generation_record
 from .generator_contract import prompt_template_sha256 as generator_prompt_sha256
 from .knowledge_index import build_knowledge_index, store_knowledge_index
 from .knowledge_validator import validate_proposal
-from .ollama_evaluator import (
-    OllamaProviderError,
-    evaluate_knowledge_note_with_ollama,
-)
-from .ollama_generator import (
+from .openai_compatible import (
     DEFAULT_TIMEOUT_SECONDS,
-    generate_knowledge_note_with_ollama,
+    OpenAICompatibleProviderError,
 )
+from .openai_evaluator import evaluate_knowledge_note_with_openai_compatible
+from .openai_generator import generate_knowledge_note_with_openai_compatible
 from .pre_review_job import (
     PreReviewJobError,
     RecipeComponent,
@@ -127,6 +126,7 @@ def run_generator_worker(
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     max_awaiting_review: int = DEFAULT_MAX_AWAITING_REVIEW,
+    api_key: str | None = None,
     transport=None,
 ) -> dict[str, object]:
     work = claim_next_attempt(
@@ -155,7 +155,7 @@ def run_generator_worker(
         return _block(ai_root, work, reason_code="generator_recipe_runtime_mismatch")
 
     try:
-        generated = generate_knowledge_note_with_ollama(
+        generated = generate_knowledge_note_with_openai_compatible(
             ai_root,
             context_sha256=work.context_sha256,
             base_url=base_url,
@@ -163,9 +163,10 @@ def run_generator_worker(
             implementation_revision=deployed_revision,
             options=_options(component),
             timeout=timeout,
+            api_key=api_key,
             transport=transport,
         )
-    except (OllamaProviderError, ArtifactLifecycleError, OSError):
+    except (OpenAICompatibleProviderError, ArtifactLifecycleError, OSError):
         return _retry(ai_root, work, reason_code="generator_provider_or_output_error")
 
     try:
@@ -368,6 +369,7 @@ def run_evaluator_worker(
     deployed_revision: str,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    api_key: str | None = None,
     transport=None,
 ) -> dict[str, object]:
     work = claim_next_attempt(
@@ -399,7 +401,7 @@ def run_evaluator_worker(
         return _block(ai_root, work, reason_code="evaluator_recipe_runtime_mismatch")
 
     try:
-        evaluated = evaluate_knowledge_note_with_ollama(
+        evaluated = evaluate_knowledge_note_with_openai_compatible(
             ai_root,
             proposal_sha256=str(selected["proposal_sha256"]),
             generation_sha256=str(selected["generation_sha256"]),
@@ -409,9 +411,10 @@ def run_evaluator_worker(
             implementation_revision=deployed_revision,
             options=_options(component),
             timeout=timeout,
+            api_key=api_key,
             transport=transport,
         )
-    except (OllamaProviderError, ArtifactLifecycleError, OSError):
+    except (OpenAICompatibleProviderError, ArtifactLifecycleError, OSError):
         return _retry(ai_root, work, reason_code="evaluator_provider_or_output_error")
 
     try:
@@ -468,7 +471,7 @@ def _print_result(result: Mapping[str, object]) -> int:
 def generator_main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="obsidian-pre-review-generator-worker")
     parser.add_argument("--ai-root", type=Path, required=True)
-    parser.add_argument("--ollama-base-url", required=True)
+    parser.add_argument("--openai-base-url", required=True)
     parser.add_argument("--deployed-revision", required=True)
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS)
     parser.add_argument("--max-attempts", type=int, default=DEFAULT_MAX_ATTEMPTS)
@@ -482,11 +485,12 @@ def generator_main(argv: Sequence[str] | None = None) -> int:
         return _print_result(
             run_generator_worker(
                 args.ai_root,
-                base_url=args.ollama_base_url,
+                base_url=args.openai_base_url,
                 deployed_revision=args.deployed_revision,
                 timeout=args.timeout,
                 max_attempts=args.max_attempts,
                 max_awaiting_review=args.max_awaiting_review,
+                api_key=os.environ.get("OPENAI_API_KEY"),
             )
         )
     except (ArtifactLifecycleError, PreReviewJobError, OSError) as exc:
@@ -535,7 +539,7 @@ def reader_main(argv: Sequence[str] | None = None) -> int:
 def evaluator_main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="obsidian-pre-review-evaluator-worker")
     parser.add_argument("--ai-root", type=Path, required=True)
-    parser.add_argument("--ollama-base-url", required=True)
+    parser.add_argument("--openai-base-url", required=True)
     parser.add_argument("--deployed-revision", required=True)
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS)
     parser.add_argument("--max-attempts", type=int, default=DEFAULT_MAX_ATTEMPTS)
@@ -544,10 +548,11 @@ def evaluator_main(argv: Sequence[str] | None = None) -> int:
         return _print_result(
             run_evaluator_worker(
                 args.ai_root,
-                base_url=args.ollama_base_url,
+                base_url=args.openai_base_url,
                 deployed_revision=args.deployed_revision,
                 timeout=args.timeout,
                 max_attempts=args.max_attempts,
+                api_key=os.environ.get("OPENAI_API_KEY"),
             )
         )
     except (ArtifactLifecycleError, PreReviewJobError, OSError) as exc:
