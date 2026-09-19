@@ -14,12 +14,12 @@ def test_safe_smoke_registry_passes() -> None:
     assert run_safe_smokes() == ("http-classification",)
 
 
-def test_live_smoke_starts_writer_and_requires_successful_dependency_chain() -> None:
+def test_live_smoke_starts_compactor_and_requires_successful_dependency_chain() -> None:
     calls: list[tuple[str, ...]] = []
 
     def runner(argv: tuple[str, ...]) -> CommandResult:
         calls.append(tuple(argv))
-        if argv == ("systemctl", "start", "obsidian-github-writer.service"):
+        if argv == ("systemctl", "start", "obsidian-github-compactor.service"):
             return CommandResult(0, "", "")
         if argv[:2] == ("systemctl", "show"):
             return CommandResult(0, "Result=success\nExecMainStatus=0\n", "")
@@ -31,13 +31,14 @@ def test_live_smoke_starts_writer_and_requires_successful_dependency_chain() -> 
         "obsidian-github-sync-vault-pull.service",
         "obsidian-github-sync.service",
         "obsidian-github-writer.service",
+        "obsidian-github-compactor.service",
     )
-    assert calls[0] == ("systemctl", "start", "obsidian-github-writer.service")
+    assert calls[0] == ("systemctl", "start", "obsidian-github-compactor.service")
 
 
 def test_live_smoke_fails_closed_on_nonzero_service_result() -> None:
     def runner(argv: tuple[str, ...]) -> CommandResult:
-        if argv == ("systemctl", "start", "obsidian-github-writer.service"):
+        if argv == ("systemctl", "start", "obsidian-github-compactor.service"):
             return CommandResult(0, "", "")
         if argv[:3] == (
             "systemctl",

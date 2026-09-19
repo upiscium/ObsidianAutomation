@@ -1,0 +1,31 @@
+[Unit]
+Description=Compact terminal Obsidian GitHub Project status requests
+Requires=obsidian-github-writer.service
+After=obsidian-github-writer.service
+
+[Service]
+Type=oneshot
+User=obsidian-github-compactor
+Group=obsidian-github-compactor
+SupplementaryGroups=obsidian-github-pipeline
+UMask=0027
+ExecStart=/opt/obsidian-github-sync/venv/bin/obsidian-github-project-status-compact \
+  --request-dir /var/lib/obsidian-github-pipeline/25-Execution \
+  --result-dir /var/lib/obsidian-github-pipeline/27-Transport
+WorkingDirectory=/opt/obsidian-github-sync/app
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadWritePaths=/var/lib/obsidian-github-pipeline/25-Execution
+ReadOnlyPaths=/var/lib/obsidian-github-pipeline/27-Transport
+InaccessiblePaths=/etc/obsidian-github-sync /etc/obsidian-github-writer /etc/obsidian-github-mirror /srv/obsidian-github-sync/vault /var/lib/obsidian-github-sync /var/lib/obsidian-github-mirror
+
+[Install]
+WantedBy=multi-user.target

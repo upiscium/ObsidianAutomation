@@ -79,15 +79,16 @@ add it to the safe registry together with unit tests. This turns a one-off
 operator command into a permanent regression check for every later deployment.
 
 `obsidian-github-production-smoke --profile live` starts exactly one
-`obsidian-github-writer.service` cycle. Existing systemd dependencies run:
+`obsidian-github-compactor.service` cycle. Existing systemd dependencies run:
 
 ```text
-writer
-  -> sync
-       -> vault-pull
+compactor
+  -> writer
+       -> sync
+            -> vault-pull
 ```
 
-The smoke then requires `Result=success` and `ExecMainStatus=0` for all three
+The smoke then requires `Result=success` and `ExecMainStatus=0` for all four
 oneshot services.
 
 Fault injection, credential corruption, migration markers, or other destructive
@@ -106,11 +107,12 @@ examples/github-sync/obsidian-github-*.timer
 
 into `/etc/systemd/system`, then runs `systemctl daemon-reload`.
 
-The four current core units are required to exist:
+The five current core units are required to exist:
 
 - `obsidian-github-sync-vault-pull.service`
 - `obsidian-github-sync.service`
 - `obsidian-github-writer.service`
+- `obsidian-github-compactor.service`
 - `obsidian-github-sync.timer`
 
 This dynamic source selection lets a reviewed future revision add another
@@ -119,6 +121,23 @@ to know its filename in advance.
 
 Private configuration, credentials, and `vault-pull.filters` are not copied by
 the updater.
+
+A revision that first introduces a new Unix service identity may require a
+one-time authority bootstrap before running the updater live smoke. The
+currently-deployed checkout may not contain that bootstrap yet, so execute the
+script from the exact reviewed target commit without moving production HEAD:
+
+```bash
+git -C /opt/obsidian-github-sync/app fetch origin main
+git -C /opt/obsidian-github-sync/app \
+  show <reviewed-target-sha>:examples/github-sync/bootstrap-compactor-authority.sh \
+  | sh
+```
+
+For the status compactor this creates only the local credential-free identity
+and narrow request-directory ACL. Then run the normal
+`obsidian-github-production-update --target-sha <reviewed-target-sha>`.
+Subsequent deployments need no additional identity work.
 
 ## Deployment receipt
 

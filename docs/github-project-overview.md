@@ -185,10 +185,10 @@ Keep the recurring timer stopped during first deployment:
 
 ```bash
 systemctl disable --now obsidian-github-sync.timer
-systemctl start obsidian-github-writer.service
+systemctl start obsidian-github-compactor.service
 ```
 
-The dependency chain should perform mirror refresh, one GitHub observation, status/overview enqueue, status mutation if needed, and overview apply.
+The dependency chain should perform mirror refresh, one GitHub observation, status/overview enqueue, status mutation if needed, overview apply, and terminal status-request compaction.
 
 For a Project without an existing `Status.md`, expect an overview worker event with:
 

@@ -27,6 +27,9 @@ obsidian-github-writer
           |
           v
 /var/lib/obsidian-github-pipeline/27-Transport
+          |
+          +--> obsidian-github-compactor
+               terminal status request cleanup only
 ```
 
 The existing AI Writer LXC and `obsidian-ai-sync` authority are not part of this path.
@@ -101,10 +104,24 @@ install -d -o root -g obsidian-github-writer -m 0750 \
   /etc/obsidian-github-writer
 ```
 
+Provision the credential-free compactor identity and its narrow ACL after these
+directories exist:
+
+```bash
+sh examples/github-sync/bootstrap-compactor-authority.sh
+```
+
+The script adds `obsidian-github-compactor` to the handoff group so request
+and result files remain readable, then grants that user directory write only on
+`25-Execution`. It does not grant result write access or any credential
+access. POSIX ACL mask bits may make the directory mode appear broader in a
+plain `ls -l`; verify effective authority with `getfacl` or the gates below.
+
 Intended local authority:
 
 - `obsidian-github-sync`: owner-write `25-Execution`; cannot write `27-Transport`;
 - `obsidian-github-writer`: read-only `25-Execution`; owner-write `27-Transport` and `24-Locks`;
+- `obsidian-github-compactor`: read/delete `25-Execution`; read-only `27-Transport`; no credential or Vault authority;
 - `obsidian-github-mirror`: no pipeline-state access;
 - `obsidian-github-pipeline`: no credential files.
 
@@ -142,7 +159,7 @@ Only a pending status transition is content-addressed:
 25-Execution/<proposal-sha256>.github-status.json
 ```
 
-The status worker fresh-GETs the canonical Project, verifies binding and expected status, changes only the top-level `status:` line with strong ETag `If-Match`, and exact-byte verifies the result.
+The status worker fresh-GETs the canonical Project, verifies binding and expected status, changes only the top-level `status:` line with strong ETag `If-Match`, and exact-byte verifies the result. After a matching terminal transport result or rejection exists, the compactor removes this content-addressed request. Terminal result/rejection artifacts remain in `27-Transport`.
 
 ### Project overview desired state
 
@@ -156,13 +173,14 @@ It contains the current open Issue/PR numbers and titles from the same GitHub sn
 
 ## systemd cycle
 
-The timer targets the writer unit. Dependencies impose:
+The timer targets the compactor unit. Dependencies impose:
 
 ```text
 obsidian-github-sync.timer
-  -> obsidian-github-writer.service
-       -> obsidian-github-sync.service
-            -> obsidian-github-sync-vault-pull.service
+  -> obsidian-github-compactor.service
+       -> obsidian-github-writer.service
+            -> obsidian-github-sync.service
+                 -> obsidian-github-sync-vault-pull.service
 ```
 
 One activation therefore performs:
@@ -173,6 +191,7 @@ remote Project mirror refresh
   -> status + overview local enqueue
   -> Project status worker
   -> Status.md overview worker
+  -> terminal status request compaction
 ```
 
 Install/update the reusable units with:
@@ -186,6 +205,9 @@ install -m 0644 \
   /etc/systemd/system/
 install -m 0644 \
   examples/github-sync/obsidian-github-writer.service \
+  /etc/systemd/system/
+install -m 0644 \
+  examples/github-sync/obsidian-github-compactor.service \
   /etc/systemd/system/
 install -m 0644 \
   examples/github-sync/obsidian-github-sync.timer \
@@ -222,6 +244,23 @@ sudo -u obsidian-github-sync \
   test -w /var/lib/obsidian-github-pipeline/27-Transport \
   && echo 'FAIL: watcher can forge transport results' \
   || echo 'PASS: transport results are read-only to watcher'
+
+sudo -u obsidian-github-compactor \
+  test -w /var/lib/obsidian-github-pipeline/25-Execution \
+  && echo 'PASS: compactor can remove requests' \
+  || echo 'FAIL: compactor cannot remove requests'
+
+sudo -u obsidian-github-compactor \
+  test -w /var/lib/obsidian-github-pipeline/27-Transport \
+  && echo 'FAIL: compactor can forge transport results' \
+  || echo 'PASS: compactor results are read-only'
+
+sudo -u obsidian-github-compactor \
+  sh -c 'test ! -r /etc/obsidian-github-sync/credentials.env &&
+         test ! -r /etc/obsidian-github-writer/webdav-password &&
+         test ! -r /etc/obsidian-github-mirror/rclone.conf' \
+  && echo 'PASS: compactor credentials isolated' \
+  || echo 'FAIL: compactor can read a credential'
 ```
 
 ## Canary
@@ -230,12 +269,13 @@ Stop the timer for the first deployment:
 
 ```bash
 systemctl disable --now obsidian-github-sync.timer
-systemctl start obsidian-github-writer.service
-systemctl show obsidian-github-writer.service -p Result -p ExecMainStatus
+systemctl start obsidian-github-compactor.service
+systemctl show obsidian-github-compactor.service -p Result -p ExecMainStatus
 journalctl \
   -u obsidian-github-sync-vault-pull.service \
   -u obsidian-github-sync.service \
   -u obsidian-github-writer.service \
+  -u obsidian-github-compactor.service \
   -n 120 --no-pager
 ```
 
@@ -251,4 +291,4 @@ systemctl enable --now obsidian-github-sync.timer
 
 ## Security boundary
 
-This is process/Unix-identity isolation inside one LXC, not host-level isolation. LXC root can reach all three credentials. The accepted boundary is that the watcher process has no canonical writer credential, while the writer process has no GitHub or mirror credential.
+This is process/Unix-identity isolation inside one LXC, not host-level isolation. LXC root can reach all three credentials. The accepted boundary is that the watcher process has no canonical writer credential, the writer process has no GitHub or mirror credential, and the compactor has no credential or canonical Vault authority at all.
