@@ -568,7 +568,7 @@ def verify_installed(role: str) -> dict[str, object]:
     present = {
         logical_id
         for logical_id, entry in manifest.items()
-        if Path(entry.path).exists()
+        if os.path.lexists(entry.path)
     }
     _validate_presence(role, present)
 
