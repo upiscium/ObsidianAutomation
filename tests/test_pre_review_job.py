@@ -284,3 +284,47 @@ def test_database_is_private_and_schema_is_versioned(tmp_path: Path) -> None:
         conn.close()
 
     assert len(str(submitted["job_id"])) == 64
+
+
+def test_status_on_uninitialized_root_is_non_mutating(tmp_path: Path) -> None:
+    root = tmp_path / "state"
+    root.mkdir()
+
+    with pytest.raises(Exception):
+        job_status(root, "e" * 64)
+
+    assert not (root / "02-Jobs").exists()
+
+
+def test_completed_attempt_cannot_be_reused(tmp_path: Path) -> None:
+    root, context_sha = _state(tmp_path)
+    submitted = submit_job(root, context_sha256=context_sha, recipe=_parsed_recipe())
+    generation = str(submitted["generation_id"])
+    attempt = start_attempt(root, generation, "generation")
+
+    complete_attempt(root, str(attempt["attempt_id"]), outcome="succeeded")
+    with pytest.raises(PreReviewJobError, match="already completed"):
+        complete_attempt(root, str(attempt["attempt_id"]), outcome="succeeded")
+
+
+def test_public_cli_and_json_schemas_are_pinned() -> None:
+    pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
+    assert (
+        'obsidian-pre-review-job = "obsidian_automation.pre_review_job:main"'
+        in pyproject
+    )
+
+    recipe_schema = json.loads(
+        Path("schemas/pre-review-recipe-v0.schema.json").read_text(encoding="utf-8")
+    )
+    assert recipe_schema["properties"]["pipeline"]["const"] == "knowledge-pre-review-v0"
+    assert recipe_schema["additionalProperties"] is False
+
+    status_schema = json.loads(
+        Path("schemas/pre-review-job-status-v0.schema.json").read_text(encoding="utf-8")
+    )
+    assert (
+        status_schema["properties"]["authority"]["const"]
+        == "orchestration_metadata_only"
+    )
+    assert status_schema["additionalProperties"] is False
