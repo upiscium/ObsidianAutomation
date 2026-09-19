@@ -44,6 +44,8 @@
             "evaluating",
             "awaiting_human_review",
             "retryable_failure",
+            "retry_exhausted",
+            "blocked",
             "deterministic_reject"
           ]
         },
