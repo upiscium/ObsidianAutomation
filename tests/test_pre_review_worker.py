@@ -30,13 +30,13 @@ from obsidian_automation.generator_contract import (
     PROMPT_TEMPLATE_VERSION,
     prompt_template_sha256 as generator_prompt_sha256,
 )
-from obsidian_automation.ollama_evaluator import (
+from obsidian_automation.openai_compatible import OpenAICompatibleProviderError
+from obsidian_automation.openai_evaluator import (
     ADAPTER_VERSION as EVALUATOR_ADAPTER_VERSION,
     EVALUATION_STRATEGY,
 )
-from obsidian_automation.ollama_generator import (
+from obsidian_automation.openai_generator import (
     ADAPTER_VERSION as GENERATOR_ADAPTER_VERSION,
-    OllamaProviderError,
 )
 from obsidian_automation.pre_review_job import (
     job_status,
@@ -48,9 +48,9 @@ from obsidian_automation.pre_review_job import (
 
 REVISION = "a" * 40
 GEN_MODEL = "gemma3:12b"
-GEN_DIGEST = "gen-" + "b" * 64
+GEN_REVISION = f"identifier:{GEN_MODEL}"
 EVAL_MODEL = "gemma3:12b-eval"
-EVAL_DIGEST = "eval-" + "c" * 64
+EVAL_REVISION = f"identifier:{EVAL_MODEL}"
 
 
 def _knowledge_note(body: str) -> str:
@@ -87,12 +87,12 @@ def _recipe_bytes() -> bytes:
             "implementation_revision": REVISION,
             "prompt_template_version": PROMPT_TEMPLATE_VERSION,
             "prompt_template_sha256": generator_prompt_sha256(),
-            "provider": "ollama",
+            "provider": "openai-compatible",
             "model_identifier": GEN_MODEL,
-            "model_revision": GEN_DIGEST,
+            "model_revision": GEN_REVISION,
             "model_config": {
                 "adapter_version": GENERATOR_ADAPTER_VERSION,
-                "think": False,
+                "identity_binding": "identifier-only",
                 "options": {"temperature": 0},
             },
         },
@@ -105,12 +105,12 @@ def _recipe_bytes() -> bytes:
             "implementation_revision": REVISION,
             "prompt_template_version": EVALUATOR_PROMPT_TEMPLATE_VERSION,
             "prompt_template_sha256": evaluator_prompt_sha256(),
-            "provider": "ollama",
+            "provider": "openai-compatible",
             "model_identifier": EVAL_MODEL,
-            "model_revision": EVAL_DIGEST,
+            "model_revision": EVAL_REVISION,
             "model_config": {
                 "adapter_version": EVALUATOR_ADAPTER_VERSION,
-                "think": False,
+                "identity_binding": "identifier-only",
                 "strategy": EVALUATION_STRATEGY,
                 "options": {"temperature": 0},
             },
@@ -166,12 +166,12 @@ def _fake_generator(ai_root: Path, *, context_sha256: str, **_kwargs):
         implementation_revision=REVISION,
         prompt_template_version=PROMPT_TEMPLATE_VERSION,
         prompt_template_sha256=generator_prompt_sha256(),
-        model_provider="ollama",
+        model_provider="openai-compatible",
         model_identifier=GEN_MODEL,
-        model_revision=GEN_DIGEST,
+        model_revision=GEN_REVISION,
         model_config={
             "adapter_version": GENERATOR_ADAPTER_VERSION,
-            "think": False,
+            "identity_binding": "identifier-only",
             "options": {"temperature": 0},
         },
         generated_at="2026-09-19T00:01:00Z",
@@ -184,7 +184,7 @@ def _fake_generator(ai_root: Path, *, context_sha256: str, **_kwargs):
         generation_sha256=generation_sha,
         generation_path=generation_path,
         model_identifier=GEN_MODEL,
-        model_revision=GEN_DIGEST,
+        model_revision=GEN_REVISION,
         prompt_template_version=PROMPT_TEMPLATE_VERSION,
         prompt_template_sha256=generator_prompt_sha256(),
     )
@@ -217,12 +217,12 @@ def _fake_evaluator(recommendation: str):
             implementation_revision=REVISION,
             prompt_template_version=EVALUATOR_PROMPT_TEMPLATE_VERSION,
             prompt_template_sha256=evaluator_prompt_sha256(),
-            model_provider="ollama",
+            model_provider="openai-compatible",
             model_identifier=EVAL_MODEL,
-            model_revision=EVAL_DIGEST,
+            model_revision=EVAL_REVISION,
             model_config={
                 "adapter_version": EVALUATOR_ADAPTER_VERSION,
-                "think": False,
+                "identity_binding": "identifier-only",
                 "strategy": EVALUATION_STRATEGY,
                 "options": {"temperature": 0},
             },
@@ -242,7 +242,7 @@ def _fake_evaluator(recommendation: str):
             evaluation_sha256=evaluation_sha,
             evaluation_path=evaluation_path,
             model_identifier=EVAL_MODEL,
-            model_revision=EVAL_DIGEST,
+            model_revision=EVAL_REVISION,
             prompt_template_version=EVALUATOR_PROMPT_TEMPLATE_VERSION,
             prompt_template_sha256=evaluator_prompt_sha256(),
             groundedness=groundedness,
@@ -262,16 +262,16 @@ def test_identity_worker_chain_stops_at_human_review_without_review_artifact(
     recommendation: str,
 ) -> None:
     state, vault, job_id, _ = _fixture(tmp_path)
-    monkeypatch.setattr(worker, "generate_knowledge_note_with_ollama", _fake_generator)
+    monkeypatch.setattr(worker, "generate_knowledge_note_with_openai_compatible", _fake_generator)
     monkeypatch.setattr(
         worker,
-        "evaluate_knowledge_note_with_ollama",
+        "evaluate_knowledge_note_with_openai_compatible",
         _fake_evaluator(recommendation),
     )
 
     generated = worker.run_generator_worker(
         state,
-        base_url="https://ollama.example.invalid",
+        base_url="https://openai.example.invalid/v1",
         deployed_revision=REVISION,
     )
     assert generated["status"] == "completed"
@@ -287,7 +287,7 @@ def test_identity_worker_chain_stops_at_human_review_without_review_artifact(
 
     evaluated = worker.run_evaluator_worker(
         state,
-        base_url="https://ollama.example.invalid",
+        base_url="https://openai.example.invalid/v1",
         deployed_revision=REVISION,
     )
     assert evaluated["status"] == "completed"
@@ -315,10 +315,10 @@ def test_generator_revision_mismatch_blocks_without_provider_contact(
         called = True
         raise AssertionError("provider must not be called")
 
-    monkeypatch.setattr(worker, "generate_knowledge_note_with_ollama", should_not_call)
+    monkeypatch.setattr(worker, "generate_knowledge_note_with_openai_compatible", should_not_call)
     result = worker.run_generator_worker(
         state,
-        base_url="https://ollama.example.invalid",
+        base_url="https://openai.example.invalid/v1",
         deployed_revision="d" * 40,
     )
 
@@ -335,14 +335,14 @@ def test_generator_provider_failure_is_bounded_to_three_attempts(
     state, _vault, job_id, _ = _fixture(tmp_path)
 
     def fail(*_args, **_kwargs):
-        raise OllamaProviderError("temporary provider failure")
+        raise OpenAICompatibleProviderError("temporary provider failure")
 
-    monkeypatch.setattr(worker, "generate_knowledge_note_with_ollama", fail)
+    monkeypatch.setattr(worker, "generate_knowledge_note_with_openai_compatible", fail)
 
     for index in range(1, 4):
         result = worker.run_generator_worker(
             state,
-            base_url="https://ollama.example.invalid",
+            base_url="https://openai.example.invalid/v1",
             deployed_revision=REVISION,
             max_attempts=3,
         )
@@ -351,7 +351,7 @@ def test_generator_provider_failure_is_bounded_to_three_attempts(
 
     idle = worker.run_generator_worker(
         state,
-        base_url="https://ollama.example.invalid",
+        base_url="https://openai.example.invalid/v1",
         deployed_revision=REVISION,
         max_attempts=3,
     )
@@ -371,10 +371,10 @@ def test_worker_recovers_orphaned_attempt_without_selecting_old_artifact(
     )
     assert first is not None
 
-    monkeypatch.setattr(worker, "generate_knowledge_note_with_ollama", _fake_generator)
+    monkeypatch.setattr(worker, "generate_knowledge_note_with_openai_compatible", _fake_generator)
     result = worker.run_generator_worker(
         state,
-        base_url="https://ollama.example.invalid",
+        base_url="https://openai.example.invalid/v1",
         deployed_revision=REVISION,
     )
 
