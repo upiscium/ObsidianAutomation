@@ -154,8 +154,22 @@ def _parse_component(value: object, *, label: str) -> RecipeComponent:
     if provider != "ollama":
         raise PreReviewJobError(f"{label}.provider must be ollama in v0")
     model_config = value["model_config"]
-    if not isinstance(model_config, dict):
-        raise PreReviewJobError(f"{label}.model_config must be an object")
+    if not isinstance(model_config, dict) or set(model_config) != {
+        "adapter_version",
+        "think",
+        "options",
+    }:
+        raise PreReviewJobError(
+            f"{label}.model_config properties do not match Ollama v0 contract"
+        )
+    if model_config["think"] is not False:
+        raise PreReviewJobError(f"{label}.model_config.think must be false")
+    _metadata(
+        model_config["adapter_version"],
+        label=f"{label}.model_config.adapter_version",
+    )
+    if not isinstance(model_config["options"], dict):
+        raise PreReviewJobError(f"{label}.model_config.options must be an object")
     return RecipeComponent(
         implementation_revision=_implementation_revision(
             value["implementation_revision"],
