@@ -23,6 +23,7 @@ DEFAULT_AI_ROOT="$VAULT_ROOT/20-AI"
 STATE_MARKER="$AI_ROOT/.obsidian-ai-disposable-state"
 KNOWLEDGE="$VAULT_ROOT/11-Knowledge"
 UNTRUSTED="$AI_ROOT/00-Untrusted"
+ORCHESTRATION="$AI_ROOT/02-Orchestration"
 INDEX="$AI_ROOT/04-Index"
 CONTEXT="$AI_ROOT/05-Context"
 VALIDATION="$AI_ROOT/10-Validation"
@@ -67,7 +68,7 @@ for user in \
 done
 
 for directory in \
-  "$KNOWLEDGE" "$UNTRUSTED" "$INDEX" "$CONTEXT" "$VALIDATION" \
+  "$KNOWLEDGE" "$UNTRUSTED" "$ORCHESTRATION" "$INDEX" "$CONTEXT" "$VALIDATION" \
   "$EVALUATION_REQUEST" "$EVALUATION_CONTEXT" "$EVALUATION" \
   "$REVIEW" "$LOCKS" "$READ_VIEW_LOCKS" "$EXECUTION" "$TRANSPORT" "$RECEIPTS"; do
   [[ -d "$directory" && ! -L "$directory" ]] || {
@@ -195,6 +196,10 @@ probe_write "$READER_USER" "$INDEX" allow "Reader writes Index"
 probe_write "$READER_USER" "$CONTEXT" allow "Reader writes Context"
 probe_write "$READER_USER" "$EVALUATION_CONTEXT" allow "Reader writes Evaluation Context"
 probe_write "$GENERATOR_USER" "$UNTRUSTED" allow "Generator writes Untrusted"
+probe_write "$READER_USER" "$ORCHESTRATION" allow "Reader writes orchestration metadata"
+probe_write "$GENERATOR_USER" "$ORCHESTRATION" allow "Generator writes orchestration metadata"
+probe_write "$VALIDATOR_USER" "$ORCHESTRATION" allow "Validator writes orchestration metadata"
+probe_write "$EVALUATOR_USER" "$ORCHESTRATION" allow "Evaluator writes orchestration metadata"
 probe_write "$VALIDATOR_USER" "$VALIDATION" allow "Validator writes Validation"
 probe_write "$VALIDATOR_USER" "$EVALUATION_REQUEST" allow "Validator writes Evaluation Request"
 probe_write "$EVALUATOR_USER" "$EVALUATION" allow "Evaluator writes Evaluation"
@@ -211,6 +216,10 @@ probe_write "$EXECUTOR_USER" "$RECEIPTS" allow "Executor writes Receipts"
 
 for user in "$GENERATOR_USER" "$VALIDATOR_USER" "$EVALUATOR_USER" "$REVIEWER_USER" "$EXECUTOR_USER"; do
   probe_write "$user" "$READ_VIEW_LOCKS" deny "$user cannot write mirror read-view Locks"
+done
+
+for user in "$SYNC_USER" "$REVIEWER_USER" "$EXECUTOR_USER"; do
+  probe_write "$user" "$ORCHESTRATION" deny "$user cannot write pre-review orchestration metadata"
 done
 
 # Reader writes only derived retrieval state and cannot write semantic authority stages.
