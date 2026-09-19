@@ -25,10 +25,10 @@ from .openai_compatible import (
     chat_content,
     identifier_revision,
     validated_base_url,
+    validated_implementation_revision,
     validated_options,
     validated_timeout,
 )
-from .ollama_generator import _validated_implementation_revision
 
 
 ADAPTER_VERSION = "openai-chat-completions-json-v0"
@@ -70,7 +70,7 @@ def generate_knowledge_note_with_openai_compatible(
     transport: JSONTransport | None = None,
 ) -> OpenAICompatibleGenerationResult:
     context_digest = _require_sha256(context_sha256, label="context_sha256")
-    revision = _validated_implementation_revision(implementation_revision)
+    revision = validated_implementation_revision(implementation_revision)
     timeout_value = validated_timeout(timeout)
     root = validated_base_url(base_url)
     inference_options = validated_options(options)
