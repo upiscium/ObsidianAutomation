@@ -1,0 +1,21 @@
+[Unit]
+Description=Obsidian pre-review Reader worker
+Requires=obsidian-pre-review-validator.service
+After=obsidian-pre-review-validator.service
+
+[Service]
+Type=oneshot
+User=obsidian-ai-reader
+Group=obsidian-ai-reader
+ExecStart=/opt/obsidian-ai/venv/bin/obsidian-pre-review-reader-worker \
+  --ai-root /var/lib/obsidian-ai/state \
+  --vault-root /var/lib/obsidian-ai/vault
+NoNewPrivileges=true
+PrivateNetwork=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/var/lib/obsidian-ai/vault /var/lib/obsidian-ai/state/12-Evaluation-Request
+ReadWritePaths=/var/lib/obsidian-ai/state/02-Orchestration /var/lib/obsidian-ai/state/04-Index /var/lib/obsidian-ai/state/14-Evaluation-Context /var/lib/obsidian-ai/state/24-Locks/read-view
+UMask=0007
+TimeoutStartSec=5min
