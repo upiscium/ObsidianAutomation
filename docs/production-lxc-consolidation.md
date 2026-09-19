@@ -6,11 +6,13 @@ Writer-side automation is consolidated by trust domain, not by feature:
 
 ```text
 obsidian-automation
-  Publisher / Gitea Runner
   Core Promotion
   AI Writer / pre-review
   GitHub Sync / local writer / compactor
   future private Importer
+
+gitea-runner
+  workflow execution only; separate LXC
 
 obsidian-snapshot-taker
   read-only Nextcloud snapshot authority only
@@ -58,10 +60,12 @@ metadata may still be operationally private.
 
 ## Publisher boundary
 
-The new host should normally register a fresh Gitea Runner rather than copying
-opaque runner registration state.
+The dedicated `gitea-runner` LXC registers a fresh Gitea Runner; the automation
+host does not run a workflow executor. See `gitea-runner-production.md` for the
+source-side binary/config/unit staging and registration boundary. Never copy
+opaque registration state.
 
-The existing Publisher LXC runs `gitea-runner.service`; cutover must stop that old unit before starting the newly registered runner on the consolidated LXC.
+The existing Publisher LXC runs `gitea-runner.service`; cutover must stop that old unit before starting the newly registered runner on the dedicated Runner LXC.
 
 The following are Gitea repository configuration, not LXC files:
 
@@ -144,7 +148,7 @@ Before any credential or durable state is migrated, the target-owned bootstrap c
 
 Provisioned identities include:
 
-- `gitea-runner`;
+- a dormant compatibility `gitea-runner` account (no runner binary, unit, registration or jobs);
 - `obsidian-core-promoter`;
 - `obsidian-ai-sync/reader/generator/validator/evaluator/status/reviewer/executor`;
 - `obsidian-github-mirror/sync/writer/compactor`.
@@ -287,8 +291,8 @@ remain disabled/inactive:
 - `obsidian-core-promotion.timer`.
 
 No production service is started. Gitea Runner is not part of this unit staging
-because the new runner is registered separately and remains inactive until the
-Publisher cutover.
+because it is hosted on a separate execution-plane LXC and remains inactive until
+its own cutover. No runner binary/unit/registration belongs on the automation host.
 
 Once the new host has passed this inert staging gate, a later cutover transaction
 may quiesce old writers, transfer durable state, run canaries, and enable the new
@@ -317,3 +321,27 @@ bootstrap new LXC
 
 The source-side bootstrap/self-update implementation is tracked separately and
 must be accepted before production cutover.
+
+## Final acceptance and retirement
+
+The deployment topology has three trust domains, not three interchangeable
+workers. #111 records the completed role migration; #110 tracks the generic
+automation-host update transaction. Merge/deploy #110 before treating the parent
+#109 lifecycle as fully accepted. A PR/CI result does not substitute for real-host
+acceptance of that new lifecycle.
+
+Retire old containers only after backup and fresh production evidence: complete
+pipeline stages with invocation timestamps, not just stale `Result=success`.
+A `Type=oneshot` process can legitimately be `activating` during execution.
+An idle AI chain does not prove non-empty generation/review-stop behavior.
+
+After cutover, old durable state is stale. Do not simply re-enable an old writer:
+first quiesce the new writer, transfer/reconcile its latest durable state and
+credentials, validate the target, then switch authority. Never overwrite current
+state with an old backup in order to roll software back. Keep snapshot credentials
+out of both writer and runner domains.
+
+The legacy dormant runner account in automation authority fixtures is retained
+for negative access checks and compatibility, not permission to run jobs there.
+Do not delete accounts recursively on a serving host; no credential/home purge is
+part of this topology update.

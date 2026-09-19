@@ -1,0 +1,22 @@
+[Unit]
+Description=Gitea Actions Runner (isolated execution plane)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=gitea-runner
+Group=gitea-runner
+WorkingDirectory=/var/lib/gitea-runner
+Environment=HOME=/var/lib/gitea-runner
+ExecStart=/usr/local/bin/runner daemon --config /etc/gitea-runner/config.yaml
+Restart=always
+RestartSec=10
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/gitea-runner
+
+[Install]
+WantedBy=multi-user.target
