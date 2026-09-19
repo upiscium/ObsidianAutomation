@@ -21,6 +21,15 @@ DEFAULT_SYSTEMD_DIR = Path("/etc/systemd/system")
 DEFAULT_RECEIPT_DIR = Path("/var/lib/obsidian-ai/deployments")
 DEFAULT_REVISION_ENV = Path("/etc/obsidian-ai/pre-review-revision.env")
 TIMER_UNIT = "obsidian-pre-review.timer"
+MIRROR_TIMER_UNIT = "obsidian-ai-vault-pull.timer"
+MIRROR_SERVICE_UNIT = "obsidian-ai-vault-pull.service"
+PRE_REVIEW_SERVICES = (
+    "obsidian-pre-review-status.service",
+    "obsidian-pre-review-evaluator.service",
+    "obsidian-pre-review-reader.service",
+    "obsidian-pre-review-validator.service",
+    "obsidian-pre-review-generator.service",
+)
 OBSOLETE_UNITS = ("obsidian-pre-review-evaluator.timer",)
 REQUIRED_UNITS = frozenset(
     {
@@ -56,6 +65,9 @@ class DeploymentReceipt:
     timer_existed: bool | None
     timer_was_enabled: bool | None
     timer_was_active: bool | None
+    mirror_timer_was_enabled: bool | None
+    mirror_timer_was_active: bool | None
+    bootstrap_mirror_pre_disabled: bool
     first_install_left_disabled: bool
     safe_smoke: str
     disposable_canary: str
@@ -74,6 +86,9 @@ class DeploymentReceipt:
                     "timer_existed": self.timer_existed,
                     "timer_was_enabled": self.timer_was_enabled,
                     "timer_was_active": self.timer_was_active,
+                    "mirror_timer_was_enabled": self.mirror_timer_was_enabled,
+                    "mirror_timer_was_active": self.mirror_timer_was_active,
+                    "bootstrap_mirror_pre_disabled": self.bootstrap_mirror_pre_disabled,
                     "first_install_left_disabled": self.first_install_left_disabled,
                     "safe_smoke": self.safe_smoke,
                     "disposable_canary": self.disposable_canary,
@@ -203,8 +218,13 @@ def _validate_target(
     return target_sha
 
 
-def _timer_state(runner: CommandRunner) -> tuple[bool, bool, bool]:
-    enabled = runner(("systemctl", "is-enabled", TIMER_UNIT))
+def _timer_state(
+    runner: CommandRunner,
+    unit: str,
+    *,
+    allow_missing: bool,
+) -> tuple[bool, bool, bool]:
+    enabled = runner(("systemctl", "is-enabled", unit))
     enabled_state = enabled.stdout.strip()
     if enabled_state == "enabled":
         exists = True
@@ -212,14 +232,14 @@ def _timer_state(runner: CommandRunner) -> tuple[bool, bool, bool]:
     elif enabled_state == "disabled":
         exists = True
         was_enabled = False
-    elif enabled_state in {"not-found", ""} and enabled.returncode != 0:
+    elif allow_missing and enabled_state in {"not-found", ""} and enabled.returncode != 0:
         return False, False, False
     else:
         raise PreReviewProductionUpdateError(
-            "timer enablement state is not enabled/disabled/not-found"
+            f"{unit} enablement state is not enabled/disabled"
         )
 
-    active = runner(("systemctl", "is-active", TIMER_UNIT))
+    active = runner(("systemctl", "is-active", unit))
     active_state = active.stdout.strip()
     if active_state == "active":
         was_active = True
@@ -227,7 +247,7 @@ def _timer_state(runner: CommandRunner) -> tuple[bool, bool, bool]:
         was_active = False
     else:
         raise PreReviewProductionUpdateError(
-            "timer activity state is not active/inactive"
+            f"{unit} activity state is not active/inactive"
         )
     return exists, was_enabled, was_active
 
@@ -326,6 +346,7 @@ def _write_revision_env(path: Path, target_sha: str) -> None:
 
 def _restore_timer(
     runner: CommandRunner,
+    unit: str,
     *,
     was_enabled: bool,
     was_active: bool,
@@ -333,33 +354,33 @@ def _restore_timer(
     if was_enabled and was_active:
         _run(
             runner,
-            ("systemctl", "enable", "--now", TIMER_UNIT),
-            label="timer restore",
+            ("systemctl", "enable", "--now", unit),
+            label=f"{unit} restore",
         )
         return
     if was_enabled:
         _run(
             runner,
-            ("systemctl", "enable", TIMER_UNIT),
-            label="timer enabled-state restore",
+            ("systemctl", "enable", unit),
+            label=f"{unit} enabled-state restore",
         )
     else:
         _run(
             runner,
-            ("systemctl", "disable", TIMER_UNIT),
-            label="timer disabled-state restore",
+            ("systemctl", "disable", unit),
+            label=f"{unit} disabled-state restore",
         )
     if was_active:
         _run(
             runner,
-            ("systemctl", "start", TIMER_UNIT),
-            label="timer active-state restore",
+            ("systemctl", "start", unit),
+            label=f"{unit} active-state restore",
         )
     else:
         _run(
             runner,
-            ("systemctl", "stop", TIMER_UNIT),
-            label="timer inactive-state restore",
+            ("systemctl", "stop", unit),
+            label=f"{unit} inactive-state restore",
         )
 
 
@@ -436,14 +457,18 @@ def execute_update(
     revision_env: Path = DEFAULT_REVISION_ENV,
     runner: CommandRunner = _default_runner,
     require_root: bool = True,
+    bootstrap_mirror_pre_disabled: bool = False,
 ) -> tuple[DeploymentReceipt, Path]:
     stage = "preflight"
     previous_sha: str | None = None
     timer_existed: bool | None = None
     timer_was_enabled: bool | None = None
     timer_was_active: bool | None = None
+    mirror_timer_was_enabled: bool | None = None
+    mirror_timer_was_active: bool | None = None
     safe_smoke = "not_run"
     timer_controlled = False
+    mirror_timer_controlled = False
     units_installed = False
 
     try:
@@ -500,16 +525,52 @@ def execute_update(
             timer_existed,
             timer_was_enabled,
             timer_was_active,
-        ) = _timer_state(runner)
+        ) = _timer_state(runner, TIMER_UNIT, allow_missing=True)
 
+        (
+            mirror_exists,
+            observed_mirror_enabled,
+            observed_mirror_active,
+        ) = _timer_state(runner, MIRROR_TIMER_UNIT, allow_missing=False)
+        if not mirror_exists:
+            raise PreReviewProductionUpdateError("mirror timer must already exist")
+        if bootstrap_mirror_pre_disabled:
+            if observed_mirror_enabled or observed_mirror_active:
+                raise PreReviewProductionUpdateError(
+                    "bootstrap mirror pre-disabled mode requires disabled/inactive mirror timer"
+                )
+            mirror_timer_was_enabled = True
+            mirror_timer_was_active = True
+        else:
+            mirror_timer_was_enabled = observed_mirror_enabled
+            mirror_timer_was_active = observed_mirror_active
+
+        stage = "stop_recurring_services"
         if timer_existed:
-            stage = "stop_timer"
             _run(
                 runner,
                 ("systemctl", "disable", "--now", TIMER_UNIT),
                 label="pre-review timer stop",
             )
             timer_controlled = True
+            for unit in PRE_REVIEW_SERVICES:
+                _run(
+                    runner,
+                    ("systemctl", "stop", unit),
+                    label=f"stop {unit}",
+                )
+
+        _run(
+            runner,
+            ("systemctl", "disable", "--now", MIRROR_TIMER_UNIT),
+            label="mirror timer stop",
+        )
+        mirror_timer_controlled = True
+        _run(
+            runner,
+            ("systemctl", "stop", MIRROR_SERVICE_UNIT),
+            label="mirror service stop",
+        )
 
         stage = "checkout_target"
         _git(
@@ -598,10 +659,20 @@ def execute_update(
         safe_smoke = "passed"
 
         first_install = not bool(timer_existed)
+
+        stage = "restore_mirror_timer"
+        _restore_timer(
+            runner,
+            MIRROR_TIMER_UNIT,
+            was_enabled=bool(mirror_timer_was_enabled),
+            was_active=bool(mirror_timer_was_active),
+        )
+
         if not first_install:
-            stage = "restore_timer"
+            stage = "restore_pre_review_timer"
             _restore_timer(
                 runner,
+                TIMER_UNIT,
                 was_enabled=bool(timer_was_enabled),
                 was_active=bool(timer_was_active),
             )
@@ -614,6 +685,9 @@ def execute_update(
             timer_existed=timer_existed,
             timer_was_enabled=timer_was_enabled,
             timer_was_active=timer_was_active,
+            mirror_timer_was_enabled=mirror_timer_was_enabled,
+            mirror_timer_was_active=mirror_timer_was_active,
+            bootstrap_mirror_pre_disabled=bootstrap_mirror_pre_disabled,
             first_install_left_disabled=first_install,
             safe_smoke=safe_smoke,
             disposable_canary="pending_manual_acceptance",
@@ -627,6 +701,8 @@ def execute_update(
     except Exception as exc:
         if timer_controlled or units_installed:
             runner(("systemctl", "disable", "--now", TIMER_UNIT))
+        if mirror_timer_controlled:
+            runner(("systemctl", "disable", "--now", MIRROR_TIMER_UNIT))
         completed_at = _utc_now()
         receipt = DeploymentReceipt(
             previous_sha=previous_sha,
@@ -634,6 +710,9 @@ def execute_update(
             timer_existed=timer_existed,
             timer_was_enabled=timer_was_enabled,
             timer_was_active=timer_was_active,
+            mirror_timer_was_enabled=mirror_timer_was_enabled,
+            mirror_timer_was_active=mirror_timer_was_active,
+            bootstrap_mirror_pre_disabled=bootstrap_mirror_pre_disabled,
             first_install_left_disabled=not bool(timer_existed),
             safe_smoke=safe_smoke,
             disposable_canary="not_run",
@@ -666,6 +745,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--systemd-dir", type=Path, default=DEFAULT_SYSTEMD_DIR)
     parser.add_argument("--receipt-dir", type=Path, default=DEFAULT_RECEIPT_DIR)
     parser.add_argument("--revision-env", type=Path, default=DEFAULT_REVISION_ENV)
+    parser.add_argument(
+        "--bootstrap-mirror-pre-disabled",
+        action="store_true",
+        help=(
+            "First updater bootstrap only: the operator already disabled/stopped "
+            "an originally enabled+active mirror timer before replacing the shared venv."
+        ),
+    )
     return parser
 
 
@@ -679,6 +766,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             systemd_dir=args.systemd_dir,
             receipt_dir=args.receipt_dir,
             revision_env=args.revision_env,
+            bootstrap_mirror_pre_disabled=args.bootstrap_mirror_pre_disabled,
         )
     except PreReviewProductionUpdateError as exc:
         print(
