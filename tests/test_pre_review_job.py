@@ -9,12 +9,13 @@ import pytest
 from obsidian_automation.context_bundle import ContextBundle, store_context_bundle
 from obsidian_automation.pre_review_job import (
     PreReviewJobError,
-    allocate_attempt,
+    complete_attempt,
     job_status,
     parse_recipe,
     regenerate_job,
+    retry_generation,
+    start_attempt,
     submit_job,
-    transition_generation,
 )
 
 
@@ -150,58 +151,92 @@ def test_regenerate_is_explicit_and_creates_next_generation(tmp_path: Path) -> N
     assert status["current_generation"]["generation_id"] == regenerated["generation_id"]
 
 
-def test_generation_state_machine_is_fail_closed(tmp_path: Path) -> None:
+def test_generation_attempts_advance_state_machine_transactionally(tmp_path: Path) -> None:
     root, context_sha = _state(tmp_path)
     submitted = submit_job(root, context_sha256=context_sha, recipe=_parsed_recipe())
     generation = str(submitted["generation_id"])
 
-    with pytest.raises(PreReviewJobError, match="not allowed"):
-        transition_generation(root, generation, "evaluating")
+    with pytest.raises(PreReviewJobError, match="requires generation state"):
+        start_attempt(root, generation, "validation")
 
-    assert transition_generation(root, generation, "generating")["state"] == "generating"
-    assert transition_generation(root, generation, "validating")["state"] == "validating"
-    assert (
-        transition_generation(root, generation, "building_evaluation_context")["state"]
-        == "building_evaluation_context"
-    )
-    assert transition_generation(root, generation, "evaluating")["state"] == "evaluating"
-    assert (
-        transition_generation(root, generation, "awaiting_human_review")["state"]
-        == "awaiting_human_review"
-    )
+    generation_attempt = start_attempt(root, generation, "generation")
+    with pytest.raises(PreReviewJobError, match="already has a running attempt"):
+        start_attempt(root, generation, "generation")
+    assert complete_attempt(
+        root, str(generation_attempt["attempt_id"]), outcome="succeeded"
+    )["state"] == "validating"
 
-    with pytest.raises(PreReviewJobError, match="not allowed"):
-        transition_generation(root, generation, "queued")
+    validation_attempt = start_attempt(root, generation, "validation")
+    assert complete_attempt(
+        root, str(validation_attempt["attempt_id"]), outcome="succeeded"
+    )["state"] == "building_evaluation_context"
+
+    context_attempt = start_attempt(root, generation, "evaluation_context")
+    assert complete_attempt(
+        root, str(context_attempt["attempt_id"]), outcome="succeeded"
+    )["state"] == "evaluating"
+
+    evaluation_attempt = start_attempt(root, generation, "evaluation")
+    assert complete_attempt(
+        root, str(evaluation_attempt["attempt_id"]), outcome="succeeded"
+    )["state"] == "awaiting_human_review"
+
+    with pytest.raises(PreReviewJobError, match="requires generation state"):
+        start_attempt(root, generation, "generation")
 
 
-def test_retryable_failure_requires_explicit_retry_transition(tmp_path: Path) -> None:
+def test_retryable_failure_retries_same_generation_with_new_attempt(tmp_path: Path) -> None:
     root, context_sha = _state(tmp_path)
     submitted = submit_job(root, context_sha256=context_sha, recipe=_parsed_recipe())
     generation = str(submitted["generation_id"])
 
-    transition_generation(root, generation, "generating")
-    transition_generation(root, generation, "retryable_failure")
-    with pytest.raises(PreReviewJobError, match="not allowed"):
-        transition_generation(root, generation, "validating")
+    first = start_attempt(root, generation, "generation")
+    failed = complete_attempt(
+        root,
+        str(first["attempt_id"]),
+        outcome="retryable_failure",
+        reason_code="provider_timeout",
+    )
+    assert failed["state"] == "retryable_failure"
 
-    retry = transition_generation(root, generation, "queued")
-    assert retry["previous_state"] == "retryable_failure"
+    retry = retry_generation(root, generation)
     assert retry["state"] == "queued"
 
+    second = start_attempt(root, generation, "generation")
+    assert second["attempt_id"] != first["attempt_id"]
+    assert second["attempt_index"] == 2
 
-def test_deterministic_reject_is_terminal_for_generation(tmp_path: Path) -> None:
+
+def test_deterministic_reject_requires_explicit_new_generation(tmp_path: Path) -> None:
     root, context_sha = _state(tmp_path)
     submitted = submit_job(root, context_sha256=context_sha, recipe=_parsed_recipe())
     generation = str(submitted["generation_id"])
 
-    transition_generation(root, generation, "generating")
-    transition_generation(root, generation, "validating")
-    transition_generation(root, generation, "deterministic_reject")
-    with pytest.raises(PreReviewJobError, match="not allowed"):
-        transition_generation(root, generation, "queued")
+    first = start_attempt(root, generation, "generation")
+    complete_attempt(root, str(first["attempt_id"]), outcome="succeeded")
+    validation = start_attempt(root, generation, "validation")
+    rejected = complete_attempt(
+        root,
+        str(validation["attempt_id"]),
+        outcome="deterministic_reject",
+        reason_code="policy_reject",
+    )
+    assert rejected["state"] == "deterministic_reject"
+
+    with pytest.raises(PreReviewJobError, match="only retryable_failure"):
+        retry_generation(root, generation)
 
     regenerated = regenerate_job(root, str(submitted["job_id"]))
     assert regenerated["generation_index"] == 2
+    assert regenerated["state"] == "queued"
+
+
+def test_regenerate_rejects_active_generation(tmp_path: Path) -> None:
+    root, context_sha = _state(tmp_path)
+    submitted = submit_job(root, context_sha256=context_sha, recipe=_parsed_recipe())
+
+    with pytest.raises(PreReviewJobError, match="requires the current generation to be stopped"):
+        regenerate_job(root, str(submitted["job_id"]))
 
 
 def test_attempt_identity_is_separate_and_stage_bound(tmp_path: Path) -> None:
@@ -209,20 +244,13 @@ def test_attempt_identity_is_separate_and_stage_bound(tmp_path: Path) -> None:
     submitted = submit_job(root, context_sha256=context_sha, recipe=_parsed_recipe())
     generation = str(submitted["generation_id"])
 
-    with pytest.raises(PreReviewJobError, match="requires generation state generating"):
-        allocate_attempt(root, generation, "generation")
-
-    transition_generation(root, generation, "generating")
-    first = allocate_attempt(root, generation, "generation")
-    second = allocate_attempt(root, generation, "generation")
-
-    assert first["attempt_id"] != second["attempt_id"]
+    first = start_attempt(root, generation, "generation")
     assert first["attempt_id"] != generation
-    assert second["attempt_index"] == 2
     assert first["stage"] == "generation"
+    assert first["attempt_index"] == 1
 
     with pytest.raises(PreReviewJobError, match="attempt stage is invalid"):
-        allocate_attempt(root, generation, "shell")
+        start_attempt(root, generation, "shell")
 
 
 def test_submit_rejects_missing_or_tampered_context(tmp_path: Path) -> None:
