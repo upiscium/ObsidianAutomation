@@ -50,6 +50,43 @@ ROLE_MANIFESTS: dict[str, tuple[ManifestEntry, ...]] = {
             "deployment_config",
             "recreate_from_reviewed_config",
         ),
+        ManifestEntry(
+            "core_promotion_env",
+            "/etc/obsidian-core-promotion/promotion.env",
+            "deployment_config",
+            "copy_narrow_private_if_deployed",
+            ("OBSIDIAN_PROMOTION_BASE_URL", "OBSIDIAN_PROMOTION_USERNAME"),
+        ),
+        ManifestEntry(
+            "core_promotion_policy",
+            "/etc/obsidian-core-promotion/public-export.toml",
+            "policy_config",
+            "copy_exact_if_deployed",
+        ),
+        ManifestEntry(
+            "core_promotion_password",
+            "/etc/obsidian-core-promotion/nextcloud.password",
+            "credential",
+            "copy_narrow_private_if_deployed",
+        ),
+        ManifestEntry(
+            "core_promotion_state",
+            "/var/lib/obsidian-core-promotion",
+            "durable_state",
+            "migrate_with_quiesced_copy_if_deployed",
+        ),
+        ManifestEntry(
+            "core_promotion_service",
+            "/etc/systemd/system/obsidian-core-promotion.service",
+            "deployment_config",
+            "recreate_from_reviewed_config",
+        ),
+        ManifestEntry(
+            "core_promotion_timer",
+            "/etc/systemd/system/obsidian-core-promotion.timer",
+            "deployment_config",
+            "recreate_from_reviewed_config",
+        ),
     ),
     "ai": (
         ManifestEntry(
@@ -145,6 +182,14 @@ ROLE_MANIFESTS: dict[str, tuple[ManifestEntry, ...]] = {
             "deployment_config",
             "copy_or_recreate",
             required=True,
+        ),
+        ManifestEntry(
+            "github_writer_config",
+            "/etc/obsidian-github-writer/config.env",
+            "deployment_config",
+            "copy_or_recreate",
+            ("NEXTCLOUD_BASE_URL", "NEXTCLOUD_USERNAME"),
+            True,
         ),
         ManifestEntry(
             "github_writer_password",
