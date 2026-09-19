@@ -123,11 +123,21 @@ Private configuration, credentials, and `vault-pull.filters` are not copied by
 the updater.
 
 A revision that first introduces a new Unix service identity may require a
-one-time authority bootstrap before running the updater live smoke. For the
-status compactor, run
-`sh examples/github-sync/bootstrap-compactor-authority.sh` as root before
-deploying the revision that changes the timer target. Subsequent deployments
-need no additional identity work.
+one-time authority bootstrap before running the updater live smoke. The
+currently-deployed checkout may not contain that bootstrap yet, so execute the
+script from the exact reviewed target commit without moving production HEAD:
+
+```bash
+git -C /opt/obsidian-github-sync/app fetch origin main
+git -C /opt/obsidian-github-sync/app \
+  show <reviewed-target-sha>:examples/github-sync/bootstrap-compactor-authority.sh \
+  | sh
+```
+
+For the status compactor this creates only the local credential-free identity
+and narrow request-directory ACL. Then run the normal
+`obsidian-github-production-update --target-sha <reviewed-target-sha>`.
+Subsequent deployments need no additional identity work.
 
 ## Deployment receipt
 
