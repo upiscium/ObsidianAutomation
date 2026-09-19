@@ -485,6 +485,8 @@ def execute_update(
         return receipt, path
 
     except Exception as exc:
+        if timer_stopped:
+            runner(("systemctl", "disable", "--now", TIMER_UNIT))
         completed_at = _utc_now()
         receipt = DeploymentReceipt(
             previous_sha=previous_sha,
