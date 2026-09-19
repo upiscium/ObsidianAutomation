@@ -38,7 +38,7 @@ from .openai_compatible import (
 )
 
 
-ADAPTER_VERSION = "openai-evaluator-chat-completions-json-v0"
+ADAPTER_VERSION = "openai-evaluator-chat-completions-json-schema-v1"
 EVALUATION_STRATEGY = "groundedness-plus-pairwise-candidates-v0"
 
 
@@ -93,6 +93,7 @@ def _chat_dimension_output(
     model: str,
     system_prompt: str,
     user_prompt: str,
+    output_schema: Mapping[str, object],
     options: Mapping[str, object],
     timeout: float,
     api_key: str | None,
@@ -103,6 +104,8 @@ def _chat_dimension_output(
         model=model,
         system_prompt=system_prompt,
         user_prompt=user_prompt,
+        output_schema=output_schema,
+        schema_name=f"knowledge_note_evaluator_{dimension}",
         options=options,
         timeout=timeout,
         api_key=api_key,
@@ -186,6 +189,7 @@ def evaluate_knowledge_note_with_openai_compatible(
             model=model,
             system_prompt=prompt.system,
             user_prompt=prompt.user,
+            output_schema=prompt.output_schema,
             options=inference_options,
             timeout=timeout_value,
             api_key=api_key,
