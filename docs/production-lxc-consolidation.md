@@ -169,6 +169,70 @@ At this phase the bootstrap receipt must show:
 }
 ```
 
+## Private config / credential stream transfer
+
+After the credential-free authority boundary passes, migrate only the declared
+private files before quiescing any old writer.
+
+Use the same reviewed ObsidianAutomation revision on both ends. The transfer
+helper has an explicit allowlist for each source role:
+
+```text
+publisher
+  Core Promotion promotion.env
+  Core Promotion public-export.toml
+  Core Promotion nextcloud.password
+
+ai
+  rclone.conf
+  vault-pull.filters
+  webdav-password when deployed
+  pre-review-generator.env
+  pre-review-evaluator.env
+
+github-sync
+  config.toml
+  credentials.env when present
+  mirror rclone.conf
+  mirror vault-pull.filters
+  writer config.env
+  writer webdav-password
+```
+
+The AI revision env is derived and is not transferred. Gitea Runner registration
+state is not transferred. Durable state and rebuildable mirrors are not members
+of the private-config bundle.
+
+The source command writes a binary bundle to stdout and fixed metadata-only
+status to stderr. The destination accepts only known logical IDs and installs
+files atomically with fixed owner/group/mode. It refuses symlink sources,
+unknown entries, partial Core Promotion config, truncated/trailing bundle data,
+and an existing destination whose bytes differ.
+
+A retry with identical bytes is idempotent. The tool may compare existing
+destination bytes internally for that purpose, but never prints secret values or
+secret hashes.
+
+The intended transport is a direct trusted stream such as SSH:
+
+```text
+old role LXC exporter stdout
+        |
+        | authenticated SSH transport
+        v
+new obsidian-automation importer stdin
+```
+
+Do not redirect the bundle to a shell-visible temporary file unless recovery
+procedures explicitly require an encrypted staging artifact.
+
+After each role import, run the built-in readability verification. It checks
+owner/group/mode and positive/negative read access for the service identities
+without printing file contents.
+
+This phase does not stop the old services and does not install or start new
+production units, so canonical writer authority remains only on the old LXCs.
+
 ## Secret transfer
 
 Do not paste credential values into GitHub, chat, shell history, or command-line
