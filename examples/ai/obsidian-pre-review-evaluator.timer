@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Obsidian pre-review identity worker chain
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=2min
+Persistent=false
+Unit=obsidian-pre-review-evaluator.service
+
+[Install]
+WantedBy=timers.target
