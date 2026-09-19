@@ -32,10 +32,10 @@ from .openai_compatible import (
     chat_content,
     identifier_revision,
     validated_base_url,
+    validated_implementation_revision,
     validated_options,
     validated_timeout,
 )
-from .ollama_generator import _validated_implementation_revision
 
 
 ADAPTER_VERSION = "openai-evaluator-chat-completions-json-v0"
@@ -139,7 +139,7 @@ def evaluate_knowledge_note_with_openai_compatible(
         evaluation_context_sha256,
         label="evaluation_context_sha256",
     )
-    revision = _validated_implementation_revision(implementation_revision)
+    revision = validated_implementation_revision(implementation_revision)
     timeout_value = validated_timeout(timeout)
     root = validated_base_url(base_url)
     inference_options = validated_options(options)
