@@ -94,24 +94,24 @@ def test_nonterminal_pending_is_recomputed_from_fresh_snapshot() -> None:
     assert decision.pending is False
 
 
-def test_terminal_pending_planning_is_upgraded_by_new_commit() -> None:
+def test_stable_pending_planning_is_upgraded_by_new_commit() -> None:
     now = datetime(2026, 9, 17, 3, 0, tzinfo=timezone.utc)
     project = ProjectBinding(
         path="10-Project/Test.md",
         repository="upiscium/Test",
-        status="done",
+        status="stable",
     )
     previous = ProjectState(
         project_path=project.path,
         repository=project.repository,
-        last_status="done",
+        last_status="stable",
         latest_commit_sha="old",
         latest_commit_at=datetime(2026, 9, 1, tzinfo=timezone.utc),
         open_issues=frozenset({1, 2}),
         open_prs=frozenset(),
         observed_at=datetime(2026, 9, 17, 2, 45, tzinfo=timezone.utc),
         pending_status="planning",
-        pending_reason="new open GitHub activity after terminal baseline: issues=2",
+        pending_reason="new open GitHub activity after stable baseline: issues=2",
     )
     snapshot = RepositorySnapshot(
         repository=project.repository,
@@ -174,7 +174,7 @@ def test_pending_transition_is_discarded_when_repository_binding_changes() -> No
     assert decision.pending is False
 
 
-def test_terminal_project_reactivates_when_head_sha_changes_to_older_commit() -> None:
+def test_stable_project_reactivates_when_head_sha_changes_to_older_commit() -> None:
     now = datetime(2026, 9, 17, 3, 0, tzinfo=timezone.utc)
     project = ProjectBinding(
         path="10-Project/Test.md",
@@ -212,4 +212,4 @@ def test_terminal_project_reactivates_when_head_sha_changes_to_older_commit() ->
 
     assert decision.proposed_status == "running"
     assert decision.pending is True
-    assert decision.reason == "new commit observed after terminal baseline"
+    assert decision.reason == "new commit observed after stable baseline"
