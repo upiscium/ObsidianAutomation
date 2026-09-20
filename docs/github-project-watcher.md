@@ -41,7 +41,7 @@ AI/LLM processing is not part of the status decision path. A future integration 
 
 ## Project metadata
 
-Only non-terminal Project notes below `10-Project/` that explicitly opt in are watched:
+Only Project notes below `10-Project/` in `planning`, `running`, or `stable` that explicitly opt in are watched:
 
 ```yaml
 ---
@@ -92,7 +92,7 @@ open items. Requests remain serial to avoid increasing secondary-rate-limit pres
 
 ### stopped
 
-`stopped` is human-controlled. GitHub activity never changes it.
+`stopped` is human-controlled. GitHub activity never changes it. A stopped Project is excluded during scanning even when `github_watch: true`, so the watcher does not issue GitHub API requests for it.
 
 ### stable
 
