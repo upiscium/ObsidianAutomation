@@ -19,6 +19,7 @@ from typing import Iterable, TextIO
 
 VALID_STATUSES = frozenset({"planning", "running", "stopped", "stable", "done", "cancelled"})
 TERMINAL_STATUSES = frozenset({"done", "cancelled"})
+UNWATCHED_STATUSES = frozenset({"stopped", "done", "cancelled"})
 _REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 
@@ -159,7 +160,7 @@ def scan_projects(vault_root: Path, project_folder: str = "10-Project") -> tuple
         if status not in VALID_STATUSES:
             warnings.append(f"{relative}: invalid Project status: {status!r}")
             continue
-        if status in TERMINAL_STATUSES:
+        if status in UNWATCHED_STATUSES:
             continue
         projects.append(ProjectBinding(path=relative, repository=repository, status=status))
     return projects, warnings
