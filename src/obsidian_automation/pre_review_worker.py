@@ -17,6 +17,11 @@ from .evaluation_artifact import (
 )
 from .evaluator_contract import prompt_template_sha256 as evaluator_prompt_sha256
 from .generation_artifact import load_generation_record
+from .human_projection import (
+    emit_evaluation_and_review_projections,
+    emit_generation_projection,
+    emit_validation_projection,
+)
 from .generator_contract import prompt_template_sha256 as generator_prompt_sha256
 from .knowledge_index import build_knowledge_index, store_knowledge_index
 from .knowledge_validator import validate_proposal
@@ -188,6 +193,12 @@ def run_generator_worker(
     except (ArtifactLifecycleError, PreReviewJobError, OSError):
         return _block(ai_root, work, reason_code="generator_output_binding_mismatch")
 
+    emit_generation_projection(
+        ai_root,
+        case_id=work.generation_id,
+        generation_sha256=generated.generation_sha256,
+        proposal_sha256=generated.proposal_sha256,
+    )
     output = {
         "proposal_sha256": generated.proposal_sha256,
         "generation_sha256": generated.generation_sha256,
@@ -241,6 +252,11 @@ def run_validator_worker(
         return _block(ai_root, work, reason_code="validator_binding_error")
 
     if validation["result"] == "rejected":
+        emit_validation_projection(
+            ai_root,
+            case_id=work.generation_id,
+            proposal_sha256=proposal_sha,
+        )
         completed = complete_attempt(
             ai_root,
             work.attempt_id,
@@ -271,6 +287,11 @@ def run_validator_worker(
     except (ArtifactLifecycleError, PreReviewJobError, OSError):
         return _block(ai_root, work, reason_code="evaluation_request_binding_error")
 
+    emit_validation_projection(
+        ai_root,
+        case_id=work.generation_id,
+        proposal_sha256=proposal_sha,
+    )
     output = {
         **selected,
         "mutation_sha256": mutation_sha,
@@ -440,6 +461,11 @@ def run_evaluator_worker(
     except (ArtifactLifecycleError, PreReviewJobError, OSError):
         return _block(ai_root, work, reason_code="evaluator_output_binding_mismatch")
 
+    emit_evaluation_and_review_projections(
+        ai_root,
+        case_id=work.generation_id,
+        evaluation_sha256=evaluated.evaluation_sha256,
+    )
     output = {
         **selected,
         "evaluation_sha256": evaluated.evaluation_sha256,
