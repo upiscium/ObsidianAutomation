@@ -52,6 +52,9 @@ from .pre_review_worker import (
 from .production_io import mirror_read_lock
 
 
+GENERATOR_INFERENCE_OPTIONS = {**dict(DEFAULT_OPTIONS), "reasoning_effort": "none"}
+EVALUATOR_INFERENCE_OPTIONS = {**dict(DEFAULT_OPTIONS), "reasoning_effort": "low"}
+
 PRODUCTION_ROOTS = (
     Path("/var/lib/obsidian-ai/state"),
     Path("/var/lib/obsidian-ai/vault"),
@@ -128,7 +131,7 @@ def _recipe(
             "model_config": {
                 "adapter_version": GENERATOR_ADAPTER_VERSION,
                 "identity_binding": "identifier-only",
-                "options": dict(DEFAULT_OPTIONS),
+                "options": dict(GENERATOR_INFERENCE_OPTIONS),
             },
         },
         "validator": {"policy": "knowledge-note-v0"},
@@ -147,7 +150,7 @@ def _recipe(
                 "adapter_version": EVALUATOR_ADAPTER_VERSION,
                 "identity_binding": "identifier-only",
                 "strategy": EVALUATION_STRATEGY,
-                "options": {"temperature": 0},
+                "options": dict(EVALUATOR_INFERENCE_OPTIONS),
             },
         },
     }

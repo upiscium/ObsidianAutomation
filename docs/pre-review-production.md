@@ -294,6 +294,10 @@ export OPENAI_GENERATOR_API_KEY='...'
 export OPENAI_EVALUATOR_API_KEY='...'
 ```
 
+The canary uses the same immutable automatic inference semantics as production:
+Generator uses `temperature=0` with `reasoning_effort=none`; Evaluator uses
+`temperature=0` with `reasoning_effort=low`.
+
 The canary covers:
 
 1. real OpenAI-compatible Generator -> Validator -> Reader -> Evaluator progression;

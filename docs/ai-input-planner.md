@@ -208,6 +208,21 @@ migrated.
 Provider endpoints and credentials remain in the existing Generator/Evaluator
 private environment files and are never readable by Reader.
 
+Automatic pre-review recipes use role-specific inference policy:
+
+```text
+Generator: temperature=0, reasoning_effort=none
+Evaluator: temperature=0, reasoning_effort=low
+```
+
+Generator is intentionally non-thinking because its job is bounded synthesis from
+explicit sources and production diagnostics showed OpenAI-compatible reasoning
+could consume the entire timeout without emitting final content. Evaluator keeps
+low reasoning because groundedness and comparison checks may benefit from a small
+reasoning budget. Both settings are part of the immutable recipe, so changing
+either creates a distinct job identity rather than silently changing an existing
+job. The generic OpenAI-compatible adapter remains caller-configurable.
+
 ## Future extensions
 
 The source / selection / objective concepts are intentionally separate. Future

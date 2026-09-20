@@ -316,6 +316,17 @@ def test_plan_once_creates_mixed_context_and_one_durable_job(tmp_path: Path) -> 
     status = job_status(state, str(result["job_id"]))
     assert status["current_generation"]["state"] == "queued"
 
+    from obsidian_automation.pre_review_job import load_recipe
+    recipe = load_recipe(state, str(status["recipe_sha256"]))
+    assert dict(recipe.generator.model_config["options"]) == {
+        "temperature": 0,
+        "reasoning_effort": "none",
+    }
+    assert dict(recipe.evaluator.model_config["options"]) == {
+        "temperature": 0,
+        "reasoning_effort": "low",
+    }
+
     requests = [
         parse_request(path.read_bytes())
         for path in sorted(
