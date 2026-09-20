@@ -159,6 +159,73 @@ def observe_remote(
     )
 
 
+def ensure_collection(
+    *,
+    base_url: str,
+    target_path: str,
+    username: str,
+    password: str,
+    timeout: float = 30.0,
+    allow_http: bool = False,
+) -> str:
+    if not username:
+        raise WebDAVCreateError("username must not be empty")
+    if not password:
+        raise WebDAVCreateError("password must not be empty")
+
+    target_url = build_target_url(base_url, target_path, allow_http=allow_http)
+    parsed = urlsplit(target_url)
+    auth = _authorization(username, password)
+    conn = _connection(parsed, timeout=timeout)
+    try:
+        conn.request("MKCOL", parsed.path, headers={"Authorization": auth})
+        response = conn.getresponse()
+        response.read()
+        status = response.status
+    except OSError as exc:
+        raise WebDAVCreateError(f"WebDAV MKCOL failed: {exc}") from exc
+    finally:
+        conn.close()
+
+    if 200 <= status < 300:
+        return "created"
+    if status != 405:
+        raise WebDAVCreateError(
+            f"WebDAV MKCOL returned unexpected HTTP status {status}"
+        )
+
+    body = (
+        '<?xml version="1.0" encoding="utf-8" ?>'
+        '<d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/></d:prop></d:propfind>'
+    ).encode("utf-8")
+    conn = _connection(parsed, timeout=timeout)
+    try:
+        conn.request(
+            "PROPFIND",
+            parsed.path,
+            body=body,
+            headers={
+                "Authorization": auth,
+                "Content-Type": "application/xml; charset=utf-8",
+                "Content-Length": str(len(body)),
+                "Depth": "0",
+            },
+        )
+        response = conn.getresponse()
+        response.read()
+        propfind_status = response.status
+    except OSError as exc:
+        raise WebDAVCreateError(f"WebDAV PROPFIND failed: {exc}") from exc
+    finally:
+        conn.close()
+
+    if propfind_status != 207:
+        raise WebDAVCreateError(
+            "existing WebDAV target could not be verified as a collection"
+        )
+    return "existing"
+
+
 def conditional_create(
     *,
     base_url: str,
