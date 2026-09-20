@@ -179,12 +179,12 @@ def test_stable_project_reactivates_when_head_sha_changes_to_older_commit() -> N
     project = ProjectBinding(
         path="10-Project/Test.md",
         repository="upiscium/Test",
-        status="done",
+        status="stable",
     )
     previous = ProjectState(
         project_path=project.path,
         repository=project.repository,
-        last_status="done",
+        last_status="stable",
         latest_commit_sha="newer-head",
         latest_commit_at=datetime(2026, 9, 16, tzinfo=timezone.utc),
         open_issues=frozenset(),
