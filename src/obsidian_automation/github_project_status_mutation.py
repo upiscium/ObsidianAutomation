@@ -24,7 +24,8 @@ from .webdav_create import WebDAVCreateError, _read_password, build_target_url
 
 TRANSPORT_RESULT_VERSION = 1
 MAX_PROJECT_BYTES = 4 * 1024 * 1024
-VALID_PROJECT_STATUSES = frozenset({"planning", "running", "stopped", "done", "cancelled"})
+VALID_PROJECT_STATUSES = frozenset({"planning", "running", "stopped", "stable", "done", "cancelled"})
+AUTOMATED_SOURCE_STATUSES = frozenset({"planning", "running", "stable"})
 AUTOMATED_TARGET_STATUSES = frozenset({"planning", "running"})
 _REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _SHA_RE = re.compile(r"^[0-9a-f]{40,64}$")
@@ -221,8 +222,10 @@ def parse_watcher_proposal(data: bytes) -> ProjectStatusProposal:
     desired_status = value["proposed_status"]
     if expected_status not in VALID_PROJECT_STATUSES:
         raise ProjectStatusMutationError("current_status is not a canonical Project status")
-    if expected_status == "stopped":
-        raise ProjectStatusMutationError("stopped is human-controlled and cannot be automated")
+    if expected_status not in AUTOMATED_SOURCE_STATUSES:
+        raise ProjectStatusMutationError(
+            "current_status must be planning, running, or stable for automated mutation"
+        )
     if desired_status not in AUTOMATED_TARGET_STATUSES:
         raise ProjectStatusMutationError("proposed_status must be planning or running")
     if desired_status == expected_status:
@@ -359,8 +362,10 @@ def prepare_project_update(
     current_status = values.get("status", "")
     if current_status not in VALID_PROJECT_STATUSES:
         raise ProjectStatusMutationConflict("remote Project status is not canonical")
-    if current_status == "stopped":
-        raise ProjectStatusMutationConflict("remote Project is stopped and remains human-controlled")
+    if current_status not in AUTOMATED_SOURCE_STATUSES:
+        raise ProjectStatusMutationConflict(
+            "remote Project is terminal or human-controlled and cannot be automated"
+        )
     if current_status == proposal.desired_status:
         return "already_desired", remote_content
     if current_status != proposal.expected_status:

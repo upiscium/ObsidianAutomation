@@ -112,15 +112,25 @@ def test_parse_watcher_observation_as_status_proposal() -> None:
     assert len(proposal.sha256) == 64
 
 
-def test_proposal_must_be_pending_change_and_cannot_automate_stopped_or_terminal_target() -> None:
+def test_proposal_must_be_pending_change_and_cannot_automate_human_or_terminal_source_or_terminal_target() -> None:
     with pytest.raises(ProjectStatusMutationError):
         parse_watcher_proposal(_event(change=False))
     with pytest.raises(ProjectStatusMutationError):
         parse_watcher_proposal(_event(pending=False))
-    with pytest.raises(ProjectStatusMutationError):
-        parse_watcher_proposal(_event(current_status="stopped"))
+    for status in ("stopped", "done", "cancelled"):
+        with pytest.raises(ProjectStatusMutationError):
+            parse_watcher_proposal(_event(current_status=status))
     with pytest.raises(ProjectStatusMutationError):
         parse_watcher_proposal(_event(proposed_status="done"))
+
+
+def test_stable_source_can_reactivate_to_planning() -> None:
+    proposal = parse_watcher_proposal(_event(current_status="stable"))
+    disposition, updated = prepare_project_update(proposal, _project(status="stable"))
+
+    assert disposition == "apply"
+    assert b"status: planning\n" in updated
+    assert b"status: stable\n" not in updated
 
 
 def test_prepare_update_changes_only_status_line_and_preserves_crlf() -> None:

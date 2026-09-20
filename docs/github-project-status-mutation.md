@@ -53,12 +53,12 @@ The input is the watcher JSON object itself. A mutation is admissible only when:
 - `pending == true`;
 - `project` is below `10-Project/` and ends in `.md`;
 - `repository` is `owner/name`;
-- `current_status` is canonical and is not `stopped`;
+- `current_status` is one of `planning`, `running`, or `stable`;
 - `proposed_status` is only `planning` or `running`;
 - current and proposed statuses differ;
 - timestamps, Git SHA and Issue/PR arrays satisfy the watcher contract.
 
-`done` / `cancelled` may appear only as the expected status for a deterministic watcher reactivation. Automation can never set `done`, `cancelled`, or `stopped`.
+`stable` may appear as the expected status for a deterministic watcher reactivation. `stopped`, `done`, and `cancelled` are never admissible automation sources, and automation can never set `stable`, `done`, `cancelled`, or `stopped`.
 
 The canonicalized watcher object is SHA-256 hashed. That digest binds the transport result to the exact request.
 
@@ -70,7 +70,7 @@ The writer never uploads bytes copied from the watcher mirror. It performs a fre
 - `github_watch` still enabled;
 - `github_repo` still equals the proposal repository;
 - current canonical status still equals `current_status` from the proposal;
-- current canonical status is not `stopped`;
+- current canonical status is one of `planning`, `running`, or `stable`;
 - a strong ETag is available before mutation.
 
 If the canonical status already equals the desired status, the operation is an idempotent `already_desired` no-op.

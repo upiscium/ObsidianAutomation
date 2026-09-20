@@ -41,7 +41,7 @@ AI/LLM processing is not part of the status decision path. A future integration 
 
 ## Project metadata
 
-Only Project notes below `10-Project/` that explicitly opt in are watched:
+Only Project notes below `10-Project/` in `planning`, `running`, or `stable` that explicitly opt in are watched:
 
 ```yaml
 ---
@@ -61,6 +61,7 @@ The canonical Project statuses are:
 - `planning`
 - `running`
 - `stopped`
+- `stable`
 - `done`
 - `cancelled`
 
@@ -91,22 +92,27 @@ open items. Requests remain serial to avoid increasing secondary-rate-limit pres
 
 ### stopped
 
-`stopped` is human-controlled. GitHub activity never changes it.
+`stopped` is human-controlled. GitHub activity never changes it. A stopped Project is excluded during scanning even when `github_watch: true`, so the watcher does not issue GitHub API requests for it.
 
-### done / cancelled
+### stable
 
-A terminal status is preserved until activity **after the terminal baseline** is observed.
+`stable` means the Project has reached its current intended scope but may resume when new GitHub activity appears.
+The first observation after entering `stable` initializes a new baseline and does not reactivate immediately.
 A default-branch HEAD SHA change counts as Commit activity even if a force-push moves the
 branch to a commit with an older timestamp.
 
 - changed default-branch HEAD SHA -> `running`
 - newly-open Issue or Pull Request -> `planning`
-- no new activity -> preserve `done` / `cancelled`
+- no new activity -> preserve `stable`
 - Commit activity wins when Commit and Issue/PR activity occur in the same observation
 
-When a Project first enters `done` or `cancelled`, that observation initializes a new baseline and never reactivates the Project immediately. This prevents old Open Issues or Pull Requests from being mistaken for post-completion activity.
+If a reactivation proposal is not yet applied, it remains pending in SQLite and is emitted again on later runs until the canonical Project status changes.
 
-If a status proposal is not yet applied, it remains pending in SQLite and is emitted again on later runs until the canonical Project status changes. This makes v0.1 dry-run operation observable without consuming an event permanently.
+### done / cancelled
+
+`done` and `cancelled` are terminal. They are never reactivated by GitHub activity.
+They are excluded during Project scanning even if legacy metadata still contains `github_watch: true`, so no GitHub API polling occurs for them.
+ObsidianCore is responsible for setting `github_watch: false` when a user transitions a Project into either terminal state.
 
 ## Configuration
 
