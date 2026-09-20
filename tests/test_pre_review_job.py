@@ -219,12 +219,38 @@ def test_supersede_only_allows_unstarted_current_generation(tmp_path: Path) -> N
     )
     started = start_attempt(root, str(other["generation_id"]), "generation")
     assert started["status"] == "running"
-    with pytest.raises(PreReviewJobError, match="unstarted queued"):
+    with pytest.raises(PreReviewJobError, match="only queued or Generation-stage retryable"):
         supersede_unstarted_generation(
             root,
             str(other["generation_id"]),
             reason_code="planner_revision_replaced",
         )
+
+
+def test_supersede_allows_generation_retryable_failure_without_selected_output(tmp_path: Path) -> None:
+    root, context_sha = _state(tmp_path)
+    submitted = submit_job(root, context_sha256=context_sha, recipe=_parsed_recipe())
+    generation = str(submitted["generation_id"])
+
+    for index in range(2):
+        attempt = start_attempt(root, generation, "generation")
+        complete_attempt(
+            root,
+            str(attempt["attempt_id"]),
+            outcome="retryable_failure",
+            reason_code="provider_timeout",
+        )
+        if index == 0:
+            retry_generation(root, generation)
+
+    result = supersede_unstarted_generation(
+        root,
+        generation,
+        reason_code="planner_recipe_replaced",
+    )
+    assert result["state"] == "superseded"
+    assert result["reused"] is False
+    assert job_status(root, str(submitted["job_id"]))["current_generation"]["state"] == "superseded"
 
 
 def test_regenerate_is_explicit_and_creates_next_generation(tmp_path: Path) -> None:
