@@ -30,6 +30,7 @@ ALL_STATES = (
     "retry_exhausted",
     "blocked",
     "deterministic_reject",
+    "superseded",
 )
 
 
