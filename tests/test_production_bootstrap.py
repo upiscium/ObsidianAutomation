@@ -20,6 +20,33 @@ def _load_bootstrap():
 
 
 bootstrap = _load_bootstrap()
+
+
+class _PackageOnlyLifecycle:
+    host_activation = "not_attempted"
+    def __init__(self, **kwargs):
+        pass
+    def __enter__(self):
+        return self
+    def __exit__(self, *args):
+        return False
+    def prepare(self):
+        pass
+    def stage_and_smoke(self):
+        pass
+    def restore(self):
+        pass
+    def finish(self):
+        pass
+
+
+@pytest.fixture(autouse=True)
+def package_test_lifecycle_seam(monkeypatch):
+    # These existing tests isolate package/handoff behavior. Runtime failure,
+    # restore and ordering behavior is tested in test_host_runtime_lifecycle.py.
+    monkeypatch.setattr(bootstrap, "_load_host_lifecycle", lambda source: _PackageOnlyLifecycle)
+
+
 TARGET = "a" * 40
 PREVIOUS = "b" * 40
 
@@ -158,7 +185,7 @@ def test_apply_from_target_replaces_launcher_and_writes_secret_free_receipt(
     assert stat.S_IMODE(launcher.stat().st_mode) == 0o755
 
     value = json.loads(path.read_text(encoding="utf-8"))
-    assert value["bootstrap_contract"] == 3
+    assert value["bootstrap_contract"] == 4
     assert value["target_sha"] == TARGET
     raw = path.read_text(encoding="utf-8")
     for forbidden in (
