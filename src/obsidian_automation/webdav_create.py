@@ -212,14 +212,14 @@ def ensure_collection(
             },
         )
         response = conn.getresponse()
-        response.read()
+        propfind_body = response.read()
         propfind_status = response.status
     except OSError as exc:
         raise WebDAVCreateError(f"WebDAV PROPFIND failed: {exc}") from exc
     finally:
         conn.close()
 
-    if propfind_status != 207:
+    if propfind_status != 207 or b"collection" not in propfind_body.lower():
         raise WebDAVCreateError(
             "existing WebDAV target could not be verified as a collection"
         )
