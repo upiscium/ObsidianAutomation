@@ -21,6 +21,6 @@ PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
 ReadOnlyPaths=/var/lib/obsidian-ai/vault
-ReadWritePaths=/var/lib/obsidian-ai/state/02-Orchestration /var/lib/obsidian-ai/state/05-Context /var/lib/obsidian-ai/state/24-Locks/read-view
+ReadWritePaths=/var/lib/obsidian-ai/state/02-Orchestration /var/lib/obsidian-ai/state/05-Context /var/lib/obsidian-ai/state/24-Locks/read-view /var/lib/obsidian-ai/state/16-Human-Projection/reader
 UMask=0007
 TimeoutStartSec=2min
