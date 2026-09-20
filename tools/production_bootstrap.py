@@ -7,15 +7,17 @@ explicit target commit, creates a detached worktree at that target, then hands
 control to the target commit's copy of this file.
 
 The target-owned apply stage updates the production checkout/package and replaces
-this launcher atomically. Service/profile provisioning is layered on top in later
-host-lifecycle stages; this foundation does not enable recurring automation.
+this launcher atomically. The target-owned lifecycle
+journals timer intent, drains the shared runtime, stages units/revision metadata,
+and restores prior timer state only after safe smoke. Fresh hosts remain inert.
 """
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -28,7 +30,7 @@ import tempfile
 from typing import Callable, Iterable, Sequence
 
 
-BOOTSTRAP_CONTRACT = 3
+BOOTSTRAP_CONTRACT = 4
 DEFAULT_REPOSITORY_URL = "https://github.com/upiscium/ObsidianAutomation.git"
 DEFAULT_APP_ROOT = Path("/opt/obsidian-automation/app")
 DEFAULT_VENV_ROOT = Path("/opt/obsidian-automation/venv")
@@ -492,7 +494,7 @@ def handoff_to_target(
             shutil.rmtree(temporary, ignore_errors=True)
 
 
-def apply_from_target(
+def _install_from_target(
     *,
     source_root: Path,
     target_sha: str,
@@ -505,7 +507,7 @@ def apply_from_target(
     runner: Runner = _default_runner,
     python_executable: str = sys.executable,
     require_root: bool = True,
-) -> tuple[BootstrapReceipt, Path]:
+) -> BootstrapReceipt:
     stage = "preflight"
     previous_sha: str | None = None
     package_install = "not_run"
@@ -660,8 +662,7 @@ def apply_from_target(
             failed_stage=None,
             completed_at=completed_at,
         )
-        path = _persist_receipt(receipt_dir, receipt)
-        return receipt, path
+        return receipt
 
     except Exception as exc:
         completed_at = _utc_now()
@@ -684,6 +685,89 @@ def apply_from_target(
         if isinstance(exc, BootstrapError):
             raise BootstrapError(f"{stage}:{exc}") from exc
         raise BootstrapError(f"{stage}:unexpected_bootstrap_failure") from exc
+
+
+
+def _load_host_lifecycle(source_root: Path):
+    path = source_root / "tools/host_runtime_lifecycle.py"
+    if not path.is_file() or path.is_symlink():
+        raise BootstrapError("target_host_lifecycle_missing_or_unsafe")
+    spec = importlib.util.spec_from_file_location("_target_host_lifecycle", path)
+    if spec is None or spec.loader is None:
+        raise BootstrapError("cannot_load_target_host_lifecycle")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module.RuntimeTransaction
+
+
+def apply_from_target(
+    *, source_root: Path, target_sha: str, profile: str,
+    app_root: Path = DEFAULT_APP_ROOT, venv_root: Path = DEFAULT_VENV_ROOT,
+    launcher_path: Path = DEFAULT_LAUNCHER_PATH,
+    receipt_dir: Path = DEFAULT_RECEIPT_DIR, wheelhouse: Path = DEFAULT_WHEELHOUSE,
+    runner: Runner = _default_runner, python_executable: str = sys.executable,
+    require_root: bool = True,
+) -> tuple[BootstrapReceipt, Path]:
+    """Complete one exact-target update; never re-enable timers on failed smoke."""
+    if require_root and os.geteuid() != 0:
+        raise BootstrapError("bootstrap_requires_root")
+    _validate_target_sha(target_sha)
+    _require_profile(profile)
+    _require_directory(source_root, label="source_root")
+    # Verify before importing executable target-owned lifecycle code.
+    if _git_output(runner, source_root, "rev-parse", "HEAD", label="read target source HEAD") != target_sha:
+        raise BootstrapError("source_root_not_exact_target")
+    if _git_output(runner, source_root, "status", "--porcelain", label="read target source status"):
+        raise BootstrapError("source_root_not_clean")
+    if require_root and (app_root != DEFAULT_APP_ROOT or venv_root != DEFAULT_VENV_ROOT):
+        raise BootstrapError("automation_runtime_requires_canonical_paths")
+    _run(runner, ("git", "-C", str(app_root), "merge-base", "--is-ancestor", target_sha, "origin/main"),
+         label="verify target source reachable before import")
+    lifecycle = _load_host_lifecycle(source_root)
+    receipt = None
+    try:
+        with lifecycle(source_root=source_root, target_sha=target_sha, venv_root=venv_root,
+                       receipt_dir=receipt_dir, runner=runner, require_root=require_root) as runtime:
+            # Recheck the application after acquiring the update lock. An old
+            # installed launcher can hand off here without understanding v4.
+            _require_directory(app_root, label="app_root")
+            if _git_output(runner, app_root, "branch", "--show-current", label="read production branch") != "main":
+                raise BootstrapError("production_checkout_must_be_on_main")
+            if _git_output(runner, app_root, "status", "--porcelain", label="read production status"):
+                raise BootstrapError("production_checkout_must_be_clean")
+            _run(runner, ("git", "-C", str(app_root), "merge-base", "--is-ancestor", target_sha, "origin/main"),
+                 label="verify target remains reachable")
+            runtime.prepare()
+            receipt = _install_from_target(
+                source_root=source_root, target_sha=target_sha, profile=profile,
+                app_root=app_root, venv_root=venv_root, launcher_path=launcher_path,
+                receipt_dir=receipt_dir, wheelhouse=wheelhouse, runner=runner,
+                python_executable=python_executable, require_root=require_root,
+            )
+            runtime.stage_and_smoke()
+            runtime.restore()
+            receipt = replace(receipt, host_activation=runtime.host_activation, completed_at=_utc_now())
+            path = _persist_receipt(receipt_dir, receipt)
+            runtime.finish()
+            return receipt, path
+    except Exception as exc:
+        failed = BootstrapReceipt(
+            previous_sha=None if receipt is None else receipt.previous_sha,
+            target_sha=target_sha, profile=profile,
+            launcher_sha256="not_installed" if receipt is None else receipt.launcher_sha256,
+            package_install="not_run" if receipt is None else receipt.package_install,
+            authority_provisioning="not_run" if receipt is None else receipt.authority_provisioning,
+            host_activation="not_restored", result="failed", failed_stage="host_lifecycle",
+            completed_at=_utc_now(),
+        )
+        try:
+            _persist_receipt(receipt_dir, failed)
+        except Exception:
+            pass
+        if isinstance(exc, BootstrapError):
+            raise
+        raise BootstrapError("host_lifecycle_failed_see_runtime_receipt") from exc
 
 
 def _build_parser() -> argparse.ArgumentParser:
