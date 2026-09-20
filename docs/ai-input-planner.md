@@ -92,7 +92,20 @@ Mutable scheduler state:
 
 ```text
 02-Orchestration/input-planner-state.json
+02-Orchestration/input-planner-pending.json
 ```
+
+`input-planner-pending.json` is a fsynced transaction journal spanning Context
+creation, durable job submission, Human projection emission and scheduler-state
+advance. It is written before submission and cleared only after projections and
+the next scheduler cursor are durable.
+
+On retry, the planner reconciles the pending record before queue/backpressure
+decisions. Same-revision retries reuse the exact existing job. If the software
+revision changed after a submitted job was durably queued but before any attempt
+started, the old generation is retained as audited `superseded` state and the
+same immutable Context is submitted with the new exact recipe revision. A
+generation with any attempt/output evidence is never superseded by this path.
 
 Immutable selection records:
 
@@ -186,8 +199,11 @@ AI_INPUT_EVALUATOR_MODEL=gemma4:12b
 
 The exact implementation revision is supplied separately by the updater-owned
 `pre-review-revision.env`. The planner builds the immutable recipe with current
-prompt hashes and the deployed revision every cycle, so a software update does
-not leave a stale recipe revision behind.
+prompt hashes and the deployed revision every cycle. The pending-submission
+journal also detects an unstarted queued job bound to an older recipe revision,
+records that generation as `superseded`, and resubmits the same Context with
+the current exact recipe. Started generations are never rewritten or silently
+migrated.
 
 Provider endpoints and credentials remain in the existing Generator/Evaluator
 private environment files and are never readable by Reader.
