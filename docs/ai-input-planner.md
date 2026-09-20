@@ -208,6 +208,18 @@ migrated.
 Provider endpoints and credentials remain in the existing Generator/Evaluator
 private environment files and are never readable by Reader.
 
+Automatic pre-review recipes explicitly set:
+
+```json
+{"temperature": 0, "reasoning_effort": "none"}
+```
+
+for both Generator and Evaluator. This keeps the bounded structured-output pipeline
+non-thinking and low-latency while preserving generic OpenAI-compatible adapter
+behavior for callers that choose other inference options. The setting is part of
+the immutable recipe, so changing it creates a distinct job identity rather than
+silently changing an existing job.
+
 ## Future extensions
 
 The source / selection / objective concepts are intentionally separate. Future
