@@ -171,6 +171,21 @@ def test_plan_once_creates_mixed_context_and_one_durable_job(tmp_path: Path) -> 
     status = job_status(state, str(result["job_id"]))
     assert status["current_generation"]["state"] == "queued"
 
+    requests = [
+        parse_request(path.read_bytes())
+        for path in sorted(
+            (state / "16-Human-Projection" / "reader").glob("*.projection.json")
+        )
+    ]
+    assert sorted(item.stage for item in requests) == ["context", "input"]
+    assert all(
+        item.case_id == status["current_generation"]["generation_id"]
+        for item in requests
+    )
+    input_projection = next(item for item in requests if item.stage == "input")
+    assert "10-Project/Running/Design.md" in input_projection.content
+    assert "11-Knowledge/Active.md" in input_projection.content
+
     second = plan_once(
         state,
         vault,
