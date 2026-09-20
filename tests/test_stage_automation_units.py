@@ -92,7 +92,7 @@ def _fixture_source(tmp_path: Path) -> Path:
 
 def test_managed_unit_set_is_complete_and_unique() -> None:
     names = set(stage.SOURCE_LAYOUT)
-    assert len(names) == 16
+    assert len(names) == 17
     assert names == set(
         (*stage.AI_UNITS, *stage.GITHUB_UNITS, *stage.PROMOTION_UNITS)
     )
