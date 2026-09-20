@@ -19,6 +19,7 @@ from obsidian_automation.pre_review_job import (
     stage_output,
     start_attempt,
     submit_job,
+    supersede_unstarted_generation,
 )
 
 
@@ -187,6 +188,43 @@ def test_recipe_change_creates_distinct_job(tmp_path: Path) -> None:
     )
     assert first["job_id"] != second["job_id"]
     assert first["generation_id"] != second["generation_id"]
+
+
+def test_supersede_only_allows_unstarted_current_generation(tmp_path: Path) -> None:
+    root, context_sha = _state(tmp_path)
+    submitted = submit_job(root, context_sha256=context_sha, recipe=_parsed_recipe())
+    generation = str(submitted["generation_id"])
+
+    result = supersede_unstarted_generation(
+        root,
+        generation,
+        reason_code="planner_revision_replaced",
+    )
+    assert result["state"] == "superseded"
+    assert result["reused"] is False
+    assert job_status(root, str(submitted["job_id"]))["current_generation"]["state"] == "superseded"
+
+    replay = supersede_unstarted_generation(
+        root,
+        generation,
+        reason_code="planner_revision_replaced",
+    )
+    assert replay["state"] == "superseded"
+    assert replay["reused"] is True
+
+    other = submit_job(
+        root,
+        context_sha256=context_sha,
+        recipe=_parsed_recipe(generator_model="qwen3:14b"),
+    )
+    started = start_attempt(root, str(other["generation_id"]), "generation")
+    assert started["status"] == "running"
+    with pytest.raises(PreReviewJobError, match="unstarted queued"):
+        supersede_unstarted_generation(
+            root,
+            str(other["generation_id"]),
+            reason_code="planner_revision_replaced",
+        )
 
 
 def test_regenerate_is_explicit_and_creates_next_generation(tmp_path: Path) -> None:
