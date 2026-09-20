@@ -1332,6 +1332,12 @@ def plan_once(
     }
 
 
+def _optional_model_revision(value: str | None) -> str | None:
+    if value in {None, "", "auto"}:
+        return None
+    return value
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="obsidian-ai-input-planner")
     parser.add_argument("--ai-root", type=Path, required=True)
@@ -1356,10 +1362,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             deployed_revision=args.deployed_revision,
             generator_provider=args.generator_provider,
             generator_model=args.generator_model,
-            generator_model_revision=args.generator_model_revision,
+            generator_model_revision=_optional_model_revision(args.generator_model_revision),
             evaluator_provider=args.evaluator_provider,
             evaluator_model=args.evaluator_model,
-            evaluator_model_revision=args.evaluator_model_revision,
+            evaluator_model_revision=_optional_model_revision(args.evaluator_model_revision),
             batch_size=args.batch_size,
             target_inflight=args.target_inflight,
             coverage_cycles=args.coverage_cycles,
