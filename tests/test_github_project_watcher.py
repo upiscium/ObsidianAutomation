@@ -85,6 +85,14 @@ def test_scan_projects_requires_explicit_watch_and_valid_metadata(tmp_path: Path
         "---\ntype: project\nstatus: running\ngithub_repo: upiscium/Ignored\n---\n",
         encoding="utf-8",
     )
+    (project_dir / "Done.md").write_text(
+        "---\ntype: project\nstatus: done\ngithub_repo: upiscium/Done\ngithub_watch: true\n---\n",
+        encoding="utf-8",
+    )
+    (project_dir / "Cancelled.md").write_text(
+        "---\ntype: project\nstatus: cancelled\ngithub_repo: upiscium/Cancelled\ngithub_watch: true\n---\n",
+        encoding="utf-8",
+    )
     (project_dir / "Broken.md").write_text(
         "---\ntype: project\nstatus: unknown\ngithub_repo: not-a-repo\ngithub_watch: true\n---\n",
         encoding="utf-8",
@@ -146,35 +154,48 @@ def test_stopped_is_never_changed_by_github_activity() -> None:
     assert decision.pending is False
 
 
-def test_terminal_status_first_observation_only_initializes_baseline() -> None:
+def test_terminal_statuses_are_never_reactivated() -> None:
+    for status in ("done", "cancelled"):
+        decision = decide_status(
+            _project(status),
+            _snapshot(sha="new", committed_at=NOW, issues=frozenset({1}), prs=frozenset({2})),
+            _state(status=status, sha="old"),
+            now=NOW,
+            active_window_days=7,
+        )
+        assert decision.proposed_status == status
+        assert decision.pending is False
+
+
+def test_stable_first_observation_only_initializes_baseline() -> None:
     decision = decide_status(
-        _project("done"),
+        _project("stable"),
         _snapshot(committed_at=NOW, issues=frozenset({1}), prs=frozenset({2})),
         None,
         now=NOW,
         active_window_days=7,
     )
-    assert decision.proposed_status == "done"
+    assert decision.proposed_status == "stable"
     assert "baseline" in decision.reason
 
 
-def test_entering_terminal_status_resets_baseline_before_reactivation() -> None:
+def test_entering_stable_resets_baseline_before_reactivation() -> None:
     decision = decide_status(
-        _project("cancelled"),
+        _project("stable"),
         _snapshot(sha="new", committed_at=NOW, issues=frozenset({3})),
         _state(status="running", sha="old", committed_at=NOW - timedelta(days=1)),
         now=NOW,
         active_window_days=7,
     )
-    assert decision.proposed_status == "cancelled"
+    assert decision.proposed_status == "stable"
     assert "baseline" in decision.reason
 
 
-def test_new_commit_after_terminal_baseline_reactivates_as_running() -> None:
+def test_new_commit_after_stable_baseline_reactivates_as_running() -> None:
     decision = decide_status(
-        _project("done"),
+        _project("stable"),
         _snapshot(sha="new", committed_at=NOW),
-        _state(status="done", sha="old", committed_at=NOW - timedelta(days=2)),
+        _state(status="stable", sha="old", committed_at=NOW - timedelta(days=2)),
         now=NOW,
         active_window_days=7,
     )
@@ -182,10 +203,10 @@ def test_new_commit_after_terminal_baseline_reactivates_as_running() -> None:
     assert decision.pending is True
 
 
-def test_new_open_issue_or_pr_after_terminal_baseline_reactivates_as_planning() -> None:
-    previous = _state(status="cancelled", issues=frozenset({1}), prs=frozenset({10}))
+def test_new_open_issue_or_pr_after_stable_baseline_reactivates_as_planning() -> None:
+    previous = _state(status="stable", issues=frozenset({1}), prs=frozenset({10}))
     decision = decide_status(
-        _project("cancelled"),
+        _project("stable"),
         _snapshot(
             sha="old",
             committed_at=previous.latest_commit_at,
@@ -203,14 +224,14 @@ def test_new_open_issue_or_pr_after_terminal_baseline_reactivates_as_planning() 
 
 def test_pending_proposal_repeats_until_canonical_status_changes() -> None:
     previous = _state(
-        status="done",
+        status="stable",
         sha="new",
         committed_at=NOW,
         pending_status="running",
-        pending_reason="new commit observed after terminal baseline",
+        pending_reason="new commit observed after stable baseline",
     )
     decision = decide_status(
-        _project("done"),
+        _project("stable"),
         _snapshot(sha="new", committed_at=NOW),
         previous,
         now=NOW + timedelta(minutes=15),
@@ -222,7 +243,7 @@ def test_pending_proposal_repeats_until_canonical_status_changes() -> None:
 
 def test_state_store_round_trips_pending_status(tmp_path: Path) -> None:
     db = tmp_path / "state.sqlite3"
-    project = _project("done")
+    project = _project("stable")
     snapshot = _snapshot(
         sha="sha",
         committed_at=NOW,
