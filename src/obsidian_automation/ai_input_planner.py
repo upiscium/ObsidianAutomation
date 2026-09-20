@@ -38,16 +38,21 @@ from .generator_contract import (
     prompt_template_sha256 as generator_prompt_sha256,
 )
 from .openai_compatible import (
-    DEFAULT_OPTIONS as GENERATOR_DEFAULT_OPTIONS,
+    DEFAULT_OPTIONS as OPENAI_DEFAULT_OPTIONS,
     IDENTITY_BINDING,
-    PROVIDER_NAME,
+    PROVIDER_NAME as OPENAI_PROVIDER_NAME,
     identifier_revision,
 )
 from .openai_evaluator import (
-    ADAPTER_VERSION as EVALUATOR_ADAPTER_VERSION,
+    ADAPTER_VERSION as OPENAI_EVALUATOR_ADAPTER_VERSION,
     EVALUATION_STRATEGY,
 )
-from .openai_generator import ADAPTER_VERSION as GENERATOR_ADAPTER_VERSION
+from .openai_generator import ADAPTER_VERSION as OPENAI_GENERATOR_ADAPTER_VERSION
+from .ollama_evaluator import ADAPTER_VERSION as OLLAMA_EVALUATOR_ADAPTER_VERSION
+from .ollama_generator import (
+    ADAPTER_VERSION as OLLAMA_GENERATOR_ADAPTER_VERSION,
+    PROVIDER_NAME as OLLAMA_PROVIDER_NAME,
+)
 from .pre_review_job import (
     PreReviewJobError,
     _connect_ro,
@@ -76,11 +81,11 @@ DEFAULT_COVERAGE_CYCLES = 4
 DEFAULT_RANDOM_CYCLES = 1
 MAX_CATALOG_FILES = 8192
 GENERATOR_INFERENCE_OPTIONS = {
-    **dict(GENERATOR_DEFAULT_OPTIONS),
+    **dict(OPENAI_DEFAULT_OPTIONS),
     "reasoning_effort": "none",
 }
 EVALUATOR_INFERENCE_OPTIONS = {
-    **dict(GENERATOR_DEFAULT_OPTIONS),
+    **dict(OPENAI_DEFAULT_OPTIONS),
     "reasoning_effort": "low",
 }
 _ALLOWED_PROJECT_STATUSES = {
@@ -902,53 +907,110 @@ def _current_states(ai_root: Path) -> dict[str, int]:
 def _build_recipe(
     *,
     deployed_revision: str,
+    generator_provider: str,
     generator_model: str,
+    generator_model_revision: str | None,
+    evaluator_provider: str,
     evaluator_model: str,
+    evaluator_model_revision: str | None,
 ):
     if not re.fullmatch(r"[0-9a-f]{40,64}", deployed_revision):
         raise AIInputPlannerError("deployed_revision must be a full lowercase Git digest")
     for label, value in (
+        ("generator_provider", generator_provider),
         ("generator_model", generator_model),
+        ("evaluator_provider", evaluator_provider),
         ("evaluator_model", evaluator_model),
     ):
         if not value or value != value.strip() or len(value) > 256:
             raise AIInputPlannerError(f"{label} is invalid")
 
+    def component(
+        *,
+        provider: str,
+        model: str,
+        model_revision: str | None,
+        evaluator: bool,
+    ) -> dict[str, object]:
+        if provider == OPENAI_PROVIDER_NAME:
+            revision = identifier_revision(model)
+            if model_revision not in {None, "", revision}:
+                raise AIInputPlannerError(
+                    "OpenAI-compatible model revision must use identifier-only binding"
+                )
+            config: dict[str, object] = {
+                "adapter_version": (
+                    OPENAI_EVALUATOR_ADAPTER_VERSION
+                    if evaluator
+                    else OPENAI_GENERATOR_ADAPTER_VERSION
+                ),
+                "identity_binding": IDENTITY_BINDING,
+                "options": dict(
+                    EVALUATOR_INFERENCE_OPTIONS
+                    if evaluator
+                    else GENERATOR_INFERENCE_OPTIONS
+                ),
+            }
+        elif provider == OLLAMA_PROVIDER_NAME:
+            if not model_revision:
+                raise AIInputPlannerError(
+                    "Ollama provider requires an exact model SHA-256 revision"
+                )
+            revision = model_revision
+            config = {
+                "adapter_version": (
+                    OLLAMA_EVALUATOR_ADAPTER_VERSION
+                    if evaluator
+                    else OLLAMA_GENERATOR_ADAPTER_VERSION
+                ),
+                "think": "low" if evaluator else False,
+                "options": {"temperature": 0},
+            }
+        else:
+            raise AIInputPlannerError(
+                f"unsupported pre-review provider: {provider}"
+            )
+
+        if evaluator:
+            config["strategy"] = EVALUATION_STRATEGY
+        return {
+            "implementation_revision": deployed_revision,
+            "prompt_template_version": (
+                EVALUATOR_PROMPT_TEMPLATE_VERSION
+                if evaluator
+                else PROMPT_TEMPLATE_VERSION
+            ),
+            "prompt_template_sha256": (
+                evaluator_prompt_sha256()
+                if evaluator
+                else generator_prompt_sha256()
+            ),
+            "provider": provider,
+            "model_identifier": model,
+            "model_revision": revision,
+            "model_config": config,
+        }
+
     value = {
         "record_version": 1,
         "pipeline": "knowledge-pre-review-v0",
-        "generator": {
-            "implementation_revision": deployed_revision,
-            "prompt_template_version": PROMPT_TEMPLATE_VERSION,
-            "prompt_template_sha256": generator_prompt_sha256(),
-            "provider": PROVIDER_NAME,
-            "model_identifier": generator_model,
-            "model_revision": identifier_revision(generator_model),
-            "model_config": {
-                "adapter_version": GENERATOR_ADAPTER_VERSION,
-                "identity_binding": IDENTITY_BINDING,
-                "options": dict(GENERATOR_INFERENCE_OPTIONS),
-            },
-        },
+        "generator": component(
+            provider=generator_provider,
+            model=generator_model,
+            model_revision=generator_model_revision,
+            evaluator=False,
+        ),
         "validator": {"policy": "knowledge-note-v0"},
         "evaluation_context": {
             "selection_policy": "bm25-topk-recall-v0",
             "top_k": 5,
         },
-        "evaluator": {
-            "implementation_revision": deployed_revision,
-            "prompt_template_version": EVALUATOR_PROMPT_TEMPLATE_VERSION,
-            "prompt_template_sha256": evaluator_prompt_sha256(),
-            "provider": PROVIDER_NAME,
-            "model_identifier": evaluator_model,
-            "model_revision": identifier_revision(evaluator_model),
-            "model_config": {
-                "adapter_version": EVALUATOR_ADAPTER_VERSION,
-                "identity_binding": IDENTITY_BINDING,
-                "strategy": EVALUATION_STRATEGY,
-                "options": dict(EVALUATOR_INFERENCE_OPTIONS),
-            },
-        },
+        "evaluator": component(
+            provider=evaluator_provider,
+            model=evaluator_model,
+            model_revision=evaluator_model_revision,
+            evaluator=True,
+        ),
     }
     return parse_recipe(
         (json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n").encode()
@@ -959,8 +1021,12 @@ def _recover_pending_submission(
     ai_root: Path,
     *,
     deployed_revision: str,
+    generator_provider: str,
     generator_model: str,
+    generator_model_revision: str | None,
+    evaluator_provider: str,
     evaluator_model: str,
+    evaluator_model_revision: str | None,
 ) -> dict[str, object] | None:
     pending = _load_pending(ai_root)
     if pending is None:
@@ -996,8 +1062,12 @@ def _recover_pending_submission(
 
     recipe = _build_recipe(
         deployed_revision=deployed_revision,
+        generator_provider=generator_provider,
         generator_model=generator_model,
+        generator_model_revision=generator_model_revision,
+        evaluator_provider=evaluator_provider,
         evaluator_model=evaluator_model,
+        evaluator_model_revision=evaluator_model_revision,
     )
     recipe_sha = sha256_bytes(recipe.to_json_bytes())
     superseded = False
@@ -1088,8 +1158,12 @@ def plan_once(
     vault_root: Path,
     *,
     deployed_revision: str,
+    generator_provider: str = OPENAI_PROVIDER_NAME,
     generator_model: str,
+    generator_model_revision: str | None = None,
+    evaluator_provider: str = OPENAI_PROVIDER_NAME,
     evaluator_model: str,
+    evaluator_model_revision: str | None = None,
     batch_size: int = DEFAULT_BATCH_SIZE,
     target_inflight: int = DEFAULT_TARGET_INFLIGHT,
     coverage_cycles: int = DEFAULT_COVERAGE_CYCLES,
@@ -1255,8 +1329,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--ai-root", type=Path, required=True)
     parser.add_argument("--vault-root", type=Path, required=True)
     parser.add_argument("--deployed-revision", required=True)
+    parser.add_argument("--generator-provider", default=OPENAI_PROVIDER_NAME)
     parser.add_argument("--generator-model", required=True)
+    parser.add_argument("--generator-model-revision")
+    parser.add_argument("--evaluator-provider", default=OPENAI_PROVIDER_NAME)
     parser.add_argument("--evaluator-model", required=True)
+    parser.add_argument("--evaluator-model-revision")
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("--target-inflight", type=int, default=DEFAULT_TARGET_INFLIGHT)
     parser.add_argument("--coverage-cycles", type=int, default=DEFAULT_COVERAGE_CYCLES)
@@ -1268,8 +1346,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.ai_root,
             args.vault_root,
             deployed_revision=args.deployed_revision,
+            generator_provider=args.generator_provider,
             generator_model=args.generator_model,
+            generator_model_revision=args.generator_model_revision,
+            evaluator_provider=args.evaluator_provider,
             evaluator_model=args.evaluator_model,
+            evaluator_model_revision=args.evaluator_model_revision,
             batch_size=args.batch_size,
             target_inflight=args.target_inflight,
             coverage_cycles=args.coverage_cycles,
