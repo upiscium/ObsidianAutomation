@@ -30,12 +30,21 @@ from .evaluation_artifact import (
 from .evaluator_contract import EVALUATOR_PROMPT_TEMPLATE_VERSION
 from .generator_contract import PROMPT_TEMPLATE_VERSION
 from .knowledge_note_policy import POLICY_NAME
-from .openai_compatible import IDENTITY_BINDING, PROVIDER_NAME, identifier_revision
+from .openai_compatible import (
+    IDENTITY_BINDING,
+    PROVIDER_NAME as OPENAI_PROVIDER_NAME,
+    identifier_revision,
+)
 from .openai_evaluator import (
-    ADAPTER_VERSION as EVALUATOR_ADAPTER_VERSION,
+    ADAPTER_VERSION as OPENAI_EVALUATOR_ADAPTER_VERSION,
     EVALUATION_STRATEGY,
 )
-from .openai_generator import ADAPTER_VERSION as GENERATOR_ADAPTER_VERSION
+from .openai_generator import ADAPTER_VERSION as OPENAI_GENERATOR_ADAPTER_VERSION
+from .ollama_evaluator import ADAPTER_VERSION as OLLAMA_EVALUATOR_ADAPTER_VERSION
+from .ollama_generator import (
+    ADAPTER_VERSION as OLLAMA_GENERATOR_ADAPTER_VERSION,
+    PROVIDER_NAME as OLLAMA_PROVIDER_NAME,
+)
 
 
 ORCHESTRATION_STAGE = "02-Orchestration"
@@ -138,7 +147,6 @@ def _parse_component(
     *,
     label: str,
     prompt_version: str,
-    adapter_version: str,
     evaluator: bool,
 ) -> RecipeComponent:
     required = {
@@ -152,10 +160,11 @@ def _parse_component(
     }
     if not isinstance(value, dict) or set(value) != required:
         raise PreReviewJobError(f"{label} properties do not match contract")
+
     provider = _metadata(value["provider"], label=f"{label}.provider")
-    if provider != PROVIDER_NAME:
+    if provider not in {OPENAI_PROVIDER_NAME, OLLAMA_PROVIDER_NAME}:
         raise PreReviewJobError(
-            f"{label}.provider must be {PROVIDER_NAME} in v0"
+            f"{label}.provider must be {OPENAI_PROVIDER_NAME} or {OLLAMA_PROVIDER_NAME}"
         )
     if value["prompt_template_version"] != prompt_version:
         raise PreReviewJobError(
@@ -170,27 +179,63 @@ def _parse_component(
         value["model_revision"],
         label=f"{label}.model_revision",
     )
-    if model_revision != identifier_revision(model_identifier):
-        raise PreReviewJobError(
-            f"{label}.model_revision must explicitly use identifier-only binding"
-        )
-
     model_config = value["model_config"]
-    expected_config = {"adapter_version", "identity_binding", "options"}
-    if evaluator:
-        expected_config.add("strategy")
-    if not isinstance(model_config, dict) or set(model_config) != expected_config:
-        raise PreReviewJobError(
-            f"{label}.model_config properties do not match OpenAI-compatible v0 contract"
+
+    if provider == OPENAI_PROVIDER_NAME:
+        if model_revision != identifier_revision(model_identifier):
+            raise PreReviewJobError(
+                f"{label}.model_revision must explicitly use identifier-only binding"
+            )
+        expected_config = {"adapter_version", "identity_binding", "options"}
+        if evaluator:
+            expected_config.add("strategy")
+        if not isinstance(model_config, dict) or set(model_config) != expected_config:
+            raise PreReviewJobError(
+                f"{label}.model_config properties do not match OpenAI-compatible v0 contract"
+            )
+        expected_adapter = (
+            OPENAI_EVALUATOR_ADAPTER_VERSION
+            if evaluator
+            else OPENAI_GENERATOR_ADAPTER_VERSION
         )
-    if model_config["adapter_version"] != adapter_version:
-        raise PreReviewJobError(
-            f"{label}.model_config.adapter_version must be {adapter_version}"
+        if model_config["adapter_version"] != expected_adapter:
+            raise PreReviewJobError(
+                f"{label}.model_config.adapter_version must be {expected_adapter}"
+            )
+        if model_config["identity_binding"] != IDENTITY_BINDING:
+            raise PreReviewJobError(
+                f"{label}.model_config.identity_binding must be {IDENTITY_BINDING}"
+            )
+    else:
+        try:
+            model_revision = _require_sha256(
+                model_revision,
+                label=f"{label}.model_revision",
+            )
+        except ArtifactLifecycleError as exc:
+            raise PreReviewJobError(str(exc)) from exc
+        expected_config = {"adapter_version", "think", "options"}
+        if evaluator:
+            expected_config.add("strategy")
+        if not isinstance(model_config, dict) or set(model_config) != expected_config:
+            raise PreReviewJobError(
+                f"{label}.model_config properties do not match Ollama native v0 contract"
+            )
+        expected_adapter = (
+            OLLAMA_EVALUATOR_ADAPTER_VERSION
+            if evaluator
+            else OLLAMA_GENERATOR_ADAPTER_VERSION
         )
-    if model_config["identity_binding"] != IDENTITY_BINDING:
-        raise PreReviewJobError(
-            f"{label}.model_config.identity_binding must be {IDENTITY_BINDING}"
-        )
+        if model_config["adapter_version"] != expected_adapter:
+            raise PreReviewJobError(
+                f"{label}.model_config.adapter_version must be {expected_adapter}"
+            )
+        expected_think: object = "low" if evaluator else False
+        if model_config["think"] != expected_think:
+            raise PreReviewJobError(
+                f"{label}.model_config.think must be {expected_think!r}"
+            )
+
     if not isinstance(model_config["options"], dict):
         raise PreReviewJobError(f"{label}.model_config.options must be an object")
     if evaluator and model_config["strategy"] != EVALUATION_STRATEGY:
@@ -266,7 +311,6 @@ def parse_recipe(data: bytes) -> PreReviewRecipe:
             value["generator"],
             label="generator",
             prompt_version=PROMPT_TEMPLATE_VERSION,
-            adapter_version=GENERATOR_ADAPTER_VERSION,
             evaluator=False,
         ),
         validator_policy=validator_policy,
@@ -276,7 +320,6 @@ def parse_recipe(data: bytes) -> PreReviewRecipe:
             value["evaluator"],
             label="evaluator",
             prompt_version=EVALUATOR_PROMPT_TEMPLATE_VERSION,
-            adapter_version=EVALUATOR_ADAPTER_VERSION,
             evaluator=True,
         ),
     )
@@ -296,7 +339,6 @@ def parse_recipe_roundtrip_guard(data: bytes) -> PreReviewRecipe:
             value["generator"],
             label="generator",
             prompt_version=PROMPT_TEMPLATE_VERSION,
-            adapter_version=GENERATOR_ADAPTER_VERSION,
             evaluator=False,
         ),
         validator_policy=_metadata(validator["policy"], label="validator.policy"),
@@ -309,7 +351,6 @@ def parse_recipe_roundtrip_guard(data: bytes) -> PreReviewRecipe:
             value["evaluator"],
             label="evaluator",
             prompt_version=EVALUATOR_PROMPT_TEMPLATE_VERSION,
-            adapter_version=EVALUATOR_ADAPTER_VERSION,
             evaluator=True,
         ),
     )
