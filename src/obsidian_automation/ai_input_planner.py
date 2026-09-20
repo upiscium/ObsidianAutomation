@@ -91,7 +91,7 @@ _SYNTHESIS_QUERY = (
     "a durable explanation, procedure, specification, or troubleshooting insight "
     "over project-local status reporting."
 )
-_WIKILINK_RE = re.compile(r"^\[\[([^\]]]+)\]\]$")
+_WIKILINK_RE = re.compile(r"^\[\[([^]]+)\]\]$")
 
 
 class AIInputPlannerError(ArtifactLifecycleError):
