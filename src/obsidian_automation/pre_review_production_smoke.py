@@ -11,11 +11,18 @@ from typing import Sequence
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40,64}$")
 REQUIRED_UNITS = {
+    "obsidian-ai-input-planner.service": (
+        "User=obsidian-ai-reader",
+        "obsidian-ai-input-planner",
+        "PrivateNetwork=true",
+        "ConditionPathExists=/etc/obsidian-ai/pre-review-input.env",
+    ),
     "obsidian-pre-review-generator.service": (
         "User=obsidian-ai-generator",
         "obsidian-pre-review-generator-worker",
         "EnvironmentFile=/etc/obsidian-ai/pre-review-generator.env",
         "EnvironmentFile=/etc/obsidian-ai/pre-review-revision.env",
+        "Wants=network-online.target obsidian-ai-input-planner.service",
         "--openai-base-url",
     ),
     "obsidian-pre-review-validator.service": (
