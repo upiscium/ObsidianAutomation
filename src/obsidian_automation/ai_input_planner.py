@@ -39,10 +39,7 @@ from .openai_evaluator import (
     ADAPTER_VERSION as EVALUATOR_ADAPTER_VERSION,
     EVALUATION_STRATEGY,
 )
-from .openai_generator import (
-    ADAPTER_VERSION as GENERATOR_ADAPTER_VERSION,
-    DEFAULT_OPTIONS as GENERATOR_DEFAULT_OPTIONS,
-)
+from .openai_generator import ADAPTER_VERSION as GENERATOR_ADAPTER_VERSION
 from .pre_review_job import (
     PreReviewJobError,
     _connect_ro,
