@@ -51,17 +51,42 @@ def test_context_bundle_reads_exact_sources_and_persists_immutable_bytes(tmp_pat
     assert (same_digest, same_path) == (digest, path)
 
 
-def test_context_bundle_rejects_sources_outside_knowledge(tmp_path: Path) -> None:
+def test_context_bundle_rejects_sources_outside_generation_roots(tmp_path: Path) -> None:
     vault, _ = _roots(tmp_path)
     (vault / "outside.md").write_text("secret\n", encoding="utf-8")
 
-    with pytest.raises(ArtifactLifecycleError, match="below 11-Knowledge"):
+    with pytest.raises(ArtifactLifecycleError, match="below 11-Knowledge or 10-Project"):
         build_context_bundle(
             vault,
             query="query",
             source_paths=["outside.md"],
         )
 
+
+
+def test_context_bundle_accepts_project_note_generation_source(tmp_path: Path) -> None:
+    vault, state = _roots(tmp_path)
+    project = vault / "10-Project" / "Example"
+    project.mkdir(parents=True)
+    note = project / "Design.md"
+    note.write_text(
+        "---\ntype: project-note\nlifecycle: active\n---\n# Design\n",
+        encoding="utf-8",
+    )
+
+    bundle = build_context_bundle(
+        vault,
+        query="mixed Vault input",
+        source_paths=["10-Project/Example/Design.md"],
+        created_at="2026-09-20T00:00:00Z",
+    )
+    digest, _ = store_context_bundle(state, bundle)
+
+    loaded = load_context_bundle(state, digest)
+    assert [source.path for source in loaded.sources] == [
+        "10-Project/Example/Design.md"
+    ]
+    assert "project-note" in loaded.sources[0].content
 
 def test_context_bundle_does_not_follow_source_symlink(tmp_path: Path) -> None:
     vault, _ = _roots(tmp_path)
