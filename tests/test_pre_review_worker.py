@@ -443,6 +443,7 @@ def test_systemd_chain_uses_distinct_fixed_identities_and_stays_disabled_by_defa
         "validator": Path("examples/ai/obsidian-pre-review-validator.service").read_text(),
         "reader": Path("examples/ai/obsidian-pre-review-reader.service").read_text(),
         "evaluator": Path("examples/ai/obsidian-pre-review-evaluator.service").read_text(),
+        "projection": Path("examples/ai/obsidian-ai-human-projection-sync.service").read_text(),
         "status": Path("examples/ai/obsidian-pre-review-status.service").read_text(),
         "timer": Path("examples/ai/obsidian-pre-review.timer").read_text(),
     }
@@ -454,13 +455,17 @@ def test_systemd_chain_uses_distinct_fixed_identities_and_stays_disabled_by_defa
     assert "User=obsidian-ai-validator" in units["validator"]
     assert "User=obsidian-ai-reader" in units["reader"]
     assert "User=obsidian-ai-evaluator" in units["evaluator"]
+    assert "User=obsidian-ai-sync" in units["projection"]
+    assert "ConditionPathExists=/etc/obsidian-ai/human-projection.env" in units["projection"]
 
     assert "Requires=obsidian-ai-input-planner.service" in units["generator"]
     assert "After=network-online.target obsidian-ai-input-planner.service" in units["generator"]
     assert "Requires=obsidian-pre-review-generator.service" in units["validator"]
     assert "Requires=obsidian-pre-review-validator.service" in units["reader"]
     assert "Requires=obsidian-pre-review-reader.service" in units["evaluator"]
+    assert "Requires=obsidian-pre-review-evaluator.service" in units["projection"]
     assert "Requires=obsidian-pre-review-evaluator.service" in units["status"]
+    assert "Wants=obsidian-ai-human-projection-sync.service" in units["status"]
     assert "User=obsidian-ai-status" in units["status"]
     assert "Unit=obsidian-pre-review-status.service" in units["timer"]
 
