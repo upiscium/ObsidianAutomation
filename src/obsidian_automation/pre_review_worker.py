@@ -642,7 +642,12 @@ def reader_main(argv: Sequence[str] | None = None) -> int:
 def evaluator_main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="obsidian-pre-review-evaluator-worker")
     parser.add_argument("--ai-root", type=Path, required=True)
-    parser.add_argument("--openai-base-url", required=True)
+    parser.add_argument(
+        "--provider-base-url",
+        "--openai-base-url",
+        dest="provider_base_url",
+        required=True,
+    )
     parser.add_argument("--deployed-revision", required=True)
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS)
     parser.add_argument("--max-attempts", type=int, default=DEFAULT_MAX_ATTEMPTS)
