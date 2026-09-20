@@ -324,7 +324,7 @@ def test_plan_once_creates_mixed_context_and_one_durable_job(tmp_path: Path) -> 
     }
     assert dict(recipe.evaluator.model_config["options"]) == {
         "temperature": 0,
-        "reasoning_effort": "none",
+        "reasoning_effort": "low",
     }
 
     requests = [
