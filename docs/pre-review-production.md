@@ -295,7 +295,8 @@ export OPENAI_EVALUATOR_API_KEY='...'
 ```
 
 The canary uses the same immutable automatic inference semantics as production:
-`temperature=0` and `reasoning_effort=none` for Generator and Evaluator.
+Generator uses `temperature=0` with `reasoning_effort=none`; Evaluator uses
+`temperature=0` with `reasoning_effort=low`.
 
 The canary covers:
 
