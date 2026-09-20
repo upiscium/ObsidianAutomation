@@ -8,6 +8,8 @@ import pytest
 
 from obsidian_automation.artifact_lifecycle import ArtifactLifecycleError
 from obsidian_automation.context_bundle import ContextBundle, store_context_bundle
+from obsidian_automation.ollama_evaluator import ADAPTER_VERSION as OLLAMA_EVALUATOR_ADAPTER_VERSION
+from obsidian_automation.ollama_generator import ADAPTER_VERSION as OLLAMA_GENERATOR_ADAPTER_VERSION
 from obsidian_automation.pre_review_job import (
     PreReviewJobError,
     claim_next_attempt,
@@ -154,6 +156,50 @@ def test_recipe_rejects_unknown_provider_and_unbounded_top_k() -> None:
     value = _recipe()
     value["evaluation_context"]["top_k"] = 1000
     with pytest.raises(PreReviewJobError, match="top_k"):
+        parse_recipe((json.dumps(value) + "\n").encode())
+
+
+def test_recipe_accepts_native_ollama_digest_binding_and_role_thinking() -> None:
+    value = _recipe()
+    digest = "d" * 64
+    value["generator"] = {
+        "implementation_revision": REV,
+        "prompt_template_version": "knowledge-note-generator-v0",
+        "prompt_template_sha256": PROMPT_SHA,
+        "provider": "ollama",
+        "model_identifier": "gemma4:12b",
+        "model_revision": digest,
+        "model_config": {
+            "adapter_version": OLLAMA_GENERATOR_ADAPTER_VERSION,
+            "think": False,
+            "options": {"temperature": 0},
+        },
+    }
+    value["evaluator"] = {
+        "implementation_revision": REV,
+        "prompt_template_version": "knowledge-note-evaluator-v3",
+        "prompt_template_sha256": PROMPT_SHA,
+        "provider": "ollama",
+        "model_identifier": "gemma4:12b",
+        "model_revision": digest,
+        "model_config": {
+            "adapter_version": OLLAMA_EVALUATOR_ADAPTER_VERSION,
+            "think": "low",
+            "strategy": "groundedness-plus-pairwise-candidates-v0",
+            "options": {"temperature": 0},
+        },
+    }
+
+    parsed = parse_recipe((json.dumps(value, separators=(",", ":")) + "\n").encode())
+    assert parsed.generator.provider == "ollama"
+    assert parsed.generator.model_revision == digest
+    assert parsed.generator.model_config["think"] is False
+    assert parsed.evaluator.provider == "ollama"
+    assert parsed.evaluator.model_revision == digest
+    assert parsed.evaluator.model_config["think"] == "low"
+
+    value["evaluator"]["model_config"]["think"] = "high"
+    with pytest.raises(PreReviewJobError, match="model_config.think"):
         parse_recipe((json.dumps(value) + "\n").encode())
 
 
