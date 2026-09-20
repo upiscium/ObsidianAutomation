@@ -76,6 +76,44 @@ def _safe_source_parts(path: str) -> tuple[str, ...]:
     return parts
 
 
+def _plain_frontmatter_scalar(raw: str) -> str:
+    value = raw.strip()
+    if " #" in value:
+        value = value.split(" #", 1)[0].rstrip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
+def _project_note_source_allowed(path: str, content: str) -> None:
+    if not path.startswith(f"{PROJECT_ROOT}/"):
+        return
+    lines = content.splitlines()
+    if not lines or lines[0].strip() != "---":
+        raise ArtifactLifecycleError("Project generation source has no frontmatter")
+    values: dict[str, str] = {}
+    closed = False
+    for line in lines[1:128]:
+        if line.strip() == "---":
+            closed = True
+            break
+        if not line or line[0].isspace() or ":" not in line:
+            continue
+        key, raw = line.split(":", 1)
+        key = key.strip()
+        if key in values:
+            raise ArtifactLifecycleError(
+                f"Project generation source has duplicate frontmatter key: {key}"
+            )
+        values[key] = _plain_frontmatter_scalar(raw)
+    if not closed:
+        raise ArtifactLifecycleError("Project generation source frontmatter is unterminated")
+    if values.get("type") != "project-note" or values.get("lifecycle") != "active":
+        raise ArtifactLifecycleError(
+            "Project generation source must be an active project-note"
+        )
+
+
 def _vault_root_flags() -> int:
     # Reader intentionally has only search/traverse permission on the Vault
     # root. Linux O_PATH lets us hold a safe directory fd without requiring
@@ -192,6 +230,7 @@ def build_context_bundle(
             content = data.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise ArtifactLifecycleError(f"context source is not valid UTF-8: {path}") from exc
+        _project_note_source_allowed(path, content)
         sources.append(
             ContextSource(
                 path=path,
@@ -244,6 +283,7 @@ def parse_context_bundle(data: bytes) -> ContextBundle:
         digest = _require_sha256(digest, label="context source content_sha256")
         if not isinstance(content, str):
             raise ArtifactLifecycleError("context source content must be a string")
+        _project_note_source_allowed(path, content)
         encoded = content.encode("utf-8")
         if len(encoded) > MAX_SOURCE_BYTES or sha256_bytes(encoded) != digest:
             raise ArtifactLifecycleError("context source bytes do not match content_sha256")
