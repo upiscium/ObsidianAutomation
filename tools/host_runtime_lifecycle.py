@@ -125,7 +125,9 @@ class RuntimeTransaction:
     def _state(self, name: str) -> dict[str, str]:
         result = self.runner((
             "systemctl", "show", name, "--property=LoadState", "--property=ActiveState",
-            "--property=UnitFileState", "--property=MainPID", "--property=ControlPID", "--property=Job",
+            "--property=SubState", "--property=UnitFileState",
+            "--property=NextElapseUSecMonotonic",
+            "--property=MainPID", "--property=ControlPID", "--property=Job",
         ))
         state = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
         # systemctl may return 1 with a complete not-found unit representation.
@@ -307,6 +309,16 @@ class RuntimeTransaction:
                 raise LifecycleError("timer_enablement_restore_mismatch")
             if after["ActiveState"] != ("active" if before["active"] else "inactive"):
                 raise LifecycleError("timer_activation_restore_mismatch")
+            if before["active"]:
+                substate = after.get("SubState", "")
+                if substate not in {"waiting", "running"}:
+                    raise LifecycleError("timer_not_armed_after_restore")
+                if (
+                    substate == "waiting"
+                    and after.get("NextElapseUSecMonotonic", "")
+                    in {"", "0", "infinity", "n/a"}
+                ):
+                    raise LifecycleError("timer_not_armed_after_restore")
         self.host_activation = "restored" if any(s["enabled"] or s["active"] for s in self.intent["timers"].values()) else "not_attempted"
 
     def finish(self) -> None:

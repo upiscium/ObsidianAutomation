@@ -2,7 +2,7 @@
 Description=Poll ObsidianCore for reviewed changes to promote
 
 [Timer]
-OnBootSec=2min
+OnActiveSec=2min
 OnUnitInactiveSec=5min
 RandomizedDelaySec=30s
 Persistent=yes

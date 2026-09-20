@@ -45,6 +45,21 @@ obsidian-github-sync.timer
 obsidian-core-promotion.timer
 ```
 
+The recurring timers use `OnActiveSec=` for their initial monotonic arm rather
+than `OnBootSec=`. The updater deliberately stops and restarts timer units long
+after boot; an already-passed `OnBootSec=` deadline does not provide a new
+monotonic schedule when the target service's activation/inactivation timestamps
+were garbage-collected. `OnActiveSec=` gives every deliberate timer activation
+a fresh initial deadline, while the existing `OnUnitActiveSec=` /
+`OnUnitInactiveSec=` values retain the steady-state cadence after a service run.
+
+Restore acceptance is stronger than `ActiveState=active`. A timer that was
+previously active must return as either `waiting` with a finite
+`NextElapseUSecMonotonic`, or `running` while its trigger service executes.
+`active/elapsed` is a failed restore. The transaction then uses the ordinary
+fail-closed containment path and leaves all managed recurrence disabled with the
+original intent journal preserved for same-target recovery.
+
 A first install with absent/disabled timers stays disabled. An enabled but stopped
 timer remains enabled but stopped; a disabled but running timer remains disabled
 but running. Masked, linked, runtime-enabled, transitional and unknown timer
