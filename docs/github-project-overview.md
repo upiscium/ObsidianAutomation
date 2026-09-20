@@ -2,7 +2,7 @@
 
 ## Purpose
 
-For every Obsidian Project that opts in with `github_watch: true`, the GitHub sync pipeline maintains a sibling `Status.md` containing the repository's currently-open Issues and Pull Requests.
+For every non-terminal Obsidian Project that opts in with `github_watch: true`, the GitHub sync pipeline maintains a sibling `Status.md` containing the repository's currently-open Issues and Pull Requests. `done` and `cancelled` Projects are excluded from collection even if legacy metadata still has the toggle enabled.
 
 For the canonical Project:
 
