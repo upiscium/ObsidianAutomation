@@ -39,6 +39,12 @@ from obsidian_automation.openai_evaluator import (
 from obsidian_automation.openai_generator import (
     ADAPTER_VERSION as GENERATOR_ADAPTER_VERSION,
 )
+from obsidian_automation.ollama_evaluator import (
+    ADAPTER_VERSION as OLLAMA_EVALUATOR_ADAPTER_VERSION,
+)
+from obsidian_automation.ollama_generator import (
+    ADAPTER_VERSION as OLLAMA_GENERATOR_ADAPTER_VERSION,
+)
 from obsidian_automation.pre_review_job import (
     job_status,
     parse_recipe,
@@ -52,6 +58,8 @@ GEN_MODEL = "gemma3:12b"
 GEN_REVISION = f"identifier:{GEN_MODEL}"
 EVAL_MODEL = "gemma3:12b-eval"
 EVAL_REVISION = f"identifier:{EVAL_MODEL}"
+OLLAMA_MODEL = "gemma4:12b"
+OLLAMA_DIGEST = "d" * 64
 
 
 def _knowledge_note(body: str) -> str:
@@ -120,7 +128,43 @@ def _recipe_bytes() -> bytes:
     return (json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n").encode()
 
 
-def _fixture(tmp_path: Path) -> tuple[Path, Path, str, str]:
+def _ollama_recipe_bytes() -> bytes:
+    value = json.loads(_recipe_bytes())
+    value["generator"] = {
+        "implementation_revision": REVISION,
+        "prompt_template_version": PROMPT_TEMPLATE_VERSION,
+        "prompt_template_sha256": generator_prompt_sha256(),
+        "provider": "ollama",
+        "model_identifier": OLLAMA_MODEL,
+        "model_revision": OLLAMA_DIGEST,
+        "model_config": {
+            "adapter_version": OLLAMA_GENERATOR_ADAPTER_VERSION,
+            "think": False,
+            "options": {"temperature": 0},
+        },
+    }
+    value["evaluator"] = {
+        "implementation_revision": REVISION,
+        "prompt_template_version": EVALUATOR_PROMPT_TEMPLATE_VERSION,
+        "prompt_template_sha256": evaluator_prompt_sha256(),
+        "provider": "ollama",
+        "model_identifier": OLLAMA_MODEL,
+        "model_revision": OLLAMA_DIGEST,
+        "model_config": {
+            "adapter_version": OLLAMA_EVALUATOR_ADAPTER_VERSION,
+            "think": "low",
+            "strategy": EVALUATION_STRATEGY,
+            "options": {"temperature": 0},
+        },
+    }
+    return (json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n").encode()
+
+
+def _fixture(
+    tmp_path: Path,
+    *,
+    recipe_bytes: bytes | None = None,
+) -> tuple[Path, Path, str, str]:
     vault = tmp_path / "vault"
     knowledge = vault / "11-Knowledge"
     knowledge.mkdir(parents=True)
@@ -153,7 +197,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, str, str]:
         sources=(),
     )
     context_sha, _ = store_context_bundle(state, bundle)
-    recipe = parse_recipe(_recipe_bytes())
+    recipe = parse_recipe(_recipe_bytes() if recipe_bytes is None else recipe_bytes)
     submitted = submit_job(state, context_sha256=context_sha, recipe=recipe)
     return state, vault, str(submitted["job_id"]), context_sha
 
@@ -201,6 +245,87 @@ def _fake_generator(ai_root: Path, *, context_sha256: str, **_kwargs):
         model_revision=GEN_REVISION,
         prompt_template_version=PROMPT_TEMPLATE_VERSION,
         prompt_template_sha256=generator_prompt_sha256(),
+    )
+
+
+def _fake_ollama_generator(ai_root: Path, *, context_sha256: str, **_kwargs):
+    proposal_sha, proposal_path = store_untrusted_proposal(ai_root, _proposal_bytes())
+    record = build_generation_record(
+        ai_root,
+        context_sha256=context_sha256,
+        proposal_sha256=proposal_sha,
+        implementation_revision=REVISION,
+        prompt_template_version=PROMPT_TEMPLATE_VERSION,
+        prompt_template_sha256=generator_prompt_sha256(),
+        model_provider="ollama",
+        model_identifier=OLLAMA_MODEL,
+        model_revision=OLLAMA_DIGEST,
+        model_config={
+            "adapter_version": OLLAMA_GENERATOR_ADAPTER_VERSION,
+            "think": False,
+            "options": {"temperature": 0},
+        },
+        generated_at="2026-09-19T00:01:00Z",
+    )
+    generation_sha, generation_path = store_generation_record(ai_root, record)
+    return SimpleNamespace(
+        context_sha256=context_sha256,
+        proposal_sha256=proposal_sha,
+        proposal_path=proposal_path,
+        generation_sha256=generation_sha,
+        generation_path=generation_path,
+        model_identifier=OLLAMA_MODEL,
+        model_revision=OLLAMA_DIGEST,
+        prompt_template_version=PROMPT_TEMPLATE_VERSION,
+        prompt_template_sha256=generator_prompt_sha256(),
+    )
+
+
+def _fake_ollama_evaluator(ai_root: Path, *, proposal_sha256: str, generation_sha256: str, evaluation_context_sha256: str, **kwargs):
+    assert kwargs["think"] == "low"
+    context = worker.load_evaluation_context(ai_root, evaluation_context_sha256)
+    record = build_evaluation_record(
+        ai_root,
+        proposal_sha256=proposal_sha256,
+        mutation_sha256=context.mutation_sha256,
+        generation_sha256=generation_sha256,
+        evaluation_context_sha256=evaluation_context_sha256,
+        implementation_revision=REVISION,
+        prompt_template_version=EVALUATOR_PROMPT_TEMPLATE_VERSION,
+        prompt_template_sha256=evaluator_prompt_sha256(),
+        model_provider="ollama",
+        model_identifier=OLLAMA_MODEL,
+        model_revision=OLLAMA_DIGEST,
+        model_config={
+            "adapter_version": OLLAMA_EVALUATOR_ADAPTER_VERSION,
+            "think": "low",
+            "strategy": EVALUATION_STRATEGY,
+            "options": {"temperature": 0},
+        },
+        groundedness="pass",
+        redundancy="none",
+        consistency="pass",
+        recommendation="proceed",
+        findings=[],
+        evaluated_at="2026-09-19T00:02:00Z",
+    )
+    evaluation_sha, evaluation_path = store_evaluation_record(ai_root, record)
+    return SimpleNamespace(
+        proposal_sha256=proposal_sha256,
+        mutation_sha256=context.mutation_sha256,
+        generation_sha256=generation_sha256,
+        evaluation_context_sha256=evaluation_context_sha256,
+        evaluation_sha256=evaluation_sha,
+        evaluation_path=evaluation_path,
+        model_identifier=OLLAMA_MODEL,
+        model_revision=OLLAMA_DIGEST,
+        prompt_template_version=EVALUATOR_PROMPT_TEMPLATE_VERSION,
+        prompt_template_sha256=evaluator_prompt_sha256(),
+        groundedness="pass",
+        redundancy="none",
+        consistency="pass",
+        recommendation="proceed",
+        findings=(),
     )
 
 
@@ -267,6 +392,57 @@ def _fake_evaluator(recommendation: str):
         )
 
     return run
+
+
+def test_native_ollama_worker_chain_dispatches_false_and_low_thinking(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    state, vault, job_id, _ = _fixture(
+        tmp_path,
+        recipe_bytes=_ollama_recipe_bytes(),
+    )
+
+    openai_generator_called = False
+    openai_evaluator_called = False
+
+    def reject_openai_generator(*_args, **_kwargs):
+        nonlocal openai_generator_called
+        openai_generator_called = True
+        raise AssertionError("OpenAI generator must not be called")
+
+    def reject_openai_evaluator(*_args, **_kwargs):
+        nonlocal openai_evaluator_called
+        openai_evaluator_called = True
+        raise AssertionError("OpenAI evaluator must not be called")
+
+    monkeypatch.setattr(worker, "generate_knowledge_note_with_openai_compatible", reject_openai_generator)
+    monkeypatch.setattr(worker, "evaluate_knowledge_note_with_openai_compatible", reject_openai_evaluator)
+    monkeypatch.setattr(worker, "generate_knowledge_note_with_ollama", _fake_ollama_generator)
+    monkeypatch.setattr(worker, "evaluate_knowledge_note_with_ollama", _fake_ollama_evaluator)
+
+    generated = worker.run_generator_worker(
+        state,
+        base_url="https://ollama.arc.upiscium.dev/v1",
+        deployed_revision=REVISION,
+    )
+    assert generated["state"] == "validating"
+
+    validated = worker.run_validator_worker(state, vault)
+    assert validated["state"] == "building_evaluation_context"
+
+    read = worker.run_reader_worker(state, vault)
+    assert read["state"] == "evaluating"
+
+    evaluated = worker.run_evaluator_worker(
+        state,
+        base_url="https://ollama.arc.upiscium.dev/v1",
+        deployed_revision=REVISION,
+    )
+    assert evaluated["state"] == "awaiting_human_review"
+    assert openai_generator_called is False
+    assert openai_evaluator_called is False
+    assert job_status(state, job_id)["current_generation"]["state"] == "awaiting_human_review"
 
 
 @pytest.mark.parametrize("recommendation", ["proceed", "do_not_proceed"])
