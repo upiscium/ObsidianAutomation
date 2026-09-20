@@ -82,6 +82,7 @@ DIRECTORIES: tuple[tuple[str, str, str, int], ...] = (
     ("/var/lib/obsidian-ai", "root", "root", 0o755),
     ("/var/lib/obsidian-ai/vault", "obsidian-ai-sync", "obsidian-ai-sync", 0o700),
     ("/var/lib/obsidian-ai/vault/11-Knowledge", "obsidian-ai-sync", "obsidian-ai-sync", 0o700),
+    ("/var/lib/obsidian-ai/vault/10-Project", "obsidian-ai-sync", "obsidian-ai-sync", 0o700),
     ("/var/lib/obsidian-ai/state", "root", "root", 0o700),
     ("/var/lib/obsidian-ai/state/00-Untrusted", "root", "root", 0o700),
     ("/var/lib/obsidian-ai/state/02-Orchestration", "root", "root", 0o700),
@@ -126,6 +127,9 @@ AI_ACLS: dict[str, tuple[str, ...]] = {
         "u:obsidian-ai-reader:r-x",
         "u:obsidian-ai-validator:r-x",
         "u:obsidian-ai-executor:r-x",
+    ),
+    "/var/lib/obsidian-ai/vault/10-Project": (
+        "u:obsidian-ai-reader:r-x",
     ),
     "/var/lib/obsidian-ai/state": (
         "u:obsidian-ai-sync:r-x",
