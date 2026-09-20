@@ -30,6 +30,7 @@ obsidian-knowledge-evaluation-context = "obsidian_automation.evaluation_artifact
 obsidian-knowledge-evaluate = "obsidian_automation.ollama_evaluator:main"
 obsidian-knowledge-review = "obsidian_automation.knowledge_review:main"
 obsidian-pre-review-job = "obsidian_automation.pre_review_job:main"
+obsidian-ai-input-planner = "obsidian_automation.ai_input_planner:main"
 obsidian-pre-review-generator-worker = "obsidian_automation.pre_review_worker:generator_main"
 obsidian-pre-review-validator-worker = "obsidian_automation.pre_review_worker:validator_main"
 obsidian-pre-review-reader-worker = "obsidian_automation.pre_review_worker:reader_main"

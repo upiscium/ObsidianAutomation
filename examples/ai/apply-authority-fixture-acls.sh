@@ -22,6 +22,7 @@ VAULT_MARKER="$VAULT_ROOT/.obsidian-ai-disposable-fixture"
 DEFAULT_AI_ROOT="$VAULT_ROOT/20-AI"
 STATE_MARKER="$AI_ROOT/.obsidian-ai-disposable-state"
 KNOWLEDGE="$VAULT_ROOT/11-Knowledge"
+PROJECTS="$VAULT_ROOT/10-Project"
 UNTRUSTED="$AI_ROOT/00-Untrusted"
 ORCHESTRATION="$AI_ROOT/02-Orchestration"
 ORCHESTRATION_RECIPES="$ORCHESTRATION/recipes"
@@ -72,6 +73,7 @@ SYNC_GROUP=$(id -gn "$SYNC_USER")
 
 install -d -o "$SYNC_USER" -g "$SYNC_GROUP" -m 0700 "$VAULT_ROOT"
 install -d -o "$SYNC_USER" -g "$SYNC_GROUP" -m 0700 "$KNOWLEDGE"
+install -d -o "$SYNC_USER" -g "$SYNC_GROUP" -m 0700 "$PROJECTS"
 setfacl -b "$VAULT_ROOT"
 setfacl -k "$VAULT_ROOT" || true
 for entry in \
@@ -97,6 +99,13 @@ for entry in \
   "u:$EXECUTOR_USER:r-x"; do
   setfacl -m "d:$entry" "$KNOWLEDGE"
 done
+
+setfacl -b "$PROJECTS"
+setfacl -k "$PROJECTS" || true
+setfacl -m u::rwx,g::---,o::---,m::rwx "$PROJECTS"
+setfacl -m "u:$READER_USER:r-x" "$PROJECTS"
+setfacl -m d:u::rwx,d:g::---,d:o::---,d:m::rwx "$PROJECTS"
+setfacl -m "d:u:$READER_USER:r-x" "$PROJECTS"
 
 install -d -o root -g root -m 0700 "$AI_ROOT"
 for directory in \

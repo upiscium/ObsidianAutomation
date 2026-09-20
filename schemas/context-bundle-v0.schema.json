@@ -19,7 +19,7 @@
         "properties": {
           "path": {
             "type": "string",
-            "pattern": "^11-Knowledge/.+\\.md$",
+            "pattern": "^(11-Knowledge|10-Project)/.+\\.md$",
             "maxLength": 1024
           },
           "content_sha256": {

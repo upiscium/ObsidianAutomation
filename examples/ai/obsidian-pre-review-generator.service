@@ -1,6 +1,7 @@
 [Unit]
 Description=Obsidian pre-review Generator worker
-After=network-online.target
+Requires=obsidian-ai-input-planner.service
+After=network-online.target obsidian-ai-input-planner.service
 Wants=network-online.target
 ConditionPathExists=/etc/obsidian-ai/pre-review-generator.env
 

@@ -151,7 +151,7 @@ def test_timer_state_matrix_and_no_unrequested_activation(setup, enabled, active
     assert not (kwargs["receipt_dir"] / "pending-runtime.json").exists()
     assert len(list(kwargs["receipt_dir"].glob("*.runtime.json"))) == 1
     assert kwargs["revision_env"].read_text() == f"OBSIDIAN_AUTOMATION_REVISION={TARGET}\n"
-    assert len(list(kwargs["systemd_dir"].glob("*.service"))) == 11
+    assert len(list(kwargs["systemd_dir"].glob("*.service"))) == 12
     assert all("gitea-runner" not in " ".join(c) and "obsidian-snapshot" not in " ".join(c) for c in system.commands)
 
 

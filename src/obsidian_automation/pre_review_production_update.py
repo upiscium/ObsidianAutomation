@@ -25,6 +25,7 @@ MIRROR_TIMER_UNIT = "obsidian-ai-vault-pull.timer"
 MIRROR_SERVICE_UNIT = "obsidian-ai-vault-pull.service"
 PRE_REVIEW_SERVICES = (
     "obsidian-pre-review-status.service",
+    "obsidian-ai-input-planner.service",
     "obsidian-pre-review-evaluator.service",
     "obsidian-pre-review-reader.service",
     "obsidian-pre-review-validator.service",
@@ -33,6 +34,7 @@ PRE_REVIEW_SERVICES = (
 OBSOLETE_UNITS = ("obsidian-pre-review-evaluator.timer",)
 REQUIRED_UNITS = frozenset(
     {
+        "obsidian-ai-input-planner.service",
         "obsidian-pre-review-generator.service",
         "obsidian-pre-review-validator.service",
         "obsidian-pre-review-reader.service",

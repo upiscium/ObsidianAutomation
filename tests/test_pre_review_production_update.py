@@ -10,6 +10,7 @@ from obsidian_automation.pre_review_production_update import (
     PreReviewProductionUpdateError,
     MIRROR_SERVICE_UNIT,
     MIRROR_TIMER_UNIT,
+    PRE_REVIEW_SERVICES,
     REQUIRED_UNITS,
     TIMER_UNIT,
     execute_update,
@@ -128,8 +129,7 @@ class Runner:
         if (
             len(command) == 3
             and command[:2] == ("systemctl", "stop")
-            and command[2].startswith("obsidian-pre-review-")
-            and command[2].endswith(".service")
+            and command[2] in PRE_REVIEW_SERVICES
         ):
             return CommandResult(0, "", "")
 

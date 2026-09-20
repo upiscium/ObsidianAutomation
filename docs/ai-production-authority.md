@@ -55,7 +55,8 @@ Recommended layout:
 ```text
 /var/lib/obsidian-ai/
 ├── vault/                   # Nextcloud -> local pull-only mirror
-│   └── 11-Knowledge/
+│   ├── 11-Knowledge/
+│   └── 10-Project/          # Project Notes for Generation input only
 └── state/                   # local-only; never rclone-sync this tree
     ├── 00-Untrusted/
     ├── 02-Orchestration/
@@ -107,6 +108,11 @@ it. Sync and Executor do not receive orchestration write authority.
 ## Reader / Generator sequence
 
 ```text
+Reader / Input Planner / Indexer
+  read canonical 11-Knowledge + active Project Notes
+  create mixed immutable Generation Context
+  submit bounded pre-review jobs
+        ↓
 Reader / Indexer
   read canonical 11-Knowledge
   create immutable 04-Index/<sha>.index.json

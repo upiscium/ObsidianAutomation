@@ -1,0 +1,5 @@
+# AI Writer pull-only mirror corpus.
+# Generation may use active Knowledge and active Project Notes.
++ /11-Knowledge/**
++ /10-Project/**
+- /**

@@ -19,13 +19,13 @@ The target implementation:
 2. Rechecks the clean production `main` checkout and target ancestry.
 3. Captures the independent enabled/active states of all four managed timers and
    fsyncs `pending-runtime.json` **before** changing any timer.
-4. Disables/stops those timers and drains all eleven existing role services.
+4. Disables/stops those timers and drains all twelve managed role services.
    It does not kill a running writer to make an update succeed. A 300-second
    drain deadline fails the update before package/authority mutation.
 5. Updates the production checkout to the exact SHA, installs the non-editable
    package using the local build wheelhouse, reapplies authority and installs
    the target-owned launcher.
-6. Atomically installs each of the fifteen canonical systemd units, rewrites
+6. Atomically installs each of the sixteen canonical systemd units, rewrites
    their legacy runtime paths to the shared runtime, binds the AI revision env
    to the target SHA and reloads systemd. The unit set is not a multi-file atomic
    filesystem transaction; it is changed only while recurrence is quiesced.

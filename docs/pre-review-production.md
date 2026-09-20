@@ -8,12 +8,13 @@ host. It stops at `awaiting_human_review`.
 It does not connect automatic execution or transport:
 
 ```text
-Generator -> Validator -> Reader -> Evaluator -> awaiting_human_review
+Input Planner -> Generator -> Validator -> Reader -> Evaluator -> awaiting_human_review
                                                 STOP
 ```
 
 The production updater never starts Executor, WebDAV transport, or any canonical
-write worker.
+write worker. The Input Planner runs as Reader and is skipped unless
+`/etc/obsidian-ai/pre-review-input.env` exists.
 
 ## Production paths
 
