@@ -1,0 +1,26 @@
+[Unit]
+Description=Plan one automatic Obsidian AI input batch
+ConditionPathExists=/etc/obsidian-ai/pre-review-input.env
+ConditionPathExists=/etc/obsidian-ai/pre-review-revision.env
+
+[Service]
+Type=oneshot
+User=obsidian-ai-reader
+Group=obsidian-ai-reader
+EnvironmentFile=/etc/obsidian-ai/pre-review-input.env
+EnvironmentFile=/etc/obsidian-ai/pre-review-revision.env
+ExecStart=/opt/obsidian-ai/venv/bin/obsidian-ai-input-planner \
+  --ai-root /var/lib/obsidian-ai/state \
+  --vault-root /var/lib/obsidian-ai/vault \
+  --deployed-revision ${OBSIDIAN_AUTOMATION_REVISION} \
+  --generator-model ${AI_INPUT_GENERATOR_MODEL} \
+  --evaluator-model ${AI_INPUT_EVALUATOR_MODEL}
+NoNewPrivileges=true
+PrivateNetwork=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/var/lib/obsidian-ai/vault
+ReadWritePaths=/var/lib/obsidian-ai/state/02-Orchestration /var/lib/obsidian-ai/state/05-Context /var/lib/obsidian-ai/state/24-Locks/read-view
+UMask=0007
+TimeoutStartSec=2min
