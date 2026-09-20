@@ -1177,8 +1177,12 @@ def plan_once(
     recovered = _recover_pending_submission(
         ai_root,
         deployed_revision=deployed_revision,
+        generator_provider=generator_provider,
         generator_model=generator_model,
+        generator_model_revision=generator_model_revision,
+        evaluator_provider=evaluator_provider,
         evaluator_model=evaluator_model,
+        evaluator_model_revision=evaluator_model_revision,
     )
     if recovered is not None:
         return recovered
@@ -1245,8 +1249,12 @@ def plan_once(
     selection_sha, _ = _store_selection(ai_root, selection)
     recipe = _build_recipe(
         deployed_revision=deployed_revision,
+        generator_provider=generator_provider,
         generator_model=generator_model,
+        generator_model_revision=generator_model_revision,
+        evaluator_provider=evaluator_provider,
         evaluator_model=evaluator_model,
+        evaluator_model_revision=evaluator_model_revision,
     )
     recipe_sha = sha256_bytes(recipe.to_json_bytes())
     pending = {
