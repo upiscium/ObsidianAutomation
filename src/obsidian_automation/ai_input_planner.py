@@ -787,6 +787,7 @@ def plan_once(
         epoch=selection.epoch,
         cycle=selection.cycle,
         selected=[entry.payload() for entry in selection.entries],
+        created_at=context.created_at,
     )
     emit_context_projection(
         ai_root,
