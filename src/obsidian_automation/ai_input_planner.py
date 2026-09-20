@@ -947,6 +947,134 @@ def _build_recipe(
     )
 
 
+def _recover_pending_submission(
+    ai_root: Path,
+    *,
+    deployed_revision: str,
+    generator_model: str,
+    evaluator_model: str,
+) -> dict[str, object] | None:
+    pending = _load_pending(ai_root)
+    if pending is None:
+        return None
+
+    before = _state_from_payload(
+        pending["planner_state_before"],
+        label="planner_state_before",
+    )
+    after = _state_from_payload(
+        pending["planner_state_after"],
+        label="planner_state_after",
+    )
+    current = _load_state(ai_root)
+    if current == after:
+        _clear_pending(ai_root)
+        return {
+            "event": "ai-input-planner",
+            "status": "recovered_committed_submission",
+            "selection_sha256": pending["selection_sha256"],
+            "context_sha256": pending["context_sha256"],
+        }
+    if current != before:
+        raise AIInputPlannerError(
+            "pending planner submission does not match current scheduler state"
+        )
+
+    context = load_context_bundle(ai_root, str(pending["context_sha256"]))
+    if context.created_at != pending["context_created_at"]:
+        raise AIInputPlannerError("pending Context timestamp binding mismatch")
+    selected = _validate_pending_selected(pending["selected"])
+    _validate_pending_context(context, selected)
+
+    recipe = _build_recipe(
+        deployed_revision=deployed_revision,
+        generator_model=generator_model,
+        evaluator_model=evaluator_model,
+    )
+    recipe_sha = sha256_bytes(recipe.to_json_bytes())
+    superseded = False
+
+    if pending["phase"] == "submitted":
+        if pending["recipe_sha256"] != recipe_sha:
+            old_generation = pending["generation_id"]
+            assert isinstance(old_generation, str)
+            supersede_unstarted_generation(
+                ai_root,
+                old_generation,
+                reason_code="planner_revision_replaced",
+            )
+            superseded = True
+        submitted = submit_job(
+            ai_root,
+            context_sha256=str(pending["context_sha256"]),
+            recipe=recipe,
+        )
+        if pending["recipe_sha256"] == recipe_sha:
+            if (
+                submitted["job_id"] != pending["job_id"]
+                or submitted["generation_id"] != pending["generation_id"]
+            ):
+                raise AIInputPlannerError(
+                    "pending submitted job identity changed unexpectedly"
+                )
+    else:
+        submitted = submit_job(
+            ai_root,
+            context_sha256=str(pending["context_sha256"]),
+            recipe=recipe,
+        )
+
+    if submitted["recipe_sha256"] != recipe_sha:
+        raise AIInputPlannerError("submitted recipe digest does not match current recipe")
+
+    updated = dict(pending)
+    updated.update(
+        {
+            "phase": "submitted",
+            "recipe_sha256": recipe_sha,
+            "job_id": submitted["job_id"],
+            "generation_id": submitted["generation_id"],
+        }
+    )
+    _store_pending(ai_root, updated)
+
+    case_id = str(submitted["generation_id"])
+    emit_input_projection(
+        ai_root,
+        case_id=case_id,
+        selection_sha256=str(updated["selection_sha256"]),
+        selection_policy=str(updated["selection_policy"]),
+        objective_policy=str(updated["objective_policy"]),
+        epoch=int(updated["epoch"]),
+        cycle=int(updated["cycle"]),
+        selected=selected,
+        created_at=context.created_at,
+    )
+    emit_context_projection(
+        ai_root,
+        case_id=case_id,
+        context_sha256=str(updated["context_sha256"]),
+        context=context,
+    )
+    _store_state(ai_root, after)
+    _clear_pending(ai_root)
+
+    return {
+        "event": "ai-input-planner",
+        "status": (
+            "recovered_revision_submission"
+            if superseded
+            else "recovered_pending_submission"
+        ),
+        "selection_sha256": updated["selection_sha256"],
+        "context_sha256": updated["context_sha256"],
+        "job_id": submitted["job_id"],
+        "generation_id": submitted["generation_id"],
+        "created": submitted["created"],
+        "superseded_stale_generation": superseded,
+    }
+
+
 def plan_once(
     ai_root: Path,
     vault_root: Path,
@@ -963,6 +1091,15 @@ def plan_once(
         raise AIInputPlannerError(
             f"target_inflight must be 1..{HARD_BACKPRESSURE}"
         )
+
+    recovered = _recover_pending_submission(
+        ai_root,
+        deployed_revision=deployed_revision,
+        generator_model=generator_model,
+        evaluator_model=evaluator_model,
+    )
+    if recovered is not None:
+        return recovered
 
     states = _current_states(ai_root)
     if states.get("blocked", 0) or states.get("retry_exhausted", 0):
@@ -1029,11 +1166,40 @@ def plan_once(
         generator_model=generator_model,
         evaluator_model=evaluator_model,
     )
+    recipe_sha = sha256_bytes(recipe.to_json_bytes())
+    pending = {
+        "record_version": RECORD_VERSION,
+        "phase": "prepared",
+        "selection_sha256": selection_sha,
+        "selection_policy": selection.policy,
+        "objective_policy": selection.objective_policy,
+        "epoch": selection.epoch,
+        "cycle": selection.cycle,
+        "selected": _selected_payload(selection.entries),
+        "context_sha256": context_sha,
+        "context_created_at": context.created_at,
+        "planner_state_before": _state_payload(state),
+        "planner_state_after": _state_payload(next_state),
+        "recipe_sha256": recipe_sha,
+        "job_id": None,
+        "generation_id": None,
+    }
+    _store_pending(ai_root, pending)
     submitted = submit_job(
         ai_root,
         context_sha256=context_sha,
         recipe=recipe,
     )
+    if submitted["recipe_sha256"] != recipe_sha:
+        raise AIInputPlannerError("submitted recipe digest does not match prepared recipe")
+    pending.update(
+        {
+            "phase": "submitted",
+            "job_id": submitted["job_id"],
+            "generation_id": submitted["generation_id"],
+        }
+    )
+    _store_pending(ai_root, pending)
     case_id = str(submitted["generation_id"])
     emit_input_projection(
         ai_root,
@@ -1053,6 +1219,7 @@ def plan_once(
         context=context,
     )
     _store_state(ai_root, next_state)
+    _clear_pending(ai_root)
     return {
         "event": "ai-input-planner",
         "status": "submitted" if submitted["created"] else "existing_job",
