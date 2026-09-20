@@ -22,7 +22,7 @@ REQUIRED_UNITS = {
         "obsidian-pre-review-generator-worker",
         "EnvironmentFile=/etc/obsidian-ai/pre-review-generator.env",
         "EnvironmentFile=/etc/obsidian-ai/pre-review-revision.env",
-        "Wants=network-online.target obsidian-ai-input-planner.service",
+        "Requires=obsidian-ai-input-planner.service",
         "--openai-base-url",
     ),
     "obsidian-pre-review-validator.service": (
