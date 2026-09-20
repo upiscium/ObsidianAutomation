@@ -26,10 +26,14 @@ TARGET = "a" * 40
 class System:
     def __init__(self, existing=True):
         self.states = {name: dict(LoadState="loaded" if existing else "not-found",
-                      ActiveState="inactive", UnitFileState="disabled" if existing else "",
+                      ActiveState="inactive", SubState="dead",
+                      UnitFileState="disabled" if existing else "",
+                      NextElapseUSecMonotonic="infinity",
                       MainPID="0", ControlPID="0", Job="") for name in (*life.TIMERS, *life.SERVICES)}
         self.commands = []
         self.fail = None
+        self.elapsed_on_start = set()
+        self.no_next_on_start = set()
         self.source = None
         self.app = None
         self.deployed = False
@@ -68,15 +72,33 @@ class System:
                     s["LoadState"] = "loaded"
                     s["UnitFileState"] = s["UnitFileState"] or "disabled"
             elif action == "disable":
-                self.states[args[-1]]["UnitFileState"] = "disabled"
+                name = args[-1]
+                self.states[name]["UnitFileState"] = "disabled"
                 if "--now" in args:
-                    self.states[args[-1]]["ActiveState"] = "inactive"
+                    self.states[name]["ActiveState"] = "inactive"
+                    self.states[name]["SubState"] = "dead"
+                    self.states[name]["NextElapseUSecMonotonic"] = "infinity"
             elif action in {"stop", "reset-failed"}:
-                self.states[args[-1]]["ActiveState"] = "inactive"
+                name = args[-1]
+                self.states[name]["ActiveState"] = "inactive"
+                self.states[name]["SubState"] = "dead"
+                self.states[name]["NextElapseUSecMonotonic"] = "infinity"
             elif action == "enable":
                 self.states[args[-1]]["UnitFileState"] = "enabled"
             elif action == "start":
-                self.states[args[-1]]["ActiveState"] = "active"
+                name = args[-1]
+                self.states[name]["ActiveState"] = "active"
+                if name.endswith(".timer"):
+                    if name in self.elapsed_on_start:
+                        self.states[name]["SubState"] = "elapsed"
+                        self.states[name]["NextElapseUSecMonotonic"] = "infinity"
+                    else:
+                        self.states[name]["SubState"] = "waiting"
+                        self.states[name]["NextElapseUSecMonotonic"] = (
+                            "infinity" if name in self.no_next_on_start else "5min"
+                        )
+                else:
+                    self.states[name]["SubState"] = "running"
             else:
                 raise AssertionError(args)
         return subprocess.CompletedProcess(args, rc, out + "\n", "")
@@ -199,6 +221,35 @@ def test_partial_restore_failure_disables_all(setup):
     system.fail = lambda c: c == ("systemctl", "start", life.TIMERS[1])
     with pytest.raises(life.LifecycleError, match="timer_start"):
         complete(kwargs)
+    assert all(system.states[t]["ActiveState"] == "inactive" for t in life.TIMERS)
+    assert all(system.states[t]["UnitFileState"] == "disabled" for t in life.TIMERS)
+
+
+def test_elapsed_timer_after_restore_fails_closed(setup):
+    kwargs, system, _ = setup
+    for name in life.TIMERS:
+        system.states[name].update(UnitFileState="enabled", ActiveState="active")
+    system.elapsed_on_start.add(life.TIMERS[0])
+
+    with pytest.raises(life.LifecycleError, match="timer_not_armed_after_restore"):
+        complete(kwargs)
+
+    assert all(system.states[t]["ActiveState"] == "inactive" for t in life.TIMERS)
+    assert all(system.states[t]["UnitFileState"] == "disabled" for t in life.TIMERS)
+    pending = json.loads((kwargs["receipt_dir"] / "pending-runtime.json").read_text())
+    assert pending["phase"] == "failed"
+    assert pending["containment"] == "disabled"
+
+
+def test_waiting_timer_without_next_elapse_fails_closed(setup):
+    kwargs, system, _ = setup
+    for name in life.TIMERS:
+        system.states[name].update(UnitFileState="enabled", ActiveState="active")
+    system.no_next_on_start.add(life.TIMERS[2])
+
+    with pytest.raises(life.LifecycleError, match="timer_not_armed_after_restore"):
+        complete(kwargs)
+
     assert all(system.states[t]["ActiveState"] == "inactive" for t in life.TIMERS)
     assert all(system.states[t]["UnitFileState"] == "disabled" for t in life.TIMERS)
 

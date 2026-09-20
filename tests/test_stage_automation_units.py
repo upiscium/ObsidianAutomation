@@ -251,6 +251,14 @@ def test_stage_requires_exact_clean_target(tmp_path: Path) -> None:
         raise AssertionError("wrong target source was not rejected")
 
 
+def test_real_timer_sources_rearm_from_timer_activation() -> None:
+    for timer in stage.TIMER_UNITS:
+        source = Path(stage.SOURCE_LAYOUT[timer])
+        text = source.read_text(encoding="utf-8")
+        assert "OnActiveSec=" in text, timer
+        assert "OnBootSec=" not in text, timer
+
+
 def test_real_unit_sources_render_to_consolidated_paths() -> None:
     for unit, relative in stage.SOURCE_LAYOUT.items():
         source = Path(relative)
