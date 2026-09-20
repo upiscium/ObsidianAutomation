@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Iterable, TextIO
 
 
-VALID_STATUSES = frozenset({"planning", "running", "stopped", "done", "cancelled"})
+VALID_STATUSES = frozenset({"planning", "running", "stopped", "stable", "done", "cancelled"})
 TERMINAL_STATUSES = frozenset({"done", "cancelled"})
 _REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
@@ -158,6 +158,8 @@ def scan_projects(vault_root: Path, project_folder: str = "10-Project") -> tuple
             continue
         if status not in VALID_STATUSES:
             warnings.append(f"{relative}: invalid Project status: {status!r}")
+            continue
+        if status in TERMINAL_STATUSES:
             continue
         projects.append(ProjectBinding(path=relative, repository=repository, status=status))
     return projects, warnings
@@ -462,7 +464,7 @@ class StateStore:
 
 
 def _has_new_commit(snapshot: RepositorySnapshot, previous: ProjectState) -> bool:
-    # A changed default-branch HEAD is new terminal-state activity even when a
+    # A changed default-branch HEAD is new stable-state activity even when a
     # force-push moves the branch back to an older commit timestamp.
     return bool(
         snapshot.latest_commit_sha
@@ -482,14 +484,17 @@ def decide_status(
         return StatusDecision("stopped", "stopped is human-controlled", False)
 
     if project.status in TERMINAL_STATUSES:
-        if previous is None or previous.last_status != project.status or previous.repository != project.repository:
-            return StatusDecision(project.status, "terminal status baseline initialized", False)
+        return StatusDecision(project.status, "terminal status is human-controlled", False)
+
+    if project.status == "stable":
+        if previous is None or previous.last_status != "stable" or previous.repository != project.repository:
+            return StatusDecision("stable", "stable status baseline initialized", False)
         if _has_new_commit(snapshot, previous):
-            return StatusDecision("running", "new commit observed after terminal baseline", True)
+            return StatusDecision("running", "new commit observed after stable baseline", True)
         if previous.pending_status in {"running", "planning"}:
             return StatusDecision(
                 previous.pending_status,
-                previous.pending_reason or "pending terminal reactivation",
+                previous.pending_reason or "pending stable reactivation",
                 True,
             )
         new_issues = snapshot.open_issues - previous.open_issues
@@ -502,10 +507,10 @@ def decide_status(
                 details.append("prs=" + ",".join(str(value) for value in sorted(new_prs)))
             return StatusDecision(
                 "planning",
-                "new open GitHub activity after terminal baseline: " + " ".join(details),
+                "new open GitHub activity after stable baseline: " + " ".join(details),
                 True,
             )
-        return StatusDecision(project.status, "no new activity after terminal baseline", False)
+        return StatusDecision("stable", "no new activity after stable baseline", False)
 
     cutoff = now.astimezone(timezone.utc) - timedelta(days=active_window_days)
     if snapshot.latest_commit_at is not None and snapshot.latest_commit_at >= cutoff:
