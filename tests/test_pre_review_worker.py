@@ -403,7 +403,7 @@ def test_systemd_chain_uses_distinct_fixed_identities_and_stays_disabled_by_defa
     assert "User=obsidian-ai-reader" in units["reader"]
     assert "User=obsidian-ai-evaluator" in units["evaluator"]
 
-    assert "Wants=network-online.target obsidian-ai-input-planner.service" in units["generator"]
+    assert "Requires=obsidian-ai-input-planner.service" in units["generator"]
     assert "After=network-online.target obsidian-ai-input-planner.service" in units["generator"]
     assert "Requires=obsidian-pre-review-generator.service" in units["validator"]
     assert "Requires=obsidian-pre-review-validator.service" in units["reader"]
