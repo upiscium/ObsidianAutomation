@@ -259,9 +259,9 @@ After private config/credential migration passes, stage the production systemd
 units on the new consolidated LXC while it is still non-serving.
 
 The staging tool reads the reviewed canonical unit examples from the exact target
-checkout and installs 16 units:
+checkout and installs 17 units:
 
-- AI Vault mirror + Input Planner + pre-review pipeline: 9 units;
+- AI Vault mirror + Input Planner + human projection + pre-review pipeline: 10 units;
 - GitHub Sync pipeline: 5 units;
 - Core Promotion: 2 units.
 
