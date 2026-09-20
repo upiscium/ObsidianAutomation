@@ -111,6 +111,19 @@ def test_ai_acl_matrix_keeps_semantic_authorities_distinct() -> None:
     assert "u:obsidian-ai-evaluator:rwx" in acls[
         "/var/lib/obsidian-ai/state/15-Evaluation"
     ]
+    assert "u:obsidian-ai-generator:rwx" in acls[
+        "/var/lib/obsidian-ai/state/16-Human-Projection/generator"
+    ]
+    assert "u:obsidian-ai-sync:r-x" in acls[
+        "/var/lib/obsidian-ai/state/16-Human-Projection/generator"
+    ]
+    assert not any(
+        entry.startswith("u:obsidian-ai-sync:rwx")
+        for entry in acls["/var/lib/obsidian-ai/state/16-Human-Projection/generator"]
+    )
+    assert "u:obsidian-ai-sync:rwx" in acls[
+        "/var/lib/obsidian-ai/state/17-Human-Projection-Result"
+    ]
     assert "u:obsidian-ai-reviewer:rwx" in acls[
         "/var/lib/obsidian-ai/state/20-Review"
     ]

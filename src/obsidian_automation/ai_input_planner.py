@@ -51,6 +51,7 @@ from .pre_review_job import (
     parse_recipe,
     submit_job,
 )
+from .human_projection import emit_context_projection, emit_input_projection
 from .production_io import ProductionIOError, mirror_read_lock
 
 
@@ -775,6 +776,24 @@ def plan_once(
         ai_root,
         context_sha256=context_sha,
         recipe=recipe,
+    )
+    case_id = str(submitted["generation_id"])
+    emit_input_projection(
+        ai_root,
+        case_id=case_id,
+        selection_sha256=selection_sha,
+        selection_policy=selection.policy,
+        objective_policy=selection.objective_policy,
+        epoch=selection.epoch,
+        cycle=selection.cycle,
+        selected=[entry.payload() for entry in selection.entries],
+        created_at=context.created_at,
+    )
+    emit_context_projection(
+        ai_root,
+        case_id=case_id,
+        context_sha256=context_sha,
+        context=context,
     )
     _store_state(ai_root, next_state)
     return {

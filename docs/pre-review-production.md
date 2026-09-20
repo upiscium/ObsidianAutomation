@@ -12,8 +12,7 @@ Input Planner -> Generator -> Validator -> Reader -> Evaluator -> awaiting_human
                                                 STOP
 ```
 
-The production updater never starts Executor, WebDAV transport, or any canonical
-write worker. The Input Planner runs as Reader and is skipped unless
+The production updater never starts Executor or the canonical Knowledge WebDAV transport. Human-facing AI projection sync is a separate Sync-owned conditional-create path restricted to `03-AI/**`; it carries no Knowledge mutation authority. The Input Planner runs as Reader and is skipped unless
 `/etc/obsidian-ai/pre-review-input.env` exists.
 
 ## Production paths

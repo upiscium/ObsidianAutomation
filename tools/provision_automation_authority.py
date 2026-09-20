@@ -94,6 +94,15 @@ DIRECTORIES: tuple[tuple[str, str, str, int], ...] = (
     ("/var/lib/obsidian-ai/state/12-Evaluation-Request", "root", "root", 0o700),
     ("/var/lib/obsidian-ai/state/14-Evaluation-Context", "root", "root", 0o700),
     ("/var/lib/obsidian-ai/state/15-Evaluation", "root", "root", 0o700),
+    ("/var/lib/obsidian-ai/state/16-Human-Projection", "root", "root", 0o700),
+    ("/var/lib/obsidian-ai/state/16-Human-Projection/reader", "root", "root", 0o700),
+    ("/var/lib/obsidian-ai/state/16-Human-Projection/generator", "root", "root", 0o700),
+    ("/var/lib/obsidian-ai/state/16-Human-Projection/validator", "root", "root", 0o700),
+    ("/var/lib/obsidian-ai/state/16-Human-Projection/evaluator", "root", "root", 0o700),
+    ("/var/lib/obsidian-ai/state/16-Human-Projection/reviewer", "root", "root", 0o700),
+    ("/var/lib/obsidian-ai/state/16-Human-Projection/executor", "root", "root", 0o700),
+    ("/var/lib/obsidian-ai/state/16-Human-Projection/sync", "root", "root", 0o700),
+    ("/var/lib/obsidian-ai/state/17-Human-Projection-Result", "root", "root", 0o700),
     ("/var/lib/obsidian-ai/state/20-Review", "root", "root", 0o700),
     ("/var/lib/obsidian-ai/state/24-Locks", "root", "root", 0o700),
     ("/var/lib/obsidian-ai/state/24-Locks/read-view", "root", "root", 0o700),
@@ -190,6 +199,45 @@ AI_ACLS: dict[str, tuple[str, ...]] = {
     "/var/lib/obsidian-ai/state/15-Evaluation": (
         "u:obsidian-ai-evaluator:rwx",
         "u:obsidian-ai-reviewer:r-x",
+    ),
+    "/var/lib/obsidian-ai/state/16-Human-Projection": (
+        "u:obsidian-ai-reader:--x",
+        "u:obsidian-ai-generator:--x",
+        "u:obsidian-ai-validator:--x",
+        "u:obsidian-ai-evaluator:--x",
+        "u:obsidian-ai-reviewer:--x",
+        "u:obsidian-ai-executor:--x",
+        "u:obsidian-ai-sync:r-x",
+    ),
+    "/var/lib/obsidian-ai/state/16-Human-Projection/reader": (
+        "u:obsidian-ai-reader:rwx",
+        "u:obsidian-ai-sync:r-x",
+    ),
+    "/var/lib/obsidian-ai/state/16-Human-Projection/generator": (
+        "u:obsidian-ai-generator:rwx",
+        "u:obsidian-ai-sync:r-x",
+    ),
+    "/var/lib/obsidian-ai/state/16-Human-Projection/validator": (
+        "u:obsidian-ai-validator:rwx",
+        "u:obsidian-ai-sync:r-x",
+    ),
+    "/var/lib/obsidian-ai/state/16-Human-Projection/evaluator": (
+        "u:obsidian-ai-evaluator:rwx",
+        "u:obsidian-ai-sync:r-x",
+    ),
+    "/var/lib/obsidian-ai/state/16-Human-Projection/reviewer": (
+        "u:obsidian-ai-reviewer:rwx",
+        "u:obsidian-ai-sync:r-x",
+    ),
+    "/var/lib/obsidian-ai/state/16-Human-Projection/executor": (
+        "u:obsidian-ai-executor:rwx",
+        "u:obsidian-ai-sync:r-x",
+    ),
+    "/var/lib/obsidian-ai/state/16-Human-Projection/sync": (
+        "u:obsidian-ai-sync:rwx",
+    ),
+    "/var/lib/obsidian-ai/state/17-Human-Projection-Result": (
+        "u:obsidian-ai-sync:rwx",
     ),
     "/var/lib/obsidian-ai/state/20-Review": (
         "u:obsidian-ai-sync:r-x",
@@ -493,6 +541,49 @@ def _apply_ai_acls(runner: Runner) -> None:
         path="/var/lib/obsidian-ai/state/30-Receipts",
         expected=False,
         label="sync cannot write Receipts",
+    )
+    for role in ("reader", "generator", "validator", "evaluator", "reviewer", "executor"):
+        user = f"obsidian-ai-{role}"
+        own = f"/var/lib/obsidian-ai/state/16-Human-Projection/{role}"
+        _require_access(
+            runner,
+            user=user,
+            flag="-w",
+            path=own,
+            expected=True,
+            label=f"{role} writes own human projection queue",
+        )
+    _require_access(
+        runner,
+        user="obsidian-ai-generator",
+        flag="-w",
+        path="/var/lib/obsidian-ai/state/16-Human-Projection/validator",
+        expected=False,
+        label="generator cannot write validator human projection queue",
+    )
+    _require_access(
+        runner,
+        user="obsidian-ai-sync",
+        flag="-r",
+        path="/var/lib/obsidian-ai/state/16-Human-Projection/generator",
+        expected=True,
+        label="sync reads human projection requests",
+    )
+    _require_access(
+        runner,
+        user="obsidian-ai-sync",
+        flag="-w",
+        path="/var/lib/obsidian-ai/state/16-Human-Projection/generator",
+        expected=False,
+        label="sync cannot forge generator human projection requests",
+    )
+    _require_access(
+        runner,
+        user="obsidian-ai-sync",
+        flag="-w",
+        path="/var/lib/obsidian-ai/state/17-Human-Projection-Result",
+        expected=True,
+        label="sync writes human projection results",
     )
 
 

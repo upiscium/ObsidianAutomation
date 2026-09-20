@@ -13,6 +13,7 @@ from obsidian_automation.webdav_create import (
     _read_password,
     build_target_url,
     conditional_create,
+    ensure_collection,
 )
 
 
@@ -21,6 +22,7 @@ class _State:
         self.files: dict[str, bytes] = {}
         self.if_none_match: list[str | None] = []
         self.authorization: list[str | None] = []
+        self.collections: set[str] = set()
         self.corrupt_get = False
 
 
@@ -51,6 +53,38 @@ def _server(state: _State):
             self.send_response(201)
             self.send_header("ETag", '"created"')
             self.end_headers()
+
+        def do_MKCOL(self) -> None:
+            if self.headers.get("Authorization") != expected_auth:
+                self.send_response(401)
+                self.end_headers()
+                return
+            if self.path in state.collections:
+                self.send_response(405)
+                self.end_headers()
+                return
+            state.collections.add(self.path)
+            self.send_response(201)
+            self.end_headers()
+
+        def do_PROPFIND(self) -> None:
+            if self.headers.get("Authorization") != expected_auth:
+                self.send_response(401)
+                self.end_headers()
+                return
+            if self.path not in state.collections:
+                self.send_response(404)
+                self.end_headers()
+                return
+            self.send_response(207)
+            self.send_header("Content-Type", "application/xml")
+            self.end_headers()
+            self.wfile.write(
+                b"<d:multistatus xmlns:d='DAV:'>"
+                b"<d:response><d:propstat><d:prop>"
+                b"<d:resourcetype><d:collection/></d:resourcetype>"
+                b"</d:prop></d:propstat></d:response></d:multistatus>"
+            )
 
         def do_GET(self) -> None:
             if self.headers.get("Authorization") != expected_auth:
@@ -100,6 +134,33 @@ def test_conditional_create_sets_precondition_and_verifies_bytes() -> None:
         server.shutdown()
         thread.join()
 
+
+
+def test_ensure_collection_is_idempotent_and_verified() -> None:
+    state = _State()
+    server, thread = _server(state)
+    try:
+        base = f"http://127.0.0.1:{server.server_port}/dav/Vault"
+        first = ensure_collection(
+            base_url=base,
+            target_path="03-AI",
+            username="writer",
+            password="secret",
+            allow_http=True,
+        )
+        second = ensure_collection(
+            base_url=base,
+            target_path="03-AI",
+            username="writer",
+            password="secret",
+            allow_http=True,
+        )
+        assert first == "created"
+        assert second == "existing"
+        assert "/dav/Vault/03-AI" in state.collections
+    finally:
+        server.shutdown()
+        thread.join()
 
 def test_existing_target_returns_conflict_without_overwrite() -> None:
     state = _State()

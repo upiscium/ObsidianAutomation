@@ -92,7 +92,7 @@ def _fixture_source(tmp_path: Path) -> Path:
 
 def test_managed_unit_set_is_complete_and_unique() -> None:
     names = set(stage.SOURCE_LAYOUT)
-    assert len(names) == 16
+    assert len(names) == 17
     assert names == set(
         (*stage.AI_UNITS, *stage.GITHUB_UNITS, *stage.PROMOTION_UNITS)
     )
@@ -144,7 +144,7 @@ def test_stage_installs_units_and_leaves_host_inert(tmp_path: Path) -> None:
     )
 
     assert result["result"] == "passed"
-    assert result["installed_unit_count"] == 16
+    assert result["installed_unit_count"] == 17
     assert result["timers_enabled"] is False
     assert result["timers_active"] is False
     assert result["services_active"] is False

@@ -1,0 +1,200 @@
+# Human-facing AI lifecycle projection v0
+
+## Purpose
+
+The authoritative AI lifecycle remains private under:
+
+```text
+/var/lib/obsidian-ai/state/**
+```
+
+Obsidian users should not need shell access to inspect that lifecycle. v0 projects
+bounded, sanitized Markdown views into the private Live Vault:
+
+```text
+03-AI/
+├── 00-Input/
+├── 10-Context/
+├── 20-Generation/
+├── 30-Validation/
+├── 40-Evaluation/
+├── 50-Review/
+├── 60-Execution/
+├── 70-Transport/
+├── 80-Completed/
+└── 90-Failed/
+```
+
+These notes are **human-facing projections**, not lifecycle authority. A note in
+`03-AI` cannot validate a mutation, approve it, authorize Executor, attest a
+transport result, or manufacture a Receipt.
+
+The System UI that renders them is owned by ObsidianCore under
+`98-System/02-embed/hub/ai-hub.md`.
+
+## Private request/result stages
+
+Projection transport uses two local-only stages:
+
+```text
+16-Human-Projection/
+├── reader/
+├── generator/
+├── validator/
+├── evaluator/
+├── reviewer/
+├── executor/
+└── sync/
+
+17-Human-Projection-Result/
+```
+
+Each semantic role may write only its own request subdirectory. Sync may read all
+request subdirectories but cannot write producer-owned queues. Only Sync writes
+transport results.
+
+This preserves the existing semantic authority separation. There is no
+all-seeing Projector identity.
+
+## Pre-review producer mapping
+
+The initial automatic path is:
+
+```text
+Input Planner / Reader
+  -> 00-Input
+  -> 10-Context
+
+Generator
+  -> 20-Generation
+
+Validator
+  -> 30-Validation
+
+Evaluator
+  -> 40-Evaluation
+  -> 50-Review
+```
+
+Evaluator already has the exact read authorities needed to compare Proposal,
+Validation and Evaluation Context. Therefore it can build the Human Review
+projection without widening Reviewer access to Untrusted Generator artifacts.
+
+The authoritative Human Review stage remains `20-Review`. Creating
+`03-AI/50-Review/<case>.md` does not create an approval.
+
+## Projection request contract
+
+A request is immutable and content-addressed. It binds:
+
+- one `ai_case_id` (the orchestration generation ID);
+- one fixed projection stage;
+- exact source artifact kind and SHA-256;
+- deterministic `03-AI/<stage>/<case>.md` target path;
+- exact Markdown SHA-256 and Markdown bytes;
+- source-artifact timestamp.
+
+Same artifact input therefore recreates the same request bytes and request SHA.
+
+The Markdown frontmatter contains bounded machine bindings such as
+`proposal_sha256`, `mutation_sha256`, `evaluation_sha256`, target path and
+recommendation when they are available. Candidate Markdown is rendered inside an
+inert dynamically-sized code fence so untrusted generated Markdown is not
+executed as an Obsidian embed, Dataview block, or Meta Bind control.
+
+## Review projection
+
+`03-AI/50-Review/<case>.md` contains:
+
+- exact target path;
+- accepted deterministic Validation evidence;
+- Evaluator groundedness / redundancy / consistency / recommendation;
+- bounded findings;
+- the proposed Knowledge Note as inert code;
+- an empty `review_request` frontmatter field reserved for the next control-plane
+  increment.
+
+v0 is read-only. No button writes authoritative Review.
+
+A later Review Intake may accept a Human edit such as
+`review_request: approve`, but it must re-fetch and re-bind the exact
+Proposal/Validation/Evaluation artifacts before creating `20-Review`.
+The Obsidian field itself is never approval authority.
+
+## Sync transport
+
+`obsidian-ai-human-projection-sync.service` runs as `obsidian-ai-sync` after
+Evaluator.
+
+Only Sync holds the Nextcloud writer credential. It:
+
+1. acquires the existing global canonical I/O lock;
+2. reads immutable role-produced projection requests;
+3. creates only the allowlisted `03-AI` collection and fixed stage collections;
+4. performs conditional WebDAV CREATE for the deterministic note target;
+5. verifies exact remote bytes;
+6. persists `17-Human-Projection-Result/<request-sha>.projection-result.json`.
+
+An existing target with identical bytes is adopted as idempotent
+`already_matching`. Different bytes produce a durable conflict and the service
+continues to fail closed until the conflict is resolved. It never overwrites a
+Human-edited projection.
+
+The service is enabled only when both private deployment files exist:
+
+```text
+/etc/obsidian-ai/human-projection.env
+/etc/obsidian-ai/webdav-password
+```
+
+The env file contains only the non-secret Nextcloud base URL / username binding.
+The password file remains readable only by Sync.
+
+## Folder creation boundary
+
+The WebDAV transport may create only:
+
+```text
+03-AI
+03-AI/00-Input
+03-AI/10-Context
+03-AI/20-Generation
+03-AI/30-Validation
+03-AI/40-Evaluation
+03-AI/50-Review
+03-AI/60-Execution
+03-AI/70-Transport
+03-AI/80-Completed
+03-AI/90-Failed
+```
+
+Stage names come from a closed code allowlist. Projection requests cannot choose
+an arbitrary collection.
+
+## Public projection boundary
+
+`03-AI/**` remains outside the ObsidianCore public-export allowlist. Regression
+tests enforce that private AI lifecycle projections cannot appear in the public
+Core repository.
+
+## Input recursion boundary
+
+AI Input Planner never reads `03-AI/**`. Human-facing generated projections
+therefore cannot recursively become Generation evidence.
+
+## Current scope
+
+Implemented by this increment:
+
+- Input, Context, Generation, Validation, Evaluation and Human Review projection;
+- role-scoped private request queues;
+- Sync-only conditional WebDAV transport;
+- fixed collection creation;
+- exact-byte idempotency and conflict detection.
+
+Reserved for later increments:
+
+- Review request intake and authoritative `20-Review`;
+- Executor / Transport / Completed projection emission after Human approval;
+- explicit Failed projections for orchestration failures;
+- cleanup/retention policy for historical stage projections.

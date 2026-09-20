@@ -24,7 +24,7 @@ TIMERS = (
 )
 SERVICES = (
     "obsidian-ai-vault-pull.service", "obsidian-ai-input-planner.service",
-    "obsidian-pre-review-generator.service",
+    "obsidian-ai-human-projection-sync.service", "obsidian-pre-review-generator.service",
     "obsidian-pre-review-validator.service", "obsidian-pre-review-reader.service",
     "obsidian-pre-review-evaluator.service", "obsidian-pre-review-status.service",
     "obsidian-github-sync-vault-pull.service", "obsidian-github-sync.service",

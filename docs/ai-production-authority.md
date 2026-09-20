@@ -69,6 +69,8 @@ Recommended layout:
     ├── 12-Evaluation-Request/
     ├── 14-Evaluation-Context/
     ├── 15-Evaluation/
+    ├── 16-Human-Projection/       # role-scoped bounded Markdown requests
+    ├── 17-Human-Projection-Result/ # Sync-only transport attestations
     ├── 20-Review/
     ├── 24-Locks/
     ├── 25-Execution/
@@ -158,6 +160,14 @@ Human reviewer
 ```
 
 Evaluator v0 assesses groundedness, redundancy, and consistency. Its recommendation is advisory machine output.
+
+Human-facing Obsidian views are projected through separate non-authoritative stages.
+Reader, Generator, Validator, Evaluator, Reviewer, Executor and Sync may write only
+their own `16-Human-Projection/<role>` request queue. Sync may read those queues but
+cannot forge producer requests; only Sync writes `17-Human-Projection-Result` and
+performs conditional WebDAV CREATE below the fixed `03-AI/**` stage allowlist.
+These projection artifacts never substitute for Validation, Human Review,
+Execution, Transport, or Receipt authority.
 
 ```text
 Evaluation != Validation

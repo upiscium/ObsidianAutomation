@@ -105,6 +105,7 @@ The initial manifest includes:
 /etc/obsidian-ai/webdav-password
 /etc/obsidian-ai/pre-review-generator.env
 /etc/obsidian-ai/pre-review-evaluator.env
+/etc/obsidian-ai/human-projection.env
 /etc/obsidian-ai/pre-review-revision.env
 /var/lib/obsidian-ai/state
 /var/lib/obsidian-ai/deployments
@@ -112,7 +113,10 @@ The initial manifest includes:
 ```
 
 The revision environment is derived and should be recreated by the deployment
-lifecycle. The local Vault is a pull-only replica and should normally be rebuilt.
+lifecycle. `human-projection.env` contains only the non-secret Nextcloud base
+URL / username binding and may be recreated on the consolidated host; the
+corresponding app password remains the existing Sync-owned
+`/etc/obsidian-ai/webdav-password`. The local Vault is a pull-only replica and should normally be rebuilt.
 Durable lifecycle state must be migrated only while old writer-side automation
 is quiesced.
 
@@ -259,9 +263,9 @@ After private config/credential migration passes, stage the production systemd
 units on the new consolidated LXC while it is still non-serving.
 
 The staging tool reads the reviewed canonical unit examples from the exact target
-checkout and installs 16 units:
+checkout and installs 17 units:
 
-- AI Vault mirror + Input Planner + pre-review pipeline: 9 units;
+- AI Vault mirror + Input Planner + human projection + pre-review pipeline: 10 units;
 - GitHub Sync pipeline: 5 units;
 - Core Promotion: 2 units.
 
