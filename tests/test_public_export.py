@@ -43,6 +43,27 @@ def test_exports_only_allowlisted_files_and_preserves_repository_owned(tmp_path:
     assert {item.action for item in changes} == {"ADD"}
 
 
+
+def test_example_public_projection_never_includes_private_ai_stage_data(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    destination = tmp_path / "public"
+    (vault / "98-System").mkdir(parents=True)
+    (vault / "98-System/view.js").write_text("view")
+    (vault / "03-AI/50-Review").mkdir(parents=True)
+    (vault / "03-AI/50-Review/private.md").write_text("private review")
+
+    reviewed = load_config(Path("configs/public-export.example.toml"))
+    config = ExportConfig(
+        include=reviewed.include,
+        repository_owned=reviewed.repository_owned,
+        strict_missing=False,
+        exclude=reviewed.exclude,
+    )
+    changes, _ = build_plan(vault, destination, config)
+
+    assert any(item.path == "98-System/view.js" for item in changes)
+    assert all(not item.path.startswith("03-AI/") for item in changes)
+
 def test_exclude_removes_health_marker_from_projection(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     destination = tmp_path / "public"
