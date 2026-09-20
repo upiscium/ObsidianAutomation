@@ -79,6 +79,7 @@ def refresh_pull_only_mirror(
         "--filter-from",
         str(filters),
         "--delete-after",
+        "--delete-excluded",
     ]
 
     # Lock order is canonical I/O -> mirror read-view. Reader never acquires

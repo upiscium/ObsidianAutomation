@@ -52,6 +52,7 @@ def test_pull_mirror_uses_fixed_remote_to_local_sync_command(tmp_path: Path) -> 
         "--filter-from",
         str(filters.absolute()),
         "--delete-after",
+        "--delete-excluded",
     ]
     assert (ai_root / "24-Locks" / "canonical-io.lock").is_file()
     assert (ai_root / "24-Locks" / "read-view" / "mirror-read.lock").is_file()
