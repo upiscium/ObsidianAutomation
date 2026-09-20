@@ -700,8 +700,10 @@ def supersede_unstarted_generation(
                 "superseded_at": existing["superseded_at"],
                 "reused": True,
             }
-        if row["state"] != "queued":
-            raise PreReviewJobError("only an unstarted queued generation can be superseded")
+        if row["state"] not in {"queued", "retryable_failure"}:
+            raise PreReviewJobError(
+                "only queued or Generation-stage retryable generation can be superseded"
+            )
         newer = conn.execute(
             "SELECT generation_id FROM generations "
             "WHERE job_id = ? AND generation_index > ? LIMIT 1",
@@ -709,16 +711,43 @@ def supersede_unstarted_generation(
         ).fetchone()
         if newer is not None:
             raise PreReviewJobError("generation is not the current job generation")
-        attempts = conn.execute(
-            "SELECT COUNT(*) AS count FROM attempts WHERE generation_id = ?",
+        running = conn.execute(
+            "SELECT COUNT(*) AS count FROM attempts "
+            "WHERE generation_id = ? AND status = 'running'",
             (digest,),
         ).fetchone()
         outputs = conn.execute(
             "SELECT COUNT(*) AS count FROM stage_outputs WHERE generation_id = ?",
             (digest,),
         ).fetchone()
-        if int(attempts["count"]) != 0 or int(outputs["count"]) != 0:
-            raise PreReviewJobError("generation has execution evidence and cannot be superseded")
+        if int(running["count"]) != 0 or int(outputs["count"]) != 0:
+            raise PreReviewJobError(
+                "generation has running or selected output evidence and cannot be superseded"
+            )
+
+        attempts = conn.execute(
+            "SELECT stage, status FROM attempts "
+            "WHERE generation_id = ? ORDER BY rowid",
+            (digest,),
+        ).fetchall()
+        if row["state"] == "queued":
+            if attempts:
+                raise PreReviewJobError(
+                    "queued generation has attempt evidence and cannot be superseded"
+                )
+        else:
+            if not attempts:
+                raise PreReviewJobError(
+                    "retryable generation has no attempt evidence"
+                )
+            if any(item["stage"] != "generation" for item in attempts):
+                raise PreReviewJobError(
+                    "only Generation-stage retryable evidence can be superseded"
+                )
+            if attempts[-1]["status"] not in {"retryable_failure", "interrupted"}:
+                raise PreReviewJobError(
+                    "retryable generation latest attempt is not replaceable"
+                )
 
         conn.execute(
             "UPDATE generations SET state = 'superseded', updated_at = ? "
