@@ -21,6 +21,8 @@ def _transport(base_url: str, **kwargs):
     assert kwargs["path"] == "/chat/completions"
     assert kwargs["api_key"] is None
     payload = kwargs["payload"]
+    assert payload["temperature"] == 0
+    assert payload["reasoning_effort"] == "none"
     model = payload["model"]
     messages = payload["messages"]
     response_format = payload["response_format"]
