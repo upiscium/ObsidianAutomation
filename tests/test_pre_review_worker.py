@@ -456,6 +456,10 @@ def test_systemd_chain_uses_distinct_fixed_identities_and_stays_disabled_by_defa
     assert "User=obsidian-ai-reader" in units["reader"]
     assert "User=obsidian-ai-evaluator" in units["evaluator"]
     assert "User=obsidian-ai-sync" in units["projection"]
+    assert "/var/lib/obsidian-ai/state/16-Human-Projection/reader" in units["planner"]
+    assert "/var/lib/obsidian-ai/state/16-Human-Projection/generator" in units["generator"]
+    assert "/var/lib/obsidian-ai/state/16-Human-Projection/validator" in units["validator"]
+    assert "/var/lib/obsidian-ai/state/16-Human-Projection/evaluator" in units["evaluator"]
     assert "ConditionPathExists=/etc/obsidian-ai/human-projection.env" in units["projection"]
 
     assert "Requires=obsidian-ai-input-planner.service" in units["generator"]
