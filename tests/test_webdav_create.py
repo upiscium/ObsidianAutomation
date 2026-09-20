@@ -79,7 +79,12 @@ def _server(state: _State):
             self.send_response(207)
             self.send_header("Content-Type", "application/xml")
             self.end_headers()
-            self.wfile.write(b"<d:multistatus xmlns:d='DAV:'/>")
+            self.wfile.write(
+                b"<d:multistatus xmlns:d='DAV:'>"
+                b"<d:response><d:propstat><d:prop>"
+                b"<d:resourcetype><d:collection/></d:resourcetype>"
+                b"</d:prop></d:propstat></d:response></d:multistatus>"
+            )
 
         def do_GET(self) -> None:
             if self.headers.get("Authorization") != expected_auth:
