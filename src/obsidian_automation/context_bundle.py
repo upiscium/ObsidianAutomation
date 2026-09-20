@@ -24,6 +24,8 @@ from .artifact_lifecycle import (
 
 CONTEXT_STAGE = "05-Context"
 KNOWLEDGE_ROOT = "11-Knowledge"
+PROJECT_ROOT = "10-Project"
+GENERATION_SOURCE_ROOTS = frozenset({KNOWLEDGE_ROOT, PROJECT_ROOT})
 MAX_QUERY_CHARS = 4096
 MAX_SOURCES = 16
 MAX_SOURCE_BYTES = 128 * 1024
@@ -65,8 +67,8 @@ def _safe_source_parts(path: str) -> tuple[str, ...]:
     if not isinstance(path, str) or not path or path.startswith("/") or "\\" in path or "\x00" in path:
         raise ArtifactLifecycleError("context source path must be a relative POSIX path")
     parts = tuple(path.split("/"))
-    if len(parts) < 2 or parts[0] != KNOWLEDGE_ROOT:
-        raise ArtifactLifecycleError("context source must be below 11-Knowledge")
+    if len(parts) < 2 or parts[0] not in GENERATION_SOURCE_ROOTS:
+        raise ArtifactLifecycleError("context source must be below 11-Knowledge or 10-Project")
     if any(part in {"", ".", ".."} for part in parts):
         raise ArtifactLifecycleError("context source contains an unsafe path component")
     if not parts[-1].endswith(".md"):
