@@ -75,7 +75,7 @@ def _vault(tmp_path: Path) -> Path:
 
 def _state(tmp_path: Path) -> Path:
     state = tmp_path / "state"
-    (state / "02-Orchestration").mkdir(parents=True)
+    (state / "02-Orchestration" / "recipes").mkdir(parents=True)
     (state / "05-Context").mkdir()
     (state / "24-Locks" / "read-view").mkdir(parents=True)
     return state
