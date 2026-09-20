@@ -144,7 +144,7 @@ def test_stage_installs_units_and_leaves_host_inert(tmp_path: Path) -> None:
     )
 
     assert result["result"] == "passed"
-    assert result["installed_unit_count"] == 15
+    assert result["installed_unit_count"] == 16
     assert result["timers_enabled"] is False
     assert result["timers_active"] is False
     assert result["services_active"] is False
