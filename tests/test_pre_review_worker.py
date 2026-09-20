@@ -386,6 +386,7 @@ def test_worker_recovers_orphaned_attempt_without_selecting_old_artifact(
 
 def test_systemd_chain_uses_distinct_fixed_identities_and_stays_disabled_by_default() -> None:
     units = {
+        "planner": Path("examples/ai/obsidian-ai-input-planner.service").read_text(),
         "generator": Path("examples/ai/obsidian-pre-review-generator.service").read_text(),
         "validator": Path("examples/ai/obsidian-pre-review-validator.service").read_text(),
         "reader": Path("examples/ai/obsidian-pre-review-reader.service").read_text(),
@@ -394,11 +395,16 @@ def test_systemd_chain_uses_distinct_fixed_identities_and_stays_disabled_by_defa
         "timer": Path("examples/ai/obsidian-pre-review.timer").read_text(),
     }
 
+    assert "User=obsidian-ai-reader" in units["planner"]
+    assert "PrivateNetwork=true" in units["planner"]
+    assert "ConditionPathExists=/etc/obsidian-ai/pre-review-input.env" in units["planner"]
     assert "User=obsidian-ai-generator" in units["generator"]
     assert "User=obsidian-ai-validator" in units["validator"]
     assert "User=obsidian-ai-reader" in units["reader"]
     assert "User=obsidian-ai-evaluator" in units["evaluator"]
 
+    assert "Wants=network-online.target obsidian-ai-input-planner.service" in units["generator"]
+    assert "After=network-online.target obsidian-ai-input-planner.service" in units["generator"]
     assert "Requires=obsidian-pre-review-generator.service" in units["validator"]
     assert "Requires=obsidian-pre-review-validator.service" in units["reader"]
     assert "Requires=obsidian-pre-review-reader.service" in units["evaluator"]
