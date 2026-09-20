@@ -11,6 +11,7 @@ from obsidian_automation.ai_input_planner import (
     plan_once,
 )
 from obsidian_automation.context_bundle import load_context_bundle
+from obsidian_automation.human_projection import parse_request
 from obsidian_automation.pre_review_job import job_status
 
 
@@ -80,6 +81,14 @@ def _state(tmp_path: Path) -> Path:
     (state / "24-Locks" / "read-view").mkdir(parents=True)
     return state
 
+
+
+def _enable_human_projection(state: Path) -> None:
+    root = state / "16-Human-Projection"
+    root.mkdir()
+    for role in ("reader", "generator", "validator", "evaluator", "reviewer", "executor", "sync"):
+        (root / role).mkdir()
+    (state / "17-Human-Projection-Result").mkdir()
 
 def test_catalog_mixes_active_knowledge_and_project_notes(tmp_path: Path) -> None:
     catalog = build_catalog(_vault(tmp_path))
