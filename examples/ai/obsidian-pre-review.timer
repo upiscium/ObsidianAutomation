@@ -2,7 +2,7 @@
 Description=Run Obsidian pre-review pipeline and status projection
 
 [Timer]
-OnBootSec=5min
+OnActiveSec=5min
 OnUnitInactiveSec=2min
 Persistent=false
 Unit=obsidian-pre-review-status.service
