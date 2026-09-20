@@ -85,8 +85,8 @@ def test_catalog_mixes_active_knowledge_and_project_notes(tmp_path: Path) -> Non
     catalog = build_catalog(_vault(tmp_path))
 
     assert [(entry.source_kind, entry.path) for entry in catalog.entries] == [
-        ("knowledge", "11-Knowledge/Active.md"),
         ("project-note", "10-Project/Running/Design.md"),
+        ("knowledge", "11-Knowledge/Active.md"),
     ]
     project = next(entry for entry in catalog.entries if entry.source_kind == "project-note")
     assert project.project_status == "running"
