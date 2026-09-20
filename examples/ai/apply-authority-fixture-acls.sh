@@ -31,6 +31,8 @@ CONTEXT="$AI_ROOT/05-Context"
 EVALUATION_REQUEST="$AI_ROOT/12-Evaluation-Request"
 EVALUATION_CONTEXT="$AI_ROOT/14-Evaluation-Context"
 EVALUATION="$AI_ROOT/15-Evaluation"
+PROJECTION="$AI_ROOT/16-Human-Projection"
+PROJECTION_RESULT="$AI_ROOT/17-Human-Projection-Result"
 VALIDATION="$AI_ROOT/10-Validation"
 REVIEW="$AI_ROOT/20-Review"
 LOCKS="$AI_ROOT/24-Locks"
@@ -110,7 +112,7 @@ setfacl -m "d:u:$READER_USER:r-x" "$PROJECTS"
 install -d -o root -g root -m 0700 "$AI_ROOT"
 for directory in \
   "$UNTRUSTED" "$ORCHESTRATION" "$INDEX" "$CONTEXT" "$VALIDATION" \
-  "$EVALUATION_REQUEST" "$EVALUATION_CONTEXT" "$EVALUATION" \
+  "$EVALUATION_REQUEST" "$EVALUATION_CONTEXT" "$EVALUATION" "$PROJECTION" "$PROJECTION_RESULT" \
   "$REVIEW" "$LOCKS" "$EXECUTION" "$TRANSPORT" "$RECEIPTS"; do
   install -d -o root -g root -m 0700 "$directory"
   setfacl -b "$directory"
@@ -189,6 +191,37 @@ apply_directory_acl "$EVALUATION_CONTEXT" \
 apply_directory_acl "$EVALUATION" \
   "u:$EVALUATOR_USER:rwx" \
   "u:$REVIEWER_USER:r-x"
+
+apply_directory_acl "$PROJECTION" \
+  "u:$READER_USER:--x" \
+  "u:$GENERATOR_USER:--x" \
+  "u:$VALIDATOR_USER:--x" \
+  "u:$EVALUATOR_USER:--x" \
+  "u:$REVIEWER_USER:--x" \
+  "u:$EXECUTOR_USER:--x" \
+  "u:$SYNC_USER:r-x"
+
+for role in reader generator validator evaluator reviewer executor sync; do
+  install -d -o root -g root -m 0700 "$PROJECTION/$role"
+  setfacl -b "$PROJECTION/$role"
+  setfacl -k "$PROJECTION/$role" || true
+done
+apply_directory_acl "$PROJECTION/reader" \
+  "u:$READER_USER:rwx" "u:$SYNC_USER:r-x"
+apply_directory_acl "$PROJECTION/generator" \
+  "u:$GENERATOR_USER:rwx" "u:$SYNC_USER:r-x"
+apply_directory_acl "$PROJECTION/validator" \
+  "u:$VALIDATOR_USER:rwx" "u:$SYNC_USER:r-x"
+apply_directory_acl "$PROJECTION/evaluator" \
+  "u:$EVALUATOR_USER:rwx" "u:$SYNC_USER:r-x"
+apply_directory_acl "$PROJECTION/reviewer" \
+  "u:$REVIEWER_USER:rwx" "u:$SYNC_USER:r-x"
+apply_directory_acl "$PROJECTION/executor" \
+  "u:$EXECUTOR_USER:rwx" "u:$SYNC_USER:r-x"
+apply_directory_acl "$PROJECTION/sync" \
+  "u:$SYNC_USER:rwx"
+apply_directory_acl "$PROJECTION_RESULT" \
+  "u:$SYNC_USER:rwx"
 
 apply_directory_acl "$REVIEW" \
   "u:$SYNC_USER:r-x" \
