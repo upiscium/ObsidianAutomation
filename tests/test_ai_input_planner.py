@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
+import pytest
+
+import obsidian_automation.ai_input_planner as planner
 from obsidian_automation.ai_input_planner import (
     COVERAGE_POLICY,
     RANDOM_POLICY,
@@ -141,6 +145,147 @@ def test_coverage_and_random_policies_are_deterministic_and_mixed(tmp_path: Path
         "knowledge",
         "project-note",
     }
+
+
+def _jobs(state: Path):
+    db = state / "02-Orchestration" / "pre-review-jobs.sqlite3"
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    try:
+        return conn.execute(
+            """
+            SELECT j.job_id, j.context_sha256, j.recipe_sha256,
+                   g.generation_id, g.state
+            FROM jobs j
+            JOIN generations g ON g.job_id = j.job_id
+            ORDER BY j.created_at, g.generation_index
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def test_plan_once_recovers_submitted_job_after_projection_failure(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    vault = _vault(tmp_path)
+    state = _state(tmp_path)
+    _enable_human_projection(state)
+    original_emit = planner.emit_input_projection
+
+    def fail_projection(*_args, **_kwargs):
+        raise OSError("synthetic projection failure")
+
+    monkeypatch.setattr(planner, "emit_input_projection", fail_projection)
+    with pytest.raises(OSError, match="synthetic projection failure"):
+        planner.plan_once(
+            state,
+            vault,
+            deployed_revision=REVISION,
+            generator_model="gemma4:12b",
+            evaluator_model="gemma4:12b",
+            batch_size=2,
+            target_inflight=1,
+            coverage_cycles=1,
+            random_cycles=0,
+        )
+
+    before = _jobs(state)
+    assert len(before) == 1
+    assert before[0]["state"] == "queued"
+    assert (state / "02-Orchestration" / "input-planner-pending.json").is_file()
+    assert not (state / "02-Orchestration" / "input-planner-state.json").exists()
+
+    monkeypatch.setattr(planner, "emit_input_projection", original_emit)
+    recovered = planner.plan_once(
+        state,
+        vault,
+        deployed_revision=REVISION,
+        generator_model="gemma4:12b",
+        evaluator_model="gemma4:12b",
+        batch_size=2,
+        target_inflight=1,
+        coverage_cycles=1,
+        random_cycles=0,
+    )
+
+    assert recovered["status"] == "recovered_pending_submission"
+    after = _jobs(state)
+    assert len(after) == 1
+    assert after[0]["job_id"] == before[0]["job_id"]
+    assert after[0]["generation_id"] == before[0]["generation_id"]
+    assert not (state / "02-Orchestration" / "input-planner-pending.json").exists()
+
+    requests = [
+        parse_request(path.read_bytes())
+        for path in sorted(
+            (state / "16-Human-Projection" / "reader").glob("*.projection.json")
+        )
+    ]
+    assert sorted(item.stage for item in requests) == ["context", "input"]
+    assert {item.case_id for item in requests} == {before[0]["generation_id"]}
+
+
+def test_plan_once_supersedes_stale_queued_job_when_revision_changes(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    vault = _vault(tmp_path)
+    state = _state(tmp_path)
+    _enable_human_projection(state)
+    original_emit = planner.emit_input_projection
+
+    def fail_projection(*_args, **_kwargs):
+        raise OSError("synthetic projection failure")
+
+    monkeypatch.setattr(planner, "emit_input_projection", fail_projection)
+    with pytest.raises(OSError):
+        planner.plan_once(
+            state,
+            vault,
+            deployed_revision=REVISION,
+            generator_model="gemma4:12b",
+            evaluator_model="gemma4:12b",
+            batch_size=2,
+            target_inflight=1,
+            coverage_cycles=1,
+            random_cycles=0,
+        )
+
+    old = _jobs(state)
+    assert len(old) == 1
+    old_job = str(old[0]["job_id"])
+    old_generation = str(old[0]["generation_id"])
+    old_context = str(old[0]["context_sha256"])
+
+    monkeypatch.setattr(planner, "emit_input_projection", original_emit)
+    new_revision = "c" * 40
+    recovered = planner.plan_once(
+        state,
+        vault,
+        deployed_revision=new_revision,
+        generator_model="gemma4:12b",
+        evaluator_model="gemma4:12b",
+        batch_size=2,
+        target_inflight=1,
+        coverage_cycles=1,
+        random_cycles=0,
+    )
+
+    assert recovered["status"] == "recovered_revision_submission"
+    assert recovered["superseded_stale_generation"] is True
+    rows = _jobs(state)
+    assert len(rows) == 2
+    by_job = {str(row["job_id"]): row for row in rows}
+    assert by_job[old_job]["state"] == "superseded"
+
+    new_job = str(recovered["job_id"])
+    assert new_job != old_job
+    assert by_job[new_job]["state"] == "queued"
+    assert str(by_job[new_job]["context_sha256"]) == old_context
+    assert str(recovered["generation_id"]) != old_generation
+    assert not (state / "02-Orchestration" / "input-planner-pending.json").exists()
 
 
 def test_plan_once_creates_mixed_context_and_one_durable_job(tmp_path: Path) -> None:

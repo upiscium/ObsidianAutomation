@@ -16,15 +16,34 @@
     "backpressure"
   ],
   "properties": {
-    "record_version": {"const": 1},
-    "authority": {"const": "orchestration_status_projection_only"},
-    "generated_at": {"type": "string", "minLength": 1},
-    "pipeline_health": {"enum": ["OK", "WARNING", "CRITICAL"]},
+    "record_version": {
+      "const": 1
+    },
+    "authority": {
+      "const": "orchestration_status_projection_only"
+    },
+    "generated_at": {
+      "type": "string",
+      "minLength": 1
+    },
+    "pipeline_health": {
+      "enum": [
+        "OK",
+        "WARNING",
+        "CRITICAL"
+      ]
+    },
     "reasons": {
       "type": "array",
-      "items": {"type": "string", "minLength": 1}
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
     },
-    "current_jobs": {"type": "integer", "minimum": 0},
+    "current_jobs": {
+      "type": "integer",
+      "minimum": 0
+    },
     "states": {
       "type": "object",
       "additionalProperties": false,
@@ -38,19 +57,54 @@
         "retryable_failure",
         "retry_exhausted",
         "blocked",
-        "deterministic_reject"
+        "deterministic_reject",
+        "superseded"
       ],
       "properties": {
-        "queued": {"type": "integer", "minimum": 0},
-        "generating": {"type": "integer", "minimum": 0},
-        "validating": {"type": "integer", "minimum": 0},
-        "building_evaluation_context": {"type": "integer", "minimum": 0},
-        "evaluating": {"type": "integer", "minimum": 0},
-        "awaiting_human_review": {"type": "integer", "minimum": 0},
-        "retryable_failure": {"type": "integer", "minimum": 0},
-        "retry_exhausted": {"type": "integer", "minimum": 0},
-        "blocked": {"type": "integer", "minimum": 0},
-        "deterministic_reject": {"type": "integer", "minimum": 0}
+        "queued": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "generating": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "validating": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "building_evaluation_context": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "evaluating": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "awaiting_human_review": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "retryable_failure": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "retry_exhausted": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "blocked": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "deterministic_reject": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "superseded": {
+          "type": "integer",
+          "minimum": 0
+        }
       }
     },
     "review_wait": {
@@ -63,22 +117,41 @@
         "reminder_due"
       ],
       "properties": {
-        "count": {"type": "integer", "minimum": 0},
-        "oldest_age_seconds": {
-          "type": ["integer", "null"],
+        "count": {
+          "type": "integer",
           "minimum": 0
         },
-        "reminder_after_seconds": {"type": "integer", "minimum": 1},
-        "reminder_due": {"type": "boolean"}
+        "oldest_age_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "reminder_after_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reminder_due": {
+          "type": "boolean"
+        }
       }
     },
     "backpressure": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["threshold", "active"],
+      "required": [
+        "threshold",
+        "active"
+      ],
       "properties": {
-        "threshold": {"type": "integer", "minimum": 1},
-        "active": {"type": "boolean"}
+        "threshold": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "active": {
+          "type": "boolean"
+        }
       }
     }
   }

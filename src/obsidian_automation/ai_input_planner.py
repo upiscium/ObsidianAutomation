@@ -15,6 +15,8 @@ from typing import Sequence
 from .artifact_lifecycle import (
     ArtifactLifecycleError,
     _canonical_json_bytes,
+    _decode_json_object,
+    _read_exact_file,
     _require_safe_directory,
     _store_immutable,
     _utc_now,
@@ -24,6 +26,7 @@ from .context_bundle import (
     MAX_CONTEXT_BYTES,
     MAX_SOURCE_BYTES,
     build_context_bundle,
+    load_context_bundle,
     store_context_bundle,
 )
 from .evaluator_contract import (
@@ -50,6 +53,7 @@ from .pre_review_job import (
     _connect_ro,
     parse_recipe,
     submit_job,
+    supersede_unstarted_generation,
 )
 from .human_projection import emit_context_projection, emit_input_projection
 from .production_io import ProductionIOError, mirror_read_lock
@@ -60,6 +64,7 @@ KNOWLEDGE_ROOT = "11-Knowledge"
 PROJECT_ROOT = "10-Project"
 SELECTION_DIR = "input-selections"
 STATE_FILE = "input-planner-state.json"
+PENDING_FILE = "input-planner-pending.json"
 OBJECTIVE_POLICY = "synthesize-v0"
 COVERAGE_POLICY = "coverage-shuffle-v0"
 RANDOM_POLICY = "random-set-v0"
@@ -457,6 +462,258 @@ def _store_state(ai_root: Path, state: PlannerState) -> Path:
     return destination
 
 
+def _state_payload(state: PlannerState) -> dict[str, object]:
+    return {
+        "catalog_sha256": state.catalog_sha256,
+        "coverage_epoch": state.coverage_epoch,
+        "coverage_cursor": state.coverage_cursor,
+        "cycle": state.cycle,
+    }
+
+
+def _state_from_payload(value: object, *, label: str) -> PlannerState:
+    if not isinstance(value, dict) or set(value) != {
+        "catalog_sha256",
+        "coverage_epoch",
+        "coverage_cursor",
+        "cycle",
+    }:
+        raise AIInputPlannerError(f"{label} properties do not match contract")
+    catalog = value["catalog_sha256"]
+    if catalog is not None and (
+        not isinstance(catalog, str)
+        or len(catalog) != 64
+        or any(ch not in "0123456789abcdef" for ch in catalog)
+    ):
+        raise AIInputPlannerError(f"{label}.catalog_sha256 is invalid")
+    for name in ("coverage_epoch", "coverage_cursor", "cycle"):
+        if type(value[name]) is not int or value[name] < 0:
+            raise AIInputPlannerError(f"{label}.{name} is invalid")
+    if value["coverage_epoch"] < 1:
+        raise AIInputPlannerError(f"{label}.coverage_epoch must be >= 1")
+    return PlannerState(
+        catalog_sha256=catalog,
+        coverage_epoch=value["coverage_epoch"],
+        coverage_cursor=value["coverage_cursor"],
+        cycle=value["cycle"],
+    )
+
+
+def _pending_path(ai_root: Path) -> Path:
+    return _orchestration_root(ai_root) / PENDING_FILE
+
+
+def _selected_payload(entries: Sequence[CatalogEntry]) -> list[dict[str, object]]:
+    return [entry.payload() for entry in entries]
+
+
+def _validate_pending_selected(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list) or not 1 <= len(value) <= MAX_BATCH_SIZE:
+        raise AIInputPlannerError("pending planner selected sources are invalid")
+    normalized: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict) or set(item) != {
+            "path",
+            "source_kind",
+            "content_sha256",
+            "byte_size",
+            "project_status",
+        }:
+            raise AIInputPlannerError("pending planner source properties do not match contract")
+        path = item["path"]
+        source_kind = item["source_kind"]
+        digest = item["content_sha256"]
+        byte_size = item["byte_size"]
+        project_status = item["project_status"]
+        if (
+            not isinstance(path, str)
+            or not path
+            or path.startswith("/")
+            or path.casefold() in seen
+        ):
+            raise AIInputPlannerError("pending planner source path is invalid")
+        seen.add(path.casefold())
+        if source_kind not in {"knowledge", "project-note"}:
+            raise AIInputPlannerError("pending planner source kind is invalid")
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(ch not in "0123456789abcdef" for ch in digest)
+        ):
+            raise AIInputPlannerError("pending planner source digest is invalid")
+        if type(byte_size) is not int or byte_size < 0 or byte_size > MAX_SOURCE_BYTES:
+            raise AIInputPlannerError("pending planner source byte size is invalid")
+        if project_status is not None and project_status not in _ALLOWED_PROJECT_STATUSES:
+            raise AIInputPlannerError("pending planner Project status is invalid")
+        normalized.append(
+            {
+                "path": path,
+                "source_kind": source_kind,
+                "content_sha256": digest,
+                "byte_size": byte_size,
+                "project_status": project_status,
+            }
+        )
+    return normalized
+
+
+def _pending_bytes(value: dict[str, object]) -> bytes:
+    normalized = _parse_pending(_canonical_json_bytes(value))
+    return _canonical_json_bytes(normalized)
+
+
+def _parse_pending(data: bytes) -> dict[str, object]:
+    value = _decode_json_object(data, label="input planner pending submission")
+    required = {
+        "record_version",
+        "phase",
+        "selection_sha256",
+        "selection_policy",
+        "objective_policy",
+        "epoch",
+        "cycle",
+        "selected",
+        "context_sha256",
+        "context_created_at",
+        "planner_state_before",
+        "planner_state_after",
+        "recipe_sha256",
+        "job_id",
+        "generation_id",
+    }
+    if set(value) != required or value["record_version"] != RECORD_VERSION:
+        raise AIInputPlannerError("pending planner properties do not match contract")
+    if value["phase"] not in {"prepared", "submitted"}:
+        raise AIInputPlannerError("pending planner phase is invalid")
+    for name in ("selection_sha256", "context_sha256", "recipe_sha256"):
+        digest = value[name]
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(ch not in "0123456789abcdef" for ch in digest)
+        ):
+            raise AIInputPlannerError(f"pending planner {name} is invalid")
+    for name in ("selection_policy", "objective_policy"):
+        item = value[name]
+        if not isinstance(item, str) or not item or len(item) > 128:
+            raise AIInputPlannerError(f"pending planner {name} is invalid")
+    for name in ("epoch", "cycle"):
+        if type(value[name]) is not int or value[name] < 0:
+            raise AIInputPlannerError(f"pending planner {name} is invalid")
+    if value["epoch"] < 1:
+        raise AIInputPlannerError("pending planner epoch must be >= 1")
+    selected = _validate_pending_selected(value["selected"])
+    created_at = value["context_created_at"]
+    if not isinstance(created_at, str) or not created_at.endswith("Z"):
+        raise AIInputPlannerError("pending planner context_created_at is invalid")
+    before = _state_from_payload(value["planner_state_before"], label="planner_state_before")
+    after = _state_from_payload(value["planner_state_after"], label="planner_state_after")
+    job_id = value["job_id"]
+    generation_id = value["generation_id"]
+    if value["phase"] == "prepared":
+        if job_id is not None or generation_id is not None:
+            raise AIInputPlannerError("prepared pending planner record must not bind a job")
+    else:
+        for name, item in (("job_id", job_id), ("generation_id", generation_id)):
+            if (
+                not isinstance(item, str)
+                or len(item) != 64
+                or any(ch not in "0123456789abcdef" for ch in item)
+            ):
+                raise AIInputPlannerError(f"pending planner {name} is invalid")
+    return {
+        "record_version": RECORD_VERSION,
+        "phase": value["phase"],
+        "selection_sha256": value["selection_sha256"],
+        "selection_policy": value["selection_policy"],
+        "objective_policy": value["objective_policy"],
+        "epoch": value["epoch"],
+        "cycle": value["cycle"],
+        "selected": selected,
+        "context_sha256": value["context_sha256"],
+        "context_created_at": created_at,
+        "planner_state_before": _state_payload(before),
+        "planner_state_after": _state_payload(after),
+        "recipe_sha256": value["recipe_sha256"],
+        "job_id": job_id,
+        "generation_id": generation_id,
+    }
+
+
+def _load_pending(ai_root: Path) -> dict[str, object] | None:
+    path = _pending_path(ai_root)
+    if not os.path.lexists(path):
+        return None
+    if path.is_symlink() or not path.is_file():
+        raise AIInputPlannerError("pending planner path is unsafe")
+    return _parse_pending(_read_exact_file(path))
+
+
+def _store_pending(ai_root: Path, value: dict[str, object]) -> Path:
+    directory = _orchestration_root(ai_root)
+    destination = directory / PENDING_FILE
+    if os.path.lexists(destination) and destination.is_symlink():
+        raise AIInputPlannerError("pending planner destination is unsafe")
+    data = _pending_bytes(value)
+    fd, temporary = tempfile.mkstemp(prefix=".input-planner-pending.", dir=directory)
+    temp_path = Path(temporary)
+    try:
+        os.fchmod(fd, 0o660)
+        view = memoryview(data)
+        while view:
+            written = os.write(fd, view)
+            if written <= 0:
+                raise AIInputPlannerError("short write while storing pending planner submission")
+            view = view[written:]
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    try:
+        os.replace(temp_path, destination)
+        dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+    return destination
+
+
+def _clear_pending(ai_root: Path) -> None:
+    path = _pending_path(ai_root)
+    if not os.path.lexists(path):
+        return
+    if path.is_symlink() or not path.is_file():
+        raise AIInputPlannerError("pending planner path is unsafe")
+    path.unlink()
+    directory = path.parent
+    dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+def _validate_pending_context(
+    context,
+    selected: Sequence[dict[str, object]],
+) -> None:
+    expected = {str(item["path"]): item for item in selected}
+    if len(context.sources) != len(expected):
+        raise AIInputPlannerError("pending Context source count does not match selection")
+    for source in context.sources:
+        item = expected.get(source.path)
+        if item is None:
+            raise AIInputPlannerError("pending Context contains an unselected source")
+        if source.content_sha256 != item["content_sha256"]:
+            raise AIInputPlannerError("pending Context source digest mismatch")
+        if len(source.content.encode("utf-8")) != item["byte_size"]:
+            raise AIInputPlannerError("pending Context source byte size mismatch")
+
+
 def _selection_dir(ai_root: Path) -> Path:
     root = _orchestration_root(ai_root)
     directory = root / SELECTION_DIR
@@ -690,6 +947,134 @@ def _build_recipe(
     )
 
 
+def _recover_pending_submission(
+    ai_root: Path,
+    *,
+    deployed_revision: str,
+    generator_model: str,
+    evaluator_model: str,
+) -> dict[str, object] | None:
+    pending = _load_pending(ai_root)
+    if pending is None:
+        return None
+
+    before = _state_from_payload(
+        pending["planner_state_before"],
+        label="planner_state_before",
+    )
+    after = _state_from_payload(
+        pending["planner_state_after"],
+        label="planner_state_after",
+    )
+    current = _load_state(ai_root)
+    if current == after:
+        _clear_pending(ai_root)
+        return {
+            "event": "ai-input-planner",
+            "status": "recovered_committed_submission",
+            "selection_sha256": pending["selection_sha256"],
+            "context_sha256": pending["context_sha256"],
+        }
+    if current != before:
+        raise AIInputPlannerError(
+            "pending planner submission does not match current scheduler state"
+        )
+
+    context = load_context_bundle(ai_root, str(pending["context_sha256"]))
+    if context.created_at != pending["context_created_at"]:
+        raise AIInputPlannerError("pending Context timestamp binding mismatch")
+    selected = _validate_pending_selected(pending["selected"])
+    _validate_pending_context(context, selected)
+
+    recipe = _build_recipe(
+        deployed_revision=deployed_revision,
+        generator_model=generator_model,
+        evaluator_model=evaluator_model,
+    )
+    recipe_sha = sha256_bytes(recipe.to_json_bytes())
+    superseded = False
+
+    if pending["phase"] == "submitted":
+        if pending["recipe_sha256"] != recipe_sha:
+            old_generation = pending["generation_id"]
+            assert isinstance(old_generation, str)
+            supersede_unstarted_generation(
+                ai_root,
+                old_generation,
+                reason_code="planner_revision_replaced",
+            )
+            superseded = True
+        submitted = submit_job(
+            ai_root,
+            context_sha256=str(pending["context_sha256"]),
+            recipe=recipe,
+        )
+        if pending["recipe_sha256"] == recipe_sha:
+            if (
+                submitted["job_id"] != pending["job_id"]
+                or submitted["generation_id"] != pending["generation_id"]
+            ):
+                raise AIInputPlannerError(
+                    "pending submitted job identity changed unexpectedly"
+                )
+    else:
+        submitted = submit_job(
+            ai_root,
+            context_sha256=str(pending["context_sha256"]),
+            recipe=recipe,
+        )
+
+    if submitted["recipe_sha256"] != recipe_sha:
+        raise AIInputPlannerError("submitted recipe digest does not match current recipe")
+
+    updated = dict(pending)
+    updated.update(
+        {
+            "phase": "submitted",
+            "recipe_sha256": recipe_sha,
+            "job_id": submitted["job_id"],
+            "generation_id": submitted["generation_id"],
+        }
+    )
+    _store_pending(ai_root, updated)
+
+    case_id = str(submitted["generation_id"])
+    emit_input_projection(
+        ai_root,
+        case_id=case_id,
+        selection_sha256=str(updated["selection_sha256"]),
+        selection_policy=str(updated["selection_policy"]),
+        objective_policy=str(updated["objective_policy"]),
+        epoch=int(updated["epoch"]),
+        cycle=int(updated["cycle"]),
+        selected=selected,
+        created_at=context.created_at,
+    )
+    emit_context_projection(
+        ai_root,
+        case_id=case_id,
+        context_sha256=str(updated["context_sha256"]),
+        context=context,
+    )
+    _store_state(ai_root, after)
+    _clear_pending(ai_root)
+
+    return {
+        "event": "ai-input-planner",
+        "status": (
+            "recovered_revision_submission"
+            if superseded
+            else "recovered_pending_submission"
+        ),
+        "selection_sha256": updated["selection_sha256"],
+        "context_sha256": updated["context_sha256"],
+        "job_id": submitted["job_id"],
+        "generation_id": submitted["generation_id"],
+        "created": submitted["created"],
+        "superseded_stale_generation": superseded,
+    }
+
+
 def plan_once(
     ai_root: Path,
     vault_root: Path,
@@ -706,6 +1091,15 @@ def plan_once(
         raise AIInputPlannerError(
             f"target_inflight must be 1..{HARD_BACKPRESSURE}"
         )
+
+    recovered = _recover_pending_submission(
+        ai_root,
+        deployed_revision=deployed_revision,
+        generator_model=generator_model,
+        evaluator_model=evaluator_model,
+    )
+    if recovered is not None:
+        return recovered
 
     states = _current_states(ai_root)
     if states.get("blocked", 0) or states.get("retry_exhausted", 0):
@@ -772,11 +1166,40 @@ def plan_once(
         generator_model=generator_model,
         evaluator_model=evaluator_model,
     )
+    recipe_sha = sha256_bytes(recipe.to_json_bytes())
+    pending = {
+        "record_version": RECORD_VERSION,
+        "phase": "prepared",
+        "selection_sha256": selection_sha,
+        "selection_policy": selection.policy,
+        "objective_policy": selection.objective_policy,
+        "epoch": selection.epoch,
+        "cycle": selection.cycle,
+        "selected": _selected_payload(selection.entries),
+        "context_sha256": context_sha,
+        "context_created_at": context.created_at,
+        "planner_state_before": _state_payload(state),
+        "planner_state_after": _state_payload(next_state),
+        "recipe_sha256": recipe_sha,
+        "job_id": None,
+        "generation_id": None,
+    }
+    _store_pending(ai_root, pending)
     submitted = submit_job(
         ai_root,
         context_sha256=context_sha,
         recipe=recipe,
     )
+    if submitted["recipe_sha256"] != recipe_sha:
+        raise AIInputPlannerError("submitted recipe digest does not match prepared recipe")
+    pending.update(
+        {
+            "phase": "submitted",
+            "job_id": submitted["job_id"],
+            "generation_id": submitted["generation_id"],
+        }
+    )
+    _store_pending(ai_root, pending)
     case_id = str(submitted["generation_id"])
     emit_input_projection(
         ai_root,
@@ -796,6 +1219,7 @@ def plan_once(
         context=context,
     )
     _store_state(ai_root, next_state)
+    _clear_pending(ai_root)
     return {
         "event": "ai-input-planner",
         "status": "submitted" if submitted["created"] else "existing_job",

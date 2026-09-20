@@ -16,6 +16,7 @@ REQUIRED_UNITS = {
         "obsidian-ai-input-planner",
         "PrivateNetwork=true",
         "ConditionPathExists=/etc/obsidian-ai/pre-review-input.env",
+        "/var/lib/obsidian-ai/state/16-Human-Projection/reader",
     ),
     "obsidian-ai-human-projection-sync.service": (
         "User=obsidian-ai-sync",
@@ -31,11 +32,13 @@ REQUIRED_UNITS = {
         "EnvironmentFile=/etc/obsidian-ai/pre-review-revision.env",
         "Requires=obsidian-ai-input-planner.service",
         "--openai-base-url",
+        "/var/lib/obsidian-ai/state/16-Human-Projection/generator",
     ),
     "obsidian-pre-review-validator.service": (
         "User=obsidian-ai-validator",
         "Requires=obsidian-pre-review-generator.service",
         "PrivateNetwork=true",
+        "/var/lib/obsidian-ai/state/16-Human-Projection/validator",
     ),
     "obsidian-pre-review-reader.service": (
         "User=obsidian-ai-reader",
@@ -49,6 +52,7 @@ REQUIRED_UNITS = {
         "EnvironmentFile=/etc/obsidian-ai/pre-review-evaluator.env",
         "EnvironmentFile=/etc/obsidian-ai/pre-review-revision.env",
         "--openai-base-url",
+        "/var/lib/obsidian-ai/state/16-Human-Projection/evaluator",
     ),
     "obsidian-pre-review-status.service": (
         "User=obsidian-ai-status",

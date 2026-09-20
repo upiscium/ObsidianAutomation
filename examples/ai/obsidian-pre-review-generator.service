@@ -20,6 +20,6 @@ PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
 ReadOnlyPaths=/var/lib/obsidian-ai/state/05-Context
-ReadWritePaths=/var/lib/obsidian-ai/state/00-Untrusted /var/lib/obsidian-ai/state/02-Orchestration
+ReadWritePaths=/var/lib/obsidian-ai/state/00-Untrusted /var/lib/obsidian-ai/state/02-Orchestration /var/lib/obsidian-ai/state/16-Human-Projection/generator
 UMask=0007
 TimeoutStartSec=15min

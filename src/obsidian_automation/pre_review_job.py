@@ -402,6 +402,11 @@ def _connect_rw(ai_root: Path) -> sqlite3.Connection:
             recorded_at TEXT NOT NULL,
             PRIMARY KEY(generation_id, stage)
         );
+        CREATE TABLE IF NOT EXISTS supersessions (
+            generation_id TEXT PRIMARY KEY REFERENCES generations(generation_id),
+            reason_code TEXT NOT NULL,
+            superseded_at TEXT NOT NULL
+        );
         """
     )
     row = conn.execute("SELECT value FROM metadata WHERE key = 'schema_version'").fetchone()
@@ -654,6 +659,94 @@ _STAGE_OUTPUT_FIELDS = {
         "recommendation",
     ),
 }
+
+
+def supersede_unstarted_generation(
+    ai_root: Path,
+    generation_id: str,
+    *,
+    reason_code: str,
+) -> dict[str, object]:
+    digest = _require_sha256(generation_id, label="generation_id")
+    reason = _metadata(reason_code, label="reason_code")
+    now = _utc_now()
+
+    conn = _connect_rw(ai_root)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT generation_id, job_id, generation_index, state "
+            "FROM generations WHERE generation_id = ?",
+            (digest,),
+        ).fetchone()
+        if row is None:
+            raise PreReviewJobError("generation does not exist")
+        if row["state"] == "superseded":
+            existing = conn.execute(
+                "SELECT reason_code, superseded_at FROM supersessions "
+                "WHERE generation_id = ?",
+                (digest,),
+            ).fetchone()
+            if existing is None or existing["reason_code"] != reason:
+                raise PreReviewJobError("superseded generation audit record mismatch")
+            conn.commit()
+            return {
+                "record_version": RECORD_VERSION,
+                "generation_id": digest,
+                "job_id": row["job_id"],
+                "generation_index": row["generation_index"],
+                "state": "superseded",
+                "reason_code": existing["reason_code"],
+                "superseded_at": existing["superseded_at"],
+                "reused": True,
+            }
+        if row["state"] != "queued":
+            raise PreReviewJobError("only an unstarted queued generation can be superseded")
+        newer = conn.execute(
+            "SELECT generation_id FROM generations "
+            "WHERE job_id = ? AND generation_index > ? LIMIT 1",
+            (row["job_id"], row["generation_index"]),
+        ).fetchone()
+        if newer is not None:
+            raise PreReviewJobError("generation is not the current job generation")
+        attempts = conn.execute(
+            "SELECT COUNT(*) AS count FROM attempts WHERE generation_id = ?",
+            (digest,),
+        ).fetchone()
+        outputs = conn.execute(
+            "SELECT COUNT(*) AS count FROM stage_outputs WHERE generation_id = ?",
+            (digest,),
+        ).fetchone()
+        if int(attempts["count"]) != 0 or int(outputs["count"]) != 0:
+            raise PreReviewJobError("generation has execution evidence and cannot be superseded")
+
+        conn.execute(
+            "UPDATE generations SET state = 'superseded', updated_at = ? "
+            "WHERE generation_id = ?",
+            (now, digest),
+        )
+        conn.execute(
+            "INSERT INTO supersessions(generation_id, reason_code, superseded_at) "
+            "VALUES(?, ?, ?)",
+            (digest, reason, now),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    return {
+        "record_version": RECORD_VERSION,
+        "generation_id": digest,
+        "job_id": row["job_id"],
+        "generation_index": row["generation_index"],
+        "state": "superseded",
+        "reason_code": reason,
+        "superseded_at": now,
+        "reused": False,
+    }
 
 
 def _validated_stage(stage: str) -> str:
@@ -1240,6 +1333,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     status.add_argument("--ai-root", type=Path, required=True)
     status.add_argument("--job-id", required=True)
 
+    supersede = sub.add_parser("supersede")
+    supersede.add_argument("--ai-root", type=Path, required=True)
+    supersede.add_argument("--generation-id", required=True)
+    supersede.add_argument("--reason-code", required=True)
+
     args = parser.parse_args(argv)
     try:
         if args.command == "submit":
@@ -1250,6 +1348,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         elif args.command == "regenerate":
             result = regenerate_job(args.ai_root, args.job_id)
+        elif args.command == "supersede":
+            result = supersede_unstarted_generation(
+                args.ai_root,
+                args.generation_id,
+                reason_code=args.reason_code,
+            )
         else:
             result = job_status(args.ai_root, args.job_id)
     except (ArtifactLifecycleError, sqlite3.Error, OSError) as exc:

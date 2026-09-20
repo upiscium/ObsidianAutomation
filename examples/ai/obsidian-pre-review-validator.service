@@ -16,6 +16,6 @@ PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
 ReadOnlyPaths=/var/lib/obsidian-ai/vault /var/lib/obsidian-ai/state/00-Untrusted
-ReadWritePaths=/var/lib/obsidian-ai/state/02-Orchestration /var/lib/obsidian-ai/state/10-Validation /var/lib/obsidian-ai/state/12-Evaluation-Request
+ReadWritePaths=/var/lib/obsidian-ai/state/02-Orchestration /var/lib/obsidian-ai/state/10-Validation /var/lib/obsidian-ai/state/12-Evaluation-Request /var/lib/obsidian-ai/state/16-Human-Projection/validator
 UMask=0007
 TimeoutStartSec=5min
