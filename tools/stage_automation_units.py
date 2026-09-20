@@ -61,6 +61,7 @@ AI_UNITS = (
     "obsidian-ai-vault-pull.service",
     "obsidian-ai-vault-pull.timer",
     "obsidian-ai-input-planner.service",
+    "obsidian-ai-human-projection-sync.service",
     "obsidian-pre-review-generator.service",
     "obsidian-pre-review-validator.service",
     "obsidian-pre-review-reader.service",
