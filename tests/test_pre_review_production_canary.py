@@ -22,7 +22,6 @@ def _transport(base_url: str, **kwargs):
     assert kwargs["api_key"] is None
     payload = kwargs["payload"]
     assert payload["temperature"] == 0
-    assert payload["reasoning_effort"] == "none"
     model = payload["model"]
     messages = payload["messages"]
     response_format = payload["response_format"]
@@ -36,11 +35,13 @@ def _transport(base_url: str, **kwargs):
     user_payload = json.loads(messages[1]["content"])
 
     if "dimension" in user_payload:
+        assert payload["reasoning_effort"] == "low"
         content = {
             "assessment": "pass",
             "findings": [],
         }
     else:
+        assert payload["reasoning_effort"] == "none"
         content = {
             "title": "Disposable Pre Review Canary",
             "category": "summary",
