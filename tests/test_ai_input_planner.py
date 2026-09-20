@@ -146,6 +146,7 @@ def test_coverage_and_random_policies_are_deterministic_and_mixed(tmp_path: Path
 def test_plan_once_creates_mixed_context_and_one_durable_job(tmp_path: Path) -> None:
     vault = _vault(tmp_path)
     state = _state(tmp_path)
+    _enable_human_projection(state)
 
     result = plan_once(
         state,
