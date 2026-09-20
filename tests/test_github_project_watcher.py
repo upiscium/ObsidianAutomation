@@ -85,6 +85,10 @@ def test_scan_projects_requires_explicit_watch_and_valid_metadata(tmp_path: Path
         "---\ntype: project\nstatus: running\ngithub_repo: upiscium/Ignored\n---\n",
         encoding="utf-8",
     )
+    (project_dir / "Stopped.md").write_text(
+        "---\ntype: project\nstatus: stopped\ngithub_repo: upiscium/Stopped\ngithub_watch: true\n---\n",
+        encoding="utf-8",
+    )
     (project_dir / "Done.md").write_text(
         "---\ntype: project\nstatus: done\ngithub_repo: upiscium/Done\ngithub_watch: true\n---\n",
         encoding="utf-8",
