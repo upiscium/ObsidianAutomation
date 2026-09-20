@@ -17,6 +17,13 @@ REQUIRED_UNITS = {
         "PrivateNetwork=true",
         "ConditionPathExists=/etc/obsidian-ai/pre-review-input.env",
     ),
+    "obsidian-ai-human-projection-sync.service": (
+        "User=obsidian-ai-sync",
+        "obsidian-ai-human-projection-sync",
+        "Requires=obsidian-pre-review-evaluator.service",
+        "ConditionPathExists=/etc/obsidian-ai/human-projection.env",
+        "ConditionPathExists=/etc/obsidian-ai/webdav-password",
+    ),
     "obsidian-pre-review-generator.service": (
         "User=obsidian-ai-generator",
         "obsidian-pre-review-generator-worker",
@@ -46,6 +53,8 @@ REQUIRED_UNITS = {
     "obsidian-pre-review-status.service": (
         "User=obsidian-ai-status",
         "Requires=obsidian-pre-review-evaluator.service",
+        "Wants=obsidian-ai-human-projection-sync.service",
+        "After=obsidian-pre-review-evaluator.service obsidian-ai-human-projection-sync.service",
         "PrivateNetwork=true",
         "obsidian-pre-review-status-project",
     ),
