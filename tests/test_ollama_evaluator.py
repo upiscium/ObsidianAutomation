@@ -240,6 +240,35 @@ def test_near_duplicate_e2e_uses_pairwise_candidate_passes_and_persists_likely(t
         assert "score" not in user_payload["evaluation_candidate"]
 
 
+def test_low_thinking_is_bound_to_native_evaluator_requests_and_record(tmp_path: Path) -> None:
+    _, state, proposal_sha, generation_sha, evaluation_context_sha = _fixture(tmp_path)
+    calls: list[dict[str, object]] = []
+
+    result = evaluate_knowledge_note_with_ollama(
+        state,
+        proposal_sha256=proposal_sha,
+        generation_sha256=generation_sha,
+        evaluation_context_sha256=evaluation_context_sha,
+        base_url="https://ollama.arc.upiscium.dev",
+        model="gemma4:12b",
+        implementation_revision=REVISION,
+        think="low",
+        transport=_transport_with_outputs(_good_outputs(), calls),
+    )
+
+    record = load_evaluation_record(state, result.evaluation_sha256)
+    assert record.model_config == {
+        "adapter_version": ADAPTER_VERSION,
+        "think": "low",
+        "strategy": EVALUATION_STRATEGY,
+        "options": {"temperature": 0},
+    }
+
+    chat_calls = calls[1:]
+    assert chat_calls
+    assert all(call["payload"]["think"] == "low" for call in chat_calls)
+
+
 def test_first_pass_malformed_output_is_rejected_before_persistence(tmp_path: Path) -> None:
     _, state, proposal_sha, generation_sha, evaluation_context_sha = _fixture(tmp_path)
     outputs = _good_outputs()
