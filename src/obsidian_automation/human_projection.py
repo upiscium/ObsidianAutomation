@@ -590,6 +590,7 @@ def emit_input_projection(
     epoch: int,
     cycle: int,
     selected: Sequence[Mapping[str, object]],
+    created_at: str,
 ) -> tuple[str, Path] | None:
     if not projection_enabled(ai_root):
         return None
@@ -613,7 +614,7 @@ def emit_input_projection(
         stage="input",
         source_kind="input_selection",
         source_sha256=source,
-        created_at=_utc_now(),
+        created_at=created_at,
         title="AI Input",
         body="\n".join(lines),
     )
@@ -626,6 +627,7 @@ def emit_input_projection(
             source_kind="input_selection",
             source_sha256=source,
             content=markdown,
+            created_at=created_at,
         ),
     )
 
@@ -669,6 +671,7 @@ def emit_context_projection(
             source_kind="context_bundle",
             source_sha256=source,
             content=markdown,
+            created_at=context.created_at,
         ),
     )
 
@@ -718,6 +721,7 @@ def emit_generation_projection(
             source_kind="generation_record",
             source_sha256=generation_digest,
             content=markdown,
+            created_at=record.generated_at,
         ),
     )
 
@@ -773,6 +777,7 @@ def emit_validation_projection(
             source_kind="validation_record",
             source_sha256=source_sha,
             content=markdown,
+            created_at=record.validated_at,
         ),
     )
 
@@ -842,6 +847,7 @@ def emit_evaluation_and_review_projections(
             source_kind="evaluation_record",
             source_sha256=evaluation,
             content=evaluation_markdown,
+            created_at=record.evaluated_at,
         ),
     )
 
@@ -892,6 +898,7 @@ def emit_evaluation_and_review_projections(
             source_kind="evaluation_record",
             source_sha256=evaluation,
             content=review_markdown,
+            created_at=record.evaluated_at,
         ),
     )
     return evaluation_stored, review_stored
