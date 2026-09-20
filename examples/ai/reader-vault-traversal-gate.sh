@@ -14,10 +14,11 @@ REPO_ROOT=${REPO_ROOT:-"$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd
 READER_USER=${READER_USER:-obsidian-ai-reader}
 SYNC_USER=${SYNC_USER:-obsidian-ai-sync}
 KNOWLEDGE="$VAULT_ROOT/11-Knowledge"
+PROJECTS="$VAULT_ROOT/10-Project"
 INDEX="$AI_ROOT/04-Index"
 CONTEXT="$AI_ROOT/05-Context"
 
-for directory in "$VAULT_ROOT" "$KNOWLEDGE" "$INDEX" "$CONTEXT"; do
+for directory in "$VAULT_ROOT" "$KNOWLEDGE" "$PROJECTS" "$INDEX" "$CONTEXT"; do
   [[ -d "$directory" && ! -L "$directory" ]] || {
     echo "ERROR: unsafe or missing fixture directory: $directory" >&2
     exit 1
@@ -47,11 +48,14 @@ cp -a "$REPO_ROOT/src/obsidian_automation" "$PYTHON_ROOT/obsidian_automation"
 chmod -R a+rX "$PYTHON_ROOT/obsidian_automation"
 
 NOTE="$KNOWLEDGE/ReaderTraversalGate-${$}.md"
+PROJECT_DIR="$PROJECTS/ReaderTraversalGate-${$}"
+PROJECT_NOTE="$PROJECT_DIR/Design.md"
 INDEX_SHA=""
 CONTEXT_SHA=""
 
 cleanup() {
   rm -f -- "$NOTE"
+  rm -rf -- "$PROJECT_DIR"
   [[ -z "$INDEX_SHA" ]] || rm -f -- "$INDEX/$INDEX_SHA.index.json"
   [[ -z "$CONTEXT_SHA" ]] || rm -f -- "$CONTEXT/$CONTEXT_SHA.context.json"
   rm -rf -- "$PYTHON_ROOT"
@@ -71,9 +75,21 @@ source_type: self
 Reader must reach this note without Vault-root listing permission.
 EOF
 
+runuser -u "$SYNC_USER" -- mkdir -p -- "$PROJECT_DIR"
+runuser -u "$SYNC_USER" -- sh -c 'cat > "$1"' sh "$PROJECT_NOTE" <<'EOF'
+---
+type: project-note
+lifecycle: active
+project: "[[ReaderTraversalGate]]"
+---
+# Reader Project Note traversal Gate
+
+Reader may use this active Project Note as Generation context.
+EOF
+
 OUTPUT=$(runuser -u "$READER_USER" -- env \
   PYTHONPATH="$PYTHON_ROOT" \
-  python3 - "$VAULT_ROOT" "$AI_ROOT" "11-Knowledge/$(basename "$NOTE")" <<'PY'
+  python3 - "$VAULT_ROOT" "$AI_ROOT" "11-Knowledge/$(basename "$NOTE")" "10-Project/$(basename "$PROJECT_DIR")/Design.md" <<'PY'
 import sys
 from pathlib import Path
 
@@ -83,6 +99,7 @@ from obsidian_automation.knowledge_index import build_knowledge_index, store_kno
 vault = Path(sys.argv[1])
 state = Path(sys.argv[2])
 source = sys.argv[3]
+project_source = sys.argv[4]
 
 index = build_knowledge_index(vault)
 index_sha, _ = store_knowledge_index(state, index)
@@ -91,11 +108,11 @@ assert any(doc.path == source for doc in index.documents)
 bundle = build_context_bundle(
     vault,
     query="Reader traversal Gate",
-    source_paths=[source],
+    source_paths=[source, project_source],
     created_at="2026-08-22T00:00:00Z",
 )
 context_sha, _ = store_context_bundle(state, bundle)
-assert bundle.sources[0].path == source
+assert {item.path for item in bundle.sources} == {source, project_source}
 
 print(index_sha)
 print(context_sha)
