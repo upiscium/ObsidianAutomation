@@ -34,7 +34,7 @@ from .generator_contract import (
     PROMPT_TEMPLATE_VERSION,
     prompt_template_sha256 as generator_prompt_sha256,
 )
-from .openai_compatible import IDENTITY_BINDING, PROVIDER_NAME, identifier_revision
+from .openai_compatible import (\n    DEFAULT_OPTIONS as GENERATOR_DEFAULT_OPTIONS,\n    IDENTITY_BINDING,\n    PROVIDER_NAME,\n    identifier_revision,\n)
 from .openai_evaluator import (
     ADAPTER_VERSION as EVALUATOR_ADAPTER_VERSION,
     EVALUATION_STRATEGY,
