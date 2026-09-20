@@ -75,6 +75,7 @@ HARD_BACKPRESSURE = 8
 DEFAULT_COVERAGE_CYCLES = 4
 DEFAULT_RANDOM_CYCLES = 1
 MAX_CATALOG_FILES = 8192
+PRE_REVIEW_INFERENCE_OPTIONS = {**dict(GENERATOR_DEFAULT_OPTIONS), "reasoning_effort": "none"}
 _ALLOWED_PROJECT_STATUSES = {
     "planning",
     "running",
@@ -919,7 +920,7 @@ def _build_recipe(
             "model_config": {
                 "adapter_version": GENERATOR_ADAPTER_VERSION,
                 "identity_binding": IDENTITY_BINDING,
-                "options": dict(GENERATOR_DEFAULT_OPTIONS),
+                "options": dict(PRE_REVIEW_INFERENCE_OPTIONS),
             },
         },
         "validator": {"policy": "knowledge-note-v0"},
@@ -938,7 +939,7 @@ def _build_recipe(
                 "adapter_version": EVALUATOR_ADAPTER_VERSION,
                 "identity_binding": IDENTITY_BINDING,
                 "strategy": EVALUATION_STRATEGY,
-                "options": {"temperature": 0},
+                "options": dict(PRE_REVIEW_INFERENCE_OPTIONS),
             },
         },
     }
