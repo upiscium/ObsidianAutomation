@@ -65,11 +65,25 @@ class OllamaEvaluationResult:
     findings: tuple[str, ...]
 
 
-def _provider_model_config(options: Mapping[str, object]) -> dict[str, object]:
+def _validated_think(value: object) -> bool | str:
+    if value is False:
+        return False
+    if isinstance(value, str) and value in {"low", "medium", "high", "max", "xhigh"}:
+        return value
+    raise ArtifactLifecycleError(
+        "Ollama evaluator think must be false or a supported bounded reasoning level"
+    )
+
+
+def _provider_model_config(
+    options: Mapping[str, object],
+    *,
+    think: bool | str,
+) -> dict[str, object]:
     return validate_model_config(
         {
             "adapter_version": ADAPTER_VERSION,
-            "think": False,
+            "think": _validated_think(think),
             "strategy": EVALUATION_STRATEGY,
             "options": dict(options),
         }
@@ -85,6 +99,7 @@ def _chat_dimension_output(
     user_prompt: str,
     output_schema: Mapping[str, object],
     options: Mapping[str, object],
+    think: bool | str,
     timeout: float,
     transport: JSONTransport | None,
 ) -> DimensionEvaluatorOutput:
@@ -100,7 +115,7 @@ def _chat_dimension_output(
                 {"role": "user", "content": user_prompt},
             ],
             "stream": False,
-            "think": False,
+            "think": _validated_think(think),
             "format": dict(output_schema),
             "options": dict(options),
         },
@@ -164,6 +179,7 @@ def evaluate_knowledge_note_with_ollama(
     model: str,
     implementation_revision: str,
     options: Mapping[str, object] | None = None,
+    think: bool | str = False,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     transport: JSONTransport | None = None,
 ) -> OllamaEvaluationResult:
@@ -177,7 +193,8 @@ def evaluate_knowledge_note_with_ollama(
     timeout_value = _validated_timeout(timeout)
     root = _validated_base_url(base_url)
     inference_options = _validated_options(options)
-    model_config = _provider_model_config(inference_options)
+    think_value = _validated_think(think)
+    model_config = _provider_model_config(inference_options, think=think_value)
 
     mutation_digest, target_path, proposal_content = _load_accepted_mutation(
         ai_root,
@@ -230,6 +247,7 @@ def evaluate_knowledge_note_with_ollama(
             user_prompt=prompt.user,
             output_schema=prompt.output_schema,
             options=inference_options,
+            think=think_value,
             timeout=timeout_value,
             transport=transport,
         )
