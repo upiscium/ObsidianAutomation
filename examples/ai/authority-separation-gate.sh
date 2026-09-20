@@ -32,6 +32,8 @@ VALIDATION="$AI_ROOT/10-Validation"
 EVALUATION_REQUEST="$AI_ROOT/12-Evaluation-Request"
 EVALUATION_CONTEXT="$AI_ROOT/14-Evaluation-Context"
 EVALUATION="$AI_ROOT/15-Evaluation"
+PROJECTION="$AI_ROOT/16-Human-Projection"
+PROJECTION_RESULT="$AI_ROOT/17-Human-Projection-Result"
 REVIEW="$AI_ROOT/20-Review"
 LOCKS="$AI_ROOT/24-Locks"
 READ_VIEW_LOCKS="$LOCKS/read-view"
@@ -72,7 +74,9 @@ done
 
 for directory in \
   "$KNOWLEDGE" "$UNTRUSTED" "$ORCHESTRATION" "$STATUS_DIR" "$INDEX" "$CONTEXT" "$VALIDATION" \
-  "$EVALUATION_REQUEST" "$EVALUATION_CONTEXT" "$EVALUATION" \
+  "$EVALUATION_REQUEST" "$EVALUATION_CONTEXT" "$EVALUATION" "$PROJECTION" "$PROJECTION_RESULT" \
+  "$PROJECTION/reader" "$PROJECTION/generator" "$PROJECTION/validator" "$PROJECTION/evaluator" \
+  "$PROJECTION/reviewer" "$PROJECTION/executor" "$PROJECTION/sync" \
   "$REVIEW" "$LOCKS" "$READ_VIEW_LOCKS" "$EXECUTION" "$TRANSPORT" "$RECEIPTS"; do
   [[ -d "$directory" && ! -L "$directory" ]] || {
     echo "ERROR: unsafe or missing fixture directory: $directory" >&2
@@ -134,6 +138,8 @@ execution_seed="$EXECUTION/.authority-gate-execution"
 transport_seed="$TRANSPORT/.authority-gate-transport"
 receipts_seed="$RECEIPTS/.authority-gate-receipt"
 status_seed="$STATUS_DIR/.authority-gate-status"
+projection_generator_seed="$PROJECTION/generator/.authority-gate-projection-generator"
+projection_result_seed="$PROJECTION_RESULT/.authority-gate-projection-result"
 
 create_seed "$SYNC_USER" "$knowledge_seed"
 create_seed "$GENERATOR_USER" "$untrusted_seed"
@@ -149,6 +155,8 @@ create_seed "$EXECUTOR_USER" "$execution_seed"
 create_seed "$SYNC_USER" "$transport_seed"
 create_seed "$EXECUTOR_USER" "$receipts_seed"
 create_seed "$STATUS_USER" "$status_seed"
+create_seed "$GENERATOR_USER" "$projection_generator_seed"
+create_seed "$SYNC_USER" "$projection_result_seed"
 
 # Positive reads.
 probe_read "$READER_USER" "$knowledge_seed" allow "Reader reads canonical Knowledge"
@@ -177,6 +185,8 @@ probe_read "$REVIEWER_USER" "$status_seed" allow "Reviewer reads aggregate statu
 probe_read "$SYNC_USER" "$validation_seed" allow "Sync reads Validation"
 probe_read "$SYNC_USER" "$review_seed" allow "Sync reads Review"
 probe_read "$SYNC_USER" "$execution_seed" allow "Sync reads Execution request"
+probe_read "$SYNC_USER" "$projection_generator_seed" allow "Sync reads human projection request"
+probe_read "$SYNC_USER" "$projection_result_seed" allow "Sync reads human projection result"
 
 # Negative reads protecting trust boundaries.
 probe_read "$GENERATOR_USER" "$knowledge_seed" deny "Generator cannot read canonical Knowledge directly"
@@ -196,6 +206,8 @@ probe_read "$EXECUTOR_USER" "$untrusted_seed" deny "Executor cannot read Untrust
 probe_read "$SYNC_USER" "$untrusted_seed" deny "Sync cannot read Untrusted proposals"
 probe_read "$SYNC_USER" "$evaluation_seed" deny "Sync cannot read Evaluation"
 probe_read "$SYNC_USER" "$receipts_seed" deny "Sync cannot read Receipts"
+probe_read "$VALIDATOR_USER" "$projection_generator_seed" deny "Validator cannot read Generator projection request"
+probe_read "$STATUS_USER" "$projection_generator_seed" deny "Status cannot read human projection request payload"
 for path in "$knowledge_seed" "$untrusted_seed" "$index_seed" "$context_seed" "$validation_seed" "$evaluation_request_seed" "$evaluation_context_seed" "$evaluation_seed" "$review_seed" "$execution_seed" "$transport_seed" "$receipts_seed"; do
   probe_read "$STATUS_USER" "$path" deny "Status identity denied semantic/authority artifact: ${path}"
 done
@@ -224,6 +236,16 @@ probe_write "$READER_USER" "$READ_VIEW_LOCKS" allow "Reader writes mirror read-v
 probe_write "$EXECUTOR_USER" "$EXECUTION" allow "Executor writes Execution request"
 probe_write "$SYNC_USER" "$TRANSPORT" allow "Sync writes Transport result"
 probe_write "$EXECUTOR_USER" "$RECEIPTS" allow "Executor writes Receipts"
+probe_write "$READER_USER" "$PROJECTION/reader" allow "Reader writes own human projection request"
+probe_write "$GENERATOR_USER" "$PROJECTION/generator" allow "Generator writes own human projection request"
+probe_write "$VALIDATOR_USER" "$PROJECTION/validator" allow "Validator writes own human projection request"
+probe_write "$EVALUATOR_USER" "$PROJECTION/evaluator" allow "Evaluator writes own human projection request"
+probe_write "$REVIEWER_USER" "$PROJECTION/reviewer" allow "Reviewer writes own human projection request"
+probe_write "$EXECUTOR_USER" "$PROJECTION/executor" allow "Executor writes own human projection request"
+probe_write "$SYNC_USER" "$PROJECTION/sync" allow "Sync writes own human projection request"
+probe_write "$SYNC_USER" "$PROJECTION_RESULT" allow "Sync writes human projection result"
+probe_write "$GENERATOR_USER" "$PROJECTION/validator" deny "Generator cannot forge Validator projection request"
+probe_write "$SYNC_USER" "$PROJECTION/generator" deny "Sync cannot forge Generator projection request"
 
 
 for user in "$GENERATOR_USER" "$VALIDATOR_USER" "$EVALUATOR_USER" "$REVIEWER_USER" "$EXECUTOR_USER"; do
