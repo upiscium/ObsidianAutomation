@@ -1,0 +1,20 @@
+[Unit]
+Description=Reconcile authoritative post-review artifacts into pre-review scheduler metadata
+Requires=obsidian-ai-post-review-executor-finalize.service
+After=obsidian-ai-post-review-executor-finalize.service
+
+[Service]
+Type=oneshot
+User=obsidian-ai-reader
+Group=obsidian-ai-reader
+ExecStart=/opt/obsidian-ai/venv/bin/obsidian-pre-review-post-review-reconcile \
+  --ai-root /var/lib/obsidian-ai/state
+NoNewPrivileges=true
+PrivateNetwork=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/var/lib/obsidian-ai/state/20-Review /var/lib/obsidian-ai/state/30-Receipts
+ReadWritePaths=/var/lib/obsidian-ai/state/02-Orchestration
+UMask=0027
+TimeoutStartSec=1min
