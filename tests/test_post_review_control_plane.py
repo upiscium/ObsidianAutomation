@@ -235,6 +235,49 @@ def test_executor_dispatch_skips_reject_and_advances_approve(
     assert layout.review.is_dir()
 
 
+def test_executor_dispatch_never_auto_executes_legacy_review_v1(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    ensure_artifact_layout(state)
+    vault = tmp_path / "vault"
+    (vault / "11-Knowledge").mkdir(parents=True)
+
+    legacy = "9" * 64
+    (state / "20-Review" / f"{legacy}.approval.json").write_bytes(
+        _canonical_json_bytes(
+            {
+                "record_version": 1,
+                "mutation_sha256": legacy,
+                "decision": "approve",
+                "decided_at": "2026-09-21T00:00:00Z",
+                "approver": "human",
+            }
+        )
+    )
+
+    called = False
+
+    def should_not_advance(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("legacy Review v1 must never be auto-executed")
+
+    monkeypatch.setattr(
+        production,
+        "advance_production_executor",
+        should_not_advance,
+    )
+
+    result = production.dispatch_pending_executor(state, vault)
+
+    assert called is False
+    assert result["legacy_ignored"] == 1
+    assert result["processed"] == 0
+
+
 def test_transport_dispatch_fails_closed_on_ambiguous_remote_result(
     monkeypatch,
     tmp_path: Path,
