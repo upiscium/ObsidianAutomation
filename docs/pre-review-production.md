@@ -2,17 +2,23 @@
 
 ## Scope
 
-This runbook deploys the #64 pre-review pipeline to the existing single AI Writer
-host. It stops at `awaiting_human_review`.
-
-It does not connect automatic execution or transport:
+This runbook deploys the automatic AI lifecycle to the existing single AI Writer
+host.
 
 ```text
-Input Planner -> Generator -> Validator -> Reader -> Evaluator -> awaiting_human_review
-                                                STOP
+Input Planner -> Generator -> Validator -> Reader -> Evaluator
+ -> Human Review projection
+ -> Review Intake
+ -> Executor prepare
+ -> Sync transport
+ -> Executor finalize
+ -> scheduler reconciliation
 ```
 
-The production updater never starts Executor or the canonical Knowledge WebDAV transport. Human-facing AI projection sync is a separate Sync-owned conditional-create path restricted to `03-AI/**`; it carries no Knowledge mutation authority. The Input Planner runs as Reader and is skipped unless
+Human-facing projection sync remains a separate Sync-owned conditional-create
+path restricted to `03-AI/**`. The Human-facing Review field is only a request;
+Review Intake must create authoritative `20-Review` before Executor can proceed.
+The Input Planner runs as Reader and is skipped unless
 `/etc/obsidian-ai/pre-review-input.env` exists.
 
 ## Production paths
@@ -33,6 +39,8 @@ revision managed by updater:
 private deployment configuration:
   /etc/obsidian-ai/pre-review-generator.env
   /etc/obsidian-ai/pre-review-evaluator.env
+  /etc/obsidian-ai/review-intake.env
+  /etc/obsidian-ai/review-intake-password
 
 deployment receipts:
   /var/lib/obsidian-ai/deployments
@@ -119,6 +127,32 @@ line or persisted in recipe/status/receipt artifacts.
 Do not put tokens, Nextcloud credentials, arbitrary commands, model names, or
 the reviewed revision into the job recipe through these files. Provider model
 identity remains pinned by the submitted immutable recipe.
+
+## Human Review Intake configuration
+
+Review Intake requires a dedicated **read-only** Nextcloud account/app password.
+Do not reuse the Sync writer credential.
+
+Install:
+
+```text
+/etc/obsidian-ai/review-intake.env
+/etc/obsidian-ai/review-intake-password
+```
+
+Example non-secret env:
+
+```text
+REVIEW_NEXTCLOUD_BASE_URL=https://nextcloud.example/remote.php/dav/files/obsidian-ai-review-reader/ObsidianVault
+REVIEW_NEXTCLOUD_USERNAME=obsidian-ai-review-reader
+AI_REVIEW_APPROVER=human
+```
+
+The password file must be readable only by `obsidian-ai-reviewer`. The remote
+account must be unable to write the Vault. Intake compares the fetched Review
+projection with the exact published projection and accepts only a change to
+`review_request`; all other changes fail closed.
+
 
 ## First updater bootstrap
 
@@ -222,24 +256,43 @@ obsidian-pre-review-production-smoke   --profile safe   --expected-revision <exa
 The safe profile verifies:
 
 - exact updater-owned revision;
-- all six reviewed pre-review units;
+- all reviewed pre/post-review units;
 - distinct non-root service identities;
-- Generator -> Validator -> Reader -> Evaluator -> Status dependency chain;
-- Validator/Reader/Status network isolation where applicable;
-- absence of Executor/WebDAV/Execution/Transport/Receipt authority markers.
+- Generator -> Validator -> Reader -> Evaluator dependency chain;
+- Reviewer -> Executor -> Sync -> Executor -> Reader post-review chain;
+- Validator/Reader/Executor network isolation where applicable;
+- post-review authority markers appear only under the expected Unix identity.
 
-It does not contact the OpenAI-compatible provider or Nextcloud.
+It does not contact the LLM provider or Nextcloud.
 
 ## Limited operational status
 
-The timer targets:
+The timer targets `obsidian-pre-review-status.service`. Its dependency graph
+runs both the pre-review path and the post-review control plane:
 
 ```text
-obsidian-pre-review-status.service
-  -> obsidian-pre-review-evaluator.service
-       -> obsidian-pre-review-reader.service
-            -> obsidian-pre-review-validator.service
-                 -> obsidian-pre-review-generator.service
+Input Planner -> Generator -> Validator -> Reader -> Evaluator
+                                         |
+                                         v
+                              Human Projection Sync
+                                         |
+                                         v
+                                  Review Intake
+                                         |
+                                         v
+                              Executor prepare
+                                         |
+                                         v
+                                Sync transport
+                                         |
+                                         v
+                              Executor finalize
+                                         |
+                                         v
+                            post-review reconcile
+                                         |
+                                         v
+                                      Status
 ```
 
 After the chain, `obsidian-ai-status` writes:
@@ -359,7 +412,9 @@ Enable recurrence only after all of these pass:
 - disposable provider canary passes;
 - production identity idle-chain passes;
 - status projection is readable and contains no sensitive identifiers;
-- no automatic Executor/Transport connection exists.
+- Review Intake uses a dedicated read-only credential;
+- one controlled approve/reject E2E proves Review/Executor/Transport/Receipt
+  binding and scheduler terminal reconciliation.
 
 Then:
 
@@ -384,5 +439,5 @@ A failed exact-SHA update intentionally leaves recurring services disabled when
 the package revision may be uncertain. Inspect the deployment receipt, repair
 the reported stage, then re-run the exact reviewed target.
 
-Do not recover a pre-review failure by starting Executor, WebDAV transport, or
-by creating a Human approval record automatically.
+Do not recover a pre-review failure by fabricating a Human approval or bypassing
+the Review Intake/Executor/Sync authority chain.
