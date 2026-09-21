@@ -127,6 +127,9 @@ DIRECTORIES: tuple[tuple[str, str, str, int], ...] = (
 )
 
 AI_ACLS: dict[str, tuple[str, ...]] = {
+    "/etc/obsidian-ai": (
+        "u:obsidian-ai-reviewer:--x",
+    ),
     "/var/lib/obsidian-ai/vault": (
         "u:obsidian-ai-reader:--x",
         "u:obsidian-ai-validator:r-x",
@@ -223,6 +226,7 @@ AI_ACLS: dict[str, tuple[str, ...]] = {
     ),
     "/var/lib/obsidian-ai/state/16-Human-Projection/evaluator": (
         "u:obsidian-ai-evaluator:rwx",
+        "u:obsidian-ai-reviewer:r-x",
         "u:obsidian-ai-sync:r-x",
     ),
     "/var/lib/obsidian-ai/state/16-Human-Projection/reviewer": (
@@ -238,9 +242,11 @@ AI_ACLS: dict[str, tuple[str, ...]] = {
     ),
     "/var/lib/obsidian-ai/state/17-Human-Projection-Result": (
         "u:obsidian-ai-sync:rwx",
+        "u:obsidian-ai-reviewer:r-x",
     ),
     "/var/lib/obsidian-ai/state/20-Review": (
         "u:obsidian-ai-sync:r-x",
+        "u:obsidian-ai-reader:r-x",
         "u:obsidian-ai-reviewer:rwx",
         "u:obsidian-ai-executor:r-x",
     ),
@@ -265,6 +271,7 @@ AI_ACLS: dict[str, tuple[str, ...]] = {
         "u:obsidian-ai-executor:r-x",
     ),
     "/var/lib/obsidian-ai/state/30-Receipts": (
+        "u:obsidian-ai-reader:r-x",
         "u:obsidian-ai-reviewer:r-x",
         "u:obsidian-ai-executor:rwx",
     ),
