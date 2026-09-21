@@ -249,6 +249,18 @@ def test_transport_dispatch_fails_closed_on_ambiguous_remote_result(
         "{}\n",
         encoding="utf-8",
     )
+    (state / "20-Review" / f"{MUTATION}.approval.json").write_bytes(
+        _canonical_json_bytes(
+            {
+                "record_version": 2,
+                "mutation_sha256": MUTATION,
+                "evaluation_sha256": EVALUATION,
+                "decision": "approve",
+                "decided_at": "2026-09-21T00:00:00Z",
+                "approver": "human",
+            }
+        )
+    )
 
     monkeypatch.setattr(
         production,
