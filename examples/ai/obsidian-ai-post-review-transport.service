@@ -1,0 +1,26 @@
+[Unit]
+Description=Apply approved Obsidian AI Knowledge transport requests
+Requires=obsidian-ai-post-review-executor-prepare.service
+After=network-online.target obsidian-ai-post-review-executor-prepare.service
+Wants=network-online.target
+ConditionPathExists=/etc/obsidian-ai/human-projection.env
+ConditionPathExists=/etc/obsidian-ai/webdav-password
+
+[Service]
+Type=oneshot
+User=obsidian-ai-sync
+Group=obsidian-ai-sync
+EnvironmentFile=/etc/obsidian-ai/human-projection.env
+ExecStart=/opt/obsidian-ai/venv/bin/obsidian-production-knowledge-webdav-dispatch \
+  --ai-root /var/lib/obsidian-ai/state \
+  --base-url ${NEXTCLOUD_BASE_URL} \
+  --username ${NEXTCLOUD_USERNAME} \
+  --password-file /etc/obsidian-ai/webdav-password
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/etc/obsidian-ai /var/lib/obsidian-ai/state/10-Validation /var/lib/obsidian-ai/state/20-Review /var/lib/obsidian-ai/state/25-Execution
+ReadWritePaths=/var/lib/obsidian-ai/state/24-Locks /var/lib/obsidian-ai/state/27-Transport
+UMask=0027
+TimeoutStartSec=5min
