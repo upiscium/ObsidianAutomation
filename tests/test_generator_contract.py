@@ -93,7 +93,7 @@ def test_generator_output_rejects_model_owned_path_and_filename_escapes() -> Non
             parse_generator_output(payload)
 
 
-def test_generator_output_rejects_invalid_metadata_and_line_endings() -> None:
+def test_generator_output_rejects_invalid_metadata_and_normalizes_crlf() -> None:
     with pytest.raises(ArtifactLifecycleError, match="category"):
         parse_generator_output(
             b'{"title":"A","category":"unknown","source_type":"self","body":"x"}\n'
@@ -102,10 +102,36 @@ def test_generator_output_rejects_invalid_metadata_and_line_endings() -> None:
         parse_generator_output(
             b'{"title":"A","category":"summary","source_type":"internet","body":"x"}\n'
         )
-    with pytest.raises(ArtifactLifecycleError, match="LF"):
+
+    parsed = parse_generator_output(
+        b'{"title":"A","category":"summary","source_type":"self","body":"x\\r\\ny"}\n'
+    )
+    assert parsed.body == "x\ny"
+
+    with pytest.raises(ArtifactLifecycleError, match="lone CR"):
         parse_generator_output(
-            b'{"title":"A","category":"summary","source_type":"self","body":"x\\r\\ny"}\n'
+            b'{"title":"A","category":"summary","source_type":"self","body":"x\\ry"}\n'
         )
+
+
+def test_lf_and_crlf_semantic_outputs_converge_to_identical_proposal_bytes() -> None:
+    lf = parse_generator_output(
+        b'{"title":"A","category":"summary","source_type":"self","body":"# H\\n\\nBody\\n"}\n'
+    )
+    crlf = parse_generator_output(
+        b'{"title":"A","category":"summary","source_type":"self","body":"# H\\r\\n\\r\\nBody\\r\\n"}\n'
+    )
+
+    first = assemble_knowledge_note_proposal(
+        context_sha256="a" * 64,
+        output=lf,
+    )
+    second = assemble_knowledge_note_proposal(
+        context_sha256="a" * 64,
+        output=crlf,
+    )
+
+    assert first == second
 
 
 def test_prompt_template_is_deterministic_and_context_is_data(tmp_path: Path) -> None:
