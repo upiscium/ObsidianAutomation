@@ -111,15 +111,45 @@ executed as an Obsidian embed, Dataview block, or Meta Bind control.
 - Evaluator groundedness / redundancy / consistency / recommendation;
 - bounded findings;
 - the proposed Knowledge Note as inert code;
-- an empty `review_request` frontmatter field reserved for the next control-plane
-  increment.
+- a Meta Bind `review_request` control for `approve` / `reject`.
 
-v0 is read-only. No button writes authoritative Review.
+The control updates only the Human-facing note. It does not write
+`20-Review` and therefore is not approval authority.
 
-A later Review Intake may accept a Human edit such as
-`review_request: approve`, but it must re-fetch and re-bind the exact
-Proposal/Validation/Evaluation artifacts before creating `20-Review`.
-The Obsidian field itself is never approval authority.
+`obsidian-ai-review-intake.service` runs as `obsidian-ai-reviewer`. It uses
+a dedicated read-only Nextcloud credential to fetch the exact
+`03-AI/50-Review/<case>.md` note. Intake accepts the Human edit only when:
+
+1. the original immutable review Projection Request exists;
+2. its successful Projection Result proves the expected note was published;
+3. the remote note differs from the original projection only in the single
+   `review_request` frontmatter value;
+4. the requested value is blank, `approve`, or `reject`;
+5. the exact Evaluation, accepted Validation, and validated mutation still
+   satisfy the existing Review v2 binding contract.
+
+Only then does the existing `obsidian-knowledge-review` logic create
+`20-Review/<mutation_sha>.approval.json`. Any other Human edit, stale binding,
+or replay mismatch fails closed. CRLF/LF representation variance is normalized
+for comparison; semantic content is never repaired.
+
+Approve then flows through the existing separated authorities:
+
+```text
+Review Intake (Reviewer)
+  -> 20-Review
+Executor
+  -> 25-Execution
+Sync
+  -> conditional Nextcloud write + 27-Transport
+Executor
+  -> 30-Receipts
+Reader
+  -> reconcile terminal state into orchestration metadata
+```
+
+Reject creates authoritative Review and reconciles directly to
+`human_rejected`; it never invokes canonical transport.
 
 ## Sync transport
 
@@ -188,13 +218,15 @@ Implemented by this increment:
 
 - Input, Context, Generation, Validation, Evaluation and Human Review projection;
 - role-scoped private request queues;
-- Sync-only conditional WebDAV transport;
+- Sync-only conditional WebDAV projection transport;
 - fixed collection creation;
-- exact-byte idempotency and conflict detection.
+- exact-byte idempotency and conflict detection;
+- fail-closed Review Intake into authoritative `20-Review`;
+- separated Executor / Sync / Executor post-review canonical path;
+- scheduler reconciliation for approve/reject/completed terminal states.
 
 Reserved for later increments:
 
-- Review request intake and authoritative `20-Review`;
-- Executor / Transport / Completed projection emission after Human approval;
+- Executor / Transport / Completed Human-facing projection emission;
 - explicit Failed projections for orchestration failures;
 - cleanup/retention policy for historical stage projections.
