@@ -287,8 +287,10 @@ def test_full_bootstrap_orders_quiesce_package_smoke_restore(setup, monkeypatch)
     first_disable = next(i for i, c in enumerate(commands) if c[:2] == ("systemctl", "disable"))
     install = next(i for i, c in enumerate(commands) if "--no-build-isolation" in c)
     smoke = next(i for i, c in enumerate(commands) if c[0].endswith("obsidian-github-production-smoke"))
+    authority = next(i for i, c in enumerate(commands)
+                     if c[:1] == ("sh",) and c[1].endswith("bootstrap-pre-review-authority.sh"))
     start = next(i for i, c in enumerate(commands) if c[:2] == ("systemctl", "start"))
-    assert first_disable < install < smoke < start
+    assert first_disable < install < smoke < authority < start
 
 
 def test_failed_package_does_not_resume_timers(setup, monkeypatch):
@@ -307,6 +309,23 @@ def test_failed_package_does_not_resume_timers(setup, monkeypatch):
     assert all(system.states[t]["UnitFileState"] == "disabled" for t in life.TIMERS)
     assert not any(c[:2] == ("systemctl", "start") for c in system.commands)
     assert "PRIVATE-COMMAND-CANARY" not in "".join(p.read_text() for p in kwargs["receipt_dir"].glob("*.json"))
+
+
+def test_failed_authority_migration_does_not_resume_timers(setup):
+    kwargs, system, _ = setup
+    for name in life.TIMERS:
+        system.states[name].update(UnitFileState="enabled", ActiveState="active")
+    system.fail = lambda c: c[:1] == ("sh",) and c[1].endswith("bootstrap-pre-review-authority.sh")
+
+    with pytest.raises(life.LifecycleError, match="pre_review_authority_failed"):
+        complete(kwargs)
+
+    assert all(system.states[t]["ActiveState"] == "inactive" for t in life.TIMERS)
+    assert all(system.states[t]["UnitFileState"] == "disabled" for t in life.TIMERS)
+    assert not any(c[:2] == ("systemctl", "start") for c in system.commands)
+    pending = json.loads((kwargs["receipt_dir"] / "pending-runtime.json").read_text())
+    assert pending["phase"] == "failed"
+    assert pending["containment"] == "disabled"
 
 
 def test_structured_not_found_rc1_is_not_confused_with_bus_failure(setup):

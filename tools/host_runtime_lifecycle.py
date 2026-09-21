@@ -295,8 +295,8 @@ class RuntimeTransaction:
                    "--expected-revision", self.target_sha, "--revision-env", str(self.revision_env),
                    "--systemd-dir", str(self.systemd_dir)), "pre_review_safe_smoke_failed")
         self._run((str(self.venv_root / "bin/obsidian-github-production-smoke"), "--profile", "safe"), "github_safe_smoke_failed")
-        # Reapply file-level ACLs on an existing orchestration DB as well as the
-        # directory ACLs provisioned by the package stage. This reads no payload.
+        # Reapply file-level ACLs on existing orchestration and immutable stage
+        # artifacts after the package-stage directory ACLs. This reads no payload.
         self._run(("sh", str(self.source_root / "examples/ai/bootstrap-pre-review-authority.sh")), "pre_review_authority_failed")
         for role, paths in ROLE_CONFIGS.items():
             configured = any(self.config_exists(path) for path in paths)
