@@ -32,7 +32,11 @@ Production v0 requires exactly one AI Writer host. The shared production lock is
 
 ## Credential boundary
 
-Only `obsidian-ai-sync` may hold the Nextcloud writer credential.
+Only `obsidian-ai-sync` may hold the Nextcloud **writer** credential.
+
+Review Intake may hold a separate read-only Nextcloud credential scoped to the
+private Vault so it can observe the Human-edited `03-AI/50-Review` projection.
+That credential cannot create, update, or delete canonical Vault content.
 
 The following identities have no Nextcloud writer credential:
 
@@ -105,7 +109,9 @@ Context/Proposal/mutation/recipe hashes, content, endpoints, credentials, or
 Review decisions.
 
 The Human reviewer may read the aggregate status projection but cannot rewrite
-it. Sync and Executor do not receive orchestration write authority.
+it. Sync and Executor do not receive orchestration write authority. Reader may
+read authoritative `20-Review` and `30-Receipts` solely to reconcile terminal
+scheduler metadata; Reader still cannot write either authority stage.
 
 ## Reader / Generator sequence
 
@@ -226,11 +232,11 @@ Therefore:
 | State `12-Evaluation-Request` | - | r | - | rw | - | - | - |
 | State `14-Evaluation-Context` | - | rw | - | - | r | - | - |
 | State `15-Evaluation` | - | - | - | - | rw | r | - |
-| State `20-Review` | r | - | - | - | - | rw | r |
+| State `20-Review` | r | r | - | - | - | rw | r |
 | State `24-Locks` | rw | - | - | - | - | rw | rw |
 | State `25-Execution` | r | - | - | - | - | r | rw |
 | State `27-Transport` | rw | - | - | - | - | r | r |
-| State `30-Receipts` | - | - | - | - | - | r | rw |
+| State `30-Receipts` | - | r | - | - | - | r | rw |
 
 Human reviewer does not receive canonical write permission through this mechanism. Human editing through normal Obsidian remains a separate existing authority path.
 
@@ -276,13 +282,13 @@ State stage directories are root-owned; named-user ACL entries grant only the re
 Production acceptance requires proving at OS level that:
 
 - Generator cannot read canonical Knowledge or `04-Index`; it can read but not write `05-Context`; it writes only `00-Untrusted`.
-- Reader can read canonical Knowledge, read/write `04-Index`, write `05-Context`, read `12-Evaluation-Request`, and write `14-Evaluation-Context`; it cannot read Generator proposals or Validation and cannot write the Vault.
+- Reader can read canonical Knowledge, read/write `04-Index`, write `05-Context`, read `12-Evaluation-Request`, and write `14-Evaluation-Context`; for post-review scheduler reconciliation it additionally reads but cannot write authoritative Review/Receipts. It cannot read Generator proposals or Validation and cannot write the Vault.
 - Validator can read canonical Knowledge and Untrusted, write Validation and Evaluation Request, but cannot read Index/Context or write canonical Knowledge/Evaluation/Review/later stages.
 - Evaluator can read Untrusted, original Context, Validation, and Evaluation Context; it cannot read the Vault, Index, Evaluation Request, Human Review, or later execution stages; it writes only Evaluation.
-- Human reviewer can read Validation and Evaluation, write Review and operational Locks, but cannot write canonical Knowledge, machine-produced Validation/Evaluation, Execution, Transport, or Receipts.
+- Human reviewer can read Validation/Evaluation plus the exact Evaluator review projection and its projection result, write Review and operational Locks, but cannot write canonical Knowledge, machine-produced Validation/Evaluation, Execution, Transport, Receipts, or orchestration metadata.
 - Executor cannot write the Vault mirror, Index, Context, Untrusted, Validation, Evaluation Request/Context/Evaluation, Review, or Transport; it writes only Locks, Execution, and Receipts.
 - Sync can write the local Vault mirror, Locks, and Transport results, but cannot forge Index, Context, Untrusted, Validation, Evaluation, Review, Execution, or Receipts.
-- no identity other than Sync can read the Nextcloud writer credential.
+- no identity other than Sync can read the Nextcloud writer credential; Review Intake's separate credential is read-only and readable only by Reviewer.
 - Status cannot read Context, Untrusted, Validation, Evaluation, Review, Execution, Transport, Receipts, or provider/Nextcloud credentials.
 - Reader/Generator/Validator/Evaluator may update orchestration metadata but Status/Reviewer/Sync/Executor cannot turn that metadata into semantic authority.
 
