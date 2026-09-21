@@ -155,9 +155,13 @@ def dispatch_pending_executor(
     rejected = 0
     completed = 0
     transport_pending = 0
+    legacy_ignored = 0
 
     for digest, _path in _digest_files(layout.review, ".approval.json"):
         review = load_review_record(ai_root, digest)
+        if review.record_version != 2 or review.evaluation_sha256 is None:
+            legacy_ignored += 1
+            continue
         if review.decision == "reject":
             rejected += 1
             continue
@@ -210,6 +214,7 @@ def dispatch_pending_executor(
         "rejected": rejected,
         "completed": completed,
         "transport_pending": transport_pending,
+        "legacy_ignored": legacy_ignored,
     }
 
 
@@ -231,6 +236,10 @@ def dispatch_pending_transport(
     existing = 0
 
     for digest, _path in _digest_files(execution, ".transport-request.json"):
+        review = load_review_record(ai_root, digest)
+        if review.record_version != 2 or review.evaluation_sha256 is None:
+            continue
+
         result_path = transport / f"{digest}.transport-result.json"
         if os.path.lexists(result_path):
             existing += 1
