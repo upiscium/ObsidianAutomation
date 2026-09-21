@@ -180,7 +180,8 @@ The Evaluator reuses the Generator transport policy:
 - resolved model identifier and digest;
 - adapter version `ollama-evaluator-chat-structured-v2`;
 - strategy `groundedness-plus-pairwise-candidates-v0`;
-- `think=false`;
+- the exact immutable recipe `think` value (`false` for new recipes; historical
+  `low` remains supported);
 - exact inference options;
 - aggregated semantic assessment;
 - deterministic recommendation.
