@@ -213,7 +213,7 @@ apply_directory_acl "$PROJECTION/generator" \
 apply_directory_acl "$PROJECTION/validator" \
   "u:$VALIDATOR_USER:rwx" "u:$SYNC_USER:r-x"
 apply_directory_acl "$PROJECTION/evaluator" \
-  "u:$EVALUATOR_USER:rwx" "u:$SYNC_USER:r-x"
+  "u:$EVALUATOR_USER:rwx" "u:$REVIEWER_USER:r-x" "u:$SYNC_USER:r-x"
 apply_directory_acl "$PROJECTION/reviewer" \
   "u:$REVIEWER_USER:rwx" "u:$SYNC_USER:r-x"
 apply_directory_acl "$PROJECTION/executor" \
@@ -221,10 +221,11 @@ apply_directory_acl "$PROJECTION/executor" \
 apply_directory_acl "$PROJECTION/sync" \
   "u:$SYNC_USER:rwx"
 apply_directory_acl "$PROJECTION_RESULT" \
-  "u:$SYNC_USER:rwx"
+  "u:$SYNC_USER:rwx" "u:$REVIEWER_USER:r-x"
 
 apply_directory_acl "$REVIEW" \
   "u:$SYNC_USER:r-x" \
+  "u:$READER_USER:r-x" \
   "u:$REVIEWER_USER:rwx" \
   "u:$EXECUTOR_USER:r-x"
 
@@ -252,6 +253,7 @@ apply_directory_acl "$TRANSPORT" \
   "u:$EXECUTOR_USER:r-x"
 
 apply_directory_acl "$RECEIPTS" \
+  "u:$READER_USER:r-x" \
   "u:$REVIEWER_USER:r-x" \
   "u:$EXECUTOR_USER:rwx"
 
