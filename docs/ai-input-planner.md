@@ -77,14 +77,28 @@ batch_size = 6
 maximum batch_size = 8
 ```
 
-`queued`, active processing states, and `awaiting_human_review` count toward
-the target. New planning pauses when the target is already satisfied. It also
-pauses on `blocked` or `retry_exhausted` generations instead of hiding an
+`queued`, active pre-review processing states,
+`awaiting_human_review`, and `approved_pending_execution` count toward the
+target. New planning pauses when the target is already satisfied. It also pauses
+on `blocked` or `retry_exhausted` generations instead of hiding an
 operational problem by creating more work.
 
-Post-review reconciliation is a later control-plane increment. Until that is
-connected, three Human Review waits intentionally fill the queue and stop
-automatic intake.
+Post-review reconciliation observes authoritative `20-Review` and
+`30-Receipts` artifacts and projects their outcome back into scheduler
+metadata:
+
+```text
+awaiting_human_review
+  -> approved_pending_execution
+  -> completed
+
+awaiting_human_review
+  -> human_rejected
+```
+
+The database does not grant approval or completion authority. Review and Receipt
+artifacts remain authoritative; reconciliation only prevents completed/rejected
+work from permanently occupying the planner target queue.
 
 ## Durable metadata
 
@@ -240,5 +254,6 @@ OpenAI-compatible adapter remains available for non-Ollama providers.
 
 The source / selection / objective concepts are intentionally separate. Future
 source adapters can add ChatGPT Export, Daily Notes, Papers, or other bounded
-sources without changing Generator authority. Human-facing `03-AI` projection
-and Approve -> Review -> Executor -> Transport wiring are separate increments.
+sources without changing Generator authority. Human-facing `03-AI` remains
+excluded from the input corpus even though its Review control now feeds a
+separate fail-closed Review Intake path.
