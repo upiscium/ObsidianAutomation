@@ -159,6 +159,7 @@ def _write_receipt(state: Path) -> None:
                 "target_path": "11-Knowledge/example.md",
                 "content_sha256": "8" * 64,
                 "executed_at": "2026-09-21T00:02:00Z",
+                "result": "success",
             }
         )
     )
