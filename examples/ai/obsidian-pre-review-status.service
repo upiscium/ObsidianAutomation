@@ -1,8 +1,7 @@
 [Unit]
 Description=Project Obsidian pre-review aggregate status
-Requires=obsidian-pre-review-evaluator.service
-Wants=obsidian-ai-human-projection-sync.service
-After=obsidian-pre-review-evaluator.service obsidian-ai-human-projection-sync.service
+Requires=obsidian-pre-review-evaluator.service obsidian-ai-post-review-reconcile.service
+After=obsidian-pre-review-evaluator.service obsidian-ai-human-projection-sync.service obsidian-ai-post-review-reconcile.service
 
 [Service]
 Type=oneshot
