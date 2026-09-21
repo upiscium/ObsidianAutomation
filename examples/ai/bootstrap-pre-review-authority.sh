@@ -30,6 +30,10 @@ for command in setfacl getfacl install id getent groupadd useradd runuser find; 
   }
 done
 
+if [ -d /etc/obsidian-ai ] && [ ! -L /etc/obsidian-ai ]; then
+  setfacl -m "u:$REVIEWER_USER:--x" /etc/obsidian-ai
+fi
+
 for dir in "$AI_ROOT" "$LOCKS"; do
   if [ ! -d "$dir" ] || [ -L "$dir" ]; then
     echo "required state directory is missing or unsafe: $dir" >&2
