@@ -29,6 +29,7 @@ from .generator_contract import (
     parse_generator_output,
     store_generator_proposal,
 )
+from .generator_output_formatter import format_generator_output
 
 
 PROVIDER_NAME = "ollama"
@@ -326,7 +327,7 @@ def _chat_semantic_output(
         raise OllamaProviderError("Ollama chat content is not UTF-8 encodable") from exc
     if len(data) > MAX_GENERATOR_OUTPUT_BYTES:
         raise OllamaProviderError("Ollama semantic output exceeds generator output limit")
-    return parse_generator_output(data)
+    return parse_generator_output(format_generator_output(data))
 
 
 def generate_knowledge_note_with_ollama(
