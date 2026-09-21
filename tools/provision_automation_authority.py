@@ -127,9 +127,6 @@ DIRECTORIES: tuple[tuple[str, str, str, int], ...] = (
 )
 
 AI_ACLS: dict[str, tuple[str, ...]] = {
-    "/etc/obsidian-ai": (
-        "u:obsidian-ai-reviewer:--x",
-    ),
     "/var/lib/obsidian-ai/vault": (
         "u:obsidian-ai-reader:--x",
         "u:obsidian-ai-validator:r-x",
@@ -449,6 +446,14 @@ def _require_access(
 
 
 def _apply_ai_acls(runner: Runner) -> None:
+    # /etc/obsidian-ai has an existing Sync-owned group boundary. Add Reviewer
+    # traverse-only access without resetting that directory ACL or defaults.
+    _run(
+        runner,
+        ("setfacl", "-m", "u:obsidian-ai-reviewer:--x", "/etc/obsidian-ai"),
+        label="grant reviewer private config traversal",
+    )
+
     no_default_acl = {
         "/var/lib/obsidian-ai/vault",
         "/var/lib/obsidian-ai/state",
