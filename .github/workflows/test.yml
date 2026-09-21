@@ -93,6 +93,8 @@ jobs:
             /etc/obsidian-ai/webdav-password \
             /etc/obsidian-ai/pre-review-generator.env \
             /etc/obsidian-ai/pre-review-evaluator.env \
+            /etc/obsidian-ai/review-intake.env \
+            /etc/obsidian-ai/review-intake-password \
             /etc/obsidian-github-sync/config.toml \
             /etc/obsidian-github-sync/credentials.env \
             /etc/obsidian-github-mirror/rclone.conf \
