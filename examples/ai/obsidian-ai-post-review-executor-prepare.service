@@ -1,0 +1,21 @@
+[Unit]
+Description=Prepare approved Obsidian AI Knowledge execution requests
+Requires=obsidian-ai-review-intake.service
+After=obsidian-ai-review-intake.service
+
+[Service]
+Type=oneshot
+User=obsidian-ai-executor
+Group=obsidian-ai-executor
+ExecStart=/opt/obsidian-ai/venv/bin/obsidian-production-knowledge-executor-dispatch \
+  --ai-root /var/lib/obsidian-ai/state \
+  --vault-root /var/lib/obsidian-ai/vault
+NoNewPrivileges=true
+PrivateNetwork=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/var/lib/obsidian-ai/vault/11-Knowledge /var/lib/obsidian-ai/state/10-Validation /var/lib/obsidian-ai/state/20-Review /var/lib/obsidian-ai/state/27-Transport
+ReadWritePaths=/var/lib/obsidian-ai/state/24-Locks /var/lib/obsidian-ai/state/25-Execution /var/lib/obsidian-ai/state/30-Receipts
+UMask=0027
+TimeoutStartSec=2min
