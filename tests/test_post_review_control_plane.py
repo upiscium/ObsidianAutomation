@@ -10,7 +10,6 @@ import obsidian_automation.knowledge_production as production
 from obsidian_automation.artifact_lifecycle import (
     _canonical_json_bytes,
     ensure_artifact_layout,
-    store_review_record,
 )
 from obsidian_automation.context_bundle import ContextBundle, store_context_bundle
 from obsidian_automation.pre_review_job import (
@@ -203,20 +202,22 @@ def test_executor_dispatch_skips_reject_and_advances_approve(
     vault = tmp_path / "vault"
     (vault / "11-Knowledge").mkdir(parents=True)
 
-    store_review_record(
-        state,
-        mutation_sha256="1" * 64,
-        decision="reject",
-        approver="human",
-        decided_at="2026-09-21T00:00:00Z",
-    )
-    store_review_record(
-        state,
-        mutation_sha256="2" * 64,
-        decision="approve",
-        approver="human",
-        decided_at="2026-09-21T00:00:00Z",
-    )
+    for digest, decision, evaluation in (
+        ("1" * 64, "reject", "a" * 64),
+        ("2" * 64, "approve", "b" * 64),
+    ):
+        (state / "20-Review" / f"{digest}.approval.json").write_bytes(
+            _canonical_json_bytes(
+                {
+                    "record_version": 2,
+                    "mutation_sha256": digest,
+                    "evaluation_sha256": evaluation,
+                    "decision": decision,
+                    "decided_at": "2026-09-21T00:00:00Z",
+                    "approver": "human",
+                }
+            )
+        )
 
     called = []
 
