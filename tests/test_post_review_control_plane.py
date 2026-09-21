@@ -241,6 +241,9 @@ def test_transport_dispatch_fails_closed_on_ambiguous_remote_result(
     state = tmp_path / "state"
     state.mkdir()
     ensure_artifact_layout(state)
+    (state / "25-Execution").mkdir()
+    (state / "27-Transport").mkdir()
+    (state / "24-Locks").mkdir()
     (state / "25-Execution" / f"{MUTATION}.transport-request.json").write_text(
         "{}\n",
         encoding="utf-8",
