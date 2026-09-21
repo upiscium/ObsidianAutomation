@@ -7,6 +7,7 @@ import pytest
 
 from obsidian_automation.artifact_lifecycle import ArtifactLifecycleError
 from obsidian_automation.context_bundle import build_context_bundle, store_context_bundle
+from obsidian_automation.generator_output_formatter import format_generator_output
 from obsidian_automation.generator_contract import (
     OUTPUT_CONTRACT_VERSION,
     PROMPT_TEMPLATE_VERSION,
@@ -93,7 +94,7 @@ def test_generator_output_rejects_model_owned_path_and_filename_escapes() -> Non
             parse_generator_output(payload)
 
 
-def test_generator_output_rejects_invalid_metadata_and_normalizes_crlf() -> None:
+def test_generator_output_rejects_invalid_metadata_and_non_lf_line_endings() -> None:
     with pytest.raises(ArtifactLifecycleError, match="category"):
         parse_generator_output(
             b'{"title":"A","category":"unknown","source_type":"self","body":"x"}\n'
@@ -102,24 +103,46 @@ def test_generator_output_rejects_invalid_metadata_and_normalizes_crlf() -> None
         parse_generator_output(
             b'{"title":"A","category":"summary","source_type":"internet","body":"x"}\n'
         )
-
-    parsed = parse_generator_output(
-        b'{"title":"A","category":"summary","source_type":"self","body":"x\\r\\ny"}\n'
-    )
-    assert parsed.body == "x\ny"
-
-    with pytest.raises(ArtifactLifecycleError, match="lone CR"):
+    with pytest.raises(ArtifactLifecycleError, match="LF"):
+        parse_generator_output(
+            b'{"title":"A","category":"summary","source_type":"self","body":"x\\r\\ny"}\n'
+        )
+    with pytest.raises(ArtifactLifecycleError, match="LF"):
         parse_generator_output(
             b'{"title":"A","category":"summary","source_type":"self","body":"x\\ry"}\n'
         )
 
 
-def test_lf_and_crlf_semantic_outputs_converge_to_identical_proposal_bytes() -> None:
+def test_formatter_normalizes_only_crlf_before_strict_validation() -> None:
+    formatted = format_generator_output(
+        b'{"title":"A","category":"summary","source_type":"self","body":"x\\r\\ny"}\n'
+    )
+    parsed = parse_generator_output(formatted)
+    assert parsed.body == "x\ny"
+
+    lone_cr = format_generator_output(
+        b'{"title":"A","category":"summary","source_type":"self","body":"x\\ry"}\n'
+    )
+    with pytest.raises(ArtifactLifecycleError, match="LF"):
+        parse_generator_output(lone_cr)
+
+    unsafe_title = format_generator_output(
+        b'{"title":"bad:name","category":"summary","source_type":"self","body":"x\\r\\ny"}\n'
+    )
+    with pytest.raises(ArtifactLifecycleError, match="unsafe"):
+        parse_generator_output(unsafe_title)
+
+
+def test_lf_and_crlf_formatted_outputs_converge_to_identical_proposal_bytes() -> None:
     lf = parse_generator_output(
-        b'{"title":"A","category":"summary","source_type":"self","body":"# H\\n\\nBody\\n"}\n'
+        format_generator_output(
+            b'{"title":"A","category":"summary","source_type":"self","body":"# H\\n\\nBody\\n"}\n'
+        )
     )
     crlf = parse_generator_output(
-        b'{"title":"A","category":"summary","source_type":"self","body":"# H\\r\\n\\r\\nBody\\r\\n"}\n'
+        format_generator_output(
+            b'{"title":"A","category":"summary","source_type":"self","body":"# H\\r\\n\\r\\nBody\\r\\n"}\n'
+        )
     )
 
     first = assemble_knowledge_note_proposal(
