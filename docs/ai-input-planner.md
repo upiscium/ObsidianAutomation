@@ -190,12 +190,23 @@ Automatic planning is enabled by creating:
 /etc/obsidian-ai/pre-review-input.env
 ```
 
-with non-secret model identifiers:
+with non-secret provider/model bindings. For the current Ollama production
+deployment:
 
 ```text
+AI_INPUT_GENERATOR_PROVIDER=ollama
 AI_INPUT_GENERATOR_MODEL=gemma4:12b
+AI_INPUT_GENERATOR_MODEL_REVISION=<64-hex-model-digest>
+AI_INPUT_EVALUATOR_PROVIDER=ollama
 AI_INPUT_EVALUATOR_MODEL=gemma4:12b
+AI_INPUT_EVALUATOR_MODEL_REVISION=<64-hex-model-digest>
 ```
+
+The Planner remains `PrivateNetwork=true`. It does not query Ollama to discover
+model identity. Ollama's exact model digest is supplied as non-secret deployment
+configuration and becomes part of the immutable recipe/job identity. For generic
+OpenAI-compatible providers, provider defaults to `openai-compatible` and model
+revision may remain `auto`, which resolves to identifier-only binding.
 
 The exact implementation revision is supplied separately by the updater-owned
 `pre-review-revision.env`. The planner builds the immutable recipe with current
@@ -208,20 +219,22 @@ migrated.
 Provider endpoints and credentials remain in the existing Generator/Evaluator
 private environment files and are never readable by Reader.
 
-Automatic pre-review recipes use role-specific inference policy:
+For Ollama production, automatic pre-review uses the native `/api/chat`
+Structured Output path with role-specific thinking policy:
 
 ```text
-Generator: temperature=0, reasoning_effort=none
-Evaluator: temperature=0, reasoning_effort=low
+Generator: temperature=0, think=false
+Evaluator: temperature=0, think=low
 ```
 
 Generator is intentionally non-thinking because its job is bounded synthesis from
-explicit sources and production diagnostics showed OpenAI-compatible reasoning
-could consume the entire timeout without emitting final content. Evaluator keeps
-low reasoning because groundedness and comparison checks may benefit from a small
-reasoning budget. Both settings are part of the immutable recipe, so changing
-either creates a distinct job identity rather than silently changing an existing
-job. The generic OpenAI-compatible adapter remains caller-configurable.
+explicit sources. Production diagnostics showed Gemma 4's OpenAI-compatible path
+could spend the entire timeout in reasoning without emitting final content, while
+native `think=false` completed the same structured request in seconds. Evaluator
+keeps low reasoning because groundedness and comparison checks may benefit from a
+small bounded reasoning budget. Provider, adapter, model digest, thinking policy,
+and options are all part of the immutable recipe/job identity. The generic
+OpenAI-compatible adapter remains available for non-Ollama providers.
 
 ## Future extensions
 

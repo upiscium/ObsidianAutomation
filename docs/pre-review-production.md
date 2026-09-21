@@ -278,13 +278,29 @@ A Human Review wait older than 24 hours is a reminder, not a pipeline failure.
 Before enabling the timer, run the canary in a **new** path below `/var/tmp`
 or `/tmp`. The CLI refuses the real production state/Vault paths.
 
-Example:
+Example for the current native Ollama production provider:
 
 ```bash
 TARGET=<deployed-review-sha>
+MODEL=gemma4:12b
+MODEL_REVISION=<64-hex-Ollama-model-digest>
 
-sudo /opt/obsidian-ai/venv/bin/obsidian-pre-review-production-canary   --scratch-root /var/tmp/obsidian-pre-review-canary-$TARGET   --generator-base-url <generator-openai-compatible-url>   --evaluator-base-url <evaluator-openai-compatible-url>   --generator-model <reviewed-generator-model>   --evaluator-model <reviewed-evaluator-model>   --deployed-revision "$TARGET"
+sudo /opt/obsidian-ai/venv/bin/obsidian-pre-review-production-canary \
+  --scratch-root /var/tmp/obsidian-pre-review-canary-$TARGET \
+  --generator-base-url https://ollama.example/v1 \
+  --evaluator-base-url https://ollama.example/v1 \
+  --generator-provider ollama \
+  --generator-model "$MODEL" \
+  --generator-model-revision "$MODEL_REVISION" \
+  --evaluator-provider ollama \
+  --evaluator-model "$MODEL" \
+  --evaluator-model-revision "$MODEL_REVISION" \
+  --deployed-revision "$TARGET"
 ```
+
+The worker accepts the existing deployment URL ending in `/v1` and normalizes it
+to the Ollama authority root only when the immutable recipe provider is
+`ollama`. The model revision must match the exact digest reported by Ollama.
 
 If bearer authentication is required, export the credentials only for the
 manual canary invocation:
@@ -294,9 +310,11 @@ export OPENAI_GENERATOR_API_KEY='...'
 export OPENAI_EVALUATOR_API_KEY='...'
 ```
 
-The canary uses the same immutable automatic inference semantics as production:
-Generator uses `temperature=0` with `reasoning_effort=none`; Evaluator uses
-`temperature=0` with `reasoning_effort=low`.
+The canary uses the same immutable automatic inference semantics as production.
+For Ollama, Generator uses native `/api/chat` with `temperature=0` and
+`think=false`; Evaluator uses native `/api/chat` with `temperature=0` and
+`think=low`. The generic OpenAI-compatible path remains available for other
+providers.
 
 The canary covers:
 

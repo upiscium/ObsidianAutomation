@@ -13,7 +13,7 @@ EnvironmentFile=/etc/obsidian-ai/pre-review-evaluator.env
 EnvironmentFile=/etc/obsidian-ai/pre-review-revision.env
 ExecStart=/opt/obsidian-ai/venv/bin/obsidian-pre-review-evaluator-worker \
   --ai-root /var/lib/obsidian-ai/state \
-  --openai-base-url ${OPENAI_BASE_URL} \
+  --provider-base-url ${OPENAI_BASE_URL} \
   --deployed-revision ${OBSIDIAN_AUTOMATION_REVISION}
 NoNewPrivileges=true
 PrivateTmp=true

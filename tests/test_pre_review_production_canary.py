@@ -14,6 +14,7 @@ from obsidian_automation.pre_review_production_canary import (
 GEN_MODEL = "gemma3:12b"
 EVAL_MODEL = "gemma3:12b-eval"
 REVISION = "a" * 40
+OLLAMA_DIGEST = "d" * 64
 
 
 def _transport(base_url: str, **kwargs):
@@ -68,6 +69,90 @@ def _transport(base_url: str, **kwargs):
             }
         ],
     }
+
+
+def _ollama_transport(base_url: str, **kwargs):
+    assert base_url == "https://ollama.example.invalid"
+    path = kwargs["path"]
+
+    if path == "/api/tags":
+        return {
+            "models": [
+                {
+                    "name": "gemma4:12b",
+                    "model": "gemma4:12b",
+                    "digest": OLLAMA_DIGEST,
+                }
+            ]
+        }
+
+    assert path == "/api/chat"
+    payload = kwargs["payload"]
+    assert payload["model"] == "gemma4:12b"
+    assert payload["stream"] is False
+    assert payload["options"] == {"temperature": 0}
+
+    if payload["think"] is False:
+        content = {
+            "title": "Disposable Native Ollama Canary",
+            "category": "summary",
+            "source_type": "self",
+            "body": (
+                "# Disposable Native Ollama Canary\n\n"
+                "This note verifies native Ollama pre-review without canonical write authority."
+            ),
+        }
+    else:
+        assert payload["think"] == "low"
+        messages = payload["messages"]
+        user_payload = json.loads(messages[1]["content"])
+        assert user_payload["dimension"] in {
+            "groundedness",
+            "redundancy",
+            "consistency",
+        }
+        content = {
+            "assessment": "pass" if user_payload["dimension"] != "redundancy" else "none",
+            "findings": [],
+        }
+
+    return {
+        "model": "gemma4:12b",
+        "done": True,
+        "done_reason": "stop",
+        "message": {
+            "role": "assistant",
+            "content": json.dumps(
+                content,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        },
+    }
+
+
+def test_disposable_canary_supports_native_ollama_role_thinking(
+    tmp_path: Path,
+) -> None:
+    scratch = tmp_path / "pre-review-native-ollama"
+
+    result = run_canary(
+        scratch_root=scratch,
+        generator_base_url="https://ollama.example.invalid/v1",
+        evaluator_base_url="https://ollama.example.invalid/v1",
+        generator_provider="ollama",
+        generator_model="gemma4:12b",
+        generator_model_revision=OLLAMA_DIGEST,
+        evaluator_provider="ollama",
+        evaluator_model="gemma4:12b",
+        evaluator_model_revision=OLLAMA_DIGEST,
+        deployed_revision=REVISION,
+        transport=_ollama_transport,
+    )
+
+    assert result["status"] == "passed"
+    assert result["live_pipeline"]["final_state"] == "awaiting_human_review"
+    assert result["canonical_write_connected"] is False
 
 
 def test_disposable_canary_covers_wave_d_acceptance_without_canonical_write(

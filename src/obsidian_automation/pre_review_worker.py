@@ -6,6 +6,7 @@ import os
 import sys
 from pathlib import Path
 from typing import Mapping, Sequence
+from urllib.parse import urlsplit
 
 from .artifact_lifecycle import ArtifactLifecycleError
 from .evaluation_artifact import (
@@ -31,6 +32,11 @@ from .openai_compatible import (
 )
 from .openai_evaluator import evaluate_knowledge_note_with_openai_compatible
 from .openai_generator import generate_knowledge_note_with_openai_compatible
+from .ollama_evaluator import evaluate_knowledge_note_with_ollama
+from .ollama_generator import (
+    OllamaProviderError,
+    generate_knowledge_note_with_ollama,
+)
 from .pre_review_job import (
     PreReviewJobError,
     RecipeComponent,
@@ -56,6 +62,21 @@ def _options(component: RecipeComponent) -> Mapping[str, object]:
     if not isinstance(value, dict):
         raise PreReviewJobError("recipe model options are invalid")
     return value
+
+
+def _ollama_root_from_provider_url(base_url: str) -> str:
+    parsed = urlsplit(base_url)
+    path = parsed.path.rstrip("/")
+    if path not in {"", "/v1"}:
+        raise PreReviewJobError(
+            "Ollama provider base URL must use the authority root or /v1"
+        )
+    if parsed.query or parsed.fragment or parsed.username is not None or parsed.password is not None:
+        raise PreReviewJobError("Ollama provider base URL is unsafe")
+    if parsed.scheme not in {"http", "https"} or parsed.hostname is None:
+        raise PreReviewJobError("Ollama provider base URL is invalid")
+    authority = parsed.netloc
+    return f"{parsed.scheme}://{authority}"
 
 
 def _component_preflight(
@@ -160,18 +181,42 @@ def run_generator_worker(
         return _block(ai_root, work, reason_code="generator_recipe_runtime_mismatch")
 
     try:
-        generated = generate_knowledge_note_with_openai_compatible(
-            ai_root,
-            context_sha256=work.context_sha256,
-            base_url=base_url,
-            model=component.model_identifier,
-            implementation_revision=deployed_revision,
-            options=_options(component),
-            timeout=timeout,
-            api_key=api_key,
-            transport=transport,
-        )
-    except (OpenAICompatibleProviderError, ArtifactLifecycleError, OSError):
+        if component.provider == "ollama":
+            generated = generate_knowledge_note_with_ollama(
+                ai_root,
+                context_sha256=work.context_sha256,
+                base_url=_ollama_root_from_provider_url(base_url),
+                model=component.model_identifier,
+                implementation_revision=deployed_revision,
+                options=_options(component),
+                timeout=timeout,
+                transport=transport,
+            )
+        elif component.provider == "openai-compatible":
+            generated = generate_knowledge_note_with_openai_compatible(
+                ai_root,
+                context_sha256=work.context_sha256,
+                base_url=base_url,
+                model=component.model_identifier,
+                implementation_revision=deployed_revision,
+                options=_options(component),
+                timeout=timeout,
+                api_key=api_key,
+                transport=transport,
+            )
+        else:
+            return _block(
+                ai_root,
+                work,
+                reason_code="generator_recipe_runtime_mismatch",
+            )
+    except (
+        OpenAICompatibleProviderError,
+        OllamaProviderError,
+        ArtifactLifecycleError,
+        PreReviewJobError,
+        OSError,
+    ):
         return _retry(ai_root, work, reason_code="generator_provider_or_output_error")
 
     try:
@@ -422,20 +467,47 @@ def run_evaluator_worker(
         return _block(ai_root, work, reason_code="evaluator_recipe_runtime_mismatch")
 
     try:
-        evaluated = evaluate_knowledge_note_with_openai_compatible(
-            ai_root,
-            proposal_sha256=str(selected["proposal_sha256"]),
-            generation_sha256=str(selected["generation_sha256"]),
-            evaluation_context_sha256=str(selected["evaluation_context_sha256"]),
-            base_url=base_url,
-            model=component.model_identifier,
-            implementation_revision=deployed_revision,
-            options=_options(component),
-            timeout=timeout,
-            api_key=api_key,
-            transport=transport,
-        )
-    except (OpenAICompatibleProviderError, ArtifactLifecycleError, OSError):
+        if component.provider == "ollama":
+            evaluated = evaluate_knowledge_note_with_ollama(
+                ai_root,
+                proposal_sha256=str(selected["proposal_sha256"]),
+                generation_sha256=str(selected["generation_sha256"]),
+                evaluation_context_sha256=str(selected["evaluation_context_sha256"]),
+                base_url=_ollama_root_from_provider_url(base_url),
+                model=component.model_identifier,
+                implementation_revision=deployed_revision,
+                options=_options(component),
+                think=component.model_config.get("think", False),
+                timeout=timeout,
+                transport=transport,
+            )
+        elif component.provider == "openai-compatible":
+            evaluated = evaluate_knowledge_note_with_openai_compatible(
+                ai_root,
+                proposal_sha256=str(selected["proposal_sha256"]),
+                generation_sha256=str(selected["generation_sha256"]),
+                evaluation_context_sha256=str(selected["evaluation_context_sha256"]),
+                base_url=base_url,
+                model=component.model_identifier,
+                implementation_revision=deployed_revision,
+                options=_options(component),
+                timeout=timeout,
+                api_key=api_key,
+                transport=transport,
+            )
+        else:
+            return _block(
+                ai_root,
+                work,
+                reason_code="evaluator_recipe_runtime_mismatch",
+            )
+    except (
+        OpenAICompatibleProviderError,
+        OllamaProviderError,
+        ArtifactLifecycleError,
+        PreReviewJobError,
+        OSError,
+    ):
         return _retry(ai_root, work, reason_code="evaluator_provider_or_output_error")
 
     try:
@@ -497,7 +569,12 @@ def _print_result(result: Mapping[str, object]) -> int:
 def generator_main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="obsidian-pre-review-generator-worker")
     parser.add_argument("--ai-root", type=Path, required=True)
-    parser.add_argument("--openai-base-url", required=True)
+    parser.add_argument(
+        "--provider-base-url",
+        "--openai-base-url",
+        dest="provider_base_url",
+        required=True,
+    )
     parser.add_argument("--deployed-revision", required=True)
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS)
     parser.add_argument("--max-attempts", type=int, default=DEFAULT_MAX_ATTEMPTS)
@@ -511,7 +588,7 @@ def generator_main(argv: Sequence[str] | None = None) -> int:
         return _print_result(
             run_generator_worker(
                 args.ai_root,
-                base_url=args.openai_base_url,
+                base_url=args.provider_base_url,
                 deployed_revision=args.deployed_revision,
                 timeout=args.timeout,
                 max_attempts=args.max_attempts,
@@ -565,7 +642,12 @@ def reader_main(argv: Sequence[str] | None = None) -> int:
 def evaluator_main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="obsidian-pre-review-evaluator-worker")
     parser.add_argument("--ai-root", type=Path, required=True)
-    parser.add_argument("--openai-base-url", required=True)
+    parser.add_argument(
+        "--provider-base-url",
+        "--openai-base-url",
+        dest="provider_base_url",
+        required=True,
+    )
     parser.add_argument("--deployed-revision", required=True)
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS)
     parser.add_argument("--max-attempts", type=int, default=DEFAULT_MAX_ATTEMPTS)
@@ -574,7 +656,7 @@ def evaluator_main(argv: Sequence[str] | None = None) -> int:
         return _print_result(
             run_evaluator_worker(
                 args.ai_root,
-                base_url=args.openai_base_url,
+                base_url=args.provider_base_url,
                 deployed_revision=args.deployed_revision,
                 timeout=args.timeout,
                 max_attempts=args.max_attempts,
