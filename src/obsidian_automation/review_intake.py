@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import re
 import stat
 import sys
 from dataclasses import dataclass
@@ -38,6 +40,26 @@ from .webdav_create import (
 MAX_REMOTE_REVIEW_BYTES = 768 * 1024
 REQUEST_SUFFIX = ".projection.json"
 RESULT_SUFFIX = ".projection-result.json"
+_FRONTMATTER_KEY = re.compile(r"[a-z][a-z0-9_]*\Z")
+_PLAIN_NUMBER = re.compile(
+    r"[+-]?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?\Z"
+)
+_DIGEST_KEY = re.compile(r"(?:^|_)(?:case_id|sha256)\Z")
+_UTC_TIMESTAMP = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z\Z"
+)
+_DATE_LIKE = re.compile(r"[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}(?:$|[Tt ].*)\Z")
+_PLAIN_PUNCTUATION = frozenset(" _./:@+,-")
+_PLAIN_RESERVED = frozenset(
+    {
+        "true",
+        "false",
+        "yes",
+        "no",
+        "on",
+        "off",
+    }
+)
 
 
 class ReviewIntakeError(ArtifactLifecycleError):
@@ -112,7 +134,103 @@ def _canonical_text(data: bytes, *, label: str) -> str:
     return text
 
 
-def _review_request_line(lines: list[str], *, label: str) -> tuple[int, str]:
+@dataclass(frozen=True)
+class _ReviewDocument:
+    frontmatter: dict[str, str | None]
+    body: str
+
+
+def _scalar_control(value: str) -> bool:
+    return any(
+        ord(character) < 0x20
+        or ord(character) == 0x7F
+        or 0xD800 <= ord(character) <= 0xDFFF
+        for character in value
+    )
+
+
+def _parse_frontmatter_scalar(raw: str, *, key: str, label: str) -> str | None:
+    value = raw.strip(" ")
+    if "\t" in value or _scalar_control(value):
+        raise ReviewIntakeError(f"{label} contains unsupported scalar syntax")
+    if value == "":
+        return None
+    if value in {"null", "Null", "NULL", "~"}:
+        return None
+
+    if value.startswith('"') or value.endswith('"'):
+        if not (value.startswith('"') and value.endswith('"')):
+            raise ReviewIntakeError(f"{label} contains malformed quoted scalar")
+        try:
+            parsed = json.loads(value)
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise ReviewIntakeError(f"{label} contains malformed quoted scalar") from exc
+        if not isinstance(parsed, str) or _scalar_control(parsed):
+            raise ReviewIntakeError(f"{label} contains unsupported quoted scalar")
+        return parsed
+
+    if value.startswith("'") or value.endswith("'"):
+        if not (value.startswith("'") and value.endswith("'")):
+            raise ReviewIntakeError(f"{label} contains malformed quoted scalar")
+        # Only the bounded YAML single-quoted escape (two single quotes) is
+        # supported; no other YAML string semantics are accepted here.
+        inner = value[1:-1]
+        parsed: list[str] = []
+        index = 0
+        while index < len(inner):
+            if inner[index] != "'":
+                parsed.append(inner[index])
+                index += 1
+                continue
+            if index + 1 >= len(inner) or inner[index + 1] != "'":
+                raise ReviewIntakeError(f"{label} contains malformed quoted scalar")
+            parsed.append("'")
+            index += 2
+        result = "".join(parsed)
+        if _scalar_control(result):
+            raise ReviewIntakeError(f"{label} contains unsupported quoted scalar")
+        return result
+
+    # This is intentionally not a YAML plain-scalar parser. Only the small
+    # string subset emitted by Review projections is accepted. In particular,
+    # YAML structural punctuation, comments, tags, aliases, and ambiguous
+    # implicit scalar types are rejected instead of being interpreted.
+    if (
+        not value[0].isalnum()
+        or not value[-1].isalnum()
+        or any(
+            not character.isalnum() and character not in _PLAIN_PUNCTUATION
+            for character in value
+        )
+        or ": " in value
+        or " #" in value
+        or value.endswith(":")
+    ):
+        raise ReviewIntakeError(f"{label} contains unsupported scalar syntax")
+    if value.casefold() in _PLAIN_RESERVED:
+        raise ReviewIntakeError(f"{label} contains ambiguous plain scalar")
+    digest_plain = bool(
+        _DIGEST_KEY.search(key) and re.fullmatch(r"[0-9a-fA-F]{64}", value)
+    )
+    if _PLAIN_NUMBER.fullmatch(value) and not digest_plain:
+        raise ReviewIntakeError(f"{label} contains ambiguous plain scalar")
+    if (
+        re.fullmatch(r"[+-]?0[0-9]+", value)
+        or re.fullmatch(r"0[xX][0-9a-fA-F]+", value)
+        or re.fullmatch(r"0[oObB][0-9a-fA-F]+", value)
+        or re.fullmatch(r"[0-9]+(?::[0-9]+)+", value)
+    ) and not digest_plain:
+        raise ReviewIntakeError(f"{label} contains ambiguous plain scalar")
+    if _DATE_LIKE.fullmatch(value) and _UTC_TIMESTAMP.fullmatch(value) is None:
+        # A date-like plain scalar is YAML-typed rather than an unambiguous
+        # Review string. Hashes are allowed by the key-specific exception.
+        if not digest_plain:
+            raise ReviewIntakeError(f"{label} contains ambiguous plain scalar")
+    return value
+
+
+def _parse_review_document(text: str, *, label: str) -> _ReviewDocument:
+    lines = text.split("\n")
     if not lines or lines[0] != "---":
         raise ReviewIntakeError(f"{label} has no expected frontmatter")
     try:
@@ -120,16 +238,24 @@ def _review_request_line(lines: list[str], *, label: str) -> tuple[int, str]:
     except ValueError as exc:
         raise ReviewIntakeError(f"{label} frontmatter is not closed") from exc
 
-    matches = [
-        (index, line)
-        for index, line in enumerate(lines[1:close], start=1)
-        if line.startswith("review_request:")
-    ]
-    if len(matches) != 1:
-        raise ReviewIntakeError(
-            f"{label} must contain exactly one review_request field"
+    frontmatter: dict[str, str | None] = {}
+    for line in lines[1:close]:
+        if not line or line[:1] in {" ", "\t"}:
+            raise ReviewIntakeError(f"{label} contains unsupported frontmatter structure")
+        key, separator, raw = line.partition(":")
+        if not separator or _FRONTMATTER_KEY.fullmatch(key) is None:
+            raise ReviewIntakeError(f"{label} contains malformed frontmatter key")
+        if key in frontmatter:
+            raise ReviewIntakeError(f"{label} contains duplicate frontmatter key: {key}")
+        frontmatter[key] = _parse_frontmatter_scalar(
+            raw,
+            key=key,
+            label=f"{label} field {key}",
         )
-    return matches[0]
+
+    if "review_request" not in frontmatter:
+        raise ReviewIntakeError(f"{label} must contain exactly one review_request field")
+    return _ReviewDocument(frontmatter=frontmatter, body="\n".join(lines[close + 1 :]))
 
 
 def extract_review_decision(
@@ -145,38 +271,51 @@ def extract_review_decision(
         label="remote review projection",
     )
 
-    expected_lines = expected.split("\n")
-    remote_lines = remote.split("\n")
-    expected_index, expected_line = _review_request_line(
-        expected_lines,
+    expected_document = _parse_review_document(
+        expected,
         label="expected review projection",
     )
-    remote_index, remote_line = _review_request_line(
-        remote_lines,
+    remote_document = _parse_review_document(
+        remote,
         label="remote review projection",
     )
 
-    if expected_index != remote_index:
-        raise ReviewIntakeError("review_request field moved from projected location")
-    if expected_line.strip() != "review_request:":
+    if expected_document.frontmatter["review_request"] not in {None, ""}:
         raise ReviewIntakeError("expected projection already contains a review decision")
 
-    raw_value = remote_line.partition(":")[2].strip()
-    if raw_value in {"", '""', "''", "null", "~"}:
-        decision = None
-    elif raw_value in {"approve", '"approve"', "'approve'"}:
-        decision = "approve"
-    elif raw_value in {"reject", '"reject"', "'reject'"}:
-        decision = "reject"
-    else:
-        raise ReviewIntakeError("review_request must be blank, approve, or reject")
-
-    restored = list(remote_lines)
-    restored[remote_index] = expected_line
-    if restored != expected_lines:
+    if expected_document.body != remote_document.body:
         raise ReviewIntakeError(
             "remote review projection changed outside review_request"
         )
+    if set(expected_document.frontmatter) != set(remote_document.frontmatter):
+        raise ReviewIntakeError(
+            "remote review projection changed outside review_request"
+        )
+
+    expected_protected = {
+        key: value
+        for key, value in expected_document.frontmatter.items()
+        if key != "review_request"
+    }
+    remote_protected = {
+        key: value
+        for key, value in remote_document.frontmatter.items()
+        if key != "review_request"
+    }
+    if expected_protected != remote_protected:
+        raise ReviewIntakeError(
+            "remote review projection changed outside review_request"
+        )
+
+    raw_value = remote_document.frontmatter["review_request"]
+    if raw_value is None or raw_value == "":
+        decision = None
+    elif raw_value == "approve":
+        decision = "approve"
+    elif raw_value == "reject":
+        decision = "reject"
+    else:
+        raise ReviewIntakeError("review_request must be blank, approve, or reject")
     return decision
 
 
@@ -219,11 +358,9 @@ def _require_projection_result(
     request_sha256: str,
     request: ProjectionRequest,
 ) -> None:
-    path = (
-        ai_root.absolute()
-        / "17-Human-Projection-Result"
-        / f"{request_sha256}{RESULT_SUFFIX}"
-    )
+    result_directory = ai_root.absolute() / "17-Human-Projection-Result"
+    _require_safe_directory(result_directory, create=False)
+    path = result_directory / f"{request_sha256}{RESULT_SUFFIX}"
     data = _read_exact_file(path)
     result = parse_result(data)
     if result.request_sha256 != request_sha256:
