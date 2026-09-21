@@ -59,6 +59,13 @@ install -d -o root -g root -m 0700 "$READ_VIEW"
 # Status needs only the orchestration metadata DB, never semantic lifecycle stages.
 setfacl -m "u:$STATUS_USER:--x" "$AI_ROOT"
 
+# Review Intake reads evaluator projection requests/results; Reader observes only
+# authoritative terminal Review/Receipt artifacts for scheduler reconciliation.
+setfacl -m "u:$REVIEWER_USER:r-x" "$AI_ROOT/16-Human-Projection/evaluator"
+setfacl -m "u:$REVIEWER_USER:r-x" "$AI_ROOT/17-Human-Projection-Result"
+setfacl -m "u:$READER_USER:r-x" "$AI_ROOT/20-Review"
+setfacl -m "u:$READER_USER:r-x" "$AI_ROOT/30-Receipts"
+
 # Reader needs traverse-only access to 24-Locks and rw only in read-view.
 setfacl -m "u:$READER_USER:--x" "$LOCKS"
 
