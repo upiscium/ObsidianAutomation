@@ -139,29 +139,21 @@ def _validate_title(value: object) -> str:
 def _validate_body(value: object) -> str:
     if not isinstance(value, str):
         raise ArtifactLifecycleError("generator output body must be a string")
-
-    # Provider/model output may use conventional CRLF line endings even when
-    # the semantic content is otherwise valid. Canonicalize CRLF at the
-    # semantic boundary so all downstream proposal bytes and content hashes
-    # remain LF-only and deterministic. A lone CR remains invalid.
-    normalized = value.replace("\r\n", "\n")
-    if "\r" in normalized:
-        raise ArtifactLifecycleError(
-            "generator output body contains a lone CR line ending"
-        )
-    if "\x00" in normalized:
+    if "\r" in value:
+        raise ArtifactLifecycleError("generator output body must use LF line endings")
+    if "\x00" in value:
         raise ArtifactLifecycleError("generator output body must not contain NUL")
-    if not normalized.strip():
+    if not value.strip():
         raise ArtifactLifecycleError("generator output body must not be empty")
     try:
-        encoded = normalized.encode("utf-8")
+        encoded = value.encode("utf-8")
     except UnicodeEncodeError as exc:
         raise ArtifactLifecycleError("generator output body must be UTF-8 encodable") from exc
     if len(encoded) > MAX_BODY_BYTES:
         raise ArtifactLifecycleError(
             f"generator output body exceeds {MAX_BODY_BYTES} UTF-8 bytes"
         )
-    return normalized
+    return value
 
 
 def parse_generator_output(data: bytes) -> KnowledgeGeneratorOutput:
