@@ -41,8 +41,14 @@ ROLE_TIMERS = {
     "ai": TIMERS[:2], "github-sync": (TIMERS[2],), "publisher": (TIMERS[3],),
 }
 ROLE_CONFIGS = {
-    "ai": ("/etc/obsidian-ai/rclone.conf", "/etc/obsidian-ai/pre-review-generator.env",
-           "/etc/obsidian-ai/pre-review-evaluator.env", "/etc/obsidian-ai/vault-pull.filters"),
+    "ai": (
+        "/etc/obsidian-ai/rclone.conf",
+        "/etc/obsidian-ai/pre-review-generator.env",
+        "/etc/obsidian-ai/pre-review-evaluator.env",
+        "/etc/obsidian-ai/review-intake.env",
+        "/etc/obsidian-ai/review-intake-password",
+        "/etc/obsidian-ai/vault-pull.filters",
+    ),
     "github-sync": ("/etc/obsidian-github-sync/config.toml", "/etc/obsidian-github-mirror/rclone.conf",
                     "/etc/obsidian-github-writer/config.env", "/etc/obsidian-github-writer/webdav-password"),
     "publisher": ("/etc/obsidian-core-promotion/promotion.env", "/etc/obsidian-core-promotion/public-export.toml",
