@@ -16,6 +16,7 @@ from .generator_contract import (
     parse_generator_output,
     store_generator_proposal,
 )
+from .generator_output_formatter import format_generator_output
 from .openai_compatible import (
     DEFAULT_TIMEOUT_SECONDS,
     IDENTITY_BINDING,
@@ -93,7 +94,7 @@ def generate_knowledge_note_with_openai_compatible(
             "OpenAI-compatible semantic output exceeds generator output limit"
         )
     try:
-        output = parse_generator_output(data)
+        output = parse_generator_output(format_generator_output(data))
     except ArtifactLifecycleError as exc:
         raise OpenAICompatibleProviderError(str(exc)) from exc
 
