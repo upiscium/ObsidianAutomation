@@ -365,8 +365,12 @@ export OPENAI_EVALUATOR_API_KEY='...'
 
 The canary uses the same immutable automatic inference semantics as production.
 For Ollama, Generator uses native `/api/chat` with `temperature=0` and
-`think=false`; Evaluator uses native `/api/chat` with `temperature=0` and
-`think=low`. The generic OpenAI-compatible path remains available for other
+`think=false`; new Evaluator recipes use native `/api/chat` with
+`temperature=0` and `think=false`. The exact Gemma 4 groundedness diagnostic
+timed out at 300 seconds with `think=low` but completed in about 6 seconds with
+`think=false`, so this is a policy change rather than a timeout increase.
+Historical immutable Evaluator recipes with `think=low` remain executable with
+that stored value. The generic OpenAI-compatible path remains available for other
 providers.
 
 The canary covers:

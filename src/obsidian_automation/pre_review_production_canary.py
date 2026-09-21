@@ -166,7 +166,7 @@ def _recipe(
                     if evaluator
                     else OLLAMA_GENERATOR_ADAPTER_VERSION
                 ),
-                "think": "low" if evaluator else False,
+                "think": False,
                 "options": {"temperature": 0},
             }
         else:

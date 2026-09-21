@@ -238,17 +238,18 @@ Structured Output path with role-specific thinking policy:
 
 ```text
 Generator: temperature=0, think=false
-Evaluator: temperature=0, think=low
+Evaluator: temperature=0, think=false
 ```
 
 Generator is intentionally non-thinking because its job is bounded synthesis from
-explicit sources. Production diagnostics showed Gemma 4's OpenAI-compatible path
-could spend the entire timeout in reasoning without emitting final content, while
-native `think=false` completed the same structured request in seconds. Evaluator
-keeps low reasoning because groundedness and comparison checks may benefit from a
-small bounded reasoning budget. Provider, adapter, model digest, thinking policy,
-and options are all part of the immutable recipe/job identity. The generic
-OpenAI-compatible adapter remains available for non-Ollama providers.
+explicit sources. Production diagnostics of the exact Gemma 4 groundedness prompt
+measured `think=low` timing out after 300 seconds without a response, while
+`think=false` returned valid structured output in about 6 seconds. New Ollama
+Evaluator recipes therefore use `think=false`; immutable historical recipes with
+`think=low` remain parseable and execute with their stored value. Provider, adapter,
+model digest, thinking policy, and options are all part of the immutable recipe/job
+identity. The generic OpenAI-compatible adapter remains available for non-Ollama
+providers.
 
 ## Future extensions
 

@@ -230,10 +230,18 @@ def _parse_component(
             raise PreReviewJobError(
                 f"{label}.model_config.adapter_version must be {expected_adapter}"
             )
-        expected_think: object = "low" if evaluator else False
-        if model_config["think"] != expected_think:
+        think = model_config["think"]
+        if evaluator:
+            supported_think = think is False or (
+                type(think) is str and think == "low"
+            )
+            expected_think = "False or 'low'"
+        else:
+            supported_think = think is False
+            expected_think = "False"
+        if not supported_think:
             raise PreReviewJobError(
-                f"{label}.model_config.think must be {expected_think!r}"
+                f"{label}.model_config.think must be {expected_think}"
             )
 
     if not isinstance(model_config["options"], dict):

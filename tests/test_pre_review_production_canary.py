@@ -91,8 +91,17 @@ def _ollama_transport(base_url: str, **kwargs):
     assert payload["model"] == "gemma4:12b"
     assert payload["stream"] is False
     assert payload["options"] == {"temperature": 0}
+    messages = payload["messages"]
+    user_payload = json.loads(messages[1]["content"])
 
-    if payload["think"] is False:
+    if "dimension" in user_payload:
+        assert payload["think"] is False
+        content = {
+            "assessment": "pass" if user_payload["dimension"] != "redundancy" else "none",
+            "findings": [],
+        }
+    else:
+        assert payload["think"] is False
         content = {
             "title": "Disposable Native Ollama Canary",
             "category": "summary",
@@ -102,20 +111,6 @@ def _ollama_transport(base_url: str, **kwargs):
                 "This note verifies native Ollama pre-review without canonical write authority."
             ),
         }
-    else:
-        assert payload["think"] == "low"
-        messages = payload["messages"]
-        user_payload = json.loads(messages[1]["content"])
-        assert user_payload["dimension"] in {
-            "groundedness",
-            "redundancy",
-            "consistency",
-        }
-        content = {
-            "assessment": "pass" if user_payload["dimension"] != "redundancy" else "none",
-            "findings": [],
-        }
-
     return {
         "model": "gemma4:12b",
         "done": True,
