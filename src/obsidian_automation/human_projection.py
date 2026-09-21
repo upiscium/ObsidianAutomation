@@ -877,7 +877,9 @@ def emit_evaluation_and_review_projections(
                 "",
                 "## Decision",
                 "",
-                "Review request has not been recorded yet.",
+                "**Review request:** `INPUT[inlineSelect(option(approve, '✅ Approve'), option(reject, '❌ Reject'), option(null, '▫️ Pending')):review_request]`",
+                "",
+                "This field is a Human request only. Authoritative Review is created separately after exact binding verification.",
             ]
         ),
         extra_frontmatter={

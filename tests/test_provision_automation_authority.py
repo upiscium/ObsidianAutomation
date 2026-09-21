@@ -124,7 +124,16 @@ def test_ai_acl_matrix_keeps_semantic_authorities_distinct() -> None:
     assert "u:obsidian-ai-sync:rwx" in acls[
         "/var/lib/obsidian-ai/state/17-Human-Projection-Result"
     ]
+    assert "u:obsidian-ai-reviewer:r-x" in acls[
+        "/var/lib/obsidian-ai/state/16-Human-Projection/evaluator"
+    ]
+    assert "u:obsidian-ai-reviewer:r-x" in acls[
+        "/var/lib/obsidian-ai/state/17-Human-Projection-Result"
+    ]
     assert "u:obsidian-ai-reviewer:rwx" in acls[
+        "/var/lib/obsidian-ai/state/20-Review"
+    ]
+    assert "u:obsidian-ai-reader:r-x" in acls[
         "/var/lib/obsidian-ai/state/20-Review"
     ]
     assert "u:obsidian-ai-executor:rwx" in acls[
@@ -134,6 +143,9 @@ def test_ai_acl_matrix_keeps_semantic_authorities_distinct() -> None:
         "/var/lib/obsidian-ai/state/27-Transport"
     ]
     assert "u:obsidian-ai-executor:rwx" in acls[
+        "/var/lib/obsidian-ai/state/30-Receipts"
+    ]
+    assert "u:obsidian-ai-reader:r-x" in acls[
         "/var/lib/obsidian-ai/state/30-Receipts"
     ]
 

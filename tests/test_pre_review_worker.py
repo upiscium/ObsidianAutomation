@@ -645,7 +645,7 @@ def test_systemd_chain_uses_distinct_fixed_identities_and_stays_disabled_by_defa
     assert "Requires=obsidian-pre-review-reader.service" in units["evaluator"]
     assert "Requires=obsidian-pre-review-evaluator.service" in units["projection"]
     assert "Requires=obsidian-pre-review-evaluator.service" in units["status"]
-    assert "Wants=obsidian-ai-human-projection-sync.service" in units["status"]
+    assert "obsidian-ai-post-review-reconcile.service" in units["status"]
     assert "User=obsidian-ai-status" in units["status"]
     assert "Unit=obsidian-pre-review-status.service" in units["timer"]
 

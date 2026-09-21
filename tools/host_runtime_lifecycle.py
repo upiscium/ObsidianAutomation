@@ -24,7 +24,13 @@ TIMERS = (
 )
 SERVICES = (
     "obsidian-ai-vault-pull.service", "obsidian-ai-input-planner.service",
-    "obsidian-ai-human-projection-sync.service", "obsidian-pre-review-generator.service",
+    "obsidian-ai-human-projection-sync.service",
+    "obsidian-ai-review-intake.service",
+    "obsidian-ai-post-review-executor-prepare.service",
+    "obsidian-ai-post-review-transport.service",
+    "obsidian-ai-post-review-executor-finalize.service",
+    "obsidian-ai-post-review-reconcile.service",
+    "obsidian-pre-review-generator.service",
     "obsidian-pre-review-validator.service", "obsidian-pre-review-reader.service",
     "obsidian-pre-review-evaluator.service", "obsidian-pre-review-status.service",
     "obsidian-github-sync-vault-pull.service", "obsidian-github-sync.service",
@@ -35,8 +41,14 @@ ROLE_TIMERS = {
     "ai": TIMERS[:2], "github-sync": (TIMERS[2],), "publisher": (TIMERS[3],),
 }
 ROLE_CONFIGS = {
-    "ai": ("/etc/obsidian-ai/rclone.conf", "/etc/obsidian-ai/pre-review-generator.env",
-           "/etc/obsidian-ai/pre-review-evaluator.env", "/etc/obsidian-ai/vault-pull.filters"),
+    "ai": (
+        "/etc/obsidian-ai/rclone.conf",
+        "/etc/obsidian-ai/pre-review-generator.env",
+        "/etc/obsidian-ai/pre-review-evaluator.env",
+        "/etc/obsidian-ai/review-intake.env",
+        "/etc/obsidian-ai/review-intake-password",
+        "/etc/obsidian-ai/vault-pull.filters",
+    ),
     "github-sync": ("/etc/obsidian-github-sync/config.toml", "/etc/obsidian-github-mirror/rclone.conf",
                     "/etc/obsidian-github-writer/config.env", "/etc/obsidian-github-writer/webdav-password"),
     "publisher": ("/etc/obsidian-core-promotion/promotion.env", "/etc/obsidian-core-promotion/public-export.toml",

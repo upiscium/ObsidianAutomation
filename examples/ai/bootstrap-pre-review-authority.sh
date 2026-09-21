@@ -30,6 +30,10 @@ for command in setfacl getfacl install id getent groupadd useradd runuser find; 
   }
 done
 
+if [ -d /etc/obsidian-ai ] && [ ! -L /etc/obsidian-ai ]; then
+  setfacl -m "u:$REVIEWER_USER:--x" /etc/obsidian-ai
+fi
+
 for dir in "$AI_ROOT" "$LOCKS"; do
   if [ ! -d "$dir" ] || [ -L "$dir" ]; then
     echo "required state directory is missing or unsafe: $dir" >&2
@@ -58,6 +62,13 @@ install -d -o root -g root -m 0700 "$READ_VIEW"
 
 # Status needs only the orchestration metadata DB, never semantic lifecycle stages.
 setfacl -m "u:$STATUS_USER:--x" "$AI_ROOT"
+
+# Review Intake reads evaluator projection requests/results; Reader observes only
+# authoritative terminal Review/Receipt artifacts for scheduler reconciliation.
+setfacl -m "u:$REVIEWER_USER:r-x" "$AI_ROOT/16-Human-Projection/evaluator"
+setfacl -m "u:$REVIEWER_USER:r-x" "$AI_ROOT/17-Human-Projection-Result"
+setfacl -m "u:$READER_USER:r-x" "$AI_ROOT/20-Review"
+setfacl -m "u:$READER_USER:r-x" "$AI_ROOT/30-Receipts"
 
 # Reader needs traverse-only access to 24-Locks and rw only in read-view.
 setfacl -m "u:$READER_USER:--x" "$LOCKS"

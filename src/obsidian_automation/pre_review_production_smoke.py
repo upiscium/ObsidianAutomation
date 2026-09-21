@@ -29,6 +29,42 @@ REQUIRED_UNITS = {
         "ConditionPathExists=/etc/obsidian-ai/human-projection.env",
         "ConditionPathExists=/etc/obsidian-ai/webdav-password",
     ),
+    "obsidian-ai-review-intake.service": (
+        "User=obsidian-ai-reviewer",
+        "obsidian-ai-review-intake",
+        "Requires=obsidian-ai-human-projection-sync.service",
+        "ConditionPathExists=/etc/obsidian-ai/review-intake.env",
+        "ConditionPathExists=/etc/obsidian-ai/review-intake-password",
+        "/var/lib/obsidian-ai/state/20-Review",
+    ),
+    "obsidian-ai-post-review-executor-prepare.service": (
+        "User=obsidian-ai-executor",
+        "obsidian-production-knowledge-executor-dispatch",
+        "Requires=obsidian-ai-review-intake.service",
+        "PrivateNetwork=true",
+        "/var/lib/obsidian-ai/state/25-Execution",
+    ),
+    "obsidian-ai-post-review-transport.service": (
+        "User=obsidian-ai-sync",
+        "obsidian-production-knowledge-webdav-dispatch",
+        "Requires=obsidian-ai-post-review-executor-prepare.service",
+        "ConditionPathExists=/etc/obsidian-ai/webdav-password",
+        "/var/lib/obsidian-ai/state/27-Transport",
+    ),
+    "obsidian-ai-post-review-executor-finalize.service": (
+        "User=obsidian-ai-executor",
+        "obsidian-production-knowledge-executor-dispatch",
+        "Requires=obsidian-ai-post-review-transport.service",
+        "PrivateNetwork=true",
+        "/var/lib/obsidian-ai/state/30-Receipts",
+    ),
+    "obsidian-ai-post-review-reconcile.service": (
+        "User=obsidian-ai-reader",
+        "obsidian-pre-review-post-review-reconcile",
+        "Requires=obsidian-ai-post-review-executor-finalize.service",
+        "PrivateNetwork=true",
+        "/var/lib/obsidian-ai/state/02-Orchestration",
+    ),
     "obsidian-pre-review-generator.service": (
         "User=obsidian-ai-generator",
         "obsidian-pre-review-generator-worker",
@@ -60,9 +96,8 @@ REQUIRED_UNITS = {
     ),
     "obsidian-pre-review-status.service": (
         "User=obsidian-ai-status",
-        "Requires=obsidian-pre-review-evaluator.service",
-        "Wants=obsidian-ai-human-projection-sync.service",
-        "After=obsidian-pre-review-evaluator.service obsidian-ai-human-projection-sync.service",
+        "Requires=obsidian-pre-review-evaluator.service obsidian-ai-post-review-reconcile.service",
+        "After=obsidian-pre-review-evaluator.service obsidian-ai-human-projection-sync.service obsidian-ai-post-review-reconcile.service",
         "PrivateNetwork=true",
         "obsidian-pre-review-status-project",
     ),
@@ -130,12 +165,7 @@ def validate_units(systemd_dir: Path) -> tuple[str, ...]:
     forbidden = (
         "--ollama-base-url",
         "OLLAMA_BASE_URL",
-        "obsidian-production-webdav-worker",
-        "obsidian-production-knowledge-webdav-worker",
-        "obsidian-production-executor",
-        "/27-Transport",
-        "/25-Execution",
-        "/30-Receipts",
+        "User=root",
     )
     for marker in forbidden:
         if marker in joined:

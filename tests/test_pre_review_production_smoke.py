@@ -78,18 +78,18 @@ def test_safe_smoke_rejects_root_worker(tmp_path: Path) -> None:
         )
 
 
-def test_safe_smoke_rejects_post_review_authority_marker(tmp_path: Path) -> None:
+def test_safe_smoke_rejects_post_review_role_confusion(tmp_path: Path) -> None:
     systemd, revision = _fixture(tmp_path)
-    path = systemd / "obsidian-pre-review-status.service"
-    path.write_text(
-        path.read_text(encoding="utf-8")
-        + "\n# obsidian-production-knowledge-webdav-worker\n",
-        encoding="utf-8",
+    path = systemd / "obsidian-ai-post-review-transport.service"
+    text = path.read_text(encoding="utf-8").replace(
+        "User=obsidian-ai-sync",
+        "User=obsidian-ai-reviewer",
     )
+    path.write_text(text, encoding="utf-8")
 
     with pytest.raises(
         PreReviewProductionSmokeError,
-        match="forbidden post-review authority",
+        match="missing required marker: User=obsidian-ai-sync",
     ):
         run_safe_smoke(
             expected_revision=REVISION,

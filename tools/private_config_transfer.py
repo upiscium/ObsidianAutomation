@@ -110,6 +110,22 @@ ROLE_FILES: dict[str, tuple[PrivateFile, ...]] = {
             "root",
             0o600,
         ),
+        PrivateFile(
+            "ai_review_intake_env",
+            "/etc/obsidian-ai/review-intake.env",
+            "root",
+            "obsidian-ai-reviewer",
+            0o640,
+            required=False,
+        ),
+        PrivateFile(
+            "ai_review_intake_password",
+            "/etc/obsidian-ai/review-intake-password",
+            "root",
+            "obsidian-ai-reviewer",
+            0o640,
+            required=False,
+        ),
     ),
     "github-sync": (
         PrivateFile(
@@ -171,6 +187,8 @@ READERS: dict[str, dict[str, tuple[str, ...]]] = {
         "ai_writer_webdav_password": ("obsidian-ai-sync",),
         "ai_generator_env": (),
         "ai_evaluator_env": (),
+        "ai_review_intake_env": ("obsidian-ai-reviewer",),
+        "ai_review_intake_password": ("obsidian-ai-reviewer",),
     },
     "github-sync": {
         "github_sync_config": ("obsidian-github-sync",),

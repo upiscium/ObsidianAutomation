@@ -54,6 +54,9 @@
         "building_evaluation_context",
         "evaluating",
         "awaiting_human_review",
+        "approved_pending_execution",
+        "human_rejected",
+        "completed",
         "retryable_failure",
         "retry_exhausted",
         "blocked",
@@ -102,6 +105,18 @@
           "minimum": 0
         },
         "superseded": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "approved_pending_execution": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "human_rejected": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "completed": {
           "type": "integer",
           "minimum": 0
         }

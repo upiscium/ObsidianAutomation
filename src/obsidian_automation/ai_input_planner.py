@@ -103,6 +103,7 @@ _ACTIVE_JOB_STATES = {
     "building_evaluation_context",
     "evaluating",
     "awaiting_human_review",
+    "approved_pending_execution",
 }
 _SYNTHESIS_QUERY = (
     "Synthesize one concise, reusable Obsidian Knowledge Note from the selected "
