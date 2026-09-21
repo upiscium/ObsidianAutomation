@@ -104,7 +104,7 @@ other
 
 `body` is Markdown body content only. It must not contain the Knowledge Note YAML frontmatter envelope.
 
-The parser requires UTF-8-encodable text, LF line endings, non-empty content, and bounded size. The assembler normalizes final newlines to exactly one LF and adds the fixed metadata editor. Exact leading copies of the fixed editor are folded into one; other body bytes and quoted examples are preserved. UI-only output is rejected. This is not a general Markdown sanitizer.
+The parser requires UTF-8-encodable, non-empty, bounded text. Conventional CRLF provider output is canonicalized to LF at the semantic boundary; a lone CR remains invalid. The assembler normalizes final newlines to exactly one LF and adds the fixed metadata editor. Therefore equivalent LF/CRLF semantic content converges to identical proposal bytes and mutation identity. Exact leading copies of the fixed editor are folded into one; other body bytes and quoted examples are preserved. UI-only output is rejected. This is not a general Markdown sanitizer.
 
 ## Deterministic ownership
 
