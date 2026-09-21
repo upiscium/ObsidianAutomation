@@ -96,9 +96,8 @@ REQUIRED_UNITS = {
     ),
     "obsidian-pre-review-status.service": (
         "User=obsidian-ai-status",
-        "Requires=obsidian-pre-review-evaluator.service",
-        "Wants=obsidian-ai-human-projection-sync.service",
-        "After=obsidian-pre-review-evaluator.service obsidian-ai-human-projection-sync.service",
+        "Requires=obsidian-pre-review-evaluator.service obsidian-ai-post-review-reconcile.service",
+        "After=obsidian-pre-review-evaluator.service obsidian-ai-human-projection-sync.service obsidian-ai-post-review-reconcile.service",
         "PrivateNetwork=true",
         "obsidian-pre-review-status-project",
     ),
