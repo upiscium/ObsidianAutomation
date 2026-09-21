@@ -182,6 +182,50 @@ def test_generator_e2e_persists_proposal_and_generation_provenance(tmp_path: Pat
     }
 
 
+def test_provider_crlf_body_is_formatted_before_strict_generator_validation(tmp_path: Path) -> None:
+    state, context_sha = _state_with_context(tmp_path)
+
+    def transport(base_url, *, method, path, payload, timeout):
+        if path == "/api/tags":
+            return {
+                "models": [
+                    {
+                        "name": "gemma3:latest",
+                        "model": "gemma3:latest",
+                        "digest": MODEL_DIGEST,
+                    }
+                ]
+            }
+        return {
+            "model": "gemma3:latest",
+            "done": True,
+            "message": {
+                "role": "assistant",
+                "content": json.dumps(
+                    {
+                        "title": "CRLF Example",
+                        "category": "summary",
+                        "source_type": "self",
+                        "body": "# Heading\r\n\r\nBody\r\n",
+                    }
+                ),
+            },
+        }
+
+    result = generate_knowledge_note_with_ollama(
+        state,
+        context_sha256=context_sha,
+        base_url="https://ollama.example.test",
+        model="gemma3",
+        implementation_revision=IMPLEMENTATION_REVISION,
+        transport=transport,
+    )
+
+    proposal = json.loads(result.proposal_path.read_text(encoding="utf-8"))
+    assert "\r" not in proposal["content"]
+    assert proposal["content"].endswith("# Heading\n\nBody\n")
+
+
 def test_malformed_model_output_is_rejected_before_proposal_persistence(tmp_path: Path) -> None:
     state, context_sha = _state_with_context(tmp_path)
 
