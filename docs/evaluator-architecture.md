@@ -12,7 +12,7 @@ structurally valid
 worth creating
 ```
 
-Evaluator v0 does not receive validation, approval, execution, transport, or canonical-write authority.
+The Evaluator does not receive validation, approval, execution, transport, or canonical-write authority.
 
 ## Lifecycle
 
@@ -82,7 +82,7 @@ freshness.
 
 ## Evaluator assessment contract
 
-Evaluation Record v0 binds:
+Current Evaluation Records use version 2 and bind:
 
 - proposal SHA-256;
 - accepted mutation SHA-256;
@@ -93,6 +93,20 @@ Evaluation Record v0 binds:
 - model provider, identifier, revision and model config;
 - evaluation timestamp;
 - advisory assessment.
+
+The current prompt/output identities are:
+
+```text
+output: knowledge-note-evaluator-output-v3
+prompt: knowledge-note-evaluator-v4
+SHA:    9411d74c10cd8c3450be6b79f12c644433862a4b292a26db7444d32606ddea3b
+```
+
+The historical prompt `knowledge-note-evaluator-v3` with SHA
+`bf6265294a4b346f12d1951f594760c80221380ccee9993c6ab866b6b1eca937` remains
+readable in recipes for audit. Current runtime preflight blocks that historical
+recipe before provider contact. Unknown and cross-paired prompt version/hash
+identities are rejected.
 
 Assessment dimensions:
 
@@ -110,7 +124,61 @@ recommendation:
   proceed | manual_review | do_not_proceed
 ```
 
-`findings` contains bounded human-readable reasons.
+Consistency `concern` requires structured conflict evidence. The model-facing
+shape omits the deterministic path:
+
+```json
+{
+  "assessment": "concern",
+  "findings": [{"detail": "..."}],
+  "conflicts": [
+    {
+      "proposal_claim": "...",
+      "candidate_claim": "...",
+      "incompatibility": "..."
+    }
+  ]
+}
+```
+
+Each conflict field is bounded to 1,000 characters and at most four conflicts
+are accepted. Deterministic code binds `candidate_path` to the exact supplied
+candidate after strict parsing. `pass` and `unknown` return an empty conflicts
+array; `concern` requires a non-empty array. `unknown` means the pair is
+insufficient or ambiguous. Different topic/scope,
+missing framework/details, omissions, extra detail, formatting, and style are
+not conflicts.
+
+Findings are bounded to four per dimension in the provider output (16 in the
+persisted assessment), with bounded detail strings. Evaluation Record v2 stores
+the path-bound conflicts under `assessment.conflicts`:
+
+```json
+{
+  "record_version": 2,
+  "assessment": {
+    "consistency": "concern",
+    "conflicts": [
+      {
+        "candidate_path": "11-Knowledge/example.md",
+        "proposal_claim": "...",
+        "candidate_claim": "...",
+        "incompatibility": "..."
+      }
+    ]
+  }
+}
+```
+
+Across candidates, deterministic aggregation selects the winning severity using
+`none < possible < likely` for Redundancy and `pass < unknown < concern` for
+Consistency. Only findings/conflicts at that winning severity survive bounded
+deduplication; no candidates yield Redundancy `none` and Consistency `pass`.
+
+Historical Evaluation Record v1 artifacts remain readable as legacy evidence;
+their assessment shape has no `conflicts` member. The complete prompt, binding,
+and aggregation contract is documented in
+[Evaluator Prompt / Output Contract](evaluator-prompt-output-contract.md).
 
 ## Authority semantics
 
@@ -202,11 +270,12 @@ Included:
 
 Not included:
 
-- Evaluator LLM prompt;
-- Ollama evaluator adapter;
 - automatic interpretation of evaluator recommendation;
 - automatic Human approval/rejection;
 - semantic/vector duplicate retrieval;
 - update/merge canonical mutation support.
 
-The next stage is to add the Evaluator prompt/output contract and then connect the Evaluator to Ollama without changing the authority topology defined here.
+The prompt and provider adapter are current implementation details described in
+[Evaluator Prompt / Output Contract](evaluator-prompt-output-contract.md) and
+[Ollama Evaluator Adapter](ollama-evaluator-adapter.md); they do not change this
+authority topology.

@@ -22,6 +22,7 @@ from .evaluator_contract import (
     render_evaluator_prompts,
     to_evaluation_assessment,
 )
+from .evaluator_conflict import ConsistencyConflict
 from .generation_artifact import load_generation_record, validate_model_config
 from .openai_compatible import (
     DEFAULT_TIMEOUT_SECONDS,
@@ -73,6 +74,7 @@ class OpenAICompatibleEvaluationResult:
     consistency: str
     recommendation: str
     findings: tuple[str, ...]
+    conflicts: tuple[ConsistencyConflict, ...] = ()
 
 
 def provider_model_config(options: Mapping[str, object]) -> dict[str, object]:
@@ -256,6 +258,7 @@ def evaluate_knowledge_note_with_openai_compatible(
         consistency=assessment.consistency,
         recommendation=assessment.recommendation,
         findings=assessment.findings,
+        conflicts=assessment.conflicts,
     )
     evaluation_sha, evaluation_path = store_evaluation_record(ai_root, record)
     return OpenAICompatibleEvaluationResult(
@@ -274,4 +277,5 @@ def evaluate_knowledge_note_with_openai_compatible(
         consistency=assessment.consistency,
         recommendation=assessment.recommendation,
         findings=assessment.findings,
+        conflicts=assessment.conflicts,
     )

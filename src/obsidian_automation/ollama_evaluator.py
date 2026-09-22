@@ -25,6 +25,7 @@ from .evaluator_contract import (
     render_evaluator_prompts,
     to_evaluation_assessment,
 )
+from .evaluator_conflict import ConsistencyConflict
 from .generation_artifact import load_generation_record, validate_model_config
 from .ollama_generator import (
     DEFAULT_TIMEOUT_SECONDS,
@@ -63,6 +64,7 @@ class OllamaEvaluationResult:
     consistency: str
     recommendation: str
     findings: tuple[str, ...]
+    conflicts: tuple[ConsistencyConflict, ...] = ()
 
 
 def _validated_think(value: object) -> bool | str:
@@ -306,6 +308,7 @@ def evaluate_knowledge_note_with_ollama(
         consistency=assessment.consistency,
         recommendation=assessment.recommendation,
         findings=assessment.findings,
+        conflicts=assessment.conflicts,
     )
     evaluation_sha, evaluation_path = store_evaluation_record(ai_root, record)
 
@@ -325,6 +328,7 @@ def evaluate_knowledge_note_with_ollama(
         consistency=assessment.consistency,
         recommendation=assessment.recommendation,
         findings=assessment.findings,
+        conflicts=assessment.conflicts,
     )
 
 
@@ -390,6 +394,15 @@ def main(argv: list[str] | None = None) -> int:
                     "consistency": result.consistency,
                     "recommendation": result.recommendation,
                     "findings": list(result.findings),
+                    "conflicts": [
+                        {
+                            "candidate_path": conflict.candidate_path,
+                            "proposal_claim": conflict.proposal_claim,
+                            "candidate_claim": conflict.candidate_claim,
+                            "incompatibility": conflict.incompatibility,
+                        }
+                        for conflict in result.conflicts
+                    ],
                 },
             },
             ensure_ascii=False,

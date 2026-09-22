@@ -2,27 +2,39 @@ from __future__ import annotations
 
 import json
 from contextlib import contextmanager
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
 
 import obsidian_automation.evaluation_artifact as evaluation_module
 
-from obsidian_automation.artifact_lifecycle import ArtifactLifecycleError, store_untrusted_proposal
+from obsidian_automation.artifact_lifecycle import (
+    ArtifactLifecycleError,
+    sha256_bytes,
+    store_untrusted_proposal,
+)
 from obsidian_automation.context_bundle import build_context_bundle, store_context_bundle
 from obsidian_automation.evaluation_artifact import (
     EVALUATION_CONTEXT_STAGE,
     EVALUATION_REQUEST_STAGE,
     EVALUATION_STAGE,
+    EvaluationAssessment,
+    EvaluationModelMetadata,
+    EvaluationRecord,
+    EvaluatorMetadata,
     build_evaluation_context,
     build_evaluation_record,
     create_evaluation_request,
     load_evaluation_context,
     load_evaluation_record,
     load_evaluation_request,
+    parse_evaluation_context,
+    parse_evaluation_record,
     store_evaluation_context,
     store_evaluation_record,
 )
+from obsidian_automation.evaluator_conflict import ConsistencyConflict
 from obsidian_automation.generation_artifact import build_generation_record, store_generation_record
 from obsidian_automation.knowledge_index import build_knowledge_index, store_knowledge_index
 from obsidian_automation.knowledge_validator import validate_proposal
@@ -141,6 +153,36 @@ def test_reader_builds_recall_biased_context_with_existing_duplicate_candidate(t
     assert load_evaluation_context(state, context_sha) == context
 
 
+@pytest.mark.parametrize(
+    "candidate_path",
+    ["11-Knowledge/../secret.md", "11-Knowledge\\secret.md"],
+)
+def test_evaluation_context_rejects_noncanonical_candidate_paths(candidate_path: str) -> None:
+    content = "# Candidate\n"
+    value = {
+        "record_version": 1,
+        "request_sha256": "a" * 64,
+        "proposal_sha256": "b" * 64,
+        "mutation_sha256": "c" * 64,
+        "query": "candidate",
+        "created_at": "2026-08-24T00:00:00Z",
+        "selection_policy": {"version": "bm25-topk-recall-v0", "top_k": 5},
+        "candidates": [
+            {
+                "path": candidate_path,
+                "content_sha256": sha256_bytes(content.encode()),
+                "score": "1",
+                "content": content,
+            }
+        ],
+    }
+
+    with pytest.raises(ArtifactLifecycleError, match="candidate path"):
+        parse_evaluation_context(
+            (json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n").encode()
+        )
+
+
 def test_evaluation_record_binds_generation_validation_and_evaluation_context(tmp_path: Path) -> None:
     vault, state, proposal_sha, mutation_sha = _accepted_fixture(tmp_path)
     request_sha, _, _ = create_evaluation_request(state, proposal_sha)
@@ -191,18 +233,35 @@ def test_evaluation_record_binds_generation_validation_and_evaluation_context(tm
         model_config={"temperature": 0},
         groundedness="pass",
         redundancy="likely",
-        consistency="pass",
+        consistency="concern",
         recommendation="do_not_proceed",
         findings=["既存Knowledge Noteと実質的に重複している。"],
+        conflicts=[
+            ConsistencyConflict(
+                proposal_claim="WebDAV synchronization is required.",
+                candidate_claim="The note uses local-only storage.",
+                incompatibility="The procedures cannot both be followed in the same setup.",
+                candidate_path="11-Knowledge/Nextcloud+RemotelySaveでObsidianVaultを共有する方法.md",
+            )
+        ],
         evaluated_at="2026-08-24T00:02:00Z",
     )
     evaluation_sha, path = store_evaluation_record(state, record)
 
     assert path == state / EVALUATION_STAGE / f"{evaluation_sha}.evaluation.json"
     loaded = load_evaluation_record(state, evaluation_sha)
+    assert loaded.record_version == 2
     assert loaded.assessment.redundancy == "likely"
     assert loaded.assessment.recommendation == "do_not_proceed"
     assert loaded.proposal_sha256 == proposal_sha
+    assert loaded.assessment.conflicts == (
+        ConsistencyConflict(
+            proposal_claim="WebDAV synchronization is required.",
+            candidate_claim="The note uses local-only storage.",
+            incompatibility="The procedures cannot both be followed in the same setup.",
+            candidate_path="11-Knowledge/Nextcloud+RemotelySaveでObsidianVaultを共有する方法.md",
+        ),
+    )
 
 
 def test_evaluation_record_cannot_cross_bind_another_mutation(tmp_path: Path) -> None:
@@ -288,3 +347,179 @@ def test_evaluation_context_holds_read_view_only_while_touching_mirror(
     # mirror lock; no mirror bytes are read at this point.
     evaluation_module.store_evaluation_context(state, context)
     assert held is False
+
+
+def _record_payload(
+    *,
+    record_version: int = 2,
+    groundedness: str = "pass",
+    redundancy: str = "none",
+    consistency: str = "concern",
+    recommendation: str = "do_not_proceed",
+    conflicts: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    assessment: dict[str, object] = {
+        "groundedness": groundedness,
+        "redundancy": redundancy,
+        "consistency": consistency,
+        "recommendation": recommendation,
+        "findings": [" legacy evidence "],
+    }
+    if record_version == 2:
+        assessment["conflicts"] = (
+            conflicts
+            if conflicts is not None
+            else [
+                {
+                    "candidate_path": "11-Knowledge/existing.md",
+                    "proposal_claim": "Proposal claim.",
+                    "candidate_claim": "Candidate claim.",
+                    "incompatibility": "The claims cannot both hold.",
+                }
+            ]
+        )
+    return {
+        "record_version": record_version,
+        "proposal_sha256": "a" * 64,
+        "mutation_sha256": "b" * 64,
+        "generation_sha256": "c" * 64,
+        "evaluation_context_sha256": "d" * 64,
+        "evaluator": {
+            "implementation_revision": "e" * 40,
+            "prompt_template_version": "evaluation-v1",
+            "prompt_template_sha256": "f" * 64,
+        },
+        "model": {
+            "provider": "ollama",
+            "identifier": "model",
+            "revision": "1" * 64,
+        },
+        "model_config": {"nested": {"temperature": 0}},
+        "assessment": assessment,
+        "evaluated_at": "2026-09-20T00:00:00Z",
+    }
+
+
+def _record_bytes(value: dict[str, object]) -> bytes:
+    return (json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n").encode()
+
+
+def test_historical_v1_record_round_trips_without_v2_shape() -> None:
+    fixture = _record_bytes(
+        _record_payload(
+            record_version=1,
+            consistency="concern",
+            recommendation="manual_review",
+        )
+    )
+
+    parsed = parse_evaluation_record(fixture)
+
+    assert parsed.record_version == 1
+    assert parsed.assessment.conflicts == ()
+    assert parsed.assessment.findings == (" legacy evidence ",)
+    assert json.loads(parsed.to_json_bytes())["assessment"].keys() == {
+        "groundedness",
+        "redundancy",
+        "consistency",
+        "recommendation",
+        "findings",
+    }
+    assert parsed.to_json_bytes() == fixture
+
+
+def test_v2_conflicts_round_trip_with_exact_evidence_shape() -> None:
+    fixture = _record_bytes(_record_payload())
+
+    parsed = parse_evaluation_record(fixture)
+    value = json.loads(parsed.to_json_bytes())
+
+    assert parsed.record_version == 2
+    assert parsed.assessment.conflicts == (
+        ConsistencyConflict(
+            candidate_path="11-Knowledge/existing.md",
+            proposal_claim="Proposal claim.",
+            candidate_claim="Candidate claim.",
+            incompatibility="The claims cannot both hold.",
+        ),
+    )
+    assert value["assessment"]["conflicts"] == [
+        {
+            "candidate_path": "11-Knowledge/existing.md",
+            "proposal_claim": "Proposal claim.",
+            "candidate_claim": "Candidate claim.",
+            "incompatibility": "The claims cannot both hold.",
+        }
+    ]
+
+
+def test_v2_record_rejects_malformed_conflicts_and_inconsistent_evidence() -> None:
+    base = _record_payload()
+    malformed = []
+
+    extra = deepcopy(base)
+    extra["assessment"]["conflicts"][0]["extra"] = "nope"  # type: ignore[index]
+    malformed.append(extra)
+
+    oversized = deepcopy(base)
+    oversized["assessment"]["conflicts"][0]["proposal_claim"] = "x" * 1001  # type: ignore[index]
+    malformed.append(oversized)
+
+    duplicate = deepcopy(base)
+    duplicate["assessment"]["conflicts"] = [  # type: ignore[index]
+        duplicate["assessment"]["conflicts"][0],  # type: ignore[index]
+        duplicate["assessment"]["conflicts"][0],  # type: ignore[index]
+    ]
+    malformed.append(duplicate)
+
+    unsafe_path = deepcopy(base)
+    unsafe_path["assessment"]["conflicts"][0]["candidate_path"] = "11-Knowledge/../secret.md"  # type: ignore[index]
+    malformed.append(unsafe_path)
+
+    invalid_utf8 = deepcopy(base)
+    invalid_utf8["assessment"]["conflicts"][0]["candidate_claim"] = "\ud800"  # type: ignore[index]
+    malformed.append(invalid_utf8)
+
+    for value in malformed:
+        with pytest.raises(ArtifactLifecycleError):
+            parse_evaluation_record(_record_bytes(value))
+
+    no_conflict_concern = _record_payload(conflicts=[])
+    with pytest.raises(ArtifactLifecycleError, match="concern"):
+        parse_evaluation_record(_record_bytes(no_conflict_concern))
+
+    conflict_pass = _record_payload(
+        groundedness="pass",
+        redundancy="none",
+        consistency="pass",
+        recommendation="proceed",
+    )
+    with pytest.raises(ArtifactLifecycleError, match="pass or unknown"):
+        parse_evaluation_record(_record_bytes(conflict_pass))
+
+    wrong_recommendation = _record_payload(recommendation="manual_review")
+    with pytest.raises(ArtifactLifecycleError, match="conservative triad"):
+        parse_evaluation_record(_record_bytes(wrong_recommendation))
+
+
+def test_evaluation_record_model_config_is_nested_immutable_and_canonical() -> None:
+    config = {"z": {"items": [{"value": 1}]}, "a": 0}
+    record = EvaluationRecord(
+        proposal_sha256="a" * 64,
+        mutation_sha256="b" * 64,
+        generation_sha256="c" * 64,
+        evaluation_context_sha256="d" * 64,
+        evaluator=EvaluatorMetadata("e" * 40, "evaluation-v1", "f" * 64),
+        model=EvaluationModelMetadata("ollama", "model", "1" * 64),
+        model_config=config,
+        assessment=EvaluationAssessment("pass", "none", "pass", "proceed", ()),
+        evaluated_at="2026-09-20T00:00:00Z",
+    )
+    before = record.to_json_bytes()
+
+    config["z"]["items"][0]["value"] = 2
+
+    assert record.to_json_bytes() == before
+    with pytest.raises(TypeError):
+        record.model_config["z"]["items"][0]["value"] = 3  # type: ignore[index]
+    assert before == _record_bytes(json.loads(before))

@@ -109,7 +109,12 @@
           "type": "string",
           "pattern": "^[0-9a-f]{40,64}$"
         },
-        "prompt_template_version": {"const": "knowledge-note-evaluator-v3"},
+        "prompt_template_version": {
+          "enum": [
+            "knowledge-note-evaluator-v3",
+            "knowledge-note-evaluator-v4"
+          ]
+        },
         "prompt_template_sha256": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"
@@ -128,7 +133,25 @@
             "options": {"type": "object"}
           }
         }
-      }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "prompt_template_version": {"const": "knowledge-note-evaluator-v3"},
+            "prompt_template_sha256": {
+              "const": "bf6265294a4b346f12d1951f594760c80221380ccee9993c6ab866b6b1eca937"
+            }
+          }
+        },
+        {
+          "properties": {
+            "prompt_template_version": {"const": "knowledge-note-evaluator-v4"},
+            "prompt_template_sha256": {
+              "const": "9411d74c10cd8c3450be6b79f12c644433862a4b292a26db7444d32606ddea3b"
+            }
+          }
+        }
+      ]
     }
   }
 }

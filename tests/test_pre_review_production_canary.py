@@ -41,6 +41,8 @@ def _transport(base_url: str, **kwargs):
             "assessment": "pass",
             "findings": [],
         }
+        if user_payload["dimension"] == "consistency":
+            content["conflicts"] = []
     else:
         assert payload["reasoning_effort"] == "none"
         content = {
@@ -100,6 +102,8 @@ def _ollama_transport(base_url: str, **kwargs):
             "assessment": "pass" if user_payload["dimension"] != "redundancy" else "none",
             "findings": [],
         }
+        if user_payload["dimension"] == "consistency":
+            content["conflicts"] = []
     else:
         assert payload["think"] is False
         content = {

@@ -16,6 +16,7 @@ from obsidian_automation.evaluation_artifact import (
     load_evaluation_record,
     store_evaluation_context,
 )
+from obsidian_automation.evaluator_conflict import ConsistencyConflict
 from obsidian_automation.generation_artifact import build_generation_record, store_generation_record
 from obsidian_automation.knowledge_index import build_knowledge_index, store_knowledge_index
 from obsidian_automation.knowledge_validator import validate_proposal
@@ -141,7 +142,7 @@ def _good_outputs() -> dict[str, dict[str, object]]:
             "assessment": "likely",
             "findings": [{"detail": "The proposal covers the same core procedure."}],
         },
-        "consistency": {"assessment": "pass", "findings": []},
+        "consistency": {"assessment": "pass", "findings": [], "conflicts": []},
     }
 
 
@@ -198,6 +199,7 @@ def test_near_duplicate_e2e_uses_pairwise_candidate_passes_and_persists_likely(t
 
     assert result.redundancy == "likely"
     assert result.recommendation == "do_not_proceed"
+    assert result.conflicts == ()
     assert result.findings == (
         f"redundancy: [{EXISTING_PATH}] The proposal covers the same core procedure.",
     )
@@ -208,6 +210,7 @@ def test_near_duplicate_e2e_uses_pairwise_candidate_passes_and_persists_likely(t
     assert record.assessment.redundancy == "likely"
     assert record.assessment.recommendation == "do_not_proceed"
     assert record.assessment.findings == result.findings
+    assert record.assessment.conflicts == ()
     assert record.model_config == {
         "adapter_version": ADAPTER_VERSION,
         "think": False,
@@ -238,6 +241,67 @@ def test_near_duplicate_e2e_uses_pairwise_candidate_passes_and_persists_likely(t
         assert "evaluation_candidates" not in user_payload
         assert user_payload["evaluation_candidate"]["path"] == EXISTING_PATH
         assert "score" not in user_payload["evaluation_candidate"]
+
+    consistency_schema = chat_calls[2]["payload"]["format"]
+    assert set(consistency_schema["required"]) == set(consistency_schema["properties"])
+    assert set(consistency_schema["properties"]["conflicts"]["items"]["required"]) == {
+        "proposal_claim",
+        "candidate_claim",
+        "incompatibility",
+    }
+    assert consistency_schema["properties"]["conflicts"]["minItems"] == 0
+    assert "candidate_path" not in json.dumps(consistency_schema)
+
+
+def test_consistency_concern_persists_structured_conflict_evidence(tmp_path: Path) -> None:
+    _, state, proposal_sha, generation_sha, evaluation_context_sha = _fixture(tmp_path)
+    outputs = _good_outputs()
+    outputs["consistency"] = {
+        "assessment": "concern",
+        "findings": [{"detail": "The procedures cannot both be followed."}],
+        "conflicts": [
+            {
+                "proposal_claim": "Use WebDAV synchronization.",
+                "candidate_claim": "Use local-only storage.",
+                "incompatibility": "The procedures cannot both be followed in the same setup.",
+            }
+        ],
+    }
+    calls: list[dict[str, object]] = []
+
+    result = evaluate_knowledge_note_with_ollama(
+        state,
+        proposal_sha256=proposal_sha,
+        generation_sha256=generation_sha,
+        evaluation_context_sha256=evaluation_context_sha,
+        base_url="https://ollama.arc.upiscium.dev",
+        model="gemma4:12b",
+        implementation_revision=REVISION,
+        transport=_transport_with_outputs(outputs, calls),
+    )
+
+    expected_conflicts = (
+        ConsistencyConflict(
+            proposal_claim="Use WebDAV synchronization.",
+            candidate_claim="Use local-only storage.",
+            incompatibility="The procedures cannot both be followed in the same setup.",
+            candidate_path=EXISTING_PATH,
+        ),
+    )
+    assert result.consistency == "concern"
+    assert result.recommendation == "do_not_proceed"
+    assert result.conflicts == expected_conflicts
+
+    record = load_evaluation_record(state, result.evaluation_sha256)
+    assert record.assessment.conflicts == expected_conflicts
+    assert json.loads(result.evaluation_path.read_text(encoding="utf-8"))["assessment"]["conflicts"] == [
+        {
+            "candidate_path": EXISTING_PATH,
+            "proposal_claim": "Use WebDAV synchronization.",
+            "candidate_claim": "Use local-only storage.",
+            "incompatibility": "The procedures cannot both be followed in the same setup.",
+        }
+    ]
 
 
 def test_low_thinking_is_bound_to_native_evaluator_requests_and_record(tmp_path: Path) -> None:
