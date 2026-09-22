@@ -635,6 +635,34 @@ def _validated_conflict_field(value: object, *, field: str) -> str:
     return value
 
 
+def _validated_conflict_quote(value: object, *, field: str) -> str:
+    if not isinstance(value, str):
+        raise ArtifactLifecycleError(f"evaluation conflict {field} must be a string")
+    if (
+        not value
+        or value != value.strip()
+        or len(value) > MAX_EVALUATION_CONFLICT_FIELD_CHARS
+    ):
+        raise ArtifactLifecycleError(
+            f"evaluation conflict {field} must be non-empty, trimmed, and at most "
+            f"{MAX_EVALUATION_CONFLICT_FIELD_CHARS} characters"
+        )
+    if any(
+        unicodedata.category(ch) == "Cc" and ch != "\n"
+        for ch in value
+    ):
+        raise ArtifactLifecycleError(
+            f"evaluation conflict {field} must not contain control characters"
+        )
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ArtifactLifecycleError(
+            f"evaluation conflict {field} must be UTF-8 encodable"
+        ) from exc
+    return value
+
+
 def _validated_conflict(
     value: object,
     *,
@@ -642,11 +670,11 @@ def _validated_conflict(
 ) -> ConsistencyConflict:
     if not isinstance(value, ConsistencyConflict):
         raise ArtifactLifecycleError("evaluation conflict has an invalid type")
-    proposal_claim = _validated_conflict_field(
+    proposal_claim = _validated_conflict_quote(
         value.proposal_claim,
         field="proposal_claim",
     )
-    candidate_claim = _validated_conflict_field(
+    candidate_claim = _validated_conflict_quote(
         value.candidate_claim,
         field="candidate_claim",
     )

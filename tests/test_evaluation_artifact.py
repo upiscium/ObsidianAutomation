@@ -238,8 +238,8 @@ def test_evaluation_record_binds_generation_validation_and_evaluation_context(tm
         findings=["既存Knowledge Noteと実質的に重複している。"],
         conflicts=[
             ConsistencyConflict(
-                proposal_claim="WebDAV synchronization is required.",
-                candidate_claim="The note uses local-only storage.",
+                proposal_claim="# Proposal\n\nWebDAV synchronization is required.",
+                candidate_claim="# Candidate\n\nThe note uses local-only storage.",
                 incompatibility="The procedures cannot both be followed in the same setup.",
                 candidate_path="11-Knowledge/Nextcloud+RemotelySaveでObsidianVaultを共有する方法.md",
             )
@@ -256,8 +256,8 @@ def test_evaluation_record_binds_generation_validation_and_evaluation_context(tm
     assert loaded.proposal_sha256 == proposal_sha
     assert loaded.assessment.conflicts == (
         ConsistencyConflict(
-            proposal_claim="WebDAV synchronization is required.",
-            candidate_claim="The note uses local-only storage.",
+            proposal_claim="# Proposal\n\nWebDAV synchronization is required.",
+            candidate_claim="# Candidate\n\nThe note uses local-only storage.",
             incompatibility="The procedures cannot both be followed in the same setup.",
             candidate_path="11-Knowledge/Nextcloud+RemotelySaveでObsidianVaultを共有する方法.md",
         ),
@@ -453,6 +453,32 @@ def test_v2_conflicts_round_trip_with_exact_evidence_shape() -> None:
     ]
 
 
+def test_v2_multiline_conflicts_round_trip_without_rewriting_quotes() -> None:
+    proposal_claim = "# Proposal\n\nUse WebDAV synchronization."
+    candidate_claim = "# Candidate\n\nUse local-only storage."
+    fixture = _record_bytes(
+        _record_payload(
+            conflicts=[
+                {
+                    "candidate_path": "11-Knowledge/existing.md",
+                    "proposal_claim": proposal_claim,
+                    "candidate_claim": candidate_claim,
+                    "incompatibility": "The procedures cannot both hold.",
+                }
+            ]
+        )
+    )
+
+    parsed = parse_evaluation_record(fixture)
+    round_tripped = parse_evaluation_record(parsed.to_json_bytes())
+
+    assert round_tripped.assessment.conflicts[0].proposal_claim == proposal_claim
+    assert round_tripped.assessment.conflicts[0].candidate_claim == candidate_claim
+    assert json.loads(round_tripped.to_json_bytes())["assessment"]["conflicts"][0][
+        "proposal_claim"
+    ] == proposal_claim
+
+
 def test_v2_record_rejects_malformed_conflicts_and_inconsistent_evidence() -> None:
     base = _record_payload()
     malformed = []
@@ -479,6 +505,15 @@ def test_v2_record_rejects_malformed_conflicts_and_inconsistent_evidence() -> No
     invalid_utf8 = deepcopy(base)
     invalid_utf8["assessment"]["conflicts"][0]["candidate_claim"] = "\ud800"  # type: ignore[index]
     malformed.append(invalid_utf8)
+
+    for field, control in (
+        ("proposal_claim", "\r"),
+        ("candidate_claim", "\x00"),
+        ("incompatibility", "\x7f"),
+    ):
+        invalid_control = deepcopy(base)
+        invalid_control["assessment"]["conflicts"][0][field] = f"bad{control}value"  # type: ignore[index]
+        malformed.append(invalid_control)
 
     for value in malformed:
         with pytest.raises(ArtifactLifecycleError):

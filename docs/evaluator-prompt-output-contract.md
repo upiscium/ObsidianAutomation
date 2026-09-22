@@ -199,7 +199,7 @@ Only a verifier `contradiction` becomes persisted conflict evidence.
 }
 ```
 
-Each of `proposal_quote`, `candidate_quote`, and `incompatibility` is a non-empty, trimmed string of at most 1,000 characters. There may be at most four proposals, with no duplicate evidence triples. `pass` and `unknown` have no proposals: the model returns `"conflicts": []`, while the parser rejects a non-empty array on either assessment. `concern` with an empty array is also rejected.
+Each of `proposal_quote`, `candidate_quote`, and `incompatibility` is a non-empty, trimmed string of at most 1,000 characters. Proposal and candidate quotes may contain exact LF line breaks; they reject CR, NUL, DEL, and every other control character. `incompatibility` remains single-line and rejects all control characters. The decoded quote is anchored and persisted without normalization. There may be at most four proposals, with no duplicate evidence triples. `pass` and `unknown` have no proposals: the model returns `"conflicts": []`, while the parser rejects a non-empty array on either assessment. `concern` with an empty array is also rejected.
 
 The following are not conflicts by themselves: different topic or scope, a missing framework or detail, omissions, extra detail, formatting, and style. Those differences can coexist; a conflict requires the explicit material incompatibility above.
 
@@ -292,7 +292,8 @@ For v2 `pass` or `unknown`, `assessment.conflicts` is the empty array. Historica
 
 For current v2 records, verified `proposal_quote` and `candidate_quote` values
 are persisted in the existing `proposal_claim` and `candidate_claim` fields so
-historical readers remain compatible.
+historical readers remain compatible. Those persisted quote fields preserve
+embedded LF line breaks exactly; `incompatibility` remains single-line.
 
 ## Deterministic recommendation policy
 
