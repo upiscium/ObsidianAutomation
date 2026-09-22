@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
@@ -16,12 +17,21 @@ from .evaluation_artifact import (
     store_evaluation_record,
 )
 from .evaluator_contract import (
+    EVALUATOR_STRATEGY_V4,
+    EVALUATOR_STRATEGY_VERSION,
+    MAX_EVALUATOR_WALL_SECONDS,
     MAX_EVALUATOR_OUTPUT_BYTES,
     CandidateEvaluatorOutput,
+    ConsistencyVerification,
     DimensionEvaluatorOutput,
     aggregate_evaluator_outputs,
     bind_candidate_output,
+    bind_consistency_proposals,
+    finalize_consistency_candidate,
+    evaluator_call_timeout,
+    parse_consistency_verifier_output,
     parse_dimension_evaluator_output,
+    render_consistency_verifier_prompt,
     render_evaluator_prompts,
     to_evaluation_assessment,
 )
@@ -42,8 +52,10 @@ from .ollama_generator import (
 
 
 PROVIDER_NAME = "ollama"
-ADAPTER_VERSION = "ollama-evaluator-chat-structured-v2"
-EVALUATION_STRATEGY = "groundedness-plus-pairwise-candidates-v0"
+ADAPTER_VERSION = "ollama-evaluator-chat-structured-v3"
+LEGACY_ADAPTER_VERSION = "ollama-evaluator-chat-structured-v2"
+EVALUATION_STRATEGY = EVALUATOR_STRATEGY_VERSION
+LEGACY_EVALUATION_STRATEGY = EVALUATOR_STRATEGY_V4
 MAX_OPTIONS_BYTES = 12 * 1024
 
 
@@ -158,6 +170,71 @@ def _chat_dimension_output(
         raise OllamaProviderError(str(exc)) from exc
 
 
+def _chat_verifier_output(
+    base_url: str,
+    *,
+    identity: OllamaModelIdentity,
+    system_prompt: str,
+    user_prompt: str,
+    output_schema: Mapping[str, object],
+    options: Mapping[str, object],
+    think: bool | str,
+    timeout: float,
+    transport: JSONTransport | None,
+) -> ConsistencyVerification:
+    request_json = transport or _request_json
+    response = request_json(
+        base_url,
+        method="POST",
+        path="/api/chat",
+        payload={
+            "model": identity.identifier,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "stream": False,
+            "think": _validated_think(think),
+            "format": dict(output_schema),
+            "options": dict(options),
+        },
+        timeout=timeout,
+    )
+    if response.get("done") is not True:
+        raise OllamaProviderError(
+            "Ollama consistency verifier chat response is not complete"
+        )
+    response_model = response.get("model")
+    if not isinstance(response_model, str) or response_model != identity.identifier:
+        raise OllamaProviderError(
+            "Ollama consistency verifier response model does not match resolved model"
+        )
+    message = response.get("message")
+    if not isinstance(message, dict) or message.get("role") != "assistant":
+        raise OllamaProviderError(
+            "Ollama consistency verifier response message is invalid"
+        )
+    content = message.get("content")
+    if not isinstance(content, str) or not content:
+        raise OllamaProviderError(
+            "Ollama consistency verifier response content is empty or invalid"
+        )
+    try:
+        data = content.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise OllamaProviderError(
+            "Ollama consistency verifier content is not UTF-8 encodable"
+        ) from exc
+    if len(data) > MAX_EVALUATOR_OUTPUT_BYTES:
+        raise OllamaProviderError(
+            "Ollama consistency verifier output exceeds evaluator output limit"
+        )
+    try:
+        return parse_consistency_verifier_output(data)
+    except ArtifactLifecycleError as exc:
+        raise OllamaProviderError(str(exc)) from exc
+
+
 def _expected_prompt_order(evaluation_context: object) -> tuple[tuple[str, str | None], ...]:
     candidates = getattr(evaluation_context, "candidates", None)
     if not isinstance(candidates, tuple):
@@ -167,7 +244,9 @@ def _expected_prompt_order(evaluation_context: object) -> tuple[tuple[str, str |
         path = getattr(candidate, "path", None)
         if not isinstance(path, str):
             raise ArtifactLifecycleError("evaluator context candidate path is invalid")
-        expected.extend((("redundancy", path), ("consistency", path)))
+        expected.extend(
+            (("redundancy", path), ("consistency_proposer", path))
+        )
     return tuple(expected)
 
 
@@ -197,6 +276,7 @@ def evaluate_knowledge_note_with_ollama(
     inference_options = _validated_options(options)
     think_value = _validated_think(think)
     model_config = _provider_model_config(inference_options, think=think_value)
+    deadline = time.monotonic() + MAX_EVALUATOR_WALL_SECONDS
 
     mutation_digest, target_path, proposal_content = _load_accepted_mutation(
         ai_root,
@@ -225,20 +305,22 @@ def evaluate_knowledge_note_with_ollama(
         generation_context=generation_context,
         evaluation_context=evaluation_context,
     )
-    actual_order = tuple((prompt.dimension, prompt.candidate_path) for prompt in prompts)
+    actual_order = tuple((prompt.pass_kind, prompt.candidate_path) for prompt in prompts)
     if actual_order != _expected_prompt_order(evaluation_context):
         raise ArtifactLifecycleError("evaluator prompt pass order is invalid")
 
     identity = resolve_ollama_model(
         root,
         model,
-        timeout=timeout_value,
+        timeout=evaluator_call_timeout(deadline, timeout_value),
         transport=transport,
     )
 
+    candidate_contents = {candidate.path: candidate.content for candidate in evaluation_context.candidates}
     groundedness_output: DimensionEvaluatorOutput | None = None
     redundancy_pairs: list[CandidateEvaluatorOutput] = []
     consistency_pairs: list[CandidateEvaluatorOutput] = []
+    used_prompts = list(prompts)
 
     for prompt in prompts:
         dimension_output = _chat_dimension_output(
@@ -250,10 +332,10 @@ def evaluate_knowledge_note_with_ollama(
             output_schema=prompt.output_schema,
             options=inference_options,
             think=think_value,
-            timeout=timeout_value,
+            timeout=evaluator_call_timeout(deadline, timeout_value),
             transport=transport,
         )
-        if prompt.dimension == "groundedness":
+        if prompt.pass_kind == "groundedness":
             if prompt.candidate_path is not None or groundedness_output is not None:
                 raise ArtifactLifecycleError("groundedness evaluator pass is invalid")
             groundedness_output = dimension_output
@@ -261,16 +343,46 @@ def evaluate_knowledge_note_with_ollama(
 
         if prompt.candidate_path is None:
             raise ArtifactLifecycleError("pairwise evaluator pass is missing candidate path")
-        bound = bind_candidate_output(
+        if prompt.pass_kind == "redundancy":
+            bound = bind_candidate_output(
+                dimension_output,
+                candidate_path=prompt.candidate_path,
+            )
+            redundancy_pairs.append(bound)
+            continue
+        if prompt.pass_kind != "consistency_proposer":
+            raise ArtifactLifecycleError("pairwise evaluator dimension is invalid")
+        candidate_content = candidate_contents.get(prompt.candidate_path)
+        if candidate_content is None:
+            raise ArtifactLifecycleError("evaluator candidate content is unavailable")
+        proposal_output = bind_consistency_proposals(
             dimension_output,
             candidate_path=prompt.candidate_path,
+            proposal_content=proposal_content,
+            candidate_content=candidate_content,
         )
-        if prompt.dimension == "redundancy":
-            redundancy_pairs.append(bound)
-        elif prompt.dimension == "consistency":
-            consistency_pairs.append(bound)
-        else:
-            raise ArtifactLifecycleError("pairwise evaluator dimension is invalid")
+        verifications: list[ConsistencyVerification] = []
+        for proposal in proposal_output.proposals:
+            verifier_prompt = render_consistency_verifier_prompt(
+                candidate_path=prompt.candidate_path,
+                proposal=proposal,
+            )
+            used_prompts.append(verifier_prompt)
+            verification = _chat_verifier_output(
+                root,
+                identity=identity,
+                system_prompt=verifier_prompt.system,
+                user_prompt=verifier_prompt.user,
+                output_schema=verifier_prompt.output_schema,
+                options=inference_options,
+                think=think_value,
+                timeout=evaluator_call_timeout(deadline, timeout_value),
+                transport=transport,
+            )
+            verifications.append(verification)
+        consistency_pairs.append(
+            finalize_consistency_candidate(proposal_output, tuple(verifications))
+        )
 
     if groundedness_output is None:
         raise ArtifactLifecycleError("groundedness evaluator pass is missing")
@@ -286,7 +398,7 @@ def evaluate_knowledge_note_with_ollama(
     if any(
         item.template_version != prompt.template_version
         or item.template_sha256 != prompt.template_sha256
-        for item in prompts[1:]
+        for item in used_prompts[1:]
     ):
         raise ArtifactLifecycleError("evaluator prompt provenance is inconsistent")
 

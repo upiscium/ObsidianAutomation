@@ -4,8 +4,31 @@ from dataclasses import dataclass, replace
 
 
 @dataclass(frozen=True)
+class ConsistencyConflictProposal:
+    """A model-proposed conflict before independent verification.
+
+    Quotes are exact excerpts supplied by the model and are never trusted as
+    provenance until deterministic code checks them against the immutable
+    proposal and candidate contents.  This model-facing type deliberately has
+    no candidate path.
+    """
+
+    proposal_quote: str
+    candidate_quote: str
+    incompatibility: str
+
+
+@dataclass(frozen=True)
+class ConsistencyVerification:
+    """The verifier's verdict for one anchored conflict proposal."""
+
+    verdict: str
+    explanation: str
+
+
+@dataclass(frozen=True)
 class ConsistencyConflict:
-    """A model-reported proposal/candidate incompatibility.
+    """A verifier-confirmed proposal/candidate incompatibility.
 
     The model-facing form deliberately has no candidate path authority.  A
     path is attached only after deterministic binding to the candidate that

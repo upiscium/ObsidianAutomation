@@ -28,6 +28,8 @@ from .evaluation_artifact import (
     EVALUATION_CONTEXT_POLICY_VERSION,
 )
 from .evaluator_contract import (
+    EVALUATOR_PROMPT_TEMPLATE_V3_VERSION,
+    EVALUATOR_PROMPT_TEMPLATE_V4_VERSION,
     EVALUATOR_PROMPT_TEMPLATE_VERSION,
     supported_prompt_template_hashes as supported_evaluator_prompt_template_hashes,
 )
@@ -43,9 +45,15 @@ from .openai_compatible import (
 from .openai_evaluator import (
     ADAPTER_VERSION as OPENAI_EVALUATOR_ADAPTER_VERSION,
     EVALUATION_STRATEGY,
+    LEGACY_ADAPTER_VERSION as LEGACY_OPENAI_EVALUATOR_ADAPTER_VERSION,
+    LEGACY_EVALUATION_STRATEGY as LEGACY_OPENAI_EVALUATION_STRATEGY,
 )
 from .openai_generator import ADAPTER_VERSION as OPENAI_GENERATOR_ADAPTER_VERSION
-from .ollama_evaluator import ADAPTER_VERSION as OLLAMA_EVALUATOR_ADAPTER_VERSION
+from .ollama_evaluator import (
+    ADAPTER_VERSION as OLLAMA_EVALUATOR_ADAPTER_VERSION,
+    LEGACY_ADAPTER_VERSION as LEGACY_OLLAMA_EVALUATOR_ADAPTER_VERSION,
+    LEGACY_EVALUATION_STRATEGY as LEGACY_OLLAMA_EVALUATION_STRATEGY,
+)
 from .ollama_generator import (
     ADAPTER_VERSION as OLLAMA_GENERATOR_ADAPTER_VERSION,
     PROVIDER_NAME as OLLAMA_PROVIDER_NAME,
@@ -111,6 +119,35 @@ class StageWorkItem:
 
 class PreReviewJobError(ArtifactLifecycleError):
     """Raised when pre-review orchestration metadata is invalid or unsafe."""
+
+
+def _evaluator_recipe_identity(
+    prompt_version: str,
+    provider: str,
+) -> tuple[str, str]:
+    if prompt_version in {
+        EVALUATOR_PROMPT_TEMPLATE_V3_VERSION,
+        EVALUATOR_PROMPT_TEMPLATE_V4_VERSION,
+    }:
+        if provider == OPENAI_PROVIDER_NAME:
+            return (
+                LEGACY_OPENAI_EVALUATOR_ADAPTER_VERSION,
+                LEGACY_OPENAI_EVALUATION_STRATEGY,
+            )
+        if provider == OLLAMA_PROVIDER_NAME:
+            return (
+                LEGACY_OLLAMA_EVALUATOR_ADAPTER_VERSION,
+                LEGACY_OLLAMA_EVALUATION_STRATEGY,
+            )
+    elif prompt_version == EVALUATOR_PROMPT_TEMPLATE_VERSION:
+        if provider == OPENAI_PROVIDER_NAME:
+            return OPENAI_EVALUATOR_ADAPTER_VERSION, EVALUATION_STRATEGY
+        if provider == OLLAMA_PROVIDER_NAME:
+            return OLLAMA_EVALUATOR_ADAPTER_VERSION, EVALUATION_STRATEGY
+    raise PreReviewJobError(
+        f"evaluator prompt/provider compatibility is not supported: "
+        f"{prompt_version}/{provider}"
+    )
 
 
 def _metadata(value: object, *, label: str) -> str:
@@ -213,7 +250,7 @@ def _parse_component(
                 f"{label}.model_config properties do not match OpenAI-compatible v0 contract"
             )
         expected_adapter = (
-            OPENAI_EVALUATOR_ADAPTER_VERSION
+            _evaluator_recipe_identity(stored_prompt_version, provider)[0]
             if evaluator
             else OPENAI_GENERATOR_ADAPTER_VERSION
         )
@@ -241,7 +278,7 @@ def _parse_component(
                 f"{label}.model_config properties do not match Ollama native v0 contract"
             )
         expected_adapter = (
-            OLLAMA_EVALUATOR_ADAPTER_VERSION
+            _evaluator_recipe_identity(stored_prompt_version, provider)[0]
             if evaluator
             else OLLAMA_GENERATOR_ADAPTER_VERSION
         )
@@ -265,10 +302,15 @@ def _parse_component(
 
     if not isinstance(model_config["options"], dict):
         raise PreReviewJobError(f"{label}.model_config.options must be an object")
-    if evaluator and model_config["strategy"] != EVALUATION_STRATEGY:
-        raise PreReviewJobError(
-            f"{label}.model_config.strategy must be {EVALUATION_STRATEGY}"
-        )
+    if evaluator:
+        expected_strategy = _evaluator_recipe_identity(
+            stored_prompt_version,
+            provider,
+        )[1]
+        if model_config["strategy"] != expected_strategy:
+            raise PreReviewJobError(
+                f"{label}.model_config.strategy must be {expected_strategy}"
+            )
 
     prompt_sha256 = _require_sha256(
         value["prompt_template_sha256"],

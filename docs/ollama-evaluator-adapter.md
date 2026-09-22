@@ -1,10 +1,10 @@
-# Ollama Evaluator Adapter v2
+# Ollama Evaluator Adapter v3
 
 ## Purpose
 
 `obsidian-knowledge-evaluate` connects the advisory Evaluator stage to Ollama while preserving the existing authority topology.
 
-Adapter v2 executes the current v4 prompt contract and v3 output contract as one Groundedness call plus two pairwise calls for every Evaluation Context candidate:
+Adapter v3 executes the current v5 prompt contract and v4 output contract as one Groundedness call plus Redundancy and Consistency proposer calls for every Evaluation Context candidate. Each bounded Consistency proposal then receives one verifier call:
 
 ```text
 accepted mutation
@@ -17,7 +17,9 @@ Groundedness /api/chat
         ↓
 for each candidate, in Evaluation Context order:
   Redundancy /api/chat
-  Consistency /api/chat
+  Consistency proposer /api/chat
+    ↓ one call per exact quote pair
+  Consistency verifier /api/chat
         ↓
 all calls strict-parse and bind successfully
         ↓ deterministic severity aggregation
@@ -31,11 +33,17 @@ No partial Evaluation Record is written if any provider call or parser/binding s
 The current prompt identity is:
 
 ```text
-knowledge-note-evaluator-v4
-9411d74c10cd8c3450be6b79f12c644433862a4b292a26db7444d32606ddea3b
+knowledge-note-evaluator-v5
+ca9755c7b448be9bb2a42ab41ba182deb7b45785a4099d6ac85d854131a06291
 ```
 
-The exact historical identity `knowledge-note-evaluator-v3` / `bf6265294a4b346f12d1951f594760c80221380ccee9993c6ab866b6b1eca937` remains readable in recipes for audit. Current runtime preflight blocks that historical recipe before provider contact; unknown and cross-paired prompt version/hash identities are rejected.
+The historical identities `knowledge-note-evaluator-v3` /
+`bf6265294a4b346f12d1951f594760c80221380ccee9993c6ab866b6b1eca937` and
+`knowledge-note-evaluator-v4` /
+`9411d74c10cd8c3450be6b79f12c644433862a4b292a26db7444d32606ddea3b` remain
+readable in recipes for audit. Current runtime preflight blocks historical
+recipes before provider contact; unknown and cross-paired prompt version/hash
+identities are rejected.
 
 ## CLI
 
@@ -63,7 +71,7 @@ Before inference, the adapter verifies:
 3. the exact `05-Context` bound by the Generation Record hash-validates;
 4. `14-Evaluation-Context` is bound to the same proposal and accepted mutation;
 5. endpoint, timeout, model options, and implementation revision satisfy existing contracts;
-6. generated provider-call order exactly matches Groundedness followed by `(Redundancy, Consistency)` for every candidate in Evaluation Context order.
+6. generated provider-call order exactly matches Groundedness followed by `(Redundancy, Consistency proposer, Consistency verifier*)` for every candidate in Evaluation Context order.
 
 ## Model identity
 
@@ -100,7 +108,7 @@ The model returns:
 }
 ```
 
-The Consistency response additionally uses the v3 structured-conflict shape when
+The Consistency proposer response additionally uses the v4 structured-conflict shape when
 the assessment is `concern`:
 
 ```json
@@ -109,24 +117,26 @@ the assessment is `concern`:
   "findings": [{"detail": "concise observation"}],
   "conflicts": [
     {
-      "proposal_claim": "...",
-      "candidate_claim": "...",
+      "proposal_quote": "...",
+      "candidate_quote": "...",
       "incompatibility": "..."
     }
   ]
 }
 ```
 
-Each conflict field is bounded to 1,000 characters and at most four conflicts
-are accepted. A Consistency `pass` or `unknown` response returns
-`"conflicts": []`; `concern` requires a non-empty array. `unknown` is used
-when the pair is insufficient or ambiguous. Different topic or scope, missing
-framework/details, omissions, extra detail, formatting, and style are not
-conflicts.
+Each quote/evidence field is bounded to 1,000 characters and at most four
+proposals are accepted. Each proposal is exact-quote checked before its verifier
+call. A verifier returns `contradiction`, `compatible`, or `unknown`; only
+`contradiction` becomes persisted conflict evidence. Different topic or scope,
+missing framework/details, omissions, extra detail, formatting, and style are
+not conflicts.
 
-The model never controls dimension, candidate identity, candidate path,
+The verifier receives only the two anchored quotes and the proposed
+incompatibility; it does not receive or control candidate identity or path. The
+model never controls dimension, candidate identity, candidate path,
 recommendation, model identity, or aggregation policy. The current output
-contract is `knowledge-note-evaluator-output-v3`.
+ contract is `knowledge-note-evaluator-output-v4`.
 
 ## Evidence isolation
 
@@ -136,7 +146,7 @@ Groundedness receives:
 proposal + original generation input
 ```
 
-Each Redundancy or Consistency call receives:
+Each Redundancy or Consistency proposer call receives:
 
 ```text
 proposal + exactly one evaluation_candidate
@@ -148,9 +158,10 @@ This prevents an unrelated candidate from dominating the semantic comparison for
 
 ## Candidate provenance
 
-Pairwise model findings contain only a detail string, and model conflicts do
-not contain a candidate path. After strict parsing, deterministic code binds
-the expected candidate path to every finding and conflict:
+Pairwise model findings contain only a detail string, and model proposals and
+verifier outputs do not contain a candidate path. After strict parsing,
+deterministic code binds the expected candidate path to every finding and
+verified conflict:
 
 ```text
 redundancy: [11-Knowledge/example.md] <detail>
@@ -187,6 +198,8 @@ consistency: pass < unknown < concern
 ```
 
 Only findings and Consistency conflicts from the winning severity are retained.
+Compatible proposals are removed, unknown proposals produce `unknown` unless a
+contradiction exists, and contradiction dominates.
 Duplicate findings and duplicate conflict evidence are removed; findings are
 bounded to four per dimension (16 in the persisted assessment), and conflicts
 to four. Zero candidates produce `redundancy=none` and `consistency=pass`.
@@ -236,11 +249,11 @@ The Evaluator reuses the Generator transport policy:
 - Evaluation Context SHA;
 - evaluator implementation revision;
 - prompt template version/SHA;
-- current output contract `knowledge-note-evaluator-output-v3`;
+- current output contract `knowledge-note-evaluator-output-v4`;
 - provider `ollama`;
 - resolved model identifier and digest;
-- adapter version `ollama-evaluator-chat-structured-v2`;
-- strategy `groundedness-plus-pairwise-candidates-v0`;
+- adapter version `ollama-evaluator-chat-structured-v3`;
+- strategy `groundedness-plus-pairwise-candidates-with-verifier-v1`;
 - the exact immutable recipe `think` value (`false` for new recipes; historical
   `low` remains supported);
 - exact inference options;

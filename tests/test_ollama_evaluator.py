@@ -26,6 +26,9 @@ from obsidian_automation.ollama_evaluator import (
     OllamaProviderError,
     evaluate_knowledge_note_with_ollama,
 )
+from obsidian_automation.openai_evaluator import (
+    evaluate_knowledge_note_with_openai_compatible,
+)
 
 
 DIGEST = "4eb23ef187e2c5462566d6a1d3bbbc2f1346d0b4327cbb66d58fffbcc9b2b05c"
@@ -245,8 +248,8 @@ def test_near_duplicate_e2e_uses_pairwise_candidate_passes_and_persists_likely(t
     consistency_schema = chat_calls[2]["payload"]["format"]
     assert set(consistency_schema["required"]) == set(consistency_schema["properties"])
     assert set(consistency_schema["properties"]["conflicts"]["items"]["required"]) == {
-        "proposal_claim",
-        "candidate_claim",
+        "proposal_quote",
+        "candidate_quote",
         "incompatibility",
     }
     assert consistency_schema["properties"]["conflicts"]["minItems"] == 0
@@ -261,11 +264,15 @@ def test_consistency_concern_persists_structured_conflict_evidence(tmp_path: Pat
         "findings": [{"detail": "The procedures cannot both be followed."}],
         "conflicts": [
             {
-                "proposal_claim": "Use WebDAV synchronization.",
-                "candidate_claim": "Use local-only storage.",
+                "proposal_quote": "Nextcloud の WebDAV と RemotelySave で Obsidian Vault を共有する方法。",
+                "candidate_quote": "Nextcloud の WebDAV と RemotelySave で Obsidian Vault を共有する方法。",
                 "incompatibility": "The procedures cannot both be followed in the same setup.",
             }
         ],
+    }
+    outputs["consistency_verifier"] = {
+        "verdict": "contradiction",
+        "explanation": "The anchored procedures are incompatible.",
     }
     calls: list[dict[str, object]] = []
 
@@ -282,8 +289,8 @@ def test_consistency_concern_persists_structured_conflict_evidence(tmp_path: Pat
 
     expected_conflicts = (
         ConsistencyConflict(
-            proposal_claim="Use WebDAV synchronization.",
-            candidate_claim="Use local-only storage.",
+            proposal_claim="Nextcloud の WebDAV と RemotelySave で Obsidian Vault を共有する方法。",
+            candidate_claim="Nextcloud の WebDAV と RemotelySave で Obsidian Vault を共有する方法。",
             incompatibility="The procedures cannot both be followed in the same setup.",
             candidate_path=EXISTING_PATH,
         ),
@@ -297,11 +304,88 @@ def test_consistency_concern_persists_structured_conflict_evidence(tmp_path: Pat
     assert json.loads(result.evaluation_path.read_text(encoding="utf-8"))["assessment"]["conflicts"] == [
         {
             "candidate_path": EXISTING_PATH,
-            "proposal_claim": "Use WebDAV synchronization.",
-            "candidate_claim": "Use local-only storage.",
+            "proposal_claim": "Nextcloud の WebDAV と RemotelySave で Obsidian Vault を共有する方法。",
+            "candidate_claim": "Nextcloud の WebDAV と RemotelySave で Obsidian Vault を共有する方法。",
             "incompatibility": "The procedures cannot both be followed in the same setup.",
         }
     ]
+
+
+def test_openai_compatible_verifier_path_preserves_pass_order(tmp_path: Path) -> None:
+    _, state, proposal_sha, generation_sha, evaluation_context_sha = _fixture(tmp_path)
+    calls: list[dict[str, object]] = []
+
+    def transport(base_url: str, **kwargs: object) -> dict[str, object]:
+        assert base_url == "https://openai.example.invalid/v1"
+        calls.append({"base_url": base_url, **kwargs})
+        payload = kwargs["payload"]
+        assert isinstance(payload, dict)
+        messages = payload["messages"]
+        assert isinstance(messages, list)
+        user_payload = json.loads(messages[1]["content"])
+        dimension = user_payload["dimension"]
+        if dimension == "consistency_verifier":
+            content: dict[str, object] = {
+                "verdict": "contradiction",
+                "explanation": "The anchored claims are incompatible.",
+            }
+        elif dimension == "consistency":
+            content = {
+                "assessment": "concern",
+                "findings": [],
+                "conflicts": [
+                    {
+                        "proposal_quote": (
+                            "Nextcloud の WebDAV と RemotelySave で Obsidian Vault を共有する方法。"
+                        ),
+                        "candidate_quote": (
+                            "Nextcloud の WebDAV と RemotelySave で Obsidian Vault を共有する方法。"
+                        ),
+                        "incompatibility": "The procedures cannot both be followed.",
+                    }
+                ],
+            }
+        elif dimension == "redundancy":
+            content = {
+                "assessment": "none",
+                "findings": [],
+            }
+        else:
+            content = {
+                "assessment": "pass",
+                "findings": [],
+            }
+        return {
+            "model": "qwen3:14b",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": json.dumps(content, ensure_ascii=False, separators=(",", ":")),
+                    }
+                }
+            ],
+        }
+
+    result = evaluate_knowledge_note_with_openai_compatible(
+        state,
+        proposal_sha256=proposal_sha,
+        generation_sha256=generation_sha,
+        evaluation_context_sha256=evaluation_context_sha,
+        base_url="https://openai.example.invalid/v1",
+        model="qwen3:14b",
+        implementation_revision=REVISION,
+        transport=transport,
+    )
+
+    assert result.consistency == "concern"
+    assert [
+        json.loads(call["payload"]["messages"][1]["content"])["dimension"]
+        for call in calls
+    ] == ["groundedness", "redundancy", "consistency", "consistency_verifier"]
+    verifier_payload = json.loads(calls[-1]["payload"]["messages"][1]["content"])
+    assert "candidate_path" not in verifier_payload
+    assert calls[-1]["payload"]["response_format"]["json_schema"]["strict"] is True
 
 
 def test_low_thinking_is_bound_to_native_evaluator_requests_and_record(tmp_path: Path) -> None:

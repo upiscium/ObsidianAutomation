@@ -1,8 +1,8 @@
-# Evaluator Prompt / Output Contract (output v3, prompt v4)
+# Evaluator Prompt / Output Contract (output v4, prompt v5)
 
 ## Purpose
 
-The Evaluator is an advisory semantic assessment stage between deterministic Validation and Human Review. Its current model-facing output contract is v3 and its current prompt/input template is v4.
+The Evaluator is an advisory semantic assessment stage between deterministic Validation and Human Review. Its current model-facing output contract is v4 and its current prompt/input template is v5.
 
 Production testing showed two independent interference modes:
 
@@ -17,11 +17,14 @@ validated proposal
         ├─ Groundedness
         │    proposal + original 05-Context
         │
-        └─ for each Evaluation Context candidate
-             ├─ Redundancy
-             │    proposal + exactly one candidate
-             └─ Consistency
-                  proposal + exactly one candidate
+         └─ for each Evaluation Context candidate
+              ├─ Redundancy
+              │    proposal + exactly one candidate
+              └─ Consistency proposer
+                   proposal + exactly one candidate
+                   ↓ zero or more bounded quote pairs
+                 Consistency verifier (one call per quote pair)
+                   exact proposal quote + exact candidate quote
 
 all provider calls strict-parse successfully
         ↓
@@ -59,8 +62,8 @@ For a Consistency pass, the model always returns a `conflicts` array. A concern 
   ],
   "conflicts": [
     {
-      "proposal_claim": "claim made by the proposal",
-      "candidate_claim": "claim made by the candidate",
+      "proposal_quote": "exact excerpt from the proposal",
+      "candidate_quote": "exact excerpt from the candidate",
       "incompatibility": "why the claims cannot both apply"
     }
   ]
@@ -70,29 +73,32 @@ For a Consistency pass, the model always returns a `conflicts` array. A concern 
 The current output contract version is:
 
 ```text
-knowledge-note-evaluator-output-v3
+knowledge-note-evaluator-output-v4
 ```
 
 The current prompt/input contract is:
 
 ```text
-knowledge-note-evaluator-v4
+knowledge-note-evaluator-v5
 ```
 
 The current prompt-template SHA-256 is:
 
 ```text
-9411d74c10cd8c3450be6b79f12c644433862a4b292a26db7444d32606ddea3b
+ca9755c7b448be9bb2a42ab41ba182deb7b45785a4099d6ac85d854131a06291
 ```
 
 The historical, readable prompt identity is an exact version/hash pair:
 
 ```text
+knowledge-note-evaluator-v4
+9411d74c10cd8c3450be6b79f12c644433862a4b292a26db7444d32606ddea3b
+
 knowledge-note-evaluator-v3
 bf6265294a4b346f12d1951f594760c80221380ccee9993c6ab866b6b1eca937
 ```
 
-Recipe parsing accepts that historical pair for readability and audit, but current runtime preflight requires the v4 pair and blocks a historical recipe before provider contact. Unknown prompt identities and cross-paired version/hash values are rejected. The dimension, candidate identity, and recommendation are fixed outside the model; the model cannot return `candidate_path` or `recommendation`.
+Recipe parsing accepts the historical v3 and v4 pairs for readability and audit, but current runtime preflight requires the v5 pair and blocks historical recipes before provider contact. Unknown prompt identities and cross-paired version/hash values are rejected. The dimension, candidate identity, and recommendation are fixed outside the model; the model cannot return `candidate_path` or `recommendation`.
 
 ## Groundedness pass
 
@@ -141,9 +147,15 @@ likely
 
 Filename punctuation, wording, section order, formatting, readability improvements, and stylistic rewrites do not make two notes semantically distinct.
 
-## Pairwise Consistency
+## Pairwise Consistency proposer and verifier
 
-One provider call is made for each candidate using the same pairwise evidence shape.
+The first Consistency call is a proposer pass for each candidate. It may return
+zero or more plausible conflict proposals, but those proposals are not durable
+evidence. Each proposal must contain exact excerpts from the proposal and the
+single candidate; deterministic code verifies that both excerpts occur in the
+already-bound source bytes before making any verifier call.
+
+One verifier call is then made for each accepted proposal.
 
 Assessment values:
 
@@ -153,7 +165,23 @@ unknown
 concern
 ```
 
-Consistency asks only whether material factual or procedural claims explicitly conflict with that one candidate.
+The proposer asks only whether material factual or procedural claims explicitly
+conflict with that one candidate. The verifier receives the two exact quotes and
+the proposed incompatibility, and returns only a verdict:
+
+```json
+{
+  "verdict": "contradiction | compatible | unknown",
+  "explanation": "bounded explanation"
+}
+```
+
+`contradiction` means the anchored claims cannot both be true or followed in the
+same relevant context. `compatible` includes different topics, scopes, papers,
+frameworks, environments, or complementary details. `unknown` is used when the
+anchored excerpts are insufficient or ambiguous.
+
+Only a verifier `contradiction` becomes persisted conflict evidence.
 
 `concern` is reserved for an explicit material incompatibility that cannot both be true or followed in the same relevant context. Its structured evidence is bounded and has this model-facing shape:
 
@@ -163,21 +191,24 @@ Consistency asks only whether material factual or procedural claims explicitly c
   "findings": [],
   "conflicts": [
     {
-      "proposal_claim": "...",
-      "candidate_claim": "...",
+      "proposal_quote": "...",
+      "candidate_quote": "...",
       "incompatibility": "..."
     }
   ]
 }
 ```
 
-Each of `proposal_claim`, `candidate_claim`, and `incompatibility` is a non-empty, trimmed string of at most 1,000 characters. There may be at most four conflicts, with no duplicate evidence triples. `pass` and `unknown` have no conflicts: the model returns `"conflicts": []`, while the parser rejects a non-empty array on either assessment. `concern` with an empty array is also rejected. `unknown` remains the result when the supplied pair is insufficient or ambiguous to judge.
+Each of `proposal_quote`, `candidate_quote`, and `incompatibility` is a non-empty, trimmed string of at most 1,000 characters. There may be at most four proposals, with no duplicate evidence triples. `pass` and `unknown` have no proposals: the model returns `"conflicts": []`, while the parser rejects a non-empty array on either assessment. `concern` with an empty array is also rejected.
 
 The following are not conflicts by themselves: different topic or scope, a missing framework or detail, omissions, extra detail, formatting, and style. Those differences can coexist; a conflict requires the explicit material incompatibility above.
 
 ## Deterministic candidate binding
 
-Candidate paths are not trusted to the model output. The model-facing conflict objects contain no path. After strict parsing, deterministic code binds the known candidate path from the prompt to each accepted pairwise finding and each accepted conflict:
+Candidate paths are not trusted to the model output. The model-facing proposal
+and verifier objects contain no path. After strict parsing, deterministic code
+binds the known candidate path from the prompt to each accepted pairwise finding
+and each verified conflict:
 
 ```text
 redundancy: [11-Knowledge/example.md] <detail>
@@ -201,7 +232,7 @@ Consistency severity:
 pass < unknown < concern
 ```
 
-The strongest assessment across all candidates becomes the final dimension assessment. Findings are taken only from pairwise results at the winning severity, deduplicated, and bounded deterministically. Consistency conflicts are likewise taken only from the winning consistency severity, deduplicated by their three claim/evidence fields, and bounded to four.
+The strongest assessment across all candidates becomes the final dimension assessment. Findings are taken only from pairwise results at the winning severity, deduplicated, and bounded deterministically. Consistency conflicts are created only from verifier `contradiction` results, then taken only from the winning consistency severity, deduplicated by their three quote/evidence fields, and bounded to four. A verifier `compatible` removes the proposal; an `unknown` verifier produces `unknown` unless another proposal is contradictory.
 
 If Evaluation Context contains zero candidates:
 
@@ -225,6 +256,10 @@ No Evaluation Record is persisted until every required call has:
 3. satisfied byte bounds;
 4. passed strict deterministic parsing;
 5. been bound to the expected candidate path and dimension.
+
+For Consistency, every proposed pair must also pass exact quote anchoring and
+every verifier response must pass the strict verdict schema. A proposer concern
+is never persisted directly.
 
 Any provider/parser/binding failure aborts the whole Evaluation without writing a partial `15-Evaluation` artifact.
 
@@ -254,6 +289,10 @@ Current evaluations persist Evaluation Record v2. Its structured conflict eviden
 ```
 
 For v2 `pass` or `unknown`, `assessment.conflicts` is the empty array. Historical Evaluation Record v1 artifacts remain readable as immutable evidence; their assessment shape has no `conflicts` member and they are not silently rewritten as current v2 records.
+
+For current v2 records, verified `proposal_quote` and `candidate_quote` values
+are persisted in the existing `proposal_claim` and `candidate_claim` fields so
+historical readers remain compatible.
 
 ## Deterministic recommendation policy
 
@@ -285,12 +324,13 @@ Recommendation remains advisory and is not Human approval or execution authority
 
 The current prompt-template SHA binds:
 
-- `knowledge-note-evaluator-v4`;
-- output contract `knowledge-note-evaluator-output-v3`;
+- `knowledge-note-evaluator-v5`;
+- output contract `knowledge-note-evaluator-output-v4`;
 - pairwise strategy identifier;
 - all dimension-specific system prompts;
 - all JSON Schemas;
-- payload version 3;
+- payload version 5;
+- the Consistency proposer/verifier pass order and verdict aggregation;
 - deterministic severity order;
 - bounded finding and conflict aggregation policy;
 - `conservative-triad-v0`.

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 import obsidian_automation.ai_input_planner as ai_input_planner
+import obsidian_automation.ollama_generator as ollama_generator
 import obsidian_automation.pre_review_worker as pre_review_worker
 from obsidian_automation.artifact_lifecycle import (
     sha256_bytes,
@@ -43,6 +44,7 @@ from obsidian_automation.knowledge_validator import validate_proposal
 from obsidian_automation.ollama_evaluator import (
     ADAPTER_VERSION as OLLAMA_EVALUATOR_ADAPTER_VERSION,
     EVALUATION_STRATEGY,
+    OllamaProviderError,
     evaluate_knowledge_note_with_ollama,
 )
 from obsidian_automation.pre_review_job import (
@@ -412,3 +414,36 @@ def test_ollama_evaluator_preserves_think_in_payload_and_record(
     assert chat_calls
     assert [call["payload"]["think"] for call in chat_calls] == [think] * len(chat_calls)
     assert all(type(call["payload"]["think"]) is type(think) for call in chat_calls)
+
+
+def test_native_ollama_transport_enforces_total_response_read_timeout(monkeypatch) -> None:
+    class Response:
+        fp = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, size: int) -> bytes:
+            assert size == 1
+            return b"x"
+
+    class Opener:
+        def open(self, _request, timeout: float):
+            assert timeout == 1.0
+            return Response()
+
+    clock = iter((0.0, 0.5, 2.0))
+    monkeypatch.setattr(ollama_generator.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(ollama_generator, "_direct_opener", lambda: Opener())
+
+    with pytest.raises(OllamaProviderError, match="response read exceeded"):
+        ollama_generator._request_json(
+            "https://ollama.example.test",
+            method="POST",
+            path="/api/chat",
+            payload={"ok": True},
+            timeout=1.0,
+        )

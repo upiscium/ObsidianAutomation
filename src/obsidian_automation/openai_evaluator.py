@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
@@ -13,12 +14,21 @@ from .evaluation_artifact import (
     store_evaluation_record,
 )
 from .evaluator_contract import (
+    EVALUATOR_STRATEGY_V4,
+    EVALUATOR_STRATEGY_VERSION,
+    MAX_EVALUATOR_WALL_SECONDS,
     MAX_EVALUATOR_OUTPUT_BYTES,
     CandidateEvaluatorOutput,
+    ConsistencyVerification,
     DimensionEvaluatorOutput,
     aggregate_evaluator_outputs,
     bind_candidate_output,
+    bind_consistency_proposals,
+    finalize_consistency_candidate,
+    evaluator_call_timeout,
+    parse_consistency_verifier_output,
     parse_dimension_evaluator_output,
+    render_consistency_verifier_prompt,
     render_evaluator_prompts,
     to_evaluation_assessment,
 )
@@ -39,8 +49,10 @@ from .openai_compatible import (
 )
 
 
-ADAPTER_VERSION = "openai-evaluator-chat-completions-json-schema-v1"
-EVALUATION_STRATEGY = "groundedness-plus-pairwise-candidates-v0"
+ADAPTER_VERSION = "openai-evaluator-chat-completions-json-schema-v2"
+LEGACY_ADAPTER_VERSION = "openai-evaluator-chat-completions-json-schema-v1"
+EVALUATION_STRATEGY = EVALUATOR_STRATEGY_VERSION
+LEGACY_EVALUATION_STRATEGY = EVALUATOR_STRATEGY_V4
 
 
 def _expected_prompt_order(evaluation_context: object) -> tuple[tuple[str, str | None], ...]:
@@ -52,7 +64,9 @@ def _expected_prompt_order(evaluation_context: object) -> tuple[tuple[str, str |
         path = getattr(candidate, "path", None)
         if not isinstance(path, str):
             raise ArtifactLifecycleError("evaluator context candidate path is invalid")
-        expected.extend((("redundancy", path), ("consistency", path)))
+        expected.extend(
+            (("redundancy", path), ("consistency_proposer", path))
+        )
     return tuple(expected)
 
 
@@ -124,6 +138,41 @@ def _chat_dimension_output(
     return identity.identifier, output
 
 
+def _chat_verifier_output(
+    base_url: str,
+    *,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    output_schema: Mapping[str, object],
+    options: Mapping[str, object],
+    timeout: float,
+    api_key: str | None,
+    transport: JSONTransport | None,
+) -> tuple[str, ConsistencyVerification]:
+    identity, data = chat_content(
+        base_url,
+        model=model,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        output_schema=output_schema,
+        schema_name="knowledge_note_evaluator_consistency_verifier",
+        options=options,
+        timeout=timeout,
+        api_key=api_key,
+        transport=transport,
+    )
+    if len(data) > MAX_EVALUATOR_OUTPUT_BYTES:
+        raise OpenAICompatibleProviderError(
+            "OpenAI-compatible consistency verifier output exceeds evaluator output limit"
+        )
+    try:
+        output = parse_consistency_verifier_output(data)
+    except ArtifactLifecycleError as exc:
+        raise OpenAICompatibleProviderError(str(exc)) from exc
+    return identity.identifier, output
+
+
 def evaluate_knowledge_note_with_openai_compatible(
     ai_root: Path,
     *,
@@ -149,6 +198,7 @@ def evaluate_knowledge_note_with_openai_compatible(
     root = validated_base_url(base_url)
     inference_options = validated_options(options)
     model_config = provider_model_config(inference_options)
+    deadline = time.monotonic() + MAX_EVALUATOR_WALL_SECONDS
 
     mutation_digest, target_path, proposal_content = _load_accepted_mutation(
         ai_root,
@@ -175,14 +225,16 @@ def evaluate_knowledge_note_with_openai_compatible(
         generation_context=generation_context,
         evaluation_context=evaluation_context,
     )
-    actual_order = tuple((prompt.dimension, prompt.candidate_path) for prompt in prompts)
+    actual_order = tuple((prompt.pass_kind, prompt.candidate_path) for prompt in prompts)
     if actual_order != _expected_prompt_order(evaluation_context):
         raise ArtifactLifecycleError("evaluator prompt pass order is invalid")
 
+    candidate_contents = {candidate.path: candidate.content for candidate in evaluation_context.candidates}
     groundedness_output: DimensionEvaluatorOutput | None = None
     redundancy_pairs: list[CandidateEvaluatorOutput] = []
     consistency_pairs: list[CandidateEvaluatorOutput] = []
     response_model: str | None = None
+    used_prompts = list(prompts)
 
     for prompt in prompts:
         model_identifier, dimension_output = _chat_dimension_output(
@@ -193,7 +245,7 @@ def evaluate_knowledge_note_with_openai_compatible(
             user_prompt=prompt.user,
             output_schema=prompt.output_schema,
             options=inference_options,
-            timeout=timeout_value,
+            timeout=evaluator_call_timeout(deadline, timeout_value),
             api_key=api_key,
             transport=transport,
         )
@@ -204,23 +256,59 @@ def evaluate_knowledge_note_with_openai_compatible(
                 "OpenAI-compatible evaluator returned inconsistent model identities"
             )
 
-        if prompt.dimension == "groundedness":
+        if prompt.pass_kind == "groundedness":
             if prompt.candidate_path is not None or groundedness_output is not None:
                 raise ArtifactLifecycleError("groundedness evaluator pass is invalid")
             groundedness_output = dimension_output
             continue
         if prompt.candidate_path is None:
             raise ArtifactLifecycleError("pairwise evaluator pass is missing candidate path")
-        bound = bind_candidate_output(
+        if prompt.pass_kind == "redundancy":
+            bound = bind_candidate_output(
+                dimension_output,
+                candidate_path=prompt.candidate_path,
+            )
+            redundancy_pairs.append(bound)
+            continue
+        if prompt.pass_kind != "consistency_proposer":
+            raise ArtifactLifecycleError("pairwise evaluator dimension is invalid")
+        candidate_content = candidate_contents.get(prompt.candidate_path)
+        if candidate_content is None:
+            raise ArtifactLifecycleError("evaluator candidate content is unavailable")
+        proposal_output = bind_consistency_proposals(
             dimension_output,
             candidate_path=prompt.candidate_path,
+            proposal_content=proposal_content,
+            candidate_content=candidate_content,
         )
-        if prompt.dimension == "redundancy":
-            redundancy_pairs.append(bound)
-        elif prompt.dimension == "consistency":
-            consistency_pairs.append(bound)
-        else:
-            raise ArtifactLifecycleError("pairwise evaluator dimension is invalid")
+        verifications: list[ConsistencyVerification] = []
+        for proposal in proposal_output.proposals:
+            verifier_prompt = render_consistency_verifier_prompt(
+                candidate_path=prompt.candidate_path,
+                proposal=proposal,
+            )
+            used_prompts.append(verifier_prompt)
+            verifier_model, verification = _chat_verifier_output(
+                root,
+                model=model,
+                system_prompt=verifier_prompt.system,
+                user_prompt=verifier_prompt.user,
+                output_schema=verifier_prompt.output_schema,
+                options=inference_options,
+                timeout=evaluator_call_timeout(deadline, timeout_value),
+                api_key=api_key,
+                transport=transport,
+            )
+            if response_model is None:
+                response_model = verifier_model
+            elif response_model != verifier_model:
+                raise OpenAICompatibleProviderError(
+                    "OpenAI-compatible evaluator returned inconsistent model identities"
+                )
+            verifications.append(verification)
+        consistency_pairs.append(
+            finalize_consistency_candidate(proposal_output, tuple(verifications))
+        )
 
     if groundedness_output is None or response_model is None:
         raise ArtifactLifecycleError("evaluator output is incomplete")
@@ -235,7 +323,7 @@ def evaluate_knowledge_note_with_openai_compatible(
     if any(
         item.template_version != prompt.template_version
         or item.template_sha256 != prompt.template_sha256
-        for item in prompts[1:]
+        for item in used_prompts[1:]
     ):
         raise ArtifactLifecycleError("evaluator prompt provenance is inconsistent")
 

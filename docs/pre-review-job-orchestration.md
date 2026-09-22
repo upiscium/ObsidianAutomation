@@ -80,32 +80,35 @@ before provider contact rather than being silently reinterpreted as v1.
 The currently executable pipeline contracts are:
 
 - Generator prompt `knowledge-note-generator-v1`;
-- Generator provider `openai-compatible`;
-- Generator adapter `openai-chat-completions-json-schema-v1`;
+- Generator provider `openai-compatible` or `ollama`;
+- Generator adapter `openai-chat-completions-json-schema-v1` or `ollama-chat-structured-v0`;
 - Validator policy `knowledge-note-v0`;
 - Evaluation Context policy `bm25-topk-recall-v0` with `top_k=5`;
-- Evaluator output contract `knowledge-note-evaluator-output-v3`;
-- Evaluator prompt `knowledge-note-evaluator-v4`;
-- Evaluator prompt SHA `9411d74c10cd8c3450be6b79f12c644433862a4b292a26db7444d32606ddea3b`;
-- Evaluator provider `openai-compatible`;
-- Evaluator adapter `openai-evaluator-chat-completions-json-schema-v1`;
-- Evaluator strategy `groundedness-plus-pairwise-candidates-v0`.
+- Evaluator output contract `knowledge-note-evaluator-output-v4`;
+- Evaluator prompt `knowledge-note-evaluator-v5`;
+- Evaluator prompt SHA `ca9755c7b448be9bb2a42ab41ba182deb7b45785a4099d6ac85d854131a06291`;
+- Evaluator provider `openai-compatible` or `ollama`;
+- Evaluator adapter `openai-evaluator-chat-completions-json-schema-v2` or `ollama-evaluator-chat-structured-v3`;
+- Evaluator strategy `groundedness-plus-pairwise-candidates-with-verifier-v1`.
 
-The exact historical Evaluator prompt identity
+The exact historical Evaluator prompt identities
 `knowledge-note-evaluator-v3` /
-`bf6265294a4b346f12d1951f594760c80221380ccee9993c6ab866b6b1eca937` remains
-readable in recipes for audit. Runtime preflight requires the current v4
-version/hash pair and blocks a historical recipe before provider contact.
+`bf6265294a4b346f12d1951f594760c80221380ccee9993c6ab866b6b1eca937` and
+`knowledge-note-evaluator-v4` /
+`9411d74c10cd8c3450be6b79f12c644433862a4b292a26db7444d32606ddea3b` remain
+readable in recipes for audit. Runtime preflight requires the current v5
+version/hash pair and blocks historical recipes before provider contact.
 Unknown prompt identities and cross-paired version/hash values are rejected;
 the same exact-pair rule applies to the Generator's supported v0/v1 prompt
 identities. This preserves Generator v0/v1 recipe readability without
 silently reinterpreting v0 as v1.
 
-The canonical provider boundary is the OpenAI-compatible Chat Completions API.
-Generator and Evaluator send their existing role-owned JSON Schema via adapter-owned `response_format`; recipe options cannot override that field. Returned content is still validated locally before durable adoption.
-Workers use only a bounded `POST /v1/chat/completions` contract and validate the
-returned JSON locally. Provider-native structured-output, tool-calling, reasoning,
-or Ollama-native endpoints are not part of the pre-review contract.
+The supported provider boundary is either the bounded OpenAI-compatible Chat
+Completions API or the native Ollama `/api/chat` adapter. Generator and
+Evaluator send their existing role-owned JSON Schema through adapter-owned
+structured-output fields; recipe options cannot override protocol fields.
+Returned content is still validated locally before durable adoption. Provider
+endpoints and credentials remain deployment configuration, never recipe data.
 
 OpenAI-compatible APIs do not standardize an immutable model digest. Recipe v0
 therefore makes the weaker provenance explicit:
