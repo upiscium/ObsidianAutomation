@@ -15,15 +15,17 @@ from .artifact_lifecycle import (
 from .context_bundle import ContextBundle
 from .evaluation_artifact import EvaluationAssessment, EvaluationCandidate, EvaluationContext
 from .evaluator_conflict import (
+    BoundConsistencyConflictProposal,
     ConsistencyConflict,
     ConsistencyConflictProposal,
     ConsistencyVerification,
 )
 
 
-EVALUATOR_OUTPUT_CONTRACT_VERSION = "knowledge-note-evaluator-output-v4"
+EVALUATOR_OUTPUT_CONTRACT_VERSION = "knowledge-note-evaluator-output-v5"
+EVALUATOR_OUTPUT_CONTRACT_V4_VERSION = "knowledge-note-evaluator-output-v4"
 EVALUATOR_OUTPUT_CONTRACT_V3_VERSION = "knowledge-note-evaluator-output-v3"
-EVALUATOR_PROMPT_TEMPLATE_VERSION = "knowledge-note-evaluator-v5"
+EVALUATOR_PROMPT_TEMPLATE_VERSION = "knowledge-note-evaluator-v6"
 EVALUATOR_PROMPT_TEMPLATE_V3_VERSION = "knowledge-note-evaluator-v3"
 EVALUATOR_PROMPT_TEMPLATE_V3_SHA256 = (
     "bf6265294a4b346f12d1951f594760c80221380ccee9993c6ab866b6b1eca937"
@@ -31,6 +33,10 @@ EVALUATOR_PROMPT_TEMPLATE_V3_SHA256 = (
 EVALUATOR_PROMPT_TEMPLATE_V4_VERSION = "knowledge-note-evaluator-v4"
 EVALUATOR_PROMPT_TEMPLATE_V4_SHA256 = (
     "9411d74c10cd8c3450be6b79f12c644433862a4b292a26db7444d32606ddea3b"
+)
+EVALUATOR_PROMPT_TEMPLATE_V5_VERSION = "knowledge-note-evaluator-v5"
+EVALUATOR_PROMPT_TEMPLATE_V5_SHA256 = (
+    "ca9755c7b448be9bb2a42ab41ba182deb7b45785a4099d6ac85d854131a06291"
 )
 # The shorter names mirror the generator contract's historical identity
 # constants and make the compatibility pair easy to consume.
@@ -48,6 +54,9 @@ MAX_EVALUATOR_CONFLICTS_PER_DIMENSION = 4
 MAX_EVALUATOR_CONFLICTS = MAX_EVALUATOR_CONFLICTS_PER_DIMENSION
 MAX_EVALUATOR_CONFLICT_FIELD_CHARS = 1000
 MAX_EVALUATOR_CONFLICT_QUOTE_CHARS = MAX_EVALUATOR_CONFLICT_FIELD_CHARS
+MAX_EVALUATOR_EXCERPT_CHARS = MAX_EVALUATOR_CONFLICT_QUOTE_CHARS
+MAX_EVALUATOR_EXCERPTS = 512
+MAX_EVALUATOR_EXCERPT_ID_CHARS = 5
 MAX_EVALUATOR_VERIFIER_EXPLANATION_CHARS = 1000
 MAX_EVALUATOR_WALL_SECONDS = 14 * 60
 _WINDOWS_FORBIDDEN = set('<>:"|?*')
@@ -1130,10 +1139,6 @@ def prompt_template_bytes() -> bytes:
 def prompt_template_sha256() -> str:
     return sha256_bytes(prompt_template_bytes())
 
-
-EVALUATOR_PROMPT_TEMPLATE_V5_SHA256 = (
-    "ca9755c7b448be9bb2a42ab41ba182deb7b45785a4099d6ac85d854131a06291"
-)
 
 
 def supported_prompt_template_hashes() -> Mapping[str, str]:
