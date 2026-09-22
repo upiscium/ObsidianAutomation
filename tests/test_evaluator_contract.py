@@ -959,8 +959,8 @@ def test_dimension_schemas_are_minimal_ollama_compatible_and_authority_free() ->
             assert conflict_item["additionalProperties"] is False
             assert set(conflict_item["required"]) == set(conflict_item["properties"])
             assert set(conflict_item["required"]) == {
-                "proposal_quote",
-                "candidate_quote",
+                "proposal_excerpt_id",
+                "candidate_excerpt_id",
                 "incompatibility",
             }
             assert "candidate_path" not in json.dumps(conflicts)
@@ -1014,22 +1014,27 @@ def test_prompt_template_hash_binds_pairwise_strategy_and_versions() -> None:
     assert len(prompt_template_sha256()) == 64
 
 
+
 def test_contract_versions_and_supported_prompt_identity_pairs_are_exact() -> None:
-    assert EVALUATOR_OUTPUT_CONTRACT_VERSION == "knowledge-note-evaluator-output-v4"
-    assert EVALUATOR_PROMPT_TEMPLATE_VERSION == "knowledge-note-evaluator-v5"
+    assert EVALUATOR_OUTPUT_CONTRACT_VERSION == "knowledge-note-evaluator-output-v5"
+    assert EVALUATOR_PROMPT_TEMPLATE_VERSION == "knowledge-note-evaluator-v6"
     assert EVALUATOR_PROMPT_TEMPLATE_V3_VERSION == "knowledge-note-evaluator-v3"
     assert EVALUATOR_PROMPT_TEMPLATE_V4_VERSION == "knowledge-note-evaluator-v4"
+    assert EVALUATOR_PROMPT_TEMPLATE_V5_VERSION == "knowledge-note-evaluator-v5"
     assert EVALUATOR_PROMPT_TEMPLATE_V3_SHA256 == (
         "bf6265294a4b346f12d1951f594760c80221380ccee9993c6ab866b6b1eca937"
+    )
+    assert EVALUATOR_PROMPT_TEMPLATE_V5_SHA256 == (
+        "ca9755c7b448be9bb2a42ab41ba182deb7b45785a4099d6ac85d854131a06291"
     )
     assert supported_prompt_template_hashes() == {
         EVALUATOR_PROMPT_TEMPLATE_V3_VERSION: EVALUATOR_PROMPT_TEMPLATE_V3_SHA256,
         EVALUATOR_PROMPT_TEMPLATE_V4_VERSION: EVALUATOR_PROMPT_TEMPLATE_V4_SHA256,
-        EVALUATOR_PROMPT_TEMPLATE_VERSION: EVALUATOR_PROMPT_TEMPLATE_V5_SHA256,
+        EVALUATOR_PROMPT_TEMPLATE_V5_VERSION: EVALUATOR_PROMPT_TEMPLATE_V5_SHA256,
+        EVALUATOR_PROMPT_TEMPLATE_VERSION: EVALUATOR_PROMPT_TEMPLATE_V6_SHA256,
     }
-    assert prompt_template_sha256() == EVALUATOR_PROMPT_TEMPLATE_V5_SHA256
+    assert prompt_template_sha256() == EVALUATOR_PROMPT_TEMPLATE_V6_SHA256
     assert RECOMMENDATION_POLICY_VERSION == "conservative-triad-v0"
-
 
 def test_consistency_prompt_defines_explicit_incompatibility_not_scope_difference() -> None:
     prompt = render_evaluator_prompts(
@@ -1053,6 +1058,7 @@ def test_consistency_prompt_defines_explicit_incompatibility_not_scope_differenc
     ):
         assert phrase in prompt.system
     assert "recommendation" in prompt.system
+
 
 
 def test_production_like_scope_difference_is_pass_and_direct_procedure_conflict_is_concern() -> None:
@@ -1088,11 +1094,10 @@ def test_production_like_scope_difference_is_pass_and_direct_procedure_conflict_
         if prompt.dimension == "consistency"
     )
     consistency_payload = json.loads(consistency_prompt.user)
-    assert consistency_payload["proposal"]["content"] == production_like_proposal
-    assert (
-        consistency_payload["evaluation_candidate"]["content"]
-        == production_like_candidate.content
-    )
+    assert "content" not in consistency_payload["proposal"]
+    assert "content" not in consistency_payload["evaluation_candidate"]
+    assert consistency_payload["proposal"]["excerpts"][0]["id"] == "p0001"
+    assert consistency_payload["evaluation_candidate"]["excerpts"][0]["id"] == "c0001"
 
     scope_difference = parse_dimension_evaluator_output(
         b'{"assessment":"pass","findings":[],"conflicts":[]}',
@@ -1101,16 +1106,18 @@ def test_production_like_scope_difference_is_pass_and_direct_procedure_conflict_
     assert scope_difference.assessment == "pass"
     assert scope_difference.conflicts == ()
 
+    proposal_content = "Run the migration before restarting.\n\nThen continue."
+    candidate_content = "Restart before running the migration.\n\nThen continue."
     direct_conflict = parse_dimension_evaluator_output(
         json.dumps(
             {
-                    "assessment": "concern",
-                    "findings": [],
-                    "conflicts": [
-                        {
-                            "proposal_quote": "Run the migration before restarting.",
-                            "candidate_quote": "Restart before running the migration.",
-                            "incompatibility": "The required order is mutually incompatible.",
+                "assessment": "concern",
+                "findings": [],
+                "conflicts": [
+                    {
+                        "proposal_excerpt_id": "p0001",
+                        "candidate_excerpt_id": "c0001",
+                        "incompatibility": "The required order is mutually incompatible.",
                     }
                 ],
             },
@@ -1123,12 +1130,8 @@ def test_production_like_scope_difference_is_pass_and_direct_procedure_conflict_
     bound_direct_conflict = bind_consistency_proposals(
         direct_conflict,
         candidate_path=production_like_candidate.path,
-        proposal_content=(
-            "Run the migration before restarting. Then continue."
-        ),
-        candidate_content=(
-            "Restart before running the migration. Then continue."
-        ),
+        proposal_content=proposal_content,
+        candidate_content=candidate_content,
     )
     finalized_direct_conflict = finalize_consistency_candidate(
         bound_direct_conflict,
@@ -1149,7 +1152,7 @@ def test_production_like_scope_difference_is_pass_and_direct_procedure_conflict_
         redundancy_pairs=(
             CandidateEvaluatorOutput(
                 "redundancy",
-                "11-Knowledge/utility-aware-task-decomposition.md",
+                production_like_candidate.path,
                 "none",
                 (),
             ),
@@ -1157,7 +1160,7 @@ def test_production_like_scope_difference_is_pass_and_direct_procedure_conflict_
         consistency_pairs=(
             CandidateEvaluatorOutput(
                 "consistency",
-                "11-Knowledge/utility-aware-task-decomposition.md",
+                production_like_candidate.path,
                 "concern",
                 (),
                 (
@@ -1165,10 +1168,11 @@ def test_production_like_scope_difference_is_pass_and_direct_procedure_conflict_
                         "Proposal procedure.",
                         "Candidate procedure.",
                         "They cannot both be followed.",
-                        "11-Knowledge/utility-aware-task-decomposition.md",
+                        production_like_candidate.path,
                     ),
                 ),
             ),
         ),
     )
     assert recommendation_for(aggregated) == "do_not_proceed"
+
