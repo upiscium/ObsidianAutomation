@@ -665,17 +665,32 @@ def _validated_dimension_conflicts(
     return normalized
 
 
+def _validated_excerpt_id(value: object, *, prefix: str, field: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != MAX_EVALUATOR_EXCERPT_ID_CHARS
+        or not value.startswith(prefix)
+        or not value[1:].isdigit()
+    ):
+        raise ArtifactLifecycleError(
+            f"evaluator conflict {field} is not a valid excerpt identifier"
+        )
+    return value
+
+
 def _validated_conflict_proposal(value: object) -> ConsistencyConflictProposal:
     if not isinstance(value, ConsistencyConflictProposal):
         raise ArtifactLifecycleError("evaluator conflict proposal has an invalid type")
     return ConsistencyConflictProposal(
-        proposal_quote=_validated_conflict_quote(
-            value.proposal_quote,
-            field="proposal_quote",
+        proposal_excerpt_id=_validated_excerpt_id(
+            value.proposal_excerpt_id,
+            prefix="p",
+            field="proposal_excerpt_id",
         ),
-        candidate_quote=_validated_conflict_quote(
-            value.candidate_quote,
-            field="candidate_quote",
+        candidate_excerpt_id=_validated_excerpt_id(
+            value.candidate_excerpt_id,
+            prefix="c",
+            field="candidate_excerpt_id",
         ),
         incompatibility=_validated_conflict_field(
             value.incompatibility,
@@ -701,8 +716,8 @@ def _validated_conflict_proposals(
     for raw_proposal in proposals:
         proposal = _validated_conflict_proposal(raw_proposal)
         identity = (
-            proposal.proposal_quote,
-            proposal.candidate_quote,
+            proposal.proposal_excerpt_id,
+            proposal.candidate_excerpt_id,
             proposal.incompatibility,
         )
         if identity in seen:
@@ -735,23 +750,45 @@ def bind_consistency_proposals(
             "only consistency outputs can bind conflict proposals"
         )
     path = _validated_candidate_path(candidate_path)
-    if not isinstance(proposal_content, str) or not proposal_content:
-        raise ArtifactLifecycleError("evaluator proposal content is invalid")
-    if not isinstance(candidate_content, str) or not candidate_content:
-        raise ArtifactLifecycleError("evaluator candidate content is invalid")
+    proposal_lookup = _excerpt_lookup(
+        consistency_excerpts(proposal_content, prefix="p"),
+        prefix="p",
+    )
+    candidate_lookup = _excerpt_lookup(
+        consistency_excerpts(candidate_content, prefix="c"),
+        prefix="c",
+    )
     proposals = _validated_conflict_proposals(
         output.conflict_proposals,
         assessment=output.assessment,
     )
+
+    bound_proposals: list[BoundConsistencyConflictProposal] = []
     for proposal in proposals:
-        if proposal.proposal_quote not in proposal_content:
+        proposal_quote = proposal_lookup.get(proposal.proposal_excerpt_id)
+        if proposal_quote is None:
             raise ArtifactLifecycleError(
-                "evaluator proposal quote is not an exact proposal excerpt"
+                "evaluator proposal excerpt ID is not in the deterministic table"
             )
-        if proposal.candidate_quote not in candidate_content:
+        candidate_quote = candidate_lookup.get(proposal.candidate_excerpt_id)
+        if candidate_quote is None:
             raise ArtifactLifecycleError(
-                "evaluator candidate quote is not an exact candidate excerpt"
+                "evaluator candidate excerpt ID is not in the deterministic table"
             )
+        bound_proposals.append(
+            BoundConsistencyConflictProposal(
+                proposal_quote=_validated_conflict_quote(
+                    proposal_quote,
+                    field="proposal_quote",
+                ),
+                candidate_quote=_validated_conflict_quote(
+                    candidate_quote,
+                    field="candidate_quote",
+                ),
+                incompatibility=proposal.incompatibility,
+            )
+        )
+
     bound_findings: list[str] = []
     prefix = "consistency: "
     for finding in output.findings:
@@ -766,7 +803,7 @@ def bind_consistency_proposals(
         candidate_path=path,
         assessment=output.assessment,
         findings=tuple(bound_findings),
-        proposals=proposals,
+        proposals=tuple(bound_proposals),
     )
 
 
