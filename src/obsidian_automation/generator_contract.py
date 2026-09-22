@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
@@ -39,6 +40,14 @@ _WINDOWS_RESERVED_STEMS = {
     *(f"com{i}" for i in range(1, 10)),
     *(f"lpt{i}" for i in range(1, 10)),
 }
+_FENCE = re.compile(r"^(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
+_BLOCKQUOTE_PREFIX = re.compile(r"^ {0,3}>[ \t]?")
+_LIST_PREFIX = re.compile(r"^ {0,3}(?:[-+*]|[0-9]+[.)])(?=[ \t]+)")
+_LIST_MARKER = re.compile(r"[ \t]*(?:[-+*]|[0-9]+[.)])(?:[ \t]+|$)")
+_TECHNICAL_QUOTE_CONTEXT = re.compile(
+    r"\b(?:character|encoding|escape|json|line[ -]?feed|literal|marker|payload|pattern|protocol|regex|sequence|string|token)\b",
+    re.IGNORECASE,
+)
 
 
 OUTPUT_JSON_SCHEMA: Mapping[str, object] = {
@@ -136,6 +145,262 @@ def _validate_title(value: object) -> str:
     return value
 
 
+def _code_mask(value: str) -> list[bool]:
+    """Mark fenced, indented, and inline code so prose checks stay bounded."""
+
+    mask = [False] * len(value)
+    fence_char: str | None = None
+    fence_length = 0
+    fence_context: tuple[str, ...] | None = None
+    fence_indentation_limit = 3
+    offset = 0
+    for line in value.splitlines(keepends=True):
+        content = line[:-1] if line.endswith("\n") else line
+        match = _fence_match(content, max_indentation=fence_indentation_limit)
+        end = offset + len(line)
+        if fence_char is not None:
+            mask[offset:end] = [True] * (end - offset)
+            if (
+                match is not None
+                and _can_close_fence(
+                    fence_context, _fence_context(content)
+                )
+                and match.group("fence")[0] == fence_char
+                and len(match.group("fence")) >= fence_length
+                and not match.group("info").strip()
+            ):
+                fence_char = None
+                fence_length = 0
+                fence_context = None
+                fence_indentation_limit = 3
+            offset = end
+            continue
+        if match is not None:
+            fence = match.group("fence")
+            fence_char = fence[0]
+            fence_length = len(fence)
+            fence_context, _, list_prefix_length = _fence_parts(content)
+            fence_indentation_limit = (
+                max(3, list_prefix_length + 4) if list_prefix_length else 3
+            )
+            mask[offset:end] = [True] * (end - offset)
+        elif _is_indented_code_line(content):
+            mask[offset:end] = [True] * (end - offset)
+        offset = end
+
+    # Markdown inline code spans are delimited by matching backtick runs. A
+    # literal escaped newline inside one must remain representable.
+    index = 0
+    while index < len(value):
+        if mask[index] or value[index] != "`":
+            index += 1
+            continue
+        if _is_escaped(value, index):
+            index += 1
+            continue
+        end = index + 1
+        while end < len(value) and value[end] == "`":
+            end += 1
+        run_length = end - index
+        candidate = end
+        while candidate < len(value):
+            candidate = value.find("`", candidate)
+            if candidate < 0:
+                index = end
+                break
+            close = candidate + 1
+            while close < len(value) and value[close] == "`":
+                close += 1
+            if (
+                close - candidate == run_length
+                and not any(mask[candidate:close])
+            ):
+                mask[index:close] = [True] * (close - index)
+                index = close
+                break
+            candidate = close
+        else:
+            index = end
+    return mask
+
+
+def _fence_match(content: str, *, max_indentation: int = 3) -> re.Match[str] | None:
+    _, remainder, _ = _fence_parts(content, max_indentation=max_indentation)
+    return _FENCE.fullmatch(remainder)
+
+
+def _fence_parts(
+    content: str, *, max_indentation: int = 3
+) -> tuple[tuple[str, ...], str, int]:
+    remainder = content
+    containers: list[str] = []
+    list_prefix_length = 0
+    while True:
+        changed = False
+        blockquote = _BLOCKQUOTE_PREFIX.match(remainder)
+        if blockquote is not None:
+            containers.append("blockquote")
+            remainder = remainder[blockquote.end() :]
+            changed = True
+        list_prefix = _LIST_PREFIX.match(remainder)
+        if list_prefix is not None:
+            containers.append("list")
+            list_prefix_length += list_prefix.end()
+            remainder = remainder[list_prefix.end() :]
+            changed = True
+        if not changed:
+            break
+    indentation = len(remainder) - len(remainder.lstrip(" "))
+    if indentation > max_indentation:
+        return tuple(containers), remainder, list_prefix_length
+    return (
+        tuple(containers),
+        remainder[indentation:],
+        list_prefix_length,
+    )
+
+
+def _fence_context(content: str) -> tuple[str, ...]:
+    context, _, _ = _fence_parts(content)
+    return context
+
+
+def _can_close_fence(
+    opening: tuple[str, ...] | None, closing: tuple[str, ...]
+) -> bool:
+    if opening is None:
+        return False
+    if opening == closing:
+        return True
+    if "list" in opening:
+        without_lists = tuple(container for container in opening if container != "list")
+        return closing == without_lists
+    return False
+
+
+def _is_indented_code_line(content: str) -> bool:
+    remainder = content
+    while True:
+        changed = False
+        blockquote = _BLOCKQUOTE_PREFIX.match(remainder)
+        if blockquote is not None:
+            remainder = remainder[blockquote.end() :]
+            changed = True
+        list_prefix = _LIST_PREFIX.match(remainder)
+        if list_prefix is not None:
+            remainder = remainder[list_prefix.end() :]
+            changed = True
+        if not changed:
+            break
+    columns = 0
+    for character in remainder:
+        if character == " ":
+            columns += 1
+        elif character == "\t":
+            columns += 4 - (columns % 4)
+        else:
+            break
+    return columns >= 4
+
+
+def _is_escaped(value: str, index: int) -> bool:
+    backslashes = 0
+    index -= 1
+    while index >= 0 and value[index] == "\\":
+        backslashes += 1
+        index -= 1
+    return backslashes % 2 == 1
+
+
+def _unmasked_text(value: str, code_mask: list[bool], start: int, end: int) -> str:
+    return "".join(
+        character
+        for index, character in enumerate(value[start:end], start)
+        if not code_mask[index]
+    )
+
+
+def _technical_quote_mask(value: str, code_mask: list[bool]) -> list[bool]:
+    mask = [False] * len(value)
+    for quote in ('"', "'"):
+        opening: int | None = None
+        for index, character in enumerate(value):
+            if code_mask[index]:
+                continue
+            if character != quote or _is_escaped(value, index):
+                continue
+            if (
+                quote == "'"
+                and index > 0
+                and value[index - 1].isalnum()
+                and (
+                    opening is None
+                    or (
+                        index + 1 < len(value)
+                        and value[index + 1].isalnum()
+                    )
+                )
+            ):
+                continue
+            if opening is None:
+                opening = index
+                continue
+            context = _unmasked_text(
+                value, code_mask, max(0, opening - 160), opening
+            )
+            context += _unmasked_text(value, code_mask, opening + 1, index)
+            if _TECHNICAL_QUOTE_CONTEXT.search(context):
+                mask[opening : index + 1] = [True] * (index + 1 - opening)
+            opening = None
+    return mask
+
+
+def _is_prose_boundary(value: str, index: int) -> bool:
+    previous_index = index - 1
+    while previous_index >= 0 and value[previous_index] in " \t":
+        previous_index -= 1
+    while previous_index >= 0 and value[previous_index] in "\"')]}*~":
+        previous_index -= 1
+        while previous_index >= 0 and value[previous_index] in " \t":
+            previous_index -= 1
+    previous = value[previous_index] if previous_index >= 0 else ""
+    return previous in ".!?;\n"
+
+
+def _reject_escaped_newline_artifacts(value: str) -> None:
+    mask = _code_mask(value)
+    technical_quote_mask = _technical_quote_mask(value, mask)
+    index = 0
+    while True:
+        index = value.find("\\n", index)
+        if index < 0:
+            return
+        if mask[index] or technical_quote_mask[index] or (
+            index and value[index - 1] == "\\"
+        ):
+            index += 2
+            continue
+
+        remainder = value[index + 2 :]
+        if _LIST_MARKER.match(remainder) or re.match(
+            r"[ \t]*\n[ \t]*(?:[-+*]|[0-9]+[.)])(?:[ \t]+|$)",
+            remainder,
+        ):
+            raise ArtifactLifecycleError(
+                "generator output body contains an escaped newline before a Markdown list"
+            )
+        if _is_prose_boundary(value, index) and (
+            not remainder
+            or remainder.startswith("\\n")
+            or re.match(r"[ \t]*\n", remainder)
+            or remainder.lstrip(" \t")[:1].isalpha()
+        ):
+            raise ArtifactLifecycleError(
+                "generator output body contains an escaped prose newline boundary"
+            )
+        index += 2
+
+
 def _validate_body(value: object) -> str:
     if not isinstance(value, str):
         raise ArtifactLifecycleError("generator output body must be a string")
@@ -145,6 +410,7 @@ def _validate_body(value: object) -> str:
         raise ArtifactLifecycleError("generator output body must not contain NUL")
     if not value.strip():
         raise ArtifactLifecycleError("generator output body must not be empty")
+    _reject_escaped_newline_artifacts(value)
     try:
         encoded = value.encode("utf-8")
     except UnicodeEncodeError as exc:
