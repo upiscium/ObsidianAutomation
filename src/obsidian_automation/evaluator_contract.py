@@ -1055,8 +1055,8 @@ def parse_dimension_evaluator_output(
         parsed_proposals: list[ConsistencyConflictProposal] = []
         for item in raw_conflicts:
             if not isinstance(item, dict) or set(item) != {
-                "proposal_quote",
-                "candidate_quote",
+                "proposal_excerpt_id",
+                "candidate_excerpt_id",
                 "incompatibility",
             }:
                 raise ArtifactLifecycleError(
@@ -1064,8 +1064,8 @@ def parse_dimension_evaluator_output(
                 )
             parsed_proposals.append(
                 ConsistencyConflictProposal(
-                    proposal_quote=item["proposal_quote"],
-                    candidate_quote=item["candidate_quote"],
+                    proposal_excerpt_id=item["proposal_excerpt_id"],
+                    candidate_excerpt_id=item["candidate_excerpt_id"],
                     incompatibility=item["incompatibility"],
                 )
             )
