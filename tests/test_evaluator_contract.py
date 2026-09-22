@@ -370,8 +370,8 @@ def test_verifier_compatible_scope_variants_do_not_persist_conflicts(
 ) -> None:
     del label
     proposal = ConsistencyConflictProposal(
-        proposal_quote=proposal_quote,
-        candidate_quote=candidate_quote,
+        proposal_excerpt_id="p0001",
+        candidate_excerpt_id="c0001",
         incompatibility="The proposer suggested a possible conflict.",
     )
     bound = bind_consistency_proposals(
@@ -391,7 +391,6 @@ def test_verifier_compatible_scope_variants_do_not_persist_conflicts(
     )
     assert result.assessment == "pass"
     assert result.conflicts == ()
-
 
 
 def test_consistency_verifier_prompt_excludes_model_controlled_path() -> None:
@@ -492,15 +491,16 @@ def test_consistency_parser_rejects_invalid_conflict_invariants(value: dict[str,
         )
 
 
+
 def test_consistency_parser_rejects_extra_wrong_duplicate_and_oversized_conflicts() -> None:
     extra = {
         "assessment": "concern",
         "findings": [],
         "conflicts": [
             {
-                    "proposal_quote": "Proposal.",
-                    "candidate_quote": "Candidate.",
-                    "incompatibility": "Incompatible.",
+                "proposal_excerpt_id": "p0001",
+                "candidate_excerpt_id": "c0001",
+                "incompatibility": "Incompatible.",
                 "extra": "not allowed",
             }
         ],
@@ -516,13 +516,13 @@ def test_consistency_parser_rejects_extra_wrong_duplicate_and_oversized_conflict
         "findings": [],
         "conflicts": [
             {
-                    "proposal_quote": "Proposal.",
-                    "candidate_quote": "Candidate.",
-                    "incompatibility": "Incompatible.",
+                "proposal_excerpt_id": "p0001",
+                "candidate_excerpt_id": "c0001",
+                "incompatibility": "Incompatible.",
             },
             {
-                "proposal_quote": "Proposal.",
-                "candidate_quote": "Candidate.",
+                "proposal_excerpt_id": "p0001",
+                "candidate_excerpt_id": "c0001",
                 "incompatibility": "Incompatible.",
             },
         ],
@@ -538,9 +538,9 @@ def test_consistency_parser_rejects_extra_wrong_duplicate_and_oversized_conflict
         "findings": [],
         "conflicts": [
             {
-                "proposal_quote": "x" * (MAX_EVALUATOR_CONFLICT_FIELD_CHARS + 1),
-                "candidate_quote": "Candidate.",
-                "incompatibility": "Incompatible.",
+                "proposal_excerpt_id": "p0001",
+                "candidate_excerpt_id": "c0001",
+                "incompatibility": "x" * (MAX_EVALUATOR_CONFLICT_FIELD_CHARS + 1),
             }
         ],
     }
@@ -555,9 +555,9 @@ def test_consistency_parser_rejects_extra_wrong_duplicate_and_oversized_conflict
         "findings": [],
         "conflicts": [
             {
-                "proposal_quote": f"Proposal {index}.",
-                "candidate_quote": "Candidate.",
-                "incompatibility": "Incompatible.",
+                "proposal_excerpt_id": f"p{index + 1:04d}",
+                "candidate_excerpt_id": "c0001",
+                "incompatibility": f"Incompatible {index}.",
             }
             for index in range(MAX_EVALUATOR_CONFLICTS + 1)
         ],
@@ -572,40 +572,24 @@ def test_consistency_parser_rejects_extra_wrong_duplicate_and_oversized_conflict
 def test_consistency_parser_rejects_non_utf8_conflict_fields() -> None:
     with pytest.raises(ArtifactLifecycleError, match="UTF-8"):
         parse_dimension_evaluator_output(
-            b'{"assessment":"concern","findings":[],"conflicts":[{"proposal_quote":"\\ud800","candidate_quote":"Candidate.","incompatibility":"Incompatible."}]}',
+            b'{"assessment":"concern","findings":[],"conflicts":[{"proposal_excerpt_id":"p0001","candidate_excerpt_id":"c0001","incompatibility":"\\ud800"}]}',
             dimension="consistency",
         )
-
 
 @pytest.mark.parametrize("control", ["\r", "\x00", "\x7f", "\u0085"])
-def test_consistency_parser_rejects_non_lf_quote_controls(control: str) -> None:
+
+def test_consistency_excerpt_builder_rejects_cr_source_content() -> None:
+    with pytest.raises(ArtifactLifecycleError, match="LF line endings"):
+        consistency_excerpts("Proposal\r\nclaim", prefix="p")
+
+def test_consistency_parser_keeps_incompatibility_single_line() -> None:
     value = {
         "assessment": "concern",
         "findings": [],
         "conflicts": [
             {
-                "proposal_quote": f"Proposal{control}claim",
-                "candidate_quote": "Candidate.",
-                "incompatibility": "Incompatible.",
-            }
-        ],
-    }
-
-    with pytest.raises(ArtifactLifecycleError, match="control characters"):
-        parse_dimension_evaluator_output(
-            json.dumps(value, separators=(",", ":")).encode(),
-            dimension="consistency",
-        )
-
-
-def test_consistency_parser_keeps_non_quote_fields_single_line() -> None:
-    value = {
-        "assessment": "concern",
-        "findings": [],
-        "conflicts": [
-            {
-                "proposal_quote": "Proposal\nclaim",
-                "candidate_quote": "Candidate.",
+                "proposal_excerpt_id": "p0001",
+                "candidate_excerpt_id": "c0001",
                 "incompatibility": "Incompatible.\nStill incompatible.",
             }
         ],
@@ -616,7 +600,6 @@ def test_consistency_parser_keeps_non_quote_fields_single_line() -> None:
             json.dumps(value, separators=(",", ":")).encode(),
             dimension="consistency",
         )
-
 
 def test_consistency_verifier_explanation_remains_single_line() -> None:
     with pytest.raises(ArtifactLifecycleError, match="control characters"):
