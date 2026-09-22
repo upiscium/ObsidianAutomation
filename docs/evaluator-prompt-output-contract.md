@@ -1,8 +1,8 @@
-# Evaluator Prompt / Output Contract (output v4, prompt v5)
+# Evaluator Prompt / Output Contract (output v5, prompt v6)
 
 ## Purpose
 
-The Evaluator is an advisory semantic assessment stage between deterministic Validation and Human Review. Its current model-facing output contract is v4 and its current prompt/input template is v5.
+The Evaluator is an advisory semantic assessment stage between deterministic Validation and Human Review. Its current model-facing output contract is v5 and its current prompt/input template is v6.
 
 Production testing showed two independent interference modes:
 
@@ -21,10 +21,11 @@ validated proposal
               ├─ Redundancy
               │    proposal + exactly one candidate
               └─ Consistency proposer
-                   proposal + exactly one candidate
-                   ↓ zero or more bounded quote pairs
-                 Consistency verifier (one call per quote pair)
-                   exact proposal quote + exact candidate quote
+                   deterministic proposal/candidate excerpt tables
+                   ↓ zero or more excerpt-ID pairs
+                 deterministic excerpt binding
+                   ↓ exact proposal quote + exact candidate quote
+                 Consistency verifier (one call per bound pair)
 
 all provider calls strict-parse successfully
         ↓
@@ -62,8 +63,8 @@ For a Consistency pass, the model always returns a `conflicts` array. A concern 
   ],
   "conflicts": [
     {
-      "proposal_quote": "exact excerpt from the proposal",
-      "candidate_quote": "exact excerpt from the candidate",
+      "proposal_excerpt_id": "p0001",
+      "candidate_excerpt_id": "c0001",
       "incompatibility": "why the claims cannot both apply"
     }
   ]
@@ -73,24 +74,27 @@ For a Consistency pass, the model always returns a `conflicts` array. A concern 
 The current output contract version is:
 
 ```text
-knowledge-note-evaluator-output-v4
+knowledge-note-evaluator-output-v5
 ```
 
 The current prompt/input contract is:
 
 ```text
-knowledge-note-evaluator-v5
+knowledge-note-evaluator-v6
 ```
 
 The current prompt-template SHA-256 is:
 
 ```text
-ca9755c7b448be9bb2a42ab41ba182deb7b45785a4099d6ac85d854131a06291
+45439ec5f3ae0d9dd31fa5af37c45c572b3e520ac87548f0a739acf1ee5f9041
 ```
 
-The historical, readable prompt identity is an exact version/hash pair:
+Historical readable prompt identities remain exact version/hash pairs:
 
 ```text
+knowledge-note-evaluator-v5
+ca9755c7b448be9bb2a42ab41ba182deb7b45785a4099d6ac85d854131a06291
+
 knowledge-note-evaluator-v4
 9411d74c10cd8c3450be6b79f12c644433862a4b292a26db7444d32606ddea3b
 
@@ -98,7 +102,7 @@ knowledge-note-evaluator-v3
 bf6265294a4b346f12d1951f594760c80221380ccee9993c6ab866b6b1eca937
 ```
 
-Recipe parsing accepts the historical v3 and v4 pairs for readability and audit, but current runtime preflight requires the v5 pair and blocks historical recipes before provider contact. Unknown prompt identities and cross-paired version/hash values are rejected. The dimension, candidate identity, and recommendation are fixed outside the model; the model cannot return `candidate_path` or `recommendation`.
+Recipe parsing accepts the historical v3, v4, and v5 pairs for readability and audit, but current runtime preflight requires the v6 pair and blocks historical recipes before provider contact. Unknown prompt identities and cross-paired version/hash values are rejected. The dimension, candidate identity, and recommendation are fixed outside the model; the model cannot return `candidate_path` or `recommendation`.
 
 ## Groundedness pass
 
@@ -149,11 +153,15 @@ Filename punctuation, wording, section order, formatting, readability improvemen
 
 ## Pairwise Consistency proposer and verifier
 
-The first Consistency call is a proposer pass for each candidate. It may return
-zero or more plausible conflict proposals, but those proposals are not durable
-evidence. Each proposal must contain exact excerpts from the proposal and the
-single candidate; deterministic code verifies that both excerpts occur in the
-already-bound source bytes before making any verifier call.
+The first Consistency call is a proposer pass for each candidate. Deterministic
+code first partitions the exact proposal and candidate bytes into bounded excerpt
+tables with stable IDs such as `p0001` and `c0001`. The model may return zero
+or more plausible conflicts by selecting one proposal excerpt ID and one candidate
+excerpt ID plus an incompatibility description. It never reproduces quote text.
+
+Deterministic code resolves the selected IDs back to the exact excerpt bytes.
+Unknown or malformed IDs fail closed before any verifier call. Only these resolved
+exact excerpts are passed to the verifier.
 
 One verifier call is then made for each accepted proposal.
 
@@ -191,15 +199,15 @@ Only a verifier `contradiction` becomes persisted conflict evidence.
   "findings": [],
   "conflicts": [
     {
-      "proposal_quote": "...",
-      "candidate_quote": "...",
+      "proposal_excerpt_id": "p0001",
+      "candidate_excerpt_id": "c0001",
       "incompatibility": "..."
     }
   ]
 }
 ```
 
-Each of `proposal_quote`, `candidate_quote`, and `incompatibility` is a non-empty, trimmed string of at most 1,000 characters. Proposal and candidate quotes may contain exact LF line breaks; they reject CR, NUL, DEL, and every other control character. `incompatibility` remains single-line and rejects all control characters. The decoded quote is anchored and persisted without normalization. There may be at most four proposals, with no duplicate evidence triples. `pass` and `unknown` have no proposals: the model returns `"conflicts": []`, while the parser rejects a non-empty array on either assessment. `concern` with an empty array is also rejected.
+`proposal_excerpt_id` and `candidate_excerpt_id` are fixed-shape identifiers selected from the deterministic tables supplied in that exact pass. `incompatibility` is a non-empty, trimmed, single-line string of at most 1,000 characters. Excerpt text itself is not model output. After deterministic ID resolution, exact excerpt bytes are carried into verification and persisted without model-side rewriting. There may be at most four proposals, with no duplicate evidence triples. `pass` and `unknown` have no proposals: the model returns `"conflicts": []`, while the parser rejects a non-empty array on either assessment. `concern` with an empty array is also rejected.
 
 The following are not conflicts by themselves: different topic or scope, a missing framework or detail, omissions, extra detail, formatting, and style. Those differences can coexist; a conflict requires the explicit material incompatibility above.
 
@@ -257,8 +265,9 @@ No Evaluation Record is persisted until every required call has:
 4. passed strict deterministic parsing;
 5. been bound to the expected candidate path and dimension.
 
-For Consistency, every proposed pair must also pass exact quote anchoring and
-every verifier response must pass the strict verdict schema. A proposer concern
+For Consistency, every proposed pair must resolve to excerpt IDs present in the
+exact deterministic tables for that pass, and every verifier response must pass
+the strict verdict schema. A proposer concern
 is never persisted directly.
 
 Any provider/parser/binding failure aborts the whole Evaluation without writing a partial `15-Evaluation` artifact.
@@ -290,9 +299,9 @@ Current evaluations persist Evaluation Record v2. Its structured conflict eviden
 
 For v2 `pass` or `unknown`, `assessment.conflicts` is the empty array. Historical Evaluation Record v1 artifacts remain readable as immutable evidence; their assessment shape has no `conflicts` member and they are not silently rewritten as current v2 records.
 
-For current v2 records, verified `proposal_quote` and `candidate_quote` values
-are persisted in the existing `proposal_claim` and `candidate_claim` fields so
-historical readers remain compatible. Those persisted quote fields preserve
+For current v2 records, deterministically resolved and verifier-confirmed proposal
+and candidate excerpts are persisted in the existing `proposal_claim` and
+`candidate_claim` fields so historical readers remain compatible. Those persisted quote fields preserve
 embedded LF line breaks exactly; `incompatibility` remains single-line.
 
 ## Deterministic recommendation policy
@@ -330,7 +339,7 @@ The current prompt-template SHA binds:
 - pairwise strategy identifier;
 - all dimension-specific system prompts;
 - all JSON Schemas;
-- payload version 5;
+- payload version 6;
 - the Consistency proposer/verifier pass order and verdict aggregation;
 - deterministic severity order;
 - bounded finding and conflict aggregation policy;
