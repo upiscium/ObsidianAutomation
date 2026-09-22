@@ -11,10 +11,23 @@ from obsidian_automation.context_bundle import ContextBundle, store_context_bund
 from obsidian_automation.evaluator_contract import (
     EVALUATOR_PROMPT_TEMPLATE_V3_SHA256,
     EVALUATOR_PROMPT_TEMPLATE_V3_VERSION,
+    EVALUATOR_PROMPT_TEMPLATE_V4_SHA256,
+    EVALUATOR_PROMPT_TEMPLATE_V4_VERSION,
     EVALUATOR_PROMPT_TEMPLATE_VERSION,
+    EVALUATOR_PROMPT_TEMPLATE_V5_SHA256,
     prompt_template_sha256 as evaluator_prompt_template_sha256,
 )
-from obsidian_automation.ollama_evaluator import ADAPTER_VERSION as OLLAMA_EVALUATOR_ADAPTER_VERSION
+from obsidian_automation.openai_evaluator import (
+    ADAPTER_VERSION as OPENAI_EVALUATOR_ADAPTER_VERSION,
+    LEGACY_ADAPTER_VERSION as LEGACY_OPENAI_EVALUATOR_ADAPTER_VERSION,
+    LEGACY_EVALUATION_STRATEGY as LEGACY_OPENAI_EVALUATION_STRATEGY,
+    EVALUATION_STRATEGY,
+)
+from obsidian_automation.ollama_evaluator import (
+    ADAPTER_VERSION as OLLAMA_EVALUATOR_ADAPTER_VERSION,
+    LEGACY_ADAPTER_VERSION as LEGACY_OLLAMA_EVALUATOR_ADAPTER_VERSION,
+    LEGACY_EVALUATION_STRATEGY as LEGACY_OLLAMA_EVALUATION_STRATEGY,
+)
 from obsidian_automation.ollama_generator import ADAPTER_VERSION as OLLAMA_GENERATOR_ADAPTER_VERSION
 from obsidian_automation.generator_contract import (
     PROMPT_TEMPLATE_VERSION,
@@ -56,8 +69,8 @@ def _state(tmp_path: Path) -> tuple[Path, str]:
 def _recipe(
     *,
     generator_model: str = "gemma3:12b",
-    evaluator_prompt_version: str = EVALUATOR_PROMPT_TEMPLATE_V3_VERSION,
-    evaluator_prompt_sha: str = EVALUATOR_PROMPT_TEMPLATE_V3_SHA256,
+    evaluator_prompt_version: str = EVALUATOR_PROMPT_TEMPLATE_VERSION,
+    evaluator_prompt_sha: str = EVALUATOR_PROMPT_SHA,
 ) -> dict[str, object]:
     component = {
         "implementation_revision": REV,
@@ -72,6 +85,10 @@ def _recipe(
             "options": {"temperature": 0},
         },
     }
+    historical_evaluator = evaluator_prompt_version in {
+        EVALUATOR_PROMPT_TEMPLATE_V3_VERSION,
+        EVALUATOR_PROMPT_TEMPLATE_V4_VERSION,
+    }
     evaluator = {
         **component,
         "prompt_template_version": evaluator_prompt_version,
@@ -79,9 +96,17 @@ def _recipe(
         "model_identifier": "gemma3:12b-eval",
         "model_revision": "identifier:gemma3:12b-eval",
         "model_config": {
-            "adapter_version": "openai-evaluator-chat-completions-json-schema-v1",
+            "adapter_version": (
+                LEGACY_OPENAI_EVALUATOR_ADAPTER_VERSION
+                if historical_evaluator
+                else OPENAI_EVALUATOR_ADAPTER_VERSION
+            ),
             "identity_binding": "identifier-only",
-            "strategy": "groundedness-plus-pairwise-candidates-v0",
+            "strategy": (
+                LEGACY_OPENAI_EVALUATION_STRATEGY
+                if historical_evaluator
+                else EVALUATION_STRATEGY
+            ),
             "options": {"temperature": 0},
         },
     }
@@ -201,9 +226,9 @@ def test_recipe_accepts_native_ollama_digest_binding_and_role_thinking() -> None
         "model_identifier": "gemma4:12b",
         "model_revision": digest,
         "model_config": {
-            "adapter_version": OLLAMA_EVALUATOR_ADAPTER_VERSION,
+            "adapter_version": LEGACY_OLLAMA_EVALUATOR_ADAPTER_VERSION,
             "think": "low",
-            "strategy": "groundedness-plus-pairwise-candidates-v0",
+            "strategy": LEGACY_OLLAMA_EVALUATION_STRATEGY,
             "options": {"temperature": 0},
         },
     }
@@ -225,6 +250,7 @@ def test_recipe_accepts_native_ollama_digest_binding_and_role_thinking() -> None
     ("prompt_version", "prompt_sha"),
     [
         (EVALUATOR_PROMPT_TEMPLATE_V3_VERSION, EVALUATOR_PROMPT_TEMPLATE_V3_SHA256),
+        (EVALUATOR_PROMPT_TEMPLATE_V4_VERSION, EVALUATOR_PROMPT_TEMPLATE_V4_SHA256),
         (EVALUATOR_PROMPT_TEMPLATE_VERSION, EVALUATOR_PROMPT_SHA),
     ],
 )
@@ -247,6 +273,7 @@ def test_recipe_accepts_exact_historical_and_current_evaluator_prompt_pairs(
     ("prompt_version", "prompt_sha"),
     [
         (EVALUATOR_PROMPT_TEMPLATE_V3_VERSION, EVALUATOR_PROMPT_SHA),
+        (EVALUATOR_PROMPT_TEMPLATE_V4_VERSION, EVALUATOR_PROMPT_TEMPLATE_V3_SHA256),
         (EVALUATOR_PROMPT_TEMPLATE_VERSION, EVALUATOR_PROMPT_TEMPLATE_V3_SHA256),
         (EVALUATOR_PROMPT_TEMPLATE_VERSION, "0" * 64),
     ],
@@ -580,20 +607,54 @@ def test_public_cli_and_json_schemas_are_pinned() -> None:
     )
     assert recipe_schema["properties"]["pipeline"]["const"] == "knowledge-pre-review-v0"
     assert recipe_schema["additionalProperties"] is False
-    evaluator_schema = recipe_schema["properties"]["evaluator"]
-    assert [
+    generator_schema = recipe_schema["properties"]["generator"]
+    assert all(
+        branch["properties"]["model_config"]["additionalProperties"] is False
+        for branch in generator_schema["oneOf"]
+    )
+    assert all(
+        set(branch["properties"]["model_config"]["required"])
+        == set(branch["properties"]["model_config"]["properties"])
+        for branch in generator_schema["oneOf"]
+    )
+    assert {
         (
             branch["properties"]["prompt_template_version"]["const"],
             branch["properties"]["prompt_template_sha256"]["const"],
+            branch["properties"]["provider"]["const"],
+        )
+        for branch in generator_schema["oneOf"]
+    } == {
+        ("knowledge-note-generator-v0", "820f86bf9f7e5495be64608690123ec31562441d4d774095d5d61ba7db9abafd", "openai-compatible"),
+        ("knowledge-note-generator-v1", "ebdcbfdc5008a1c84366555debc15842e154cfaf51919d023c30d3d5c3fa9248", "openai-compatible"),
+        ("knowledge-note-generator-v0", "820f86bf9f7e5495be64608690123ec31562441d4d774095d5d61ba7db9abafd", "ollama"),
+        ("knowledge-note-generator-v1", "ebdcbfdc5008a1c84366555debc15842e154cfaf51919d023c30d3d5c3fa9248", "ollama"),
+    }
+    evaluator_schema = recipe_schema["properties"]["evaluator"]
+    assert all(
+        branch["properties"]["model_config"]["additionalProperties"] is False
+        for branch in evaluator_schema["oneOf"]
+    )
+    assert all(
+        set(branch["properties"]["model_config"]["required"])
+        == set(branch["properties"]["model_config"]["properties"])
+        for branch in evaluator_schema["oneOf"]
+    )
+    assert {
+        (
+            branch["properties"]["prompt_template_version"]["const"],
+            branch["properties"]["prompt_template_sha256"]["const"],
+            branch["properties"]["provider"]["const"],
         )
         for branch in evaluator_schema["oneOf"]
-    ] == [
-        (
-            EVALUATOR_PROMPT_TEMPLATE_V3_VERSION,
-            EVALUATOR_PROMPT_TEMPLATE_V3_SHA256,
-        ),
-        (EVALUATOR_PROMPT_TEMPLATE_VERSION, EVALUATOR_PROMPT_SHA),
-    ]
+    } == {
+        (EVALUATOR_PROMPT_TEMPLATE_V3_VERSION, EVALUATOR_PROMPT_TEMPLATE_V3_SHA256, "openai-compatible"),
+        (EVALUATOR_PROMPT_TEMPLATE_V4_VERSION, EVALUATOR_PROMPT_TEMPLATE_V4_SHA256, "openai-compatible"),
+        (EVALUATOR_PROMPT_TEMPLATE_VERSION, EVALUATOR_PROMPT_TEMPLATE_V5_SHA256, "openai-compatible"),
+        (EVALUATOR_PROMPT_TEMPLATE_V3_VERSION, EVALUATOR_PROMPT_TEMPLATE_V3_SHA256, "ollama"),
+        (EVALUATOR_PROMPT_TEMPLATE_V4_VERSION, EVALUATOR_PROMPT_TEMPLATE_V4_SHA256, "ollama"),
+        (EVALUATOR_PROMPT_TEMPLATE_VERSION, EVALUATOR_PROMPT_TEMPLATE_V5_SHA256, "ollama"),
+    }
 
     status_schema = json.loads(
         Path("schemas/pre-review-job-status-v0.schema.json").read_text(encoding="utf-8")

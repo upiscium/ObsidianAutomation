@@ -39,6 +39,8 @@ from obsidian_automation.openai_compatible import OpenAICompatibleProviderError
 from obsidian_automation.openai_evaluator import (
     ADAPTER_VERSION as EVALUATOR_ADAPTER_VERSION,
     EVALUATION_STRATEGY,
+    LEGACY_ADAPTER_VERSION as LEGACY_EVALUATOR_ADAPTER_VERSION,
+    LEGACY_EVALUATION_STRATEGY,
 )
 from obsidian_automation.openai_generator import (
     ADAPTER_VERSION as GENERATOR_ADAPTER_VERSION,
@@ -136,6 +138,8 @@ def _historical_evaluator_recipe_bytes() -> bytes:
     value = json.loads(_recipe_bytes())
     value["evaluator"]["prompt_template_version"] = EVALUATOR_PROMPT_TEMPLATE_V3_VERSION
     value["evaluator"]["prompt_template_sha256"] = EVALUATOR_PROMPT_TEMPLATE_V3_SHA256
+    value["evaluator"]["model_config"]["adapter_version"] = LEGACY_EVALUATOR_ADAPTER_VERSION
+    value["evaluator"]["model_config"]["strategy"] = LEGACY_EVALUATION_STRATEGY
     return (json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n").encode()
 
 

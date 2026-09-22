@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import re
+import time
 from dataclasses import dataclass
 from typing import Callable, Mapping
 from urllib.error import HTTPError, URLError
@@ -210,6 +211,39 @@ def _direct_opener():
     return build_opener(ProxyHandler({}), _NoRedirect())
 
 
+def _read_bounded_response(response: object, *, deadline: float) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    while total <= MAX_HTTP_RESPONSE_BYTES:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise OpenAICompatibleProviderError(
+                "OpenAI-compatible response read exceeded request timeout"
+            )
+        file_object = getattr(response, "fp", None)
+        raw = getattr(file_object, "raw", None)
+        socket = getattr(raw, "_sock", None)
+        if socket is not None and hasattr(socket, "settimeout"):
+            socket.settimeout(remaining)
+        try:
+            # Read one byte at a time so a buffered reader cannot spend the
+            # entire remaining deadline waiting to fill a large read request.
+            chunk = response.read(1)  # type: ignore[attr-defined]
+        except (TimeoutError, OSError) as exc:
+            raise OpenAICompatibleProviderError(
+                "OpenAI-compatible response read failed"
+            ) from exc
+        if not chunk:
+            break
+        if not isinstance(chunk, bytes):
+            raise OpenAICompatibleProviderError(
+                "OpenAI-compatible response body is not bytes"
+            )
+        chunks.append(chunk)
+        total += len(chunk)
+    return b"".join(chunks)
+
+
 def request_json(
     base_url: str,
     *,
@@ -251,6 +285,7 @@ def request_json(
         headers["Authorization"] = f"Bearer {api_key}"
 
     request = Request(root + path, data=data, headers=headers, method=method)
+    deadline = time.monotonic() + timeout_value
     try:
         response = _direct_opener().open(request, timeout=timeout_value)
     except HTTPError as exc:
@@ -263,7 +298,7 @@ def request_json(
         ) from exc
 
     with response:
-        raw = response.read(MAX_HTTP_RESPONSE_BYTES + 1)
+        raw = _read_bounded_response(response, deadline=deadline)
     if len(raw) > MAX_HTTP_RESPONSE_BYTES:
         raise OpenAICompatibleProviderError(
             f"OpenAI-compatible response exceeds {MAX_HTTP_RESPONSE_BYTES} bytes"

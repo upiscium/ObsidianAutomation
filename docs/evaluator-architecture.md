@@ -97,15 +97,17 @@ Current Evaluation Records use version 2 and bind:
 The current prompt/output identities are:
 
 ```text
-output: knowledge-note-evaluator-output-v3
-prompt: knowledge-note-evaluator-v4
-SHA:    9411d74c10cd8c3450be6b79f12c644433862a4b292a26db7444d32606ddea3b
+output: knowledge-note-evaluator-output-v4
+prompt: knowledge-note-evaluator-v5
+SHA:    ca9755c7b448be9bb2a42ab41ba182deb7b45785a4099d6ac85d854131a06291
 ```
 
-The historical prompt `knowledge-note-evaluator-v3` with SHA
-`bf6265294a4b346f12d1951f594760c80221380ccee9993c6ab866b6b1eca937` remains
-readable in recipes for audit. Current runtime preflight blocks that historical
-recipe before provider contact. Unknown and cross-paired prompt version/hash
+The historical prompts `knowledge-note-evaluator-v3` with SHA
+`bf6265294a4b346f12d1951f594760c80221380ccee9993c6ab866b6b1eca937` and
+`knowledge-note-evaluator-v4` with SHA
+`9411d74c10cd8c3450be6b79f12c644433862a4b292a26db7444d32606ddea3b` remain
+readable in recipes for audit. Current runtime preflight blocks historical
+recipes before provider contact. Unknown and cross-paired prompt version/hash
 identities are rejected.
 
 Assessment dimensions:
@@ -124,8 +126,10 @@ recommendation:
   proceed | manual_review | do_not_proceed
 ```
 
-Consistency `concern` requires structured conflict evidence. The model-facing
-shape omits the deterministic path:
+Consistency first returns bounded quote proposals. Each proposal is checked
+against the exact proposal and candidate bytes, then independently verified.
+Only a verifier `contradiction` becomes structured conflict evidence. The
+model-facing proposal shape omits the deterministic path:
 
 ```json
 {
@@ -133,19 +137,19 @@ shape omits the deterministic path:
   "findings": [{"detail": "..."}],
   "conflicts": [
     {
-      "proposal_claim": "...",
-      "candidate_claim": "...",
+      "proposal_quote": "...",
+      "candidate_quote": "...",
       "incompatibility": "..."
     }
   ]
 }
 ```
 
-Each conflict field is bounded to 1,000 characters and at most four conflicts
-are accepted. Deterministic code binds `candidate_path` to the exact supplied
-candidate after strict parsing. `pass` and `unknown` return an empty conflicts
-array; `concern` requires a non-empty array. `unknown` means the pair is
-insufficient or ambiguous. Different topic/scope,
+Each quote/evidence field is bounded to 1,000 characters and at most four
+proposals are accepted. Deterministic code binds `candidate_path` to the exact
+supplied candidate after strict parsing. A compatible proposal is removed; an
+unknown verifier yields `unknown` unless another proposal is contradictory.
+Different topic/scope,
 missing framework/details, omissions, extra detail, formatting, and style are
 not conflicts.
 

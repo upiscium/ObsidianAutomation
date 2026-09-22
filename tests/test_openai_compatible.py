@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+import obsidian_automation.openai_compatible as openai_compatible
 from obsidian_automation.artifact_lifecycle import ArtifactLifecycleError
 from obsidian_automation.openai_compatible import (
     OpenAICompatibleProviderError,
@@ -154,4 +155,37 @@ def test_chat_content_fails_closed_on_invalid_response(response) -> None:
             options={"temperature": 0},
             timeout=30,
             transport=transport,
+        )
+
+
+def test_request_json_enforces_total_response_read_timeout(monkeypatch) -> None:
+    class Response:
+        fp = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, size: int) -> bytes:
+            assert size == 1
+            return b"x"
+
+    class Opener:
+        def open(self, _request, timeout: float):
+            assert timeout == 1.0
+            return Response()
+
+    clock = iter((0.0, 0.5, 2.0))
+    monkeypatch.setattr(openai_compatible.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(openai_compatible, "_direct_opener", lambda: Opener())
+
+    with pytest.raises(OpenAICompatibleProviderError, match="response read exceeded"):
+        openai_compatible.request_json(
+            "https://llm.example.invalid/v1",
+            method="POST",
+            path="/chat/completions",
+            payload={"ok": True},
+            timeout=1.0,
         )

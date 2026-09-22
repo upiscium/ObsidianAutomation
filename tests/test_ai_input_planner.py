@@ -323,10 +323,10 @@ def test_plan_once_creates_mixed_context_and_one_durable_job(tmp_path: Path) -> 
     from obsidian_automation.pre_review_job import load_recipe
     recipe = load_recipe(state, str(status["recipe_sha256"]))
     assert recipe.evaluator.prompt_template_version == EVALUATOR_PROMPT_TEMPLATE_VERSION
-    assert recipe.evaluator.prompt_template_version == "knowledge-note-evaluator-v4"
+    assert recipe.evaluator.prompt_template_version == "knowledge-note-evaluator-v5"
     assert recipe.evaluator.prompt_template_sha256 == evaluator_prompt_sha256()
     assert recipe.evaluator.prompt_template_sha256 == (
-        "9411d74c10cd8c3450be6b79f12c644433862a4b292a26db7444d32606ddea3b"
+        "ca9755c7b448be9bb2a42ab41ba182deb7b45785a4099d6ac85d854131a06291"
     )
     assert dict(recipe.generator.model_config["options"]) == {
         "temperature": 0,
