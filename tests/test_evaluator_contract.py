@@ -436,8 +436,8 @@ def test_evaluator_provider_calls_are_bounded_by_wall_clock_budget(monkeypatch) 
             "findings": [],
             "conflicts": [
                 {
-                    "proposal_quote": "Proposal.",
-                    "candidate_quote": "Candidate.",
+                    "proposal_excerpt_id": "p0001",
+                    "candidate_excerpt_id": "c0001",
                     "incompatibility": "Incompatible.",
                 }
             ],
@@ -452,20 +452,8 @@ def test_evaluator_provider_calls_are_bounded_by_wall_clock_budget(monkeypatch) 
             "findings": [],
             "conflicts": [
                 {
-                    "proposal_quote": "Proposal.",
-                    "candidate_quote": "Candidate.",
-                    "incompatibility": "Incompatible.",
-                    "candidate_path": "11-Knowledge/model-authority.md",
-                }
-            ],
-        },
-        {
-            "assessment": "concern",
-            "findings": [],
-            "conflicts": [
-                {
-                    "proposal_quote": " ",
-                    "candidate_quote": "Candidate.",
+                    "proposal_excerpt_id": "x0001",
+                    "candidate_excerpt_id": "c0001",
                     "incompatibility": "Incompatible.",
                 }
             ],
@@ -475,8 +463,19 @@ def test_evaluator_provider_calls_are_bounded_by_wall_clock_budget(monkeypatch) 
             "findings": [],
             "conflicts": [
                 {
-                    "proposal_quote": "Proposal\rclaim",
-                    "candidate_quote": "Candidate.",
+                    "proposal_excerpt_id": "p0001",
+                    "candidate_excerpt_id": "p0001",
+                    "incompatibility": "Incompatible.",
+                }
+            ],
+        },
+        {
+            "assessment": "concern",
+            "findings": [],
+            "conflicts": [
+                {
+                    "proposal_excerpt_id": "p01",
+                    "candidate_excerpt_id": "c0001",
                     "incompatibility": "Incompatible.",
                 }
             ],
@@ -489,7 +488,6 @@ def test_consistency_parser_rejects_invalid_conflict_invariants(value: dict[str,
             json.dumps(value, separators=(",", ":")).encode(),
             dimension="consistency",
         )
-
 
 
 def test_consistency_parser_rejects_extra_wrong_duplicate_and_oversized_conflicts() -> None:
@@ -575,8 +573,6 @@ def test_consistency_parser_rejects_non_utf8_conflict_fields() -> None:
             b'{"assessment":"concern","findings":[],"conflicts":[{"proposal_excerpt_id":"p0001","candidate_excerpt_id":"c0001","incompatibility":"\\ud800"}]}',
             dimension="consistency",
         )
-
-@pytest.mark.parametrize("control", ["\r", "\x00", "\x7f", "\u0085"])
 
 def test_consistency_excerpt_builder_rejects_cr_source_content() -> None:
     with pytest.raises(ArtifactLifecycleError, match="LF line endings"):
