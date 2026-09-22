@@ -264,6 +264,110 @@ def _validated_candidate_path(value: object) -> str:
     return value
 
 
+def _exact_excerpt_chunks(text: str) -> tuple[str, ...]:
+    if not text:
+        return ()
+    chunks: list[str] = []
+    remaining = text
+    while len(remaining) > MAX_EVALUATOR_EXCERPT_CHARS:
+        limit = MAX_EVALUATOR_EXCERPT_CHARS
+        split_at = remaining.rfind("\n", 0, limit + 1)
+        delimiter_width = 1
+        if split_at <= 0:
+            split_at = remaining.rfind(" ", 0, limit + 1)
+        if split_at <= 0:
+            split_at = limit
+            delimiter_width = 0
+        chunk = remaining[:split_at]
+        if chunk:
+            chunks.append(chunk)
+        remaining = remaining[split_at + delimiter_width :]
+    if remaining:
+        chunks.append(remaining)
+    return tuple(chunks)
+
+
+def consistency_excerpts(
+    content: str,
+    *,
+    prefix: str,
+) -> tuple[ConsistencyExcerpt, ...]:
+    if not isinstance(content, str) or not content:
+        raise ArtifactLifecycleError("consistency excerpt source content is invalid")
+    if prefix not in {"p", "c"}:
+        raise ArtifactLifecycleError("consistency excerpt prefix is invalid")
+    if "\r" in content:
+        raise ArtifactLifecycleError(
+            "consistency excerpt source must use LF line endings"
+        )
+    try:
+        content.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ArtifactLifecycleError(
+            "consistency excerpt source must be UTF-8 encodable"
+        ) from exc
+
+    blocks: list[str] = []
+    current: list[str] = []
+    for line in content.splitlines(keepends=True):
+        if not line.strip(" \t\n"):
+            if current:
+                block = "".join(current).rstrip("\n")
+                if block:
+                    blocks.extend(_exact_excerpt_chunks(block))
+                current = []
+            continue
+        current.append(line)
+    if current:
+        block = "".join(current).rstrip("\n")
+        if block:
+            blocks.extend(_exact_excerpt_chunks(block))
+
+    if len(blocks) > MAX_EVALUATOR_EXCERPTS:
+        raise ArtifactLifecycleError(
+            f"consistency excerpt table exceeds {MAX_EVALUATOR_EXCERPTS} items"
+        )
+
+    return tuple(
+        ConsistencyExcerpt(
+            excerpt_id=f"{prefix}{index:04d}",
+            text=text,
+        )
+        for index, text in enumerate(blocks, start=1)
+    )
+
+
+def _excerpt_payload(excerpts: Sequence[ConsistencyExcerpt]) -> list[dict[str, str]]:
+    return [
+        {
+            "id": excerpt.excerpt_id,
+            "text": excerpt.text,
+        }
+        for excerpt in excerpts
+    ]
+
+
+def _excerpt_lookup(
+    excerpts: Sequence[ConsistencyExcerpt],
+    *,
+    prefix: str,
+) -> dict[str, str]:
+    lookup: dict[str, str] = {}
+    for excerpt in excerpts:
+        expected_prefix = excerpt.excerpt_id[:1]
+        if expected_prefix != prefix:
+            raise ArtifactLifecycleError("consistency excerpt table prefix mismatch")
+        if (
+            len(excerpt.excerpt_id) != MAX_EVALUATOR_EXCERPT_ID_CHARS
+            or not excerpt.excerpt_id[1:].isdigit()
+        ):
+            raise ArtifactLifecycleError("consistency excerpt identifier is invalid")
+        if excerpt.excerpt_id in lookup:
+            raise ArtifactLifecycleError("consistency excerpt identifiers duplicate")
+        lookup[excerpt.excerpt_id] = excerpt.text
+    return lookup
+
+
 def _conflict_field_schema() -> dict[str, object]:
     return {
         "type": "string",
