@@ -1417,11 +1417,12 @@ def render_evaluator_prompts(
     evaluation_context: EvaluationContext,
 ) -> tuple[EvaluatorPrompt, ...]:
     proposal = _proposal_payload(target_path, proposal_content)
+    proposal_excerpts = consistency_excerpts(proposal_content, prefix="p")
     template_sha = prompt_template_sha256()
     prompts: list[EvaluatorPrompt] = []
 
     groundedness_payload = {
-        "payload_version": 5,
+        "payload_version": 6,
         "dimension": "groundedness",
         "proposal": proposal,
         "generation_input": {
@@ -1445,13 +1446,29 @@ def render_evaluator_prompts(
     for candidate in evaluation_context.candidates:
         candidate_payload = _candidate_payload(candidate)
         candidate_path = candidate_payload["path"]
+        candidate_excerpts = consistency_excerpts(candidate.content, prefix="c")
         for dimension in _PAIRWISE_DIMENSIONS:
-            payload = {
-                "payload_version": 5,
-                "dimension": dimension,
-                "proposal": proposal,
-                "evaluation_candidate": candidate_payload,
-            }
+            if dimension == "consistency":
+                payload = {
+                    "payload_version": 6,
+                    "dimension": dimension,
+                    "proposal": {
+                        "target_path": target_path,
+                        "excerpts": _excerpt_payload(proposal_excerpts),
+                    },
+                    "evaluation_candidate": {
+                        "path": candidate_path,
+                        "content_sha256": candidate.content_sha256,
+                        "excerpts": _excerpt_payload(candidate_excerpts),
+                    },
+                }
+            else:
+                payload = {
+                    "payload_version": 6,
+                    "dimension": dimension,
+                    "proposal": proposal,
+                    "evaluation_candidate": candidate_payload,
+                }
             prompts.append(
                 EvaluatorPrompt(
                     dimension=dimension,
@@ -1480,7 +1497,7 @@ def render_consistency_verifier_prompt(
     path = _validated_candidate_path(candidate_path)
     normalized = _validated_conflict_proposal(proposal)
     payload = {
-        "payload_version": 5,
+        "payload_version": 6,
         "dimension": "consistency_verifier",
         "proposal_quote": normalized.proposal_quote,
         "candidate_quote": normalized.candidate_quote,
