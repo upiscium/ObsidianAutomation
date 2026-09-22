@@ -738,6 +738,68 @@ def _validated_conflict_proposals(
     return tuple(normalized)
 
 
+def _validated_bound_conflict_proposal(
+    value: object,
+) -> BoundConsistencyConflictProposal:
+    if not isinstance(value, BoundConsistencyConflictProposal):
+        raise ArtifactLifecycleError(
+            "bound evaluator conflict proposal has an invalid type"
+        )
+    return BoundConsistencyConflictProposal(
+        proposal_quote=_validated_conflict_quote(
+            value.proposal_quote,
+            field="proposal_quote",
+        ),
+        candidate_quote=_validated_conflict_quote(
+            value.candidate_quote,
+            field="candidate_quote",
+        ),
+        incompatibility=_validated_conflict_field(
+            value.incompatibility,
+            field="incompatibility",
+        ),
+    )
+
+
+def _validated_bound_conflict_proposals(
+    proposals: object,
+    *,
+    assessment: str,
+) -> tuple[BoundConsistencyConflictProposal, ...]:
+    if not isinstance(proposals, tuple):
+        raise ArtifactLifecycleError("bound evaluator conflict proposals must be a tuple")
+    if len(proposals) > MAX_EVALUATOR_CONFLICTS:
+        raise ArtifactLifecycleError(
+            f"bound evaluator conflict proposals exceed {MAX_EVALUATOR_CONFLICTS} items"
+        )
+
+    normalized: list[BoundConsistencyConflictProposal] = []
+    seen: set[tuple[str, str, str]] = set()
+    for raw_proposal in proposals:
+        proposal = _validated_bound_conflict_proposal(raw_proposal)
+        identity = (
+            proposal.proposal_quote,
+            proposal.candidate_quote,
+            proposal.incompatibility,
+        )
+        if identity in seen:
+            raise ArtifactLifecycleError(
+                "bound evaluator conflict proposals must not contain duplicates"
+            )
+        seen.add(identity)
+        normalized.append(proposal)
+
+    if assessment == "concern" and not normalized:
+        raise ArtifactLifecycleError(
+            "consistency evaluator concern requires at least one bound conflict proposal"
+        )
+    if assessment in {"pass", "unknown"} and normalized:
+        raise ArtifactLifecycleError(
+            "consistency evaluator pass or unknown must not contain bound conflict proposals"
+        )
+    return tuple(normalized)
+
+
 def bind_consistency_proposals(
     output: DimensionEvaluatorOutput,
     *,
@@ -849,7 +911,7 @@ def finalize_consistency_candidate(
     path = _validated_candidate_path(proposals.candidate_path)
     if proposals.assessment not in _ASSESSMENT_VALUES["consistency"]:
         raise ArtifactLifecycleError("consistency proposer assessment is invalid")
-    normalized_proposals = _validated_conflict_proposals(
+    normalized_proposals = _validated_bound_conflict_proposals(
         proposals.proposals,
         assessment=proposals.assessment,
     )
