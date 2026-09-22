@@ -10,6 +10,10 @@ from obsidian_automation.artifact_lifecycle import ArtifactLifecycleError
 from obsidian_automation.context_bundle import ContextBundle, store_context_bundle
 from obsidian_automation.ollama_evaluator import ADAPTER_VERSION as OLLAMA_EVALUATOR_ADAPTER_VERSION
 from obsidian_automation.ollama_generator import ADAPTER_VERSION as OLLAMA_GENERATOR_ADAPTER_VERSION
+from obsidian_automation.generator_contract import (
+    PROMPT_TEMPLATE_VERSION,
+    prompt_template_sha256,
+)
 from obsidian_automation.pre_review_job import (
     PreReviewJobError,
     claim_next_attempt,
@@ -26,7 +30,7 @@ from obsidian_automation.pre_review_job import (
 
 
 REV = "a" * 40
-PROMPT_SHA = "b" * 64
+PROMPT_SHA = prompt_template_sha256()
 
 
 def _state(tmp_path: Path) -> tuple[Path, str]:
@@ -45,7 +49,7 @@ def _state(tmp_path: Path) -> tuple[Path, str]:
 def _recipe(*, generator_model: str = "gemma3:12b") -> dict[str, object]:
     component = {
         "implementation_revision": REV,
-        "prompt_template_version": "knowledge-note-generator-v0",
+        "prompt_template_version": PROMPT_TEMPLATE_VERSION,
         "prompt_template_sha256": PROMPT_SHA,
         "provider": "openai-compatible",
         "model_identifier": generator_model,
@@ -164,7 +168,7 @@ def test_recipe_accepts_native_ollama_digest_binding_and_role_thinking() -> None
     digest = "d" * 64
     value["generator"] = {
         "implementation_revision": REV,
-        "prompt_template_version": "knowledge-note-generator-v0",
+        "prompt_template_version": PROMPT_TEMPLATE_VERSION,
         "prompt_template_sha256": PROMPT_SHA,
         "provider": "ollama",
         "model_identifier": "gemma4:12b",

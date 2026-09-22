@@ -16,14 +16,20 @@ from .evaluation_artifact import (
     load_evaluation_record,
     store_evaluation_context,
 )
-from .evaluator_contract import prompt_template_sha256 as evaluator_prompt_sha256
+from .evaluator_contract import (
+    EVALUATOR_PROMPT_TEMPLATE_VERSION,
+    prompt_template_sha256 as evaluator_prompt_sha256,
+)
 from .generation_artifact import load_generation_record
 from .human_projection import (
     emit_evaluation_and_review_projections,
     emit_generation_projection,
     emit_validation_projection,
 )
-from .generator_contract import prompt_template_sha256 as generator_prompt_sha256
+from .generator_contract import (
+    PROMPT_TEMPLATE_VERSION,
+    prompt_template_sha256 as generator_prompt_sha256,
+)
 from .knowledge_index import build_knowledge_index, store_knowledge_index
 from .knowledge_validator import validate_proposal
 from .openai_compatible import (
@@ -83,11 +89,14 @@ def _component_preflight(
     component: RecipeComponent,
     *,
     deployed_revision: str,
+    expected_prompt_version: str,
     expected_prompt_sha256: str,
     role: str,
 ) -> None:
     if deployed_revision != component.implementation_revision:
         raise PreReviewJobError(f"{role} deployed revision does not match recipe")
+    if component.prompt_template_version != expected_prompt_version:
+        raise PreReviewJobError(f"{role} prompt version does not match recipe")
     if component.prompt_template_sha256 != expected_prompt_sha256:
         raise PreReviewJobError(f"{role} prompt hash does not match recipe")
 
@@ -174,6 +183,7 @@ def run_generator_worker(
         _component_preflight(
             component,
             deployed_revision=deployed_revision,
+            expected_prompt_version=PROMPT_TEMPLATE_VERSION,
             expected_prompt_sha256=generator_prompt_sha256(),
             role="generator",
         )
@@ -460,6 +470,7 @@ def run_evaluator_worker(
         _component_preflight(
             component,
             deployed_revision=deployed_revision,
+            expected_prompt_version=EVALUATOR_PROMPT_TEMPLATE_VERSION,
             expected_prompt_sha256=evaluator_prompt_sha256(),
             role="evaluator",
         )

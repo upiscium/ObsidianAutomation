@@ -12,6 +12,10 @@ from obsidian_automation.artifact_lifecycle import (
     ensure_artifact_layout,
 )
 from obsidian_automation.context_bundle import ContextBundle, store_context_bundle
+from obsidian_automation.generator_contract import (
+    PROMPT_TEMPLATE_VERSION,
+    prompt_template_sha256 as generator_prompt_sha256,
+)
 from obsidian_automation.pre_review_job import (
     complete_attempt,
     job_status,
@@ -25,6 +29,7 @@ from obsidian_automation.production_orchestrator import ProductionOrchestrationE
 
 REV = "a" * 40
 PROMPT_SHA = "b" * 64
+GENERATOR_PROMPT_SHA = generator_prompt_sha256()
 MUTATION = "3" * 64
 EVALUATION = "7" * 64
 
@@ -35,8 +40,8 @@ def _recipe():
         "pipeline": "knowledge-pre-review-v0",
         "generator": {
             "implementation_revision": REV,
-            "prompt_template_version": "knowledge-note-generator-v0",
-            "prompt_template_sha256": PROMPT_SHA,
+            "prompt_template_version": PROMPT_TEMPLATE_VERSION,
+            "prompt_template_sha256": GENERATOR_PROMPT_SHA,
             "provider": "openai-compatible",
             "model_identifier": "generator",
             "model_revision": "identifier:generator",

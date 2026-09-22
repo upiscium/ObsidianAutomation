@@ -1,7 +1,8 @@
 # Generated Knowledge Note layout v1
 
 New proposals use `knowledge-note-layout-v1`. The semantic output schema and
-prompt remain `knowledge-note-semantic-output-v0` and `knowledge-note-generator-v0`.
+prompt remain `knowledge-note-semantic-output-v0` and
+`knowledge-note-generator-v1`.
 This rendering change does not require the LLM to generate application controls.
 
 ## Assembly

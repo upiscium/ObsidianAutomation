@@ -51,7 +51,7 @@ Schema:
   "proposal_sha256": "<64 lowercase hex>",
   "generator": {
     "implementation_revision": "<generator implementation revision>",
-    "prompt_template_version": "knowledge-note-generator-v0",
+    "prompt_template_version": "knowledge-note-generator-v1",
     "prompt_template_sha256": "<64 lowercase hex>"
   },
   "model": {

@@ -71,9 +71,15 @@ The immutable recipe pins only bounded processing identity:
 - Evaluator prompt version/hash;
 - Evaluator provider/model identity and model configuration.
 
-Recipe v0 supports only the currently deployed pipeline contracts:
+Recipe v0 stores the immutable processing contracts. New recipes use the current
+Generator prompt identity, while the exact historical Generator v0 identity is
+also accepted for readability and audit. Historical Generator v0 recipes remain
+bound to their stored version/hash and are blocked by current runtime preflight
+before provider contact rather than being silently reinterpreted as v1.
 
-- Generator prompt `knowledge-note-generator-v0`;
+The currently executable pipeline contracts are:
+
+- Generator prompt `knowledge-note-generator-v1`;
 - Generator provider `openai-compatible`;
 - Generator adapter `openai-chat-completions-json-schema-v1`;
 - Validator policy `knowledge-note-v0`;
