@@ -99,7 +99,7 @@ The current prompt/output identities are:
 ```text
 output: knowledge-note-evaluator-output-v3
 prompt: knowledge-note-evaluator-v4
-SHA:    64be14bb5d17e351d9fb694dd17f9764a8a2e0daefa1f44946a5349ecec2aebd
+SHA:    9411d74c10cd8c3450be6b79f12c644433862a4b292a26db7444d32606ddea3b
 ```
 
 The historical prompt `knowledge-note-evaluator-v3` with SHA
@@ -143,8 +143,9 @@ shape omits the deterministic path:
 
 Each conflict field is bounded to 1,000 characters and at most four conflicts
 are accepted. Deterministic code binds `candidate_path` to the exact supplied
-candidate after strict parsing. `pass` and `unknown` have no conflicts;
-`unknown` means the pair is insufficient or ambiguous. Different topic/scope,
+candidate after strict parsing. `pass` and `unknown` return an empty conflicts
+array; `concern` requires a non-empty array. `unknown` means the pair is
+insufficient or ambiguous. Different topic/scope,
 missing framework/details, omissions, extra detail, formatting, and style are
 not conflicts.
 

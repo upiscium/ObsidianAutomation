@@ -32,7 +32,7 @@ The current prompt identity is:
 
 ```text
 knowledge-note-evaluator-v4
-64be14bb5d17e351d9fb694dd17f9764a8a2e0daefa1f44946a5349ecec2aebd
+9411d74c10cd8c3450be6b79f12c644433862a4b292a26db7444d32606ddea3b
 ```
 
 The exact historical identity `knowledge-note-evaluator-v3` / `bf6265294a4b346f12d1951f594760c80221380ccee9993c6ab866b6b1eca937` remains readable in recipes for audit. Current runtime preflight blocks that historical recipe before provider contact; unknown and cross-paired prompt version/hash identities are rejected.
@@ -118,10 +118,11 @@ the assessment is `concern`:
 ```
 
 Each conflict field is bounded to 1,000 characters and at most four conflicts
-are accepted. A Consistency `pass` or `unknown` response has no conflicts;
-`unknown` is used when the pair is insufficient or ambiguous. Different topic
-or scope, missing framework/details, omissions, extra detail, formatting, and
-style are not conflicts.
+are accepted. A Consistency `pass` or `unknown` response returns
+`"conflicts": []`; `concern` requires a non-empty array. `unknown` is used
+when the pair is insufficient or ambiguous. Different topic or scope, missing
+framework/details, omissions, extra detail, formatting, and style are not
+conflicts.
 
 The model never controls dimension, candidate identity, candidate path,
 recommendation, model identity, or aggregation policy. The current output

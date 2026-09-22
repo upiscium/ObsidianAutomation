@@ -168,7 +168,7 @@ Human reviewer
 Evaluator assesses groundedness, redundancy, and consistency using output
 contract `knowledge-note-evaluator-output-v3` and current prompt
 `knowledge-note-evaluator-v4` (SHA
-`64be14bb5d17e351d9fb694dd17f9764a8a2e0daefa1f44946a5349ecec2aebd`). Its
+`9411d74c10cd8c3450be6b79f12c644433862a4b292a26db7444d32606ddea3b`). Its
 recommendation is advisory machine output. Consistency concerns carry bounded
 structured `proposal_claim`, `candidate_claim`, and `incompatibility` evidence;
 deterministic code binds each `candidate_path` outside the model. Current

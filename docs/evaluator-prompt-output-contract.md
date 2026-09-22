@@ -49,7 +49,7 @@ The current model-facing output contract is:
 }
 ```
 
-For a Consistency pass, the model may also return structured conflict evidence. A concern must contain at least one conflict; a pass or unknown result must not contain conflicts:
+For a Consistency pass, the model always returns a `conflicts` array. A concern must contain at least one conflict; a pass or unknown result must return an empty array:
 
 ```json
 {
@@ -82,7 +82,7 @@ knowledge-note-evaluator-v4
 The current prompt-template SHA-256 is:
 
 ```text
-64be14bb5d17e351d9fb694dd17f9764a8a2e0daefa1f44946a5349ecec2aebd
+9411d74c10cd8c3450be6b79f12c644433862a4b292a26db7444d32606ddea3b
 ```
 
 The historical, readable prompt identity is an exact version/hash pair:
@@ -171,7 +171,7 @@ Consistency asks only whether material factual or procedural claims explicitly c
 }
 ```
 
-Each of `proposal_claim`, `candidate_claim`, and `incompatibility` is a non-empty, trimmed string of at most 1,000 characters. There may be at most four conflicts, with no duplicate evidence triples. `pass` and `unknown` have no conflicts: the model omits `conflicts` and the parser rejects conflicts on either assessment. `unknown` remains the result when the supplied pair is insufficient or ambiguous to judge.
+Each of `proposal_claim`, `candidate_claim`, and `incompatibility` is a non-empty, trimmed string of at most 1,000 characters. There may be at most four conflicts, with no duplicate evidence triples. `pass` and `unknown` have no conflicts: the model returns `"conflicts": []`, while the parser rejects a non-empty array on either assessment. `concern` with an empty array is also rejected. `unknown` remains the result when the supplied pair is insufficient or ambiguous to judge.
 
 The following are not conflicts by themselves: different topic or scope, a missing framework or detail, omissions, extra detail, formatting, and style. Those differences can coexist; a conflict requires the explicit material incompatibility above.
 

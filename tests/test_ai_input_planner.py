@@ -326,7 +326,7 @@ def test_plan_once_creates_mixed_context_and_one_durable_job(tmp_path: Path) -> 
     assert recipe.evaluator.prompt_template_version == "knowledge-note-evaluator-v4"
     assert recipe.evaluator.prompt_template_sha256 == evaluator_prompt_sha256()
     assert recipe.evaluator.prompt_template_sha256 == (
-        "64be14bb5d17e351d9fb694dd17f9764a8a2e0daefa1f44946a5349ecec2aebd"
+        "9411d74c10cd8c3450be6b79f12c644433862a4b292a26db7444d32606ddea3b"
     )
     assert dict(recipe.generator.model_config["options"]) == {
         "temperature": 0,

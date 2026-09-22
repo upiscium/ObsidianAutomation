@@ -105,8 +105,8 @@ assessment:
 - unknown: the supplied pair is too ambiguous or incomplete to judge.
 
 conflicts:
-- For concern, conflicts is required and must be non-empty. Each conflict must contain proposal_claim, candidate_claim, and incompatibility.
-- For pass or unknown, omit conflicts. Do not report a conflict merely because of a different topic or scope, a missing framework or detail, an omission, extra detail, formatting, or stylistic differences.
+- Always return conflicts as an array. For concern, it is required and must be non-empty. Each conflict must contain proposal_claim, candidate_claim, and incompatibility.
+- For pass or unknown, return conflicts as an empty array. Do not report a conflict merely because of a different topic or scope, a missing framework or detail, an omission, extra detail, formatting, or stylistic differences.
 
 The following are not conflicts: different topic/scope, missing framework/details, omission, extra detail, formatting, and stylistic differences. A conflict requires an explicit material incompatibility that cannot both be true or followed in the same relevant context.
 Do not assess groundedness against the original generation input in this pass.
@@ -204,7 +204,7 @@ def _conflict_field_schema() -> dict[str, object]:
 def _conflict_schema() -> dict[str, object]:
     return {
         "type": "array",
-        "minItems": 1,
+        "minItems": 0,
         "maxItems": MAX_EVALUATOR_CONFLICTS,
         "items": {
             "type": "object",
@@ -244,14 +244,18 @@ def _output_schema_for(dimension: str) -> dict[str, object]:
         },
     }
     if dimension == "consistency":
-        # The assessment-dependent requiredness is intentionally enforced by
-        # the parser below.  Ollama-compatible schemas do not rely on
-        # conditional JSON Schema features for this contract.
+        # Assessment-dependent semantics are intentionally enforced by the
+        # parser below.  Ollama-compatible schemas do not rely on conditional
+        # JSON Schema features, and strict OpenAI-compatible schemas require
+        # every declared property to be listed as required.
         properties["conflicts"] = _conflict_schema()
+    required = ["assessment", "findings"]
+    if dimension == "consistency":
+        required.append("conflicts")
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["assessment", "findings"],
+        "required": required,
         "properties": properties,
     }
 
@@ -476,46 +480,41 @@ def parse_dimension_evaluator_output(
 
     conflicts: tuple[ConsistencyConflict, ...] = ()
     if dimension == "consistency":
-        if assessment == "concern":
-            if "conflicts" not in value:
-                raise ArtifactLifecycleError(
-                    "consistency evaluator concern requires conflicts"
-                )
-            raw_conflicts = value["conflicts"]
-            if not isinstance(raw_conflicts, list):
-                raise ArtifactLifecycleError("consistency evaluator conflicts are invalid")
-            if len(raw_conflicts) > MAX_EVALUATOR_CONFLICTS:
-                raise ArtifactLifecycleError(
-                    f"consistency evaluator conflicts exceed {MAX_EVALUATOR_CONFLICTS} items"
-                )
-            parsed_conflicts: list[ConsistencyConflict] = []
-            for item in raw_conflicts:
-                if not isinstance(item, dict) or set(item) != {
-                    "proposal_claim",
-                    "candidate_claim",
-                    "incompatibility",
-                }:
-                    raise ArtifactLifecycleError(
-                        "consistency evaluator conflict properties do not match contract"
-                    )
-                parsed_conflicts.append(
-                    ConsistencyConflict(
-                        proposal_claim=item["proposal_claim"],
-                        candidate_claim=item["candidate_claim"],
-                        incompatibility=item["incompatibility"],
-                    )
-                )
-            conflicts = _validated_dimension_conflicts(
-                dimension,
-                assessment,
-                tuple(parsed_conflicts),
-                require_bound_path=False,
-                require_concern_evidence=True,
-            )
-        elif "conflicts" in value:
+        if "conflicts" not in value:
             raise ArtifactLifecycleError(
-                "consistency evaluator pass or unknown must not contain conflicts"
+                "consistency evaluator output requires conflicts"
             )
+        raw_conflicts = value["conflicts"]
+        if not isinstance(raw_conflicts, list):
+            raise ArtifactLifecycleError("consistency evaluator conflicts are invalid")
+        if len(raw_conflicts) > MAX_EVALUATOR_CONFLICTS:
+            raise ArtifactLifecycleError(
+                f"consistency evaluator conflicts exceed {MAX_EVALUATOR_CONFLICTS} items"
+            )
+        parsed_conflicts: list[ConsistencyConflict] = []
+        for item in raw_conflicts:
+            if not isinstance(item, dict) or set(item) != {
+                "proposal_claim",
+                "candidate_claim",
+                "incompatibility",
+            }:
+                raise ArtifactLifecycleError(
+                    "consistency evaluator conflict properties do not match contract"
+                )
+            parsed_conflicts.append(
+                ConsistencyConflict(
+                    proposal_claim=item["proposal_claim"],
+                    candidate_claim=item["candidate_claim"],
+                    incompatibility=item["incompatibility"],
+                )
+            )
+        conflicts = _validated_dimension_conflicts(
+            dimension,
+            assessment,
+            tuple(parsed_conflicts),
+            require_bound_path=False,
+            require_concern_evidence=True,
+        )
     return DimensionEvaluatorOutput(
         dimension=dimension,
         assessment=assessment,
@@ -794,7 +793,7 @@ def prompt_template_sha256() -> str:
 
 
 EVALUATOR_PROMPT_TEMPLATE_V4_SHA256 = (
-    "64be14bb5d17e351d9fb694dd17f9764a8a2e0daefa1f44946a5349ecec2aebd"
+    "9411d74c10cd8c3450be6b79f12c644433862a4b292a26db7444d32606ddea3b"
 )
 
 

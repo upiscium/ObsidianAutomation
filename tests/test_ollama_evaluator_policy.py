@@ -368,7 +368,11 @@ def _evaluator_transport(calls: list[dict[str, object]]):
             "message": {
                 "role": "assistant",
                 "content": json.dumps(
-                    {"assessment": assessment, "findings": []},
+                    {
+                        "assessment": assessment,
+                        "findings": [],
+                        **({"conflicts": []} if dimension == "consistency" else {}),
+                    },
                     separators=(",", ":"),
                 ),
             },

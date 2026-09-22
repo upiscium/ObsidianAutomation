@@ -86,7 +86,7 @@ The currently executable pipeline contracts are:
 - Evaluation Context policy `bm25-topk-recall-v0` with `top_k=5`;
 - Evaluator output contract `knowledge-note-evaluator-output-v3`;
 - Evaluator prompt `knowledge-note-evaluator-v4`;
-- Evaluator prompt SHA `64be14bb5d17e351d9fb694dd17f9764a8a2e0daefa1f44946a5349ecec2aebd`;
+- Evaluator prompt SHA `9411d74c10cd8c3450be6b79f12c644433862a4b292a26db7444d32606ddea3b`;
 - Evaluator provider `openai-compatible`;
 - Evaluator adapter `openai-evaluator-chat-completions-json-schema-v1`;
 - Evaluator strategy `groundedness-plus-pairwise-candidates-v0`.

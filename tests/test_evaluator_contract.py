@@ -176,6 +176,8 @@ def test_consistency_conflict_path_is_bound_only_from_external_candidate_path() 
     "value",
     [
         {"assessment": "concern", "findings": []},
+        {"assessment": "pass", "findings": []},
+        {"assessment": "unknown", "findings": []},
         {
             "assessment": "unknown",
             "findings": [],
@@ -186,6 +188,11 @@ def test_consistency_conflict_path_is_bound_only_from_external_candidate_path() 
                     "incompatibility": "Incompatible.",
                 }
             ],
+        },
+        {
+            "assessment": "concern",
+            "findings": [],
+            "conflicts": [],
         },
         {
             "assessment": "concern",
@@ -647,21 +654,23 @@ def test_dimension_schemas_are_minimal_ollama_compatible_and_authority_free() ->
     for dimension, values in expected_sets.items():
         schema = output_schema(dimension)
         assert schema["additionalProperties"] is False
-        assert set(schema["required"]) == {"assessment", "findings"}
+        assert set(schema["required"]) == set(schema["properties"])
         assert "recommendation" not in schema["properties"]
         assert "dimension" not in schema["properties"]
         assert set(schema["properties"]["assessment"]["enum"]) == values
         items = schema["properties"]["findings"]["items"]
         assert items["type"] == "object"
         assert items["additionalProperties"] is False
+        assert set(items["required"]) == set(items["properties"])
         assert items["required"] == ["detail"]
         if dimension == "consistency":
             conflicts = schema["properties"]["conflicts"]
             assert conflicts["type"] == "array"
-            assert conflicts["minItems"] == 1
+            assert conflicts["minItems"] == 0
             assert conflicts["maxItems"] == MAX_EVALUATOR_CONFLICTS
             conflict_item = conflicts["items"]
             assert conflict_item["additionalProperties"] is False
+            assert set(conflict_item["required"]) == set(conflict_item["properties"])
             assert set(conflict_item["required"]) == {
                 "proposal_claim",
                 "candidate_claim",
@@ -711,6 +720,8 @@ def test_consistency_prompt_defines_explicit_incompatibility_not_scope_differenc
 
     assert "explicit material factual or procedural incompatibility" in prompt.system
     assert "cannot both be true or followed in the same relevant context" in prompt.system
+    assert "Always return conflicts as an array" in prompt.system
+    assert "return conflicts as an empty array" in prompt.system
     for phrase in (
         "different topic/scope",
         "missing framework/details",
@@ -763,7 +774,7 @@ def test_production_like_scope_difference_is_pass_and_direct_procedure_conflict_
     )
 
     scope_difference = parse_dimension_evaluator_output(
-        b'{"assessment":"pass","findings":[]}',
+        b'{"assessment":"pass","findings":[],"conflicts":[]}',
         dimension="consistency",
     )
     assert scope_difference.assessment == "pass"
@@ -790,7 +801,7 @@ def test_production_like_scope_difference_is_pass_and_direct_procedure_conflict_
     assert len(direct_conflict.conflicts) == 1
 
     unknown = parse_dimension_evaluator_output(
-        b'{"assessment":"unknown","findings":[]}',
+        b'{"assessment":"unknown","findings":[],"conflicts":[]}',
         dimension="consistency",
     )
     assert unknown.assessment == "unknown"

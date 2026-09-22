@@ -142,7 +142,7 @@ def _good_outputs() -> dict[str, dict[str, object]]:
             "assessment": "likely",
             "findings": [{"detail": "The proposal covers the same core procedure."}],
         },
-        "consistency": {"assessment": "pass", "findings": []},
+        "consistency": {"assessment": "pass", "findings": [], "conflicts": []},
     }
 
 
@@ -243,11 +243,13 @@ def test_near_duplicate_e2e_uses_pairwise_candidate_passes_and_persists_likely(t
         assert "score" not in user_payload["evaluation_candidate"]
 
     consistency_schema = chat_calls[2]["payload"]["format"]
+    assert set(consistency_schema["required"]) == set(consistency_schema["properties"])
     assert set(consistency_schema["properties"]["conflicts"]["items"]["required"]) == {
         "proposal_claim",
         "candidate_claim",
         "incompatibility",
     }
+    assert consistency_schema["properties"]["conflicts"]["minItems"] == 0
     assert "candidate_path" not in json.dumps(consistency_schema)
 
 
