@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import unicodedata
 from dataclasses import dataclass
 from typing import Mapping, Sequence
 
@@ -12,16 +13,29 @@ from .artifact_lifecycle import (
 )
 from .context_bundle import ContextBundle
 from .evaluation_artifact import EvaluationAssessment, EvaluationCandidate, EvaluationContext
+from .evaluator_conflict import ConsistencyConflict
 
 
-EVALUATOR_OUTPUT_CONTRACT_VERSION = "knowledge-note-evaluator-output-v2"
-EVALUATOR_PROMPT_TEMPLATE_VERSION = "knowledge-note-evaluator-v3"
+EVALUATOR_OUTPUT_CONTRACT_VERSION = "knowledge-note-evaluator-output-v3"
+EVALUATOR_PROMPT_TEMPLATE_VERSION = "knowledge-note-evaluator-v4"
+EVALUATOR_PROMPT_TEMPLATE_V3_VERSION = "knowledge-note-evaluator-v3"
+EVALUATOR_PROMPT_TEMPLATE_V3_SHA256 = (
+    "bf6265294a4b346f12d1951f594760c80221380ccee9993c6ab866b6b1eca937"
+)
+# The shorter names mirror the generator contract's historical identity
+# constants and make the compatibility pair easy to consume.
+PROMPT_TEMPLATE_V3_VERSION = EVALUATOR_PROMPT_TEMPLATE_V3_VERSION
+PROMPT_TEMPLATE_V3_SHA256 = EVALUATOR_PROMPT_TEMPLATE_V3_SHA256
 RECOMMENDATION_POLICY_VERSION = "conservative-triad-v0"
 MAX_EVALUATOR_OUTPUT_BYTES = 32 * 1024
 MAX_EVALUATOR_FINDINGS_PER_DIMENSION = 4
 MAX_EVALUATOR_FINDING_CHARS = 2048
 MAX_EVALUATOR_FINDING_DETAIL_CHARS = 1000
 MAX_EVALUATOR_CANDIDATE_PATH_CHARS = 1024
+MAX_EVALUATOR_CONFLICTS_PER_DIMENSION = 4
+MAX_EVALUATOR_CONFLICTS = MAX_EVALUATOR_CONFLICTS_PER_DIMENSION
+MAX_EVALUATOR_CONFLICT_FIELD_CHARS = 1000
+_WINDOWS_FORBIDDEN = set('<>:"|?*')
 
 _DIMENSIONS = ("groundedness", "redundancy", "consistency")
 _PAIRWISE_DIMENSIONS = ("redundancy", "consistency")
@@ -86,11 +100,15 @@ This pass evaluates consistency against exactly one evaluation_candidate.
 Compare the proposal only with that candidate for explicit material incompatibilities.
 
 assessment:
-- concern: the proposal makes a factual or procedural claim that materially conflicts with the candidate.
+- concern: the proposal and candidate contain an explicit material factual or procedural incompatibility that cannot both be true or followed in the same relevant context. For concern, return one or more structured conflicts.
 - pass: no material conflict is present between the proposal and candidate.
 - unknown: the supplied pair is too ambiguous or incomplete to judge.
 
-Missing details, different scope, formatting, or extra detail alone are not contradictions.
+conflicts:
+- For concern, conflicts is required and must be non-empty. Each conflict must contain proposal_claim, candidate_claim, and incompatibility.
+- For pass or unknown, omit conflicts. Do not report a conflict merely because of a different topic or scope, a missing framework or detail, an omission, extra detail, formatting, or stylistic differences.
+
+The following are not conflicts: different topic/scope, missing framework/details, omission, extra detail, formatting, and stylistic differences. A conflict requires an explicit material incompatibility that cannot both be true or followed in the same relevant context.
 Do not assess groundedness against the original generation input in this pass.
 Do not discuss other notes or infer that other candidates exist.
 """,
@@ -102,6 +120,7 @@ class DimensionEvaluatorOutput:
     dimension: str
     assessment: str
     findings: tuple[str, ...]
+    conflicts: tuple[ConsistencyConflict, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -110,6 +129,7 @@ class CandidateEvaluatorOutput:
     candidate_path: str
     assessment: str
     findings: tuple[str, ...]
+    conflicts: tuple[ConsistencyConflict, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -118,6 +138,7 @@ class EvaluatorOutput:
     redundancy: str
     consistency: str
     findings: tuple[str, ...]
+    conflicts: tuple[ConsistencyConflict, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -145,45 +166,93 @@ def _validated_candidate_path(value: object) -> str:
         or len(value) > MAX_EVALUATOR_CANDIDATE_PATH_CHARS
         or not value.startswith("11-Knowledge/")
         or not value.endswith(".md")
+        or "\\" in value
+        or value.startswith("/")
     ):
         raise ArtifactLifecycleError("evaluator candidate path is invalid")
-    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
-        raise ArtifactLifecycleError("evaluator candidate path must not contain control characters")
     try:
         value.encode("utf-8")
     except UnicodeEncodeError as exc:
         raise ArtifactLifecycleError("evaluator candidate path must be UTF-8 encodable") from exc
+    parts = value.split("/")
+    if len(parts) < 2 or parts[0] != "11-Knowledge":
+        raise ArtifactLifecycleError("evaluator candidate path is invalid")
+    for component in parts[1:]:
+        if (
+            not component
+            or component in {".", ".."}
+            or component.startswith(".")
+            or component != component.strip()
+            or any(
+                character in _WINDOWS_FORBIDDEN
+                or unicodedata.category(character) == "Cc"
+                for character in component
+            )
+        ):
+            raise ArtifactLifecycleError("evaluator candidate path is unsafe")
     return value
+
+
+def _conflict_field_schema() -> dict[str, object]:
+    return {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": MAX_EVALUATOR_CONFLICT_FIELD_CHARS,
+    }
+
+
+def _conflict_schema() -> dict[str, object]:
+    return {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": MAX_EVALUATOR_CONFLICTS,
+        "items": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["proposal_claim", "candidate_claim", "incompatibility"],
+            "properties": {
+                "proposal_claim": _conflict_field_schema(),
+                "candidate_claim": _conflict_field_schema(),
+                "incompatibility": _conflict_field_schema(),
+            },
+        },
+    }
 
 
 def _output_schema_for(dimension: str) -> dict[str, object]:
     dimension = _require_dimension(dimension)
+    properties: dict[str, object] = {
+        "assessment": {
+            "type": "string",
+            "enum": list(_ASSESSMENT_VALUES[dimension]),
+        },
+        "findings": {
+            "type": "array",
+            "maxItems": MAX_EVALUATOR_FINDINGS_PER_DIMENSION,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["detail"],
+                "properties": {
+                    "detail": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": MAX_EVALUATOR_FINDING_DETAIL_CHARS,
+                    }
+                },
+            },
+        },
+    }
+    if dimension == "consistency":
+        # The assessment-dependent requiredness is intentionally enforced by
+        # the parser below.  Ollama-compatible schemas do not rely on
+        # conditional JSON Schema features for this contract.
+        properties["conflicts"] = _conflict_schema()
     return {
         "type": "object",
         "additionalProperties": False,
         "required": ["assessment", "findings"],
-        "properties": {
-            "assessment": {
-                "type": "string",
-                "enum": list(_ASSESSMENT_VALUES[dimension]),
-            },
-            "findings": {
-                "type": "array",
-                "maxItems": MAX_EVALUATOR_FINDINGS_PER_DIMENSION,
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["detail"],
-                    "properties": {
-                        "detail": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": MAX_EVALUATOR_FINDING_DETAIL_CHARS,
-                        }
-                    },
-                },
-            },
-        },
+        "properties": properties,
     }
 
 
@@ -223,6 +292,141 @@ def _normalized_finding(dimension: str, detail: object) -> str:
     return finding
 
 
+def _validated_conflict_field(value: object, *, field: str) -> str:
+    if not isinstance(value, str):
+        raise ArtifactLifecycleError(f"evaluator conflict {field} must be a string")
+    if (
+        not value
+        or value != value.strip()
+        or len(value) > MAX_EVALUATOR_CONFLICT_FIELD_CHARS
+    ):
+        raise ArtifactLifecycleError(
+            f"evaluator conflict {field} must be non-empty, trimmed, and at most "
+            f"{MAX_EVALUATOR_CONFLICT_FIELD_CHARS} characters"
+        )
+    if any(unicodedata.category(ch) == "Cc" for ch in value):
+        raise ArtifactLifecycleError(
+            f"evaluator conflict {field} must not contain control characters"
+        )
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ArtifactLifecycleError(
+            f"evaluator conflict {field} must be UTF-8 encodable"
+        ) from exc
+    return value
+
+
+def _conflict_triple(conflict: ConsistencyConflict) -> tuple[str, str, str]:
+    return (
+        conflict.proposal_claim,
+        conflict.candidate_claim,
+        conflict.incompatibility,
+    )
+
+
+def _validated_conflict(
+    value: object,
+    *,
+    require_bound_path: bool,
+    expected_path: str | None = None,
+) -> ConsistencyConflict:
+    if not isinstance(value, ConsistencyConflict):
+        raise ArtifactLifecycleError("evaluator conflict has an invalid type")
+    proposal_claim = _validated_conflict_field(
+        value.proposal_claim,
+        field="proposal_claim",
+    )
+    candidate_claim = _validated_conflict_field(
+        value.candidate_claim,
+        field="candidate_claim",
+    )
+    incompatibility = _validated_conflict_field(
+        value.incompatibility,
+        field="incompatibility",
+    )
+    candidate_path = value.candidate_path
+    if require_bound_path:
+        path = _validated_candidate_path(candidate_path)
+        if expected_path is not None and path != expected_path:
+            raise ArtifactLifecycleError(
+                "evaluator conflict candidate path does not match bound candidate"
+            )
+    elif candidate_path is not None:
+        raise ArtifactLifecycleError(
+            "model-facing evaluator conflict must not contain a candidate path"
+        )
+    return ConsistencyConflict(
+        proposal_claim=proposal_claim,
+        candidate_claim=candidate_claim,
+        incompatibility=incompatibility,
+        candidate_path=candidate_path,
+    )
+
+
+def _validated_conflicts(
+    conflicts: object,
+    *,
+    require_bound_path: bool,
+    expected_path: str | None = None,
+) -> tuple[ConsistencyConflict, ...]:
+    if not isinstance(conflicts, tuple):
+        raise ArtifactLifecycleError("evaluator conflicts must be a tuple")
+    if len(conflicts) > MAX_EVALUATOR_CONFLICTS:
+        raise ArtifactLifecycleError(
+            f"evaluator conflicts exceed {MAX_EVALUATOR_CONFLICTS} items"
+        )
+
+    normalized: list[ConsistencyConflict] = []
+    seen: set[tuple[str, str, str]] = set()
+    for raw_conflict in conflicts:
+        conflict = _validated_conflict(
+            raw_conflict,
+            require_bound_path=require_bound_path,
+            expected_path=expected_path,
+        )
+        triple = _conflict_triple(conflict)
+        if triple in seen:
+            raise ArtifactLifecycleError("evaluator conflicts must not contain duplicate triples")
+        seen.add(triple)
+        normalized.append(conflict)
+    return tuple(normalized)
+
+
+def _validated_dimension_conflicts(
+    dimension: str,
+    assessment: str,
+    conflicts: object,
+    *,
+    require_bound_path: bool,
+    expected_path: str | None = None,
+    require_concern_evidence: bool,
+) -> tuple[ConsistencyConflict, ...]:
+    if dimension != "consistency":
+        if not isinstance(conflicts, tuple):
+            raise ArtifactLifecycleError("evaluator conflicts must be a tuple")
+        if conflicts:
+            raise ArtifactLifecycleError(
+                f"{dimension} evaluator output must not contain conflicts"
+            )
+        return ()
+
+    normalized = _validated_conflicts(
+        conflicts,
+        require_bound_path=require_bound_path,
+        expected_path=expected_path,
+    )
+    if assessment == "concern" and require_concern_evidence and not normalized:
+        raise ArtifactLifecycleError(
+            "consistency evaluator concern requires at least one conflict"
+        )
+    if assessment in {"pass", "unknown"} and normalized:
+        raise ArtifactLifecycleError(
+            "consistency evaluator pass or unknown must not contain conflicts"
+        )
+    return normalized
+
+
 def parse_dimension_evaluator_output(
     data: bytes,
     *,
@@ -234,7 +438,13 @@ def parse_dimension_evaluator_output(
             f"evaluator output exceeds {MAX_EVALUATOR_OUTPUT_BYTES} bytes"
         )
     value = _decode_json_object(data, label=f"{dimension} evaluator output")
-    if set(value) != {"assessment", "findings"}:
+    allowed_properties = {"assessment", "findings"}
+    if dimension == "consistency":
+        allowed_properties.add("conflicts")
+    if not set(value).issubset(allowed_properties) or {
+        "assessment",
+        "findings",
+    } - set(value):
         raise ArtifactLifecycleError(
             f"{dimension} evaluator output properties do not match contract"
         )
@@ -263,10 +473,54 @@ def parse_dimension_evaluator_output(
         raise ArtifactLifecycleError(
             f"{dimension} evaluator findings must not contain duplicates"
         )
+
+    conflicts: tuple[ConsistencyConflict, ...] = ()
+    if dimension == "consistency":
+        if assessment == "concern":
+            if "conflicts" not in value:
+                raise ArtifactLifecycleError(
+                    "consistency evaluator concern requires conflicts"
+                )
+            raw_conflicts = value["conflicts"]
+            if not isinstance(raw_conflicts, list):
+                raise ArtifactLifecycleError("consistency evaluator conflicts are invalid")
+            if len(raw_conflicts) > MAX_EVALUATOR_CONFLICTS:
+                raise ArtifactLifecycleError(
+                    f"consistency evaluator conflicts exceed {MAX_EVALUATOR_CONFLICTS} items"
+                )
+            parsed_conflicts: list[ConsistencyConflict] = []
+            for item in raw_conflicts:
+                if not isinstance(item, dict) or set(item) != {
+                    "proposal_claim",
+                    "candidate_claim",
+                    "incompatibility",
+                }:
+                    raise ArtifactLifecycleError(
+                        "consistency evaluator conflict properties do not match contract"
+                    )
+                parsed_conflicts.append(
+                    ConsistencyConflict(
+                        proposal_claim=item["proposal_claim"],
+                        candidate_claim=item["candidate_claim"],
+                        incompatibility=item["incompatibility"],
+                    )
+                )
+            conflicts = _validated_dimension_conflicts(
+                dimension,
+                assessment,
+                tuple(parsed_conflicts),
+                require_bound_path=False,
+                require_concern_evidence=True,
+            )
+        elif "conflicts" in value:
+            raise ArtifactLifecycleError(
+                "consistency evaluator pass or unknown must not contain conflicts"
+            )
     return DimensionEvaluatorOutput(
         dimension=dimension,
         assessment=assessment,
         findings=normalized,
+        conflicts=conflicts,
     )
 
 
@@ -282,6 +536,14 @@ def bind_candidate_output(
     if output.assessment not in _ASSESSMENT_VALUES[dimension]:
         raise ArtifactLifecycleError(f"{dimension} evaluator assessment is invalid")
 
+    unbound_conflicts = _validated_dimension_conflicts(
+        dimension,
+        output.assessment,
+        output.conflicts,
+        require_bound_path=False,
+        require_concern_evidence=True,
+    )
+
     bound_findings: list[str] = []
     prefix = f"{dimension}: "
     for finding in output.findings:
@@ -294,11 +556,16 @@ def bind_candidate_output(
             _normalized_finding(dimension, f"[{path}] {detail}")
         )
 
+    bound_conflicts = tuple(
+        conflict.bind_candidate_path(path) for conflict in unbound_conflicts
+    )
+
     return CandidateEvaluatorOutput(
         dimension=dimension,
         candidate_path=path,
         assessment=output.assessment,
         findings=tuple(bound_findings),
+        conflicts=bound_conflicts,
     )
 
 
@@ -331,7 +598,23 @@ def aggregate_candidate_outputs(
                 raise ArtifactLifecycleError(
                     f"{dimension} candidate finding is not path-scoped"
                 )
-        normalized_outputs.append(output)
+        conflicts = _validated_dimension_conflicts(
+            dimension,
+            output.assessment,
+            output.conflicts,
+            require_bound_path=True,
+            expected_path=path,
+            require_concern_evidence=True,
+        )
+        normalized_outputs.append(
+            CandidateEvaluatorOutput(
+                dimension=dimension,
+                candidate_path=path,
+                assessment=output.assessment,
+                findings=output.findings,
+                conflicts=conflicts,
+            )
+        )
 
     severity = _SEVERITY[dimension]
     winning_assessment = max(
@@ -340,21 +623,34 @@ def aggregate_candidate_outputs(
     )
 
     findings: list[str] = []
+    conflicts: list[ConsistencyConflict] = []
+    conflict_triples: set[tuple[str, str, str]] = set()
     for output in normalized_outputs:
         if output.assessment != winning_assessment:
             continue
-        for finding in output.findings:
-            if finding not in findings:
-                findings.append(finding)
-            if len(findings) >= MAX_EVALUATOR_FINDINGS_PER_DIMENSION:
+        if len(findings) < MAX_EVALUATOR_FINDINGS_PER_DIMENSION:
+            for finding in output.findings:
+                if finding not in findings:
+                    findings.append(finding)
+                if len(findings) >= MAX_EVALUATOR_FINDINGS_PER_DIMENSION:
+                    break
+        if dimension == "consistency":
+            for conflict in output.conflicts:
+                triple = _conflict_triple(conflict)
+                if triple in conflict_triples:
+                    continue
+                conflict_triples.add(triple)
+                conflicts.append(conflict)
+                if len(conflicts) >= MAX_EVALUATOR_CONFLICTS:
+                    break
+            if len(conflicts) >= MAX_EVALUATOR_CONFLICTS:
                 break
-        if len(findings) >= MAX_EVALUATOR_FINDINGS_PER_DIMENSION:
-            break
 
     return DimensionEvaluatorOutput(
         dimension=dimension,
         assessment=winning_assessment,
         findings=tuple(findings),
+        conflicts=tuple(conflicts),
     )
 
 
@@ -368,6 +664,13 @@ def aggregate_evaluator_outputs(
         raise ArtifactLifecycleError("groundedness evaluator output is invalid")
     if groundedness.assessment not in _ASSESSMENT_VALUES["groundedness"]:
         raise ArtifactLifecycleError("groundedness evaluator assessment is invalid")
+    _validated_dimension_conflicts(
+        "groundedness",
+        groundedness.assessment,
+        groundedness.conflicts,
+        require_bound_path=False,
+        require_concern_evidence=False,
+    )
 
     redundancy_paths = tuple(item.candidate_path for item in redundancy_pairs)
     consistency_paths = tuple(item.candidate_path for item in consistency_pairs)
@@ -385,6 +688,7 @@ def aggregate_evaluator_outputs(
         redundancy=redundancy.assessment,
         consistency=consistency.assessment,
         findings=findings,
+        conflicts=consistency.conflicts,
     )
 
 
@@ -414,7 +718,20 @@ def _validated_evaluator_output(output: EvaluatorOutput) -> EvaluatorOutput:
             raise ArtifactLifecycleError("evaluator finding must be dimension-scoped")
     if len(set(output.findings)) != len(output.findings):
         raise ArtifactLifecycleError("evaluator findings must not contain duplicates")
-    return output
+    conflicts = _validated_dimension_conflicts(
+        "consistency",
+        output.consistency,
+        output.conflicts,
+        require_bound_path=True,
+        require_concern_evidence=True,
+    )
+    return EvaluatorOutput(
+        groundedness=output.groundedness,
+        redundancy=output.redundancy,
+        consistency=output.consistency,
+        findings=output.findings,
+        conflicts=conflicts,
+    )
 
 
 def recommendation_for(output: EvaluatorOutput) -> str:
@@ -442,6 +759,7 @@ def to_evaluation_assessment(output: EvaluatorOutput) -> EvaluationAssessment:
         consistency=normalized.consistency,
         recommendation=recommendation_for(normalized),
         findings=normalized.findings,
+        conflicts=normalized.conflicts,
     )
 
 
@@ -465,6 +783,7 @@ def prompt_template_bytes() -> bytes:
                 "redundancy": ["none", "possible", "likely"],
                 "consistency": ["pass", "unknown", "concern"],
                 "findings": "winning-severity-only",
+                "conflicts": "winning-consistency-severity-only",
             },
         }
     )
@@ -472,6 +791,18 @@ def prompt_template_bytes() -> bytes:
 
 def prompt_template_sha256() -> str:
     return sha256_bytes(prompt_template_bytes())
+
+
+EVALUATOR_PROMPT_TEMPLATE_V4_SHA256 = (
+    "64be14bb5d17e351d9fb694dd17f9764a8a2e0daefa1f44946a5349ecec2aebd"
+)
+
+
+def supported_prompt_template_hashes() -> Mapping[str, str]:
+    return {
+        EVALUATOR_PROMPT_TEMPLATE_V3_VERSION: EVALUATOR_PROMPT_TEMPLATE_V3_SHA256,
+        EVALUATOR_PROMPT_TEMPLATE_VERSION: EVALUATOR_PROMPT_TEMPLATE_V4_SHA256,
+    }
 
 
 def _generation_sources(bundle: ContextBundle) -> list[dict[str, str]]:

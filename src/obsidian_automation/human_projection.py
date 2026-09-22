@@ -6,6 +6,7 @@ import os
 import re
 import stat
 import sys
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -180,6 +181,18 @@ def _code_fence(content: str, language: str = "markdown") -> str:
     ticks = max((len(match.group(0)) for match in re.finditer(r"`+", content)), default=0)
     fence = "`" * max(3, ticks + 1)
     return f"{fence}{language}\n{content.rstrip()}\n{fence}"
+
+
+def _assessment_inline(value: object) -> str:
+    text = value if isinstance(value, str) else repr(value)
+    text = text.encode("utf-8", "backslashreplace").decode("utf-8")
+    text = "".join(
+        f"\\u{ord(character):04x}"
+        if unicodedata.category(character) == "Cc"
+        else character
+        for character in text
+    )
+    return _inline_code(text)
 
 
 def _projection_markdown(
@@ -792,7 +805,29 @@ def _assessment_lines(record) -> list[str]:
     if record.assessment.findings:
         lines.extend(["", "### Findings"])
         for finding in record.assessment.findings:
-            lines.append(f"- {_inline_code(finding)}")
+            lines.append(f"- {_assessment_inline(finding)}")
+    conflicts = getattr(record.assessment, "conflicts", ())
+    if conflicts:
+        lines.extend(["", "### Consistency Conflicts"])
+        ordered_conflicts = sorted(
+            conflicts,
+            key=lambda conflict: (
+                str(conflict.candidate_path).casefold(),
+                str(conflict.candidate_path),
+                str(conflict.proposal_claim),
+                str(conflict.candidate_claim),
+                str(conflict.incompatibility),
+            ),
+        )
+        for conflict in ordered_conflicts:
+            lines.extend(
+                [
+                    f"- Candidate: {_assessment_inline(conflict.candidate_path)}",
+                    f"  - Proposal claim: {_assessment_inline(conflict.proposal_claim)}",
+                    f"  - Candidate claim: {_assessment_inline(conflict.candidate_claim)}",
+                    f"  - Incompatibility: {_assessment_inline(conflict.incompatibility)}",
+                ]
+            )
     return lines
 
 

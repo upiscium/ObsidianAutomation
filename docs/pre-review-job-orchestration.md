@@ -84,10 +84,22 @@ The currently executable pipeline contracts are:
 - Generator adapter `openai-chat-completions-json-schema-v1`;
 - Validator policy `knowledge-note-v0`;
 - Evaluation Context policy `bm25-topk-recall-v0` with `top_k=5`;
-- Evaluator prompt `knowledge-note-evaluator-v3`;
+- Evaluator output contract `knowledge-note-evaluator-output-v3`;
+- Evaluator prompt `knowledge-note-evaluator-v4`;
+- Evaluator prompt SHA `64be14bb5d17e351d9fb694dd17f9764a8a2e0daefa1f44946a5349ecec2aebd`;
 - Evaluator provider `openai-compatible`;
 - Evaluator adapter `openai-evaluator-chat-completions-json-schema-v1`;
 - Evaluator strategy `groundedness-plus-pairwise-candidates-v0`.
+
+The exact historical Evaluator prompt identity
+`knowledge-note-evaluator-v3` /
+`bf6265294a4b346f12d1951f594760c80221380ccee9993c6ab866b6b1eca937` remains
+readable in recipes for audit. Runtime preflight requires the current v4
+version/hash pair and blocks a historical recipe before provider contact.
+Unknown prompt identities and cross-paired version/hash values are rejected;
+the same exact-pair rule applies to the Generator's supported v0/v1 prompt
+identities. This preserves Generator v0/v1 recipe readability without
+silently reinterpreting v0 as v1.
 
 The canonical provider boundary is the OpenAI-compatible Chat Completions API.
 Generator and Evaluator send their existing role-owned JSON Schema via adapter-owned `response_format`; recipe options cannot override that field. Returned content is still validated locally before durable adoption.

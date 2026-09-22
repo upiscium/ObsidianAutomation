@@ -27,7 +27,10 @@ from .evaluation_artifact import (
     DEFAULT_EVALUATION_TOP_K,
     EVALUATION_CONTEXT_POLICY_VERSION,
 )
-from .evaluator_contract import EVALUATOR_PROMPT_TEMPLATE_VERSION
+from .evaluator_contract import (
+    EVALUATOR_PROMPT_TEMPLATE_VERSION,
+    supported_prompt_template_hashes as supported_evaluator_prompt_template_hashes,
+)
 from .generator_contract import (
     supported_prompt_template_hashes,
 )
@@ -352,6 +355,7 @@ def parse_recipe(data: bytes) -> PreReviewRecipe:
             label="evaluator",
             prompt_version=EVALUATOR_PROMPT_TEMPLATE_VERSION,
             evaluator=True,
+            prompt_hashes=supported_evaluator_prompt_template_hashes(),
         ),
     )
     canonical = recipe.to_json_bytes()
@@ -384,6 +388,7 @@ def parse_recipe_roundtrip_guard(data: bytes) -> PreReviewRecipe:
             label="evaluator",
             prompt_version=EVALUATOR_PROMPT_TEMPLATE_VERSION,
             evaluator=True,
+            prompt_hashes=supported_evaluator_prompt_template_hashes(),
         ),
     )
 

@@ -8,6 +8,12 @@ import pytest
 
 from obsidian_automation.artifact_lifecycle import ArtifactLifecycleError
 from obsidian_automation.context_bundle import ContextBundle, store_context_bundle
+from obsidian_automation.evaluator_contract import (
+    EVALUATOR_PROMPT_TEMPLATE_V3_SHA256,
+    EVALUATOR_PROMPT_TEMPLATE_V3_VERSION,
+    EVALUATOR_PROMPT_TEMPLATE_VERSION,
+    prompt_template_sha256 as evaluator_prompt_template_sha256,
+)
 from obsidian_automation.ollama_evaluator import ADAPTER_VERSION as OLLAMA_EVALUATOR_ADAPTER_VERSION
 from obsidian_automation.ollama_generator import ADAPTER_VERSION as OLLAMA_GENERATOR_ADAPTER_VERSION
 from obsidian_automation.generator_contract import (
@@ -31,6 +37,7 @@ from obsidian_automation.pre_review_job import (
 
 REV = "a" * 40
 PROMPT_SHA = prompt_template_sha256()
+EVALUATOR_PROMPT_SHA = evaluator_prompt_template_sha256()
 
 
 def _state(tmp_path: Path) -> tuple[Path, str]:
@@ -46,7 +53,12 @@ def _state(tmp_path: Path) -> tuple[Path, str]:
     return root, context_sha
 
 
-def _recipe(*, generator_model: str = "gemma3:12b") -> dict[str, object]:
+def _recipe(
+    *,
+    generator_model: str = "gemma3:12b",
+    evaluator_prompt_version: str = EVALUATOR_PROMPT_TEMPLATE_V3_VERSION,
+    evaluator_prompt_sha: str = EVALUATOR_PROMPT_TEMPLATE_V3_SHA256,
+) -> dict[str, object]:
     component = {
         "implementation_revision": REV,
         "prompt_template_version": PROMPT_TEMPLATE_VERSION,
@@ -62,7 +74,8 @@ def _recipe(*, generator_model: str = "gemma3:12b") -> dict[str, object]:
     }
     evaluator = {
         **component,
-        "prompt_template_version": "knowledge-note-evaluator-v3",
+        "prompt_template_version": evaluator_prompt_version,
+        "prompt_template_sha256": evaluator_prompt_sha,
         "model_identifier": "gemma3:12b-eval",
         "model_revision": "identifier:gemma3:12b-eval",
         "model_config": {
@@ -179,10 +192,11 @@ def test_recipe_accepts_native_ollama_digest_binding_and_role_thinking() -> None
             "options": {"temperature": 0},
         },
     }
+
     value["evaluator"] = {
         "implementation_revision": REV,
-        "prompt_template_version": "knowledge-note-evaluator-v3",
-        "prompt_template_sha256": PROMPT_SHA,
+        "prompt_template_version": EVALUATOR_PROMPT_TEMPLATE_V3_VERSION,
+        "prompt_template_sha256": EVALUATOR_PROMPT_TEMPLATE_V3_SHA256,
         "provider": "ollama",
         "model_identifier": "gemma4:12b",
         "model_revision": digest,
@@ -205,6 +219,49 @@ def test_recipe_accepts_native_ollama_digest_binding_and_role_thinking() -> None
     value["evaluator"]["model_config"]["think"] = "high"
     with pytest.raises(PreReviewJobError, match="model_config.think"):
         parse_recipe((json.dumps(value) + "\n").encode())
+
+
+@pytest.mark.parametrize(
+    ("prompt_version", "prompt_sha"),
+    [
+        (EVALUATOR_PROMPT_TEMPLATE_V3_VERSION, EVALUATOR_PROMPT_TEMPLATE_V3_SHA256),
+        (EVALUATOR_PROMPT_TEMPLATE_VERSION, EVALUATOR_PROMPT_SHA),
+    ],
+)
+def test_recipe_accepts_exact_historical_and_current_evaluator_prompt_pairs(
+    prompt_version: str,
+    prompt_sha: str,
+) -> None:
+    value = _recipe(
+        evaluator_prompt_version=prompt_version,
+        evaluator_prompt_sha=prompt_sha,
+    )
+
+    parsed = parse_recipe((json.dumps(value, separators=(",", ":")) + "\n").encode())
+
+    assert parsed.evaluator.prompt_template_version == prompt_version
+    assert parsed.evaluator.prompt_template_sha256 == prompt_sha
+
+
+@pytest.mark.parametrize(
+    ("prompt_version", "prompt_sha"),
+    [
+        (EVALUATOR_PROMPT_TEMPLATE_V3_VERSION, EVALUATOR_PROMPT_SHA),
+        (EVALUATOR_PROMPT_TEMPLATE_VERSION, EVALUATOR_PROMPT_TEMPLATE_V3_SHA256),
+        (EVALUATOR_PROMPT_TEMPLATE_VERSION, "0" * 64),
+    ],
+)
+def test_recipe_rejects_crossed_or_arbitrary_evaluator_prompt_pairs(
+    prompt_version: str,
+    prompt_sha: str,
+) -> None:
+    value = _recipe(
+        evaluator_prompt_version=prompt_version,
+        evaluator_prompt_sha=prompt_sha,
+    )
+
+    with pytest.raises(PreReviewJobError, match="prompt_template_sha256"):
+        parse_recipe((json.dumps(value, separators=(",", ":")) + "\n").encode())
 
 
 def test_submit_is_idempotent_for_same_context_and_recipe(tmp_path: Path) -> None:
@@ -523,6 +580,20 @@ def test_public_cli_and_json_schemas_are_pinned() -> None:
     )
     assert recipe_schema["properties"]["pipeline"]["const"] == "knowledge-pre-review-v0"
     assert recipe_schema["additionalProperties"] is False
+    evaluator_schema = recipe_schema["properties"]["evaluator"]
+    assert [
+        (
+            branch["properties"]["prompt_template_version"]["const"],
+            branch["properties"]["prompt_template_sha256"]["const"],
+        )
+        for branch in evaluator_schema["oneOf"]
+    ] == [
+        (
+            EVALUATOR_PROMPT_TEMPLATE_V3_VERSION,
+            EVALUATOR_PROMPT_TEMPLATE_V3_SHA256,
+        ),
+        (EVALUATOR_PROMPT_TEMPLATE_VERSION, EVALUATOR_PROMPT_SHA),
+    ]
 
     status_schema = json.loads(
         Path("schemas/pre-review-job-status-v0.schema.json").read_text(encoding="utf-8")

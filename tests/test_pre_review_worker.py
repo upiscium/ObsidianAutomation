@@ -19,6 +19,8 @@ from obsidian_automation.evaluation_artifact import (
     store_evaluation_record,
 )
 from obsidian_automation.evaluator_contract import (
+    EVALUATOR_PROMPT_TEMPLATE_V3_SHA256,
+    EVALUATOR_PROMPT_TEMPLATE_V3_VERSION,
     EVALUATOR_PROMPT_TEMPLATE_VERSION,
     prompt_template_sha256 as evaluator_prompt_sha256,
 )
@@ -128,6 +130,17 @@ def _recipe_bytes() -> bytes:
         },
     }
     return (json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n").encode()
+
+
+def _historical_evaluator_recipe_bytes() -> bytes:
+    value = json.loads(_recipe_bytes())
+    value["evaluator"]["prompt_template_version"] = EVALUATOR_PROMPT_TEMPLATE_V3_VERSION
+    value["evaluator"]["prompt_template_sha256"] = EVALUATOR_PROMPT_TEMPLATE_V3_SHA256
+    return (json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n").encode()
+
+
+def _fail_provider_contact(*_args, **_kwargs):
+    raise AssertionError("historical evaluator recipe must not reach provider")
 
 
 def _ollama_recipe_bytes() -> bytes:
@@ -555,6 +568,36 @@ def test_generator_revision_mismatch_blocks_without_provider_contact(
     assert result["status"] == "blocked"
     assert result["reason_code"] == "generator_recipe_runtime_mismatch"
     assert called is False
+    assert job_status(state, job_id)["current_generation"]["state"] == "blocked"
+
+
+def test_historical_evaluator_recipe_blocks_without_provider_contact(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    state, vault, job_id, _ = _fixture(
+        tmp_path,
+        recipe_bytes=_historical_evaluator_recipe_bytes(),
+    )
+    monkeypatch.setattr(worker, "generate_knowledge_note_with_openai_compatible", _fake_generator)
+    monkeypatch.setattr(worker, "evaluate_knowledge_note_with_openai_compatible", _fail_provider_contact)
+
+    assert worker.run_generator_worker(
+        state,
+        base_url="https://openai.example.invalid/v1",
+        deployed_revision=REVISION,
+    )["status"] == "completed"
+    assert worker.run_validator_worker(state, vault)["status"] == "completed"
+    assert worker.run_reader_worker(state, vault)["status"] == "completed"
+
+    result = worker.run_evaluator_worker(
+        state,
+        base_url="https://openai.example.invalid/v1",
+        deployed_revision=REVISION,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["reason_code"] == "evaluator_recipe_runtime_mismatch"
     assert job_status(state, job_id)["current_generation"]["state"] == "blocked"
 
 

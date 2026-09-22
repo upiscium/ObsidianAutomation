@@ -11,6 +11,10 @@ from obsidian_automation.artifact_lifecycle import (
     sha256_bytes,
 )
 from obsidian_automation.context_bundle import ContextBundle, store_context_bundle
+from obsidian_automation.evaluator_contract import (
+    EVALUATOR_PROMPT_TEMPLATE_VERSION,
+    prompt_template_sha256 as evaluator_prompt_sha256,
+)
 from obsidian_automation.generator_contract import (
     PROMPT_TEMPLATE_V0_SHA256,
     PROMPT_TEMPLATE_V0_VERSION,
@@ -32,8 +36,8 @@ from obsidian_automation.pre_review_job import (
 REVISION = "a" * 40
 GENERATOR_MODEL = "gemma4:12b"
 EVALUATOR_MODEL = "gemma4:12b-evaluator"
-EVALUATOR_PROMPT_VERSION = "knowledge-note-evaluator-v3"
-EVALUATOR_PROMPT_SHA256 = "e" * 64
+EVALUATOR_PROMPT_VERSION = EVALUATOR_PROMPT_TEMPLATE_VERSION
+EVALUATOR_PROMPT_SHA256 = evaluator_prompt_sha256()
 
 
 def _recipe_value(

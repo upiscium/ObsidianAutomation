@@ -4,6 +4,7 @@ import argparse
 import json
 import re
 import sys
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -26,6 +27,7 @@ from .generation_artifact import (
     _validated_model_config,
     load_generation_record,
 )
+from .evaluator_conflict import ConsistencyConflict
 from .knowledge_index import (
     MAX_TOP_K,
     KnowledgeIndex,
@@ -46,12 +48,93 @@ MAX_EVALUATION_QUERY_CHARS = 4096
 MAX_EVALUATION_RECORD_BYTES = 64 * 1024
 MAX_FINDINGS = 16
 MAX_FINDING_CHARS = 2048
+EVALUATION_RECORD_VERSION = 2
+LEGACY_EVALUATION_RECORD_VERSION = 1
+MAX_EVALUATION_CONFLICTS = 4
+MAX_EVALUATION_CONFLICT_FIELD_CHARS = 1000
+MAX_EVALUATION_CANDIDATE_PATH_CHARS = 1024
+
+# Short aliases keep the artifact contract easy to consume without making the
+# evaluator contract module a dependency of this lower-level artifact module.
+MAX_CONFLICTS = MAX_EVALUATION_CONFLICTS
+MAX_CONFLICT_FIELD_CHARS = MAX_EVALUATION_CONFLICT_FIELD_CHARS
+MAX_CANDIDATE_PATH_CHARS = MAX_EVALUATION_CANDIDATE_PATH_CHARS
 
 _HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*$")
 _GROUNDEDNESS = {"pass", "concern", "unknown"}
 _REDUNDANCY = {"none", "possible", "likely"}
 _CONSISTENCY = {"pass", "concern", "unknown"}
 _RECOMMENDATION = {"proceed", "manual_review", "do_not_proceed"}
+_WINDOWS_FORBIDDEN = set('<>:"|?*')
+
+
+class _FrozenDict(dict[str, object]):
+    """A JSON-object-shaped dict that cannot be mutated after construction."""
+
+    def _immutable(self, *args: object, **kwargs: object) -> None:
+        raise TypeError("model_config is immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    clear = _immutable
+    pop = _immutable
+    popitem = _immutable
+    setdefault = _immutable
+    update = _immutable
+
+    def __ior__(self, other: object) -> _FrozenDict:
+        self._immutable(other)
+        return self
+
+
+class _FrozenList(list[object]):
+    """A JSON-array-shaped list that cannot be mutated after construction."""
+
+    def _immutable(self, *args: object, **kwargs: object) -> None:
+        raise TypeError("model_config is immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    __iadd__ = _immutable
+    __imul__ = _immutable
+    append = _immutable
+    clear = _immutable
+    extend = _immutable
+    insert = _immutable
+    pop = _immutable
+    remove = _immutable
+    reverse = _immutable
+    sort = _immutable
+
+
+def _plain_json_value(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {key: _plain_json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain_json_value(item) for item in value]
+    return value
+
+
+def _freeze_json_value(value: object) -> object:
+    if isinstance(value, dict):
+        frozen = _FrozenDict()
+        for key, item in value.items():
+            dict.__setitem__(frozen, key, _freeze_json_value(item))
+        return frozen
+    if isinstance(value, list):
+        frozen_list = _FrozenList()
+        list.extend(frozen_list, [_freeze_json_value(item) for item in value])
+        return frozen_list
+    return value
+
+
+def _immutable_model_config(value: object) -> Mapping[str, object]:
+    plain = _plain_json_value(value)
+    validated = _validated_model_config(plain)
+    frozen = _freeze_json_value(validated)
+    if not isinstance(frozen, Mapping):  # pragma: no cover - guarded by validator
+        raise ArtifactLifecycleError("model_config must be a JSON object")
+    return frozen
 
 
 @dataclass(frozen=True)
@@ -123,6 +206,14 @@ class EvaluationAssessment:
     consistency: str
     recommendation: str
     findings: tuple[str, ...]
+    conflicts: tuple[ConsistencyConflict, ...] = ()
+
+    def __post_init__(self) -> None:
+        # The contract exposes tuples even when an older caller supplied a
+        # list.  Copying here also keeps a caller-owned list from changing a
+        # frozen assessment after construction.
+        object.__setattr__(self, "findings", tuple(self.findings))
+        object.__setattr__(self, "conflicts", tuple(self.conflicts))
 
 
 @dataclass(frozen=True)
@@ -150,11 +241,16 @@ class EvaluationRecord:
     model_config: Mapping[str, object]
     assessment: EvaluationAssessment
     evaluated_at: str
+    record_version: int = EVALUATION_RECORD_VERSION
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "model_config", _immutable_model_config(self.model_config))
 
     def to_json_bytes(self) -> bytes:
+        version = _record_version(self.record_version)
         return _canonical_json_bytes(
             {
-                "record_version": 1,
+                "record_version": version,
                 "proposal_sha256": self.proposal_sha256,
                 "mutation_sha256": self.mutation_sha256,
                 "generation_sha256": self.generation_sha256,
@@ -169,14 +265,8 @@ class EvaluationRecord:
                     "identifier": self.model.identifier,
                     "revision": self.model.revision,
                 },
-                "model_config": dict(self.model_config),
-                "assessment": {
-                    "groundedness": self.assessment.groundedness,
-                    "redundancy": self.assessment.redundancy,
-                    "consistency": self.assessment.consistency,
-                    "recommendation": self.assessment.recommendation,
-                    "findings": list(self.assessment.findings),
-                },
+                "model_config": _plain_json_value(self.model_config),
+                "assessment": _assessment_json(self.assessment, version=version),
                 "evaluated_at": self.evaluated_at,
             }
         )
@@ -423,12 +513,10 @@ def parse_evaluation_context(data: bytes) -> EvaluationContext:
     for raw in raw_candidates:
         if not isinstance(raw, dict) or set(raw) != {"path", "content_sha256", "score", "content"}:
             raise ArtifactLifecycleError("evaluation candidate properties do not match contract")
-        path = raw["path"]
+        path = _validated_knowledge_path(raw["path"], label="candidate path")
         digest = raw["content_sha256"]
         score = raw["score"]
         content = raw["content"]
-        if not isinstance(path, str) or not path.startswith("11-Knowledge/") or not path.endswith(".md"):
-            raise ArtifactLifecycleError("evaluation candidate path is invalid")
         folded = path.casefold()
         if folded in seen:
             raise ArtifactLifecycleError("evaluation context contains duplicate candidate paths")
@@ -477,6 +565,164 @@ def load_evaluation_context(ai_root: Path, context_sha256: str) -> EvaluationCon
     return parse_evaluation_context(data)
 
 
+def _record_version(value: object) -> int:
+    if type(value) is not int or value not in {
+        LEGACY_EVALUATION_RECORD_VERSION,
+        EVALUATION_RECORD_VERSION,
+    }:
+        raise ArtifactLifecycleError("evaluation record_version must be integer 1 or 2")
+    return value
+
+
+def _validated_knowledge_path(value: object, *, label: str = "candidate_path") -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > MAX_EVALUATION_CANDIDATE_PATH_CHARS
+        or not value.startswith("11-Knowledge/")
+        or not value.endswith(".md")
+        or "\\" in value
+        or value.startswith("/")
+    ):
+        raise ArtifactLifecycleError(f"evaluation {label} is invalid")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ArtifactLifecycleError(f"evaluation {label} must be UTF-8 encodable") from exc
+
+    parts = value.split("/")
+    if len(parts) < 2 or parts[0] != "11-Knowledge":
+        raise ArtifactLifecycleError(f"evaluation {label} is invalid")
+    for component in parts[1:]:
+        if (
+            not component
+            or component in {".", ".."}
+            or component.startswith(".")
+            or component != component.strip()
+            or any(
+                ch in _WINDOWS_FORBIDDEN
+                or unicodedata.category(ch) == "Cc"
+                for ch in component
+            )
+        ):
+            raise ArtifactLifecycleError(f"evaluation {label} is not a safe Knowledge path")
+    return value
+
+
+def _validated_conflict_field(value: object, *, field: str) -> str:
+    if not isinstance(value, str):
+        raise ArtifactLifecycleError(f"evaluation conflict {field} must be a string")
+    if (
+        not value
+        or value != value.strip()
+        or len(value) > MAX_EVALUATION_CONFLICT_FIELD_CHARS
+    ):
+        raise ArtifactLifecycleError(
+            f"evaluation conflict {field} must be non-empty, trimmed, and at most "
+            f"{MAX_EVALUATION_CONFLICT_FIELD_CHARS} characters"
+        )
+    if any(unicodedata.category(ch) == "Cc" for ch in value):
+        raise ArtifactLifecycleError(
+            f"evaluation conflict {field} must not contain control characters"
+        )
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ArtifactLifecycleError(
+            f"evaluation conflict {field} must be UTF-8 encodable"
+        ) from exc
+    return value
+
+
+def _validated_conflict(
+    value: object,
+    *,
+    expected_paths: set[str] | None = None,
+) -> ConsistencyConflict:
+    if not isinstance(value, ConsistencyConflict):
+        raise ArtifactLifecycleError("evaluation conflict has an invalid type")
+    proposal_claim = _validated_conflict_field(
+        value.proposal_claim,
+        field="proposal_claim",
+    )
+    candidate_claim = _validated_conflict_field(
+        value.candidate_claim,
+        field="candidate_claim",
+    )
+    incompatibility = _validated_conflict_field(
+        value.incompatibility,
+        field="incompatibility",
+    )
+    candidate_path = _validated_knowledge_path(value.candidate_path)
+    if expected_paths is not None and candidate_path not in expected_paths:
+        raise ArtifactLifecycleError(
+            "evaluation conflict candidate_path is not an evaluation candidate"
+        )
+    return ConsistencyConflict(
+        proposal_claim=proposal_claim,
+        candidate_claim=candidate_claim,
+        incompatibility=incompatibility,
+        candidate_path=candidate_path,
+    )
+
+
+def _validated_conflicts(
+    conflicts: object,
+    *,
+    expected_paths: set[str] | None = None,
+) -> tuple[ConsistencyConflict, ...]:
+    if isinstance(conflicts, (str, bytes, bytearray)):
+        raise ArtifactLifecycleError("evaluation conflicts must be a sequence")
+    try:
+        raw_conflicts = tuple(conflicts)  # type: ignore[arg-type]
+    except TypeError as exc:
+        raise ArtifactLifecycleError("evaluation conflicts must be a sequence") from exc
+    if len(raw_conflicts) > MAX_EVALUATION_CONFLICTS:
+        raise ArtifactLifecycleError(
+            f"evaluation conflicts exceed {MAX_EVALUATION_CONFLICTS} items"
+        )
+
+    normalized: list[ConsistencyConflict] = []
+    seen: set[tuple[str, str, str]] = set()
+    for raw_conflict in raw_conflicts:
+        conflict = _validated_conflict(
+            raw_conflict,
+            expected_paths=expected_paths,
+        )
+        evidence = (
+            conflict.proposal_claim,
+            conflict.candidate_claim,
+            conflict.incompatibility,
+        )
+        if evidence in seen:
+            raise ArtifactLifecycleError("evaluation conflicts must not contain duplicate evidence")
+        seen.add(evidence)
+        normalized.append(conflict)
+    return tuple(normalized)
+
+
+def _recommendation_for_values(
+    *,
+    groundedness: str,
+    redundancy: str,
+    consistency: str,
+) -> str:
+    if (
+        groundedness == "pass"
+        and redundancy == "none"
+        and consistency == "pass"
+    ):
+        return "proceed"
+    if (
+        groundedness == "concern"
+        or redundancy == "likely"
+        or consistency == "concern"
+    ):
+        return "do_not_proceed"
+    return "manual_review"
+
+
 def _assessment(
     *,
     groundedness: str,
@@ -484,29 +730,95 @@ def _assessment(
     consistency: str,
     recommendation: str,
     findings: Sequence[str],
+    conflicts: Sequence[ConsistencyConflict] = (),
+    record_version: int = EVALUATION_RECORD_VERSION,
 ) -> EvaluationAssessment:
-    if groundedness not in _GROUNDEDNESS:
+    version = _record_version(record_version)
+    if not isinstance(groundedness, str) or groundedness not in _GROUNDEDNESS:
         raise ArtifactLifecycleError("groundedness assessment is invalid")
-    if redundancy not in _REDUNDANCY:
+    if not isinstance(redundancy, str) or redundancy not in _REDUNDANCY:
         raise ArtifactLifecycleError("redundancy assessment is invalid")
-    if consistency not in _CONSISTENCY:
+    if not isinstance(consistency, str) or consistency not in _CONSISTENCY:
         raise ArtifactLifecycleError("consistency assessment is invalid")
-    if recommendation not in _RECOMMENDATION:
+    if not isinstance(recommendation, str) or recommendation not in _RECOMMENDATION:
         raise ArtifactLifecycleError("evaluation recommendation is invalid")
-    if len(findings) > MAX_FINDINGS:
+    if isinstance(findings, (str, bytes, bytearray)):
+        raise ArtifactLifecycleError("evaluation findings must be a sequence")
+    try:
+        raw_findings = tuple(findings)
+    except TypeError as exc:
+        raise ArtifactLifecycleError("evaluation findings must be a sequence") from exc
+    if len(raw_findings) > MAX_FINDINGS:
         raise ArtifactLifecycleError("evaluation contains too many findings")
     normalized: list[str] = []
-    for finding in findings:
+    for finding in raw_findings:
         if not isinstance(finding, str) or not finding.strip() or len(finding) > MAX_FINDING_CHARS:
             raise ArtifactLifecycleError("evaluation finding is invalid")
         normalized.append(finding)
+    normalized_conflicts = _validated_conflicts(conflicts)
+    if version == LEGACY_EVALUATION_RECORD_VERSION:
+        if normalized_conflicts:
+            raise ArtifactLifecycleError("legacy evaluation records must not contain conflicts")
+    else:
+        if consistency == "concern" and not normalized_conflicts:
+            raise ArtifactLifecycleError(
+                "v2 consistency concern requires at least one conflict"
+            )
+        if consistency in {"pass", "unknown"} and normalized_conflicts:
+            raise ArtifactLifecycleError(
+                "v2 consistency pass or unknown must not contain conflicts"
+            )
+        expected_recommendation = _recommendation_for_values(
+            groundedness=groundedness,
+            redundancy=redundancy,
+            consistency=consistency,
+        )
+        if recommendation != expected_recommendation:
+            raise ArtifactLifecycleError(
+                "v2 evaluation recommendation does not match conservative triad"
+            )
     return EvaluationAssessment(
         groundedness=groundedness,
         redundancy=redundancy,
         consistency=consistency,
         recommendation=recommendation,
         findings=tuple(normalized),
+        conflicts=normalized_conflicts,
     )
+
+
+def _assessment_json(
+    assessment: EvaluationAssessment,
+    *,
+    version: int,
+) -> dict[str, object]:
+    normalized = _assessment(
+        groundedness=assessment.groundedness,
+        redundancy=assessment.redundancy,
+        consistency=assessment.consistency,
+        recommendation=assessment.recommendation,
+        findings=assessment.findings,
+        conflicts=assessment.conflicts,
+        record_version=version,
+    )
+    value: dict[str, object] = {
+        "groundedness": normalized.groundedness,
+        "redundancy": normalized.redundancy,
+        "consistency": normalized.consistency,
+        "recommendation": normalized.recommendation,
+        "findings": list(normalized.findings),
+    }
+    if version == EVALUATION_RECORD_VERSION:
+        value["conflicts"] = [
+            {
+                "candidate_path": conflict.candidate_path,
+                "proposal_claim": conflict.proposal_claim,
+                "candidate_claim": conflict.candidate_claim,
+                "incompatibility": conflict.incompatibility,
+            }
+            for conflict in normalized.conflicts
+        ]
+    return value
 
 
 def build_evaluation_record(
@@ -528,6 +840,7 @@ def build_evaluation_record(
     consistency: str,
     recommendation: str,
     findings: Sequence[str],
+    conflicts: Sequence[ConsistencyConflict] = (),
     evaluated_at: str | None = None,
 ) -> EvaluationRecord:
     proposal = _require_sha256(proposal_sha256, label="proposal_sha256")
@@ -544,10 +857,21 @@ def build_evaluation_record(
     context = load_evaluation_context(ai_root, evaluation_context)
     if context.proposal_sha256 != proposal or context.mutation_sha256 != mutation:
         raise ArtifactLifecycleError("evaluation context is bound to another mutation")
+    candidate_paths = {candidate.path for candidate in context.candidates}
 
     timestamp = evaluated_at or _utc_now()
     if not isinstance(timestamp, str) or not timestamp.endswith("Z"):
         raise ArtifactLifecycleError("evaluated_at must be a UTC timestamp ending in Z")
+    assessment = _assessment(
+        groundedness=groundedness,
+        redundancy=redundancy,
+        consistency=consistency,
+        recommendation=recommendation,
+        findings=findings,
+        conflicts=conflicts,
+        record_version=EVALUATION_RECORD_VERSION,
+    )
+    _validated_conflicts(assessment.conflicts, expected_paths=candidate_paths)
     record = EvaluationRecord(
         proposal_sha256=proposal,
         mutation_sha256=mutation,
@@ -563,15 +887,10 @@ def build_evaluation_record(
             identifier=_metadata_string(model_identifier, label="model.identifier"),
             revision=_metadata_string(model_revision, label="model.revision"),
         ),
-        model_config=_validated_model_config(dict(model_config)),
-        assessment=_assessment(
-            groundedness=groundedness,
-            redundancy=redundancy,
-            consistency=consistency,
-            recommendation=recommendation,
-            findings=findings,
-        ),
+        model_config=_immutable_model_config(model_config),
+        assessment=assessment,
         evaluated_at=timestamp,
+        record_version=EVALUATION_RECORD_VERSION,
     )
     return parse_evaluation_record(record.to_json_bytes())
 
@@ -594,8 +913,7 @@ def parse_evaluation_record(data: bytes) -> EvaluationRecord:
     }
     if set(value) != required:
         raise ArtifactLifecycleError("evaluation record properties do not match contract")
-    if type(value["record_version"]) is not int or value["record_version"] != 1:
-        raise ArtifactLifecycleError("evaluation record_version must be integer 1")
+    record_version = _record_version(value["record_version"])
     proposal = _require_sha256(value["proposal_sha256"], label="proposal_sha256")
     mutation = _require_sha256(value["mutation_sha256"], label="mutation_sha256")
     generation = _require_sha256(value["generation_sha256"], label="generation_sha256")
@@ -618,20 +936,56 @@ def parse_evaluation_record(data: bytes) -> EvaluationRecord:
         identifier=_metadata_string(raw_model["identifier"], label="model.identifier"),
         revision=_metadata_string(raw_model["revision"], label="model.revision"),
     )
-    model_config = _validated_model_config(value["model_config"])
+    model_config = _immutable_model_config(value["model_config"])
 
     raw_assessment = value["assessment"]
-    if not isinstance(raw_assessment, dict) or set(raw_assessment) != {"groundedness", "redundancy", "consistency", "recommendation", "findings"}:
+    expected_assessment_properties = {
+        "groundedness",
+        "redundancy",
+        "consistency",
+        "recommendation",
+        "findings",
+    }
+    if record_version == EVALUATION_RECORD_VERSION:
+        expected_assessment_properties.add("conflicts")
+    if not isinstance(raw_assessment, dict) or set(raw_assessment) != expected_assessment_properties:
         raise ArtifactLifecycleError("evaluation assessment properties do not match contract")
     findings = raw_assessment["findings"]
     if not isinstance(findings, list):
         raise ArtifactLifecycleError("evaluation findings must be a list")
+    conflicts: tuple[ConsistencyConflict, ...] = ()
+    if record_version == EVALUATION_RECORD_VERSION:
+        raw_conflicts = raw_assessment["conflicts"]
+        if not isinstance(raw_conflicts, list):
+            raise ArtifactLifecycleError("evaluation conflicts must be a list")
+        parsed_conflicts: list[ConsistencyConflict] = []
+        for raw_conflict in raw_conflicts:
+            if not isinstance(raw_conflict, dict) or set(raw_conflict) != {
+                "candidate_path",
+                "proposal_claim",
+                "candidate_claim",
+                "incompatibility",
+            }:
+                raise ArtifactLifecycleError(
+                    "evaluation conflict properties do not match contract"
+                )
+            parsed_conflicts.append(
+                ConsistencyConflict(
+                    proposal_claim=raw_conflict["proposal_claim"],
+                    candidate_claim=raw_conflict["candidate_claim"],
+                    incompatibility=raw_conflict["incompatibility"],
+                    candidate_path=raw_conflict["candidate_path"],
+                )
+            )
+        conflicts = _validated_conflicts(tuple(parsed_conflicts))
     assessment = _assessment(
         groundedness=raw_assessment["groundedness"],
         redundancy=raw_assessment["redundancy"],
         consistency=raw_assessment["consistency"],
         recommendation=raw_assessment["recommendation"],
         findings=findings,
+        conflicts=conflicts,
+        record_version=record_version,
     )
     evaluated_at = value["evaluated_at"]
     if not isinstance(evaluated_at, str) or not evaluated_at.endswith("Z"):
@@ -646,31 +1000,69 @@ def parse_evaluation_record(data: bytes) -> EvaluationRecord:
         model_config=model_config,
         assessment=assessment,
         evaluated_at=evaluated_at,
+        record_version=record_version,
     )
+
+
+def _validate_evaluation_record_bindings(
+    ai_root: Path,
+    record: EvaluationRecord,
+) -> None:
+    proposal = _require_sha256(record.proposal_sha256, label="proposal_sha256")
+    mutation = _require_sha256(record.mutation_sha256, label="mutation_sha256")
+    generation = _require_sha256(record.generation_sha256, label="generation_sha256")
+    evaluation_context = _require_sha256(
+        record.evaluation_context_sha256,
+        label="evaluation_context_sha256",
+    )
+    accepted_mutation, _, _ = _load_accepted_mutation(ai_root, proposal)
+    if accepted_mutation != mutation:
+        raise ArtifactLifecycleError("evaluation mutation does not match accepted validation")
+    generation_record = load_generation_record(ai_root, generation)
+    if generation_record.proposal_sha256 != proposal:
+        raise ArtifactLifecycleError("evaluation generation record is bound to another proposal")
+    context = load_evaluation_context(ai_root, evaluation_context)
+    if context.proposal_sha256 != proposal or context.mutation_sha256 != mutation:
+        raise ArtifactLifecycleError("evaluation context is bound to another mutation")
+    if record.record_version == EVALUATION_RECORD_VERSION:
+        _validated_conflicts(
+            record.assessment.conflicts,
+            expected_paths={candidate.path for candidate in context.candidates},
+        )
 
 
 def store_evaluation_record(ai_root: Path, record: EvaluationRecord) -> tuple[str, Path]:
-    normalized = build_evaluation_record(
-        ai_root,
-        proposal_sha256=record.proposal_sha256,
-        mutation_sha256=record.mutation_sha256,
-        generation_sha256=record.generation_sha256,
-        evaluation_context_sha256=record.evaluation_context_sha256,
-        implementation_revision=record.evaluator.implementation_revision,
-        prompt_template_version=record.evaluator.prompt_template_version,
-        prompt_template_sha256=record.evaluator.prompt_template_sha256,
-        model_provider=record.model.provider,
-        model_identifier=record.model.identifier,
-        model_revision=record.model.revision,
-        model_config=record.model_config,
-        groundedness=record.assessment.groundedness,
-        redundancy=record.assessment.redundancy,
-        consistency=record.assessment.consistency,
-        recommendation=record.assessment.recommendation,
-        findings=record.assessment.findings,
-        evaluated_at=record.evaluated_at,
-    )
+    record_version = _record_version(record.record_version)
+    if record_version == LEGACY_EVALUATION_RECORD_VERSION:
+        # Legacy records are immutable evidence.  Parse/canonicalize them and
+        # validate their bindings, but never send them through the v2 builder.
+        normalized = parse_evaluation_record(record.to_json_bytes())
+        _validate_evaluation_record_bindings(ai_root, normalized)
+    else:
+        normalized = build_evaluation_record(
+            ai_root,
+            proposal_sha256=record.proposal_sha256,
+            mutation_sha256=record.mutation_sha256,
+            generation_sha256=record.generation_sha256,
+            evaluation_context_sha256=record.evaluation_context_sha256,
+            implementation_revision=record.evaluator.implementation_revision,
+            prompt_template_version=record.evaluator.prompt_template_version,
+            prompt_template_sha256=record.evaluator.prompt_template_sha256,
+            model_provider=record.model.provider,
+            model_identifier=record.model.identifier,
+            model_revision=record.model.revision,
+            model_config=record.model_config,
+            groundedness=record.assessment.groundedness,
+            redundancy=record.assessment.redundancy,
+            consistency=record.assessment.consistency,
+            recommendation=record.assessment.recommendation,
+            findings=record.assessment.findings,
+            conflicts=record.assessment.conflicts,
+            evaluated_at=record.evaluated_at,
+        )
     data = normalized.to_json_bytes()
+    if parse_evaluation_record(data) != normalized:
+        raise ArtifactLifecycleError("evaluation record canonical round-trip mismatch")
     digest = sha256_bytes(data)
     path = _stage_directory(ai_root, EVALUATION_STAGE) / f"{digest}.evaluation.json"
     return digest, _store_immutable(path, data)

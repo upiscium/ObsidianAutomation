@@ -15,6 +15,10 @@ from obsidian_automation.ai_input_planner import (
     plan_once,
 )
 from obsidian_automation.context_bundle import load_context_bundle
+from obsidian_automation.evaluator_contract import (
+    EVALUATOR_PROMPT_TEMPLATE_VERSION,
+    prompt_template_sha256 as evaluator_prompt_sha256,
+)
 from obsidian_automation.human_projection import parse_request
 from obsidian_automation.pre_review_job import job_status
 
@@ -318,6 +322,12 @@ def test_plan_once_creates_mixed_context_and_one_durable_job(tmp_path: Path) -> 
 
     from obsidian_automation.pre_review_job import load_recipe
     recipe = load_recipe(state, str(status["recipe_sha256"]))
+    assert recipe.evaluator.prompt_template_version == EVALUATOR_PROMPT_TEMPLATE_VERSION
+    assert recipe.evaluator.prompt_template_version == "knowledge-note-evaluator-v4"
+    assert recipe.evaluator.prompt_template_sha256 == evaluator_prompt_sha256()
+    assert recipe.evaluator.prompt_template_sha256 == (
+        "64be14bb5d17e351d9fb694dd17f9764a8a2e0daefa1f44946a5349ecec2aebd"
+    )
     assert dict(recipe.generator.model_config["options"]) == {
         "temperature": 0,
         "reasoning_effort": "none",

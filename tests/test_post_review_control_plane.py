@@ -12,6 +12,10 @@ from obsidian_automation.artifact_lifecycle import (
     ensure_artifact_layout,
 )
 from obsidian_automation.context_bundle import ContextBundle, store_context_bundle
+from obsidian_automation.evaluator_contract import (
+    EVALUATOR_PROMPT_TEMPLATE_VERSION,
+    prompt_template_sha256 as evaluator_prompt_sha256,
+)
 from obsidian_automation.generator_contract import (
     PROMPT_TEMPLATE_VERSION,
     prompt_template_sha256 as generator_prompt_sha256,
@@ -28,8 +32,8 @@ from obsidian_automation.production_orchestrator import ProductionOrchestrationE
 
 
 REV = "a" * 40
-PROMPT_SHA = "b" * 64
 GENERATOR_PROMPT_SHA = generator_prompt_sha256()
+EVALUATOR_PROMPT_SHA = evaluator_prompt_sha256()
 MUTATION = "3" * 64
 EVALUATION = "7" * 64
 
@@ -58,8 +62,8 @@ def _recipe():
         },
         "evaluator": {
             "implementation_revision": REV,
-            "prompt_template_version": "knowledge-note-evaluator-v3",
-            "prompt_template_sha256": PROMPT_SHA,
+            "prompt_template_version": EVALUATOR_PROMPT_TEMPLATE_VERSION,
+            "prompt_template_sha256": EVALUATOR_PROMPT_SHA,
             "provider": "openai-compatible",
             "model_identifier": "evaluator",
             "model_revision": "identifier:evaluator",
