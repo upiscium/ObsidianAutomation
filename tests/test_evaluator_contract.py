@@ -185,6 +185,42 @@ def test_consistency_conflict_quote_binding_is_exact_and_path_is_external() -> N
     assert bound.candidate_path == "11-Knowledge/existing.md"
 
 
+def test_consistency_multiline_quotes_bind_and_persist_exactly() -> None:
+    proposal_quote = "# Proposal\n\nUse WebDAV synchronization."
+    candidate_quote = "# Candidate\n\nUse local-only storage."
+    parsed = parse_dimension_evaluator_output(
+        json.dumps(
+            {
+                "assessment": "concern",
+                "findings": [],
+                "conflicts": [
+                    {
+                        "proposal_quote": proposal_quote,
+                        "candidate_quote": candidate_quote,
+                        "incompatibility": "The procedures require different storage paths.",
+                    }
+                ],
+            },
+            separators=(",", ":"),
+        ).encode(),
+        dimension="consistency",
+    )
+
+    bound = bind_consistency_proposals(
+        parsed,
+        candidate_path="11-Knowledge/existing.md",
+        proposal_content=f"Intro.\n\n{proposal_quote}\n\nTail.",
+        candidate_content=f"Intro.\n\n{candidate_quote}\n\nTail.",
+    )
+    result = finalize_consistency_candidate(
+        bound,
+        (ConsistencyVerification("contradiction", "The storage paths differ."),),
+    )
+
+    assert result.conflicts[0].proposal_claim == proposal_quote
+    assert result.conflicts[0].candidate_claim == candidate_quote
+
+
 def test_consistency_conflict_binding_rejects_fabricated_quotes() -> None:
     parsed = parse_dimension_evaluator_output(
         json.dumps(
@@ -427,7 +463,7 @@ def test_evaluator_provider_calls_are_bounded_by_wall_clock_budget(monkeypatch) 
             "findings": [],
             "conflicts": [
                 {
-                    "proposal_quote": "Proposal\nclaim",
+                    "proposal_quote": "Proposal\rclaim",
                     "candidate_quote": "Candidate.",
                     "incompatibility": "Incompatible.",
                 }
@@ -525,6 +561,60 @@ def test_consistency_parser_rejects_non_utf8_conflict_fields() -> None:
         parse_dimension_evaluator_output(
             b'{"assessment":"concern","findings":[],"conflicts":[{"proposal_quote":"\\ud800","candidate_quote":"Candidate.","incompatibility":"Incompatible."}]}',
             dimension="consistency",
+        )
+
+
+@pytest.mark.parametrize("control", ["\r", "\x00", "\x7f", "\u0085"])
+def test_consistency_parser_rejects_non_lf_quote_controls(control: str) -> None:
+    value = {
+        "assessment": "concern",
+        "findings": [],
+        "conflicts": [
+            {
+                "proposal_quote": f"Proposal{control}claim",
+                "candidate_quote": "Candidate.",
+                "incompatibility": "Incompatible.",
+            }
+        ],
+    }
+
+    with pytest.raises(ArtifactLifecycleError, match="control characters"):
+        parse_dimension_evaluator_output(
+            json.dumps(value, separators=(",", ":")).encode(),
+            dimension="consistency",
+        )
+
+
+def test_consistency_parser_keeps_non_quote_fields_single_line() -> None:
+    value = {
+        "assessment": "concern",
+        "findings": [],
+        "conflicts": [
+            {
+                "proposal_quote": "Proposal\nclaim",
+                "candidate_quote": "Candidate.",
+                "incompatibility": "Incompatible.\nStill incompatible.",
+            }
+        ],
+    }
+
+    with pytest.raises(ArtifactLifecycleError, match="control characters"):
+        parse_dimension_evaluator_output(
+            json.dumps(value, separators=(",", ":")).encode(),
+            dimension="consistency",
+        )
+
+
+def test_consistency_verifier_explanation_remains_single_line() -> None:
+    with pytest.raises(ArtifactLifecycleError, match="control characters"):
+        parse_consistency_verifier_output(
+            json.dumps(
+                {
+                    "verdict": "contradiction",
+                    "explanation": "First line.\nSecond line.",
+                },
+                separators=(",", ":"),
+            ).encode()
         )
 
 
