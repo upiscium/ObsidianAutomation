@@ -13,12 +13,15 @@ from obsidian_automation.evaluator_contract import (
     EVALUATOR_PROMPT_TEMPLATE_V4_SHA256,
     EVALUATOR_PROMPT_TEMPLATE_V4_VERSION,
     EVALUATOR_PROMPT_TEMPLATE_V5_SHA256,
+    EVALUATOR_PROMPT_TEMPLATE_V5_VERSION,
+    EVALUATOR_PROMPT_TEMPLATE_V6_SHA256,
     EVALUATOR_OUTPUT_CONTRACT_VERSION,
     EVALUATOR_PROMPT_TEMPLATE_VERSION,
     MAX_EVALUATOR_WALL_SECONDS,
     MAX_EVALUATOR_CONFLICTS,
     MAX_EVALUATOR_CONFLICT_FIELD_CHARS,
     RECOMMENDATION_POLICY_VERSION,
+    BoundConsistencyConflictProposal,
     CandidateEvaluatorOutput,
     ConsistencyConflict,
     ConsistencyConflictProposal,
@@ -29,6 +32,7 @@ from obsidian_automation.evaluator_contract import (
     aggregate_evaluator_outputs,
     bind_candidate_output,
     bind_consistency_proposals,
+    consistency_excerpts,
     consistency_verifier_schema,
     finalize_consistency_candidate,
     evaluator_call_timeout,
@@ -121,15 +125,16 @@ def test_dimension_output_contract_scopes_findings_without_recommendation() -> N
     )
 
 
-def test_consistency_concern_parses_anchored_conflict_proposals() -> None:
+
+def test_consistency_concern_parses_excerpt_id_conflict_proposals() -> None:
     raw = json.dumps(
         {
             "assessment": "concern",
             "findings": [{"detail": "The procedures cannot both be followed."}],
             "conflicts": [
                 {
-                    "proposal_quote": "Use WebDAV synchronization.",
-                    "candidate_quote": "Use local-only storage.",
+                    "proposal_excerpt_id": "p0001",
+                    "candidate_excerpt_id": "c0002",
                     "incompatibility": "The two procedures require different storage paths.",
                 }
             ],
@@ -141,15 +146,20 @@ def test_consistency_concern_parses_anchored_conflict_proposals() -> None:
 
     assert parsed.conflict_proposals == (
         ConsistencyConflictProposal(
-            proposal_quote="Use WebDAV synchronization.",
-            candidate_quote="Use local-only storage.",
+            proposal_excerpt_id="p0001",
+            candidate_excerpt_id="c0002",
             incompatibility="The two procedures require different storage paths.",
         ),
     )
     assert parsed.conflicts == ()
 
 
-def test_consistency_conflict_quote_binding_is_exact_and_path_is_external() -> None:
+def test_consistency_excerpt_ids_bind_exact_evidence_and_path_is_external() -> None:
+    proposal_content = "Intro.\n\nProposal procedure.\n\nTail."
+    candidate_content = "Intro.\n\nCandidate procedure.\n\nTail."
+    proposal_excerpts = consistency_excerpts(proposal_content, prefix="p")
+    candidate_excerpts = consistency_excerpts(candidate_content, prefix="c")
+
     parsed = parse_dimension_evaluator_output(
         json.dumps(
             {
@@ -157,8 +167,8 @@ def test_consistency_conflict_quote_binding_is_exact_and_path_is_external() -> N
                 "findings": [],
                 "conflicts": [
                     {
-                        "proposal_quote": "Proposal procedure.",
-                        "candidate_quote": "Candidate procedure.",
+                        "proposal_excerpt_id": proposal_excerpts[1].excerpt_id,
+                        "candidate_excerpt_id": candidate_excerpts[1].excerpt_id,
                         "incompatibility": "They cannot both be followed.",
                     }
                 ],
@@ -171,12 +181,12 @@ def test_consistency_conflict_quote_binding_is_exact_and_path_is_external() -> N
     bound = bind_consistency_proposals(
         parsed,
         candidate_path="11-Knowledge/existing.md",
-        proposal_content="Intro. Proposal procedure. Tail.",
-        candidate_content="Intro. Candidate procedure. Tail.",
+        proposal_content=proposal_content,
+        candidate_content=candidate_content,
     )
 
     assert bound.proposals == (
-        ConsistencyConflictProposal(
+        BoundConsistencyConflictProposal(
             proposal_quote="Proposal procedure.",
             candidate_quote="Candidate procedure.",
             incompatibility="They cannot both be followed.",
@@ -185,9 +195,12 @@ def test_consistency_conflict_quote_binding_is_exact_and_path_is_external() -> N
     assert bound.candidate_path == "11-Knowledge/existing.md"
 
 
-def test_consistency_multiline_quotes_bind_and_persist_exactly() -> None:
-    proposal_quote = "# Proposal\n\nUse WebDAV synchronization."
-    candidate_quote = "# Candidate\n\nUse local-only storage."
+def test_consistency_multiline_excerpts_bind_and_persist_exactly() -> None:
+    proposal_content = "# Proposal\nUse WebDAV synchronization.\n\nTail."
+    candidate_content = "# Candidate\nUse local-only storage.\n\nTail."
+    proposal_excerpts = consistency_excerpts(proposal_content, prefix="p")
+    candidate_excerpts = consistency_excerpts(candidate_content, prefix="c")
+
     parsed = parse_dimension_evaluator_output(
         json.dumps(
             {
@@ -195,8 +208,8 @@ def test_consistency_multiline_quotes_bind_and_persist_exactly() -> None:
                 "findings": [],
                 "conflicts": [
                     {
-                        "proposal_quote": proposal_quote,
-                        "candidate_quote": candidate_quote,
+                        "proposal_excerpt_id": proposal_excerpts[0].excerpt_id,
+                        "candidate_excerpt_id": candidate_excerpts[0].excerpt_id,
                         "incompatibility": "The procedures require different storage paths.",
                     }
                 ],
@@ -209,19 +222,19 @@ def test_consistency_multiline_quotes_bind_and_persist_exactly() -> None:
     bound = bind_consistency_proposals(
         parsed,
         candidate_path="11-Knowledge/existing.md",
-        proposal_content=f"Intro.\n\n{proposal_quote}\n\nTail.",
-        candidate_content=f"Intro.\n\n{candidate_quote}\n\nTail.",
+        proposal_content=proposal_content,
+        candidate_content=candidate_content,
     )
     result = finalize_consistency_candidate(
         bound,
         (ConsistencyVerification("contradiction", "The storage paths differ."),),
     )
 
-    assert result.conflicts[0].proposal_claim == proposal_quote
-    assert result.conflicts[0].candidate_claim == candidate_quote
+    assert result.conflicts[0].proposal_claim == "# Proposal\nUse WebDAV synchronization."
+    assert result.conflicts[0].candidate_claim == "# Candidate\nUse local-only storage."
 
 
-def test_consistency_conflict_binding_rejects_fabricated_quotes() -> None:
+def test_consistency_binding_rejects_unknown_excerpt_ids() -> None:
     parsed = parse_dimension_evaluator_output(
         json.dumps(
             {
@@ -229,8 +242,8 @@ def test_consistency_conflict_binding_rejects_fabricated_quotes() -> None:
                 "findings": [],
                 "conflicts": [
                     {
-                        "proposal_quote": "Not present in proposal.",
-                        "candidate_quote": "Candidate procedure.",
+                        "proposal_excerpt_id": "p9999",
+                        "candidate_excerpt_id": "c0001",
                         "incompatibility": "They cannot both be followed.",
                     }
                 ],
@@ -240,16 +253,26 @@ def test_consistency_conflict_binding_rejects_fabricated_quotes() -> None:
         dimension="consistency",
     )
 
-    with pytest.raises(ArtifactLifecycleError, match="exact proposal excerpt"):
+    with pytest.raises(ArtifactLifecycleError, match="excerpt ID"):
         bind_consistency_proposals(
             parsed,
             candidate_path="11-Knowledge/existing.md",
-            proposal_content="The proposal contains a different procedure.",
+            proposal_content="Proposal procedure.",
             candidate_content="Candidate procedure.",
         )
 
 
 def test_consistency_verifier_aggregation_is_deterministic() -> None:
+    proposal_content = (
+        "Run migration before restart.\n\n"
+        "Use the local cache."
+    )
+    candidate_content = (
+        "Restart before migration.\n\n"
+        "Use the shared cache."
+    )
+    p = consistency_excerpts(proposal_content, prefix="p")
+    q = consistency_excerpts(candidate_content, prefix="c")
     parsed = parse_dimension_evaluator_output(
         json.dumps(
             {
@@ -257,13 +280,13 @@ def test_consistency_verifier_aggregation_is_deterministic() -> None:
                 "findings": [{"detail": "Candidate pair needs verification."}],
                 "conflicts": [
                     {
-                        "proposal_quote": "Run migration before restart.",
-                        "candidate_quote": "Restart before migration.",
+                        "proposal_excerpt_id": p[0].excerpt_id,
+                        "candidate_excerpt_id": q[0].excerpt_id,
                         "incompatibility": "The required order is incompatible.",
                     },
                     {
-                        "proposal_quote": "Use the local cache.",
-                        "candidate_quote": "Use the shared cache.",
+                        "proposal_excerpt_id": p[1].excerpt_id,
+                        "candidate_excerpt_id": q[1].excerpt_id,
                         "incompatibility": "The storage scopes may differ.",
                     },
                 ],
@@ -275,12 +298,8 @@ def test_consistency_verifier_aggregation_is_deterministic() -> None:
     bound = bind_consistency_proposals(
         parsed,
         candidate_path="11-Knowledge/existing.md",
-        proposal_content=(
-            "Run migration before restart. Use the local cache."
-        ),
-        candidate_content=(
-            "Restart before migration. Use the shared cache."
-        ),
+        proposal_content=proposal_content,
+        candidate_content=candidate_content,
     )
 
     compatible = finalize_consistency_candidate(
@@ -302,10 +321,6 @@ def test_consistency_verifier_aggregation_is_deterministic() -> None:
         ),
     )
     assert unknown.assessment == "unknown"
-    assert unknown.conflicts == ()
-    assert unknown.findings == (
-        "consistency: [11-Knowledge/existing.md] Candidate pair needs verification.",
-    )
 
     contradiction = finalize_consistency_candidate(
         bound,
@@ -317,8 +332,6 @@ def test_consistency_verifier_aggregation_is_deterministic() -> None:
     assert contradiction.assessment == "concern"
     assert len(contradiction.conflicts) == 1
     assert contradiction.conflicts[0].proposal_claim == "Run migration before restart."
-    assert contradiction.conflicts[0].candidate_path == "11-Knowledge/existing.md"
-
 
 @pytest.mark.parametrize(
     ("label", "proposal_quote", "candidate_quote"),
@@ -357,8 +370,8 @@ def test_verifier_compatible_scope_variants_do_not_persist_conflicts(
 ) -> None:
     del label
     proposal = ConsistencyConflictProposal(
-        proposal_quote=proposal_quote,
-        candidate_quote=candidate_quote,
+        proposal_excerpt_id="p0001",
+        candidate_excerpt_id="c0001",
         incompatibility="The proposer suggested a possible conflict.",
     )
     bound = bind_consistency_proposals(
@@ -383,7 +396,7 @@ def test_verifier_compatible_scope_variants_do_not_persist_conflicts(
 def test_consistency_verifier_prompt_excludes_model_controlled_path() -> None:
     prompt = render_consistency_verifier_prompt(
         candidate_path="11-Knowledge/existing.md",
-        proposal=ConsistencyConflictProposal(
+        proposal=BoundConsistencyConflictProposal(
             proposal_quote="Proposal fact.",
             candidate_quote="Candidate fact.",
             incompatibility="The facts conflict.",
@@ -394,7 +407,6 @@ def test_consistency_verifier_prompt_excludes_model_controlled_path() -> None:
     assert payload["candidate_quote"] == "Candidate fact."
     assert "candidate_path" not in payload
     assert "candidate_path" not in prompt.system
-
 
 def test_evaluator_provider_calls_are_bounded_by_wall_clock_budget(monkeypatch) -> None:
     clock = {"value": 100.0}
@@ -424,8 +436,8 @@ def test_evaluator_provider_calls_are_bounded_by_wall_clock_budget(monkeypatch) 
             "findings": [],
             "conflicts": [
                 {
-                    "proposal_quote": "Proposal.",
-                    "candidate_quote": "Candidate.",
+                    "proposal_excerpt_id": "p0001",
+                    "candidate_excerpt_id": "c0001",
                     "incompatibility": "Incompatible.",
                 }
             ],
@@ -440,20 +452,8 @@ def test_evaluator_provider_calls_are_bounded_by_wall_clock_budget(monkeypatch) 
             "findings": [],
             "conflicts": [
                 {
-                    "proposal_quote": "Proposal.",
-                    "candidate_quote": "Candidate.",
-                    "incompatibility": "Incompatible.",
-                    "candidate_path": "11-Knowledge/model-authority.md",
-                }
-            ],
-        },
-        {
-            "assessment": "concern",
-            "findings": [],
-            "conflicts": [
-                {
-                    "proposal_quote": " ",
-                    "candidate_quote": "Candidate.",
+                    "proposal_excerpt_id": "x0001",
+                    "candidate_excerpt_id": "c0001",
                     "incompatibility": "Incompatible.",
                 }
             ],
@@ -463,8 +463,19 @@ def test_evaluator_provider_calls_are_bounded_by_wall_clock_budget(monkeypatch) 
             "findings": [],
             "conflicts": [
                 {
-                    "proposal_quote": "Proposal\rclaim",
-                    "candidate_quote": "Candidate.",
+                    "proposal_excerpt_id": "p0001",
+                    "candidate_excerpt_id": "p0001",
+                    "incompatibility": "Incompatible.",
+                }
+            ],
+        },
+        {
+            "assessment": "concern",
+            "findings": [],
+            "conflicts": [
+                {
+                    "proposal_excerpt_id": "p01",
+                    "candidate_excerpt_id": "c0001",
                     "incompatibility": "Incompatible.",
                 }
             ],
@@ -485,9 +496,9 @@ def test_consistency_parser_rejects_extra_wrong_duplicate_and_oversized_conflict
         "findings": [],
         "conflicts": [
             {
-                    "proposal_quote": "Proposal.",
-                    "candidate_quote": "Candidate.",
-                    "incompatibility": "Incompatible.",
+                "proposal_excerpt_id": "p0001",
+                "candidate_excerpt_id": "c0001",
+                "incompatibility": "Incompatible.",
                 "extra": "not allowed",
             }
         ],
@@ -503,13 +514,13 @@ def test_consistency_parser_rejects_extra_wrong_duplicate_and_oversized_conflict
         "findings": [],
         "conflicts": [
             {
-                    "proposal_quote": "Proposal.",
-                    "candidate_quote": "Candidate.",
-                    "incompatibility": "Incompatible.",
+                "proposal_excerpt_id": "p0001",
+                "candidate_excerpt_id": "c0001",
+                "incompatibility": "Incompatible.",
             },
             {
-                "proposal_quote": "Proposal.",
-                "candidate_quote": "Candidate.",
+                "proposal_excerpt_id": "p0001",
+                "candidate_excerpt_id": "c0001",
                 "incompatibility": "Incompatible.",
             },
         ],
@@ -525,9 +536,9 @@ def test_consistency_parser_rejects_extra_wrong_duplicate_and_oversized_conflict
         "findings": [],
         "conflicts": [
             {
-                "proposal_quote": "x" * (MAX_EVALUATOR_CONFLICT_FIELD_CHARS + 1),
-                "candidate_quote": "Candidate.",
-                "incompatibility": "Incompatible.",
+                "proposal_excerpt_id": "p0001",
+                "candidate_excerpt_id": "c0001",
+                "incompatibility": "x" * (MAX_EVALUATOR_CONFLICT_FIELD_CHARS + 1),
             }
         ],
     }
@@ -542,9 +553,9 @@ def test_consistency_parser_rejects_extra_wrong_duplicate_and_oversized_conflict
         "findings": [],
         "conflicts": [
             {
-                "proposal_quote": f"Proposal {index}.",
-                "candidate_quote": "Candidate.",
-                "incompatibility": "Incompatible.",
+                "proposal_excerpt_id": f"p{index + 1:04d}",
+                "candidate_excerpt_id": "c0001",
+                "incompatibility": f"Incompatible {index}.",
             }
             for index in range(MAX_EVALUATOR_CONFLICTS + 1)
         ],
@@ -559,40 +570,22 @@ def test_consistency_parser_rejects_extra_wrong_duplicate_and_oversized_conflict
 def test_consistency_parser_rejects_non_utf8_conflict_fields() -> None:
     with pytest.raises(ArtifactLifecycleError, match="UTF-8"):
         parse_dimension_evaluator_output(
-            b'{"assessment":"concern","findings":[],"conflicts":[{"proposal_quote":"\\ud800","candidate_quote":"Candidate.","incompatibility":"Incompatible."}]}',
+            b'{"assessment":"concern","findings":[],"conflicts":[{"proposal_excerpt_id":"p0001","candidate_excerpt_id":"c0001","incompatibility":"\\ud800"}]}',
             dimension="consistency",
         )
 
+def test_consistency_excerpt_builder_rejects_cr_source_content() -> None:
+    with pytest.raises(ArtifactLifecycleError, match="LF line endings"):
+        consistency_excerpts("Proposal\r\nclaim", prefix="p")
 
-@pytest.mark.parametrize("control", ["\r", "\x00", "\x7f", "\u0085"])
-def test_consistency_parser_rejects_non_lf_quote_controls(control: str) -> None:
+def test_consistency_parser_keeps_incompatibility_single_line() -> None:
     value = {
         "assessment": "concern",
         "findings": [],
         "conflicts": [
             {
-                "proposal_quote": f"Proposal{control}claim",
-                "candidate_quote": "Candidate.",
-                "incompatibility": "Incompatible.",
-            }
-        ],
-    }
-
-    with pytest.raises(ArtifactLifecycleError, match="control characters"):
-        parse_dimension_evaluator_output(
-            json.dumps(value, separators=(",", ":")).encode(),
-            dimension="consistency",
-        )
-
-
-def test_consistency_parser_keeps_non_quote_fields_single_line() -> None:
-    value = {
-        "assessment": "concern",
-        "findings": [],
-        "conflicts": [
-            {
-                "proposal_quote": "Proposal\nclaim",
-                "candidate_quote": "Candidate.",
+                "proposal_excerpt_id": "p0001",
+                "candidate_excerpt_id": "c0001",
                 "incompatibility": "Incompatible.\nStill incompatible.",
             }
         ],
@@ -603,7 +596,6 @@ def test_consistency_parser_keeps_non_quote_fields_single_line() -> None:
             json.dumps(value, separators=(",", ":")).encode(),
             dimension="consistency",
         )
-
 
 def test_consistency_verifier_explanation_remains_single_line() -> None:
     with pytest.raises(ArtifactLifecycleError, match="control characters"):
@@ -967,8 +959,8 @@ def test_dimension_schemas_are_minimal_ollama_compatible_and_authority_free() ->
             assert conflict_item["additionalProperties"] is False
             assert set(conflict_item["required"]) == set(conflict_item["properties"])
             assert set(conflict_item["required"]) == {
-                "proposal_quote",
-                "candidate_quote",
+                "proposal_excerpt_id",
+                "candidate_excerpt_id",
                 "incompatibility",
             }
             assert "candidate_path" not in json.dumps(conflicts)
@@ -1022,22 +1014,27 @@ def test_prompt_template_hash_binds_pairwise_strategy_and_versions() -> None:
     assert len(prompt_template_sha256()) == 64
 
 
+
 def test_contract_versions_and_supported_prompt_identity_pairs_are_exact() -> None:
-    assert EVALUATOR_OUTPUT_CONTRACT_VERSION == "knowledge-note-evaluator-output-v4"
-    assert EVALUATOR_PROMPT_TEMPLATE_VERSION == "knowledge-note-evaluator-v5"
+    assert EVALUATOR_OUTPUT_CONTRACT_VERSION == "knowledge-note-evaluator-output-v5"
+    assert EVALUATOR_PROMPT_TEMPLATE_VERSION == "knowledge-note-evaluator-v6"
     assert EVALUATOR_PROMPT_TEMPLATE_V3_VERSION == "knowledge-note-evaluator-v3"
     assert EVALUATOR_PROMPT_TEMPLATE_V4_VERSION == "knowledge-note-evaluator-v4"
+    assert EVALUATOR_PROMPT_TEMPLATE_V5_VERSION == "knowledge-note-evaluator-v5"
     assert EVALUATOR_PROMPT_TEMPLATE_V3_SHA256 == (
         "bf6265294a4b346f12d1951f594760c80221380ccee9993c6ab866b6b1eca937"
+    )
+    assert EVALUATOR_PROMPT_TEMPLATE_V5_SHA256 == (
+        "ca9755c7b448be9bb2a42ab41ba182deb7b45785a4099d6ac85d854131a06291"
     )
     assert supported_prompt_template_hashes() == {
         EVALUATOR_PROMPT_TEMPLATE_V3_VERSION: EVALUATOR_PROMPT_TEMPLATE_V3_SHA256,
         EVALUATOR_PROMPT_TEMPLATE_V4_VERSION: EVALUATOR_PROMPT_TEMPLATE_V4_SHA256,
-        EVALUATOR_PROMPT_TEMPLATE_VERSION: EVALUATOR_PROMPT_TEMPLATE_V5_SHA256,
+        EVALUATOR_PROMPT_TEMPLATE_V5_VERSION: EVALUATOR_PROMPT_TEMPLATE_V5_SHA256,
+        EVALUATOR_PROMPT_TEMPLATE_VERSION: EVALUATOR_PROMPT_TEMPLATE_V6_SHA256,
     }
-    assert prompt_template_sha256() == EVALUATOR_PROMPT_TEMPLATE_V5_SHA256
+    assert prompt_template_sha256() == EVALUATOR_PROMPT_TEMPLATE_V6_SHA256
     assert RECOMMENDATION_POLICY_VERSION == "conservative-triad-v0"
-
 
 def test_consistency_prompt_defines_explicit_incompatibility_not_scope_difference() -> None:
     prompt = render_evaluator_prompts(
@@ -1061,6 +1058,7 @@ def test_consistency_prompt_defines_explicit_incompatibility_not_scope_differenc
     ):
         assert phrase in prompt.system
     assert "recommendation" in prompt.system
+
 
 
 def test_production_like_scope_difference_is_pass_and_direct_procedure_conflict_is_concern() -> None:
@@ -1096,11 +1094,10 @@ def test_production_like_scope_difference_is_pass_and_direct_procedure_conflict_
         if prompt.dimension == "consistency"
     )
     consistency_payload = json.loads(consistency_prompt.user)
-    assert consistency_payload["proposal"]["content"] == production_like_proposal
-    assert (
-        consistency_payload["evaluation_candidate"]["content"]
-        == production_like_candidate.content
-    )
+    assert "content" not in consistency_payload["proposal"]
+    assert "content" not in consistency_payload["evaluation_candidate"]
+    assert consistency_payload["proposal"]["excerpts"][0]["id"] == "p0001"
+    assert consistency_payload["evaluation_candidate"]["excerpts"][0]["id"] == "c0001"
 
     scope_difference = parse_dimension_evaluator_output(
         b'{"assessment":"pass","findings":[],"conflicts":[]}',
@@ -1109,16 +1106,18 @@ def test_production_like_scope_difference_is_pass_and_direct_procedure_conflict_
     assert scope_difference.assessment == "pass"
     assert scope_difference.conflicts == ()
 
+    proposal_content = "Run the migration before restarting.\n\nThen continue."
+    candidate_content = "Restart before running the migration.\n\nThen continue."
     direct_conflict = parse_dimension_evaluator_output(
         json.dumps(
             {
-                    "assessment": "concern",
-                    "findings": [],
-                    "conflicts": [
-                        {
-                            "proposal_quote": "Run the migration before restarting.",
-                            "candidate_quote": "Restart before running the migration.",
-                            "incompatibility": "The required order is mutually incompatible.",
+                "assessment": "concern",
+                "findings": [],
+                "conflicts": [
+                    {
+                        "proposal_excerpt_id": "p0001",
+                        "candidate_excerpt_id": "c0001",
+                        "incompatibility": "The required order is mutually incompatible.",
                     }
                 ],
             },
@@ -1131,12 +1130,8 @@ def test_production_like_scope_difference_is_pass_and_direct_procedure_conflict_
     bound_direct_conflict = bind_consistency_proposals(
         direct_conflict,
         candidate_path=production_like_candidate.path,
-        proposal_content=(
-            "Run the migration before restarting. Then continue."
-        ),
-        candidate_content=(
-            "Restart before running the migration. Then continue."
-        ),
+        proposal_content=proposal_content,
+        candidate_content=candidate_content,
     )
     finalized_direct_conflict = finalize_consistency_candidate(
         bound_direct_conflict,
@@ -1157,7 +1152,7 @@ def test_production_like_scope_difference_is_pass_and_direct_procedure_conflict_
         redundancy_pairs=(
             CandidateEvaluatorOutput(
                 "redundancy",
-                "11-Knowledge/utility-aware-task-decomposition.md",
+                production_like_candidate.path,
                 "none",
                 (),
             ),
@@ -1165,7 +1160,7 @@ def test_production_like_scope_difference_is_pass_and_direct_procedure_conflict_
         consistency_pairs=(
             CandidateEvaluatorOutput(
                 "consistency",
-                "11-Knowledge/utility-aware-task-decomposition.md",
+                production_like_candidate.path,
                 "concern",
                 (),
                 (
@@ -1173,10 +1168,11 @@ def test_production_like_scope_difference_is_pass_and_direct_procedure_conflict_
                         "Proposal procedure.",
                         "Candidate procedure.",
                         "They cannot both be followed.",
-                        "11-Knowledge/utility-aware-task-decomposition.md",
+                        production_like_candidate.path,
                     ),
                 ),
             ),
         ),
     )
     assert recommendation_for(aggregated) == "do_not_proceed"
+

@@ -166,13 +166,14 @@ Human reviewer
 ```
 
 Evaluator assesses groundedness, redundancy, and consistency using output
-contract `knowledge-note-evaluator-output-v4` and current prompt
-`knowledge-note-evaluator-v5` (SHA
-`ca9755c7b448be9bb2a42ab41ba182deb7b45785a4099d6ac85d854131a06291`). Its
-recommendation is advisory machine output. Consistency first proposes bounded
-exact quote pairs, then independently verifies each pair; only a verifier
-`contradiction` becomes persisted evidence. Deterministic code binds each
-`candidate_path` outside the model. Current Evaluation Records are v2, while
+contract `knowledge-note-evaluator-output-v5` and current prompt
+`knowledge-note-evaluator-v6` (SHA
+`45439ec5f3ae0d9dd31fa5af37c45c572b3e520ac87548f0a739acf1ee5f9041`). Its
+recommendation is advisory machine output. For Consistency, deterministic code
+builds exact proposal/candidate excerpt tables and the model selects excerpt IDs.
+Code resolves those IDs back to exact source bytes before independent verifier
+calls; only a verifier `contradiction` becomes persisted evidence. Deterministic
+code also binds each `candidate_path` outside the model. Current Evaluation Records are v2, while
 historical v1 records remain readable.
 
 Human-facing Obsidian views are projected through separate non-authoritative stages.

@@ -52,7 +52,8 @@ from .ollama_generator import (
 
 
 PROVIDER_NAME = "ollama"
-ADAPTER_VERSION = "ollama-evaluator-chat-structured-v3"
+ADAPTER_VERSION = "ollama-evaluator-chat-structured-v4"
+PREVIOUS_ADAPTER_VERSION = "ollama-evaluator-chat-structured-v3"
 LEGACY_ADAPTER_VERSION = "ollama-evaluator-chat-structured-v2"
 EVALUATION_STRATEGY = EVALUATOR_STRATEGY_VERSION
 LEGACY_EVALUATION_STRATEGY = EVALUATOR_STRATEGY_V4

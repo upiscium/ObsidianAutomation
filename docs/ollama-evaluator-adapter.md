@@ -1,10 +1,10 @@
-# Ollama Evaluator Adapter v3
+# Ollama Evaluator Adapter v4
 
 ## Purpose
 
 `obsidian-knowledge-evaluate` connects the advisory Evaluator stage to Ollama while preserving the existing authority topology.
 
-Adapter v3 executes the current v5 prompt contract and v4 output contract as one Groundedness call plus Redundancy and Consistency proposer calls for every Evaluation Context candidate. Each bounded Consistency proposal then receives one verifier call:
+Adapter v4 executes the current v6 prompt contract and v5 output contract as one Groundedness call plus Redundancy and Consistency proposer calls for every Evaluation Context candidate. Each bounded Consistency proposal then receives one verifier call:
 
 ```text
 accepted mutation
@@ -18,7 +18,9 @@ Groundedness /api/chat
 for each candidate, in Evaluation Context order:
   Redundancy /api/chat
   Consistency proposer /api/chat
-    ↓ one call per exact quote pair
+    ↓ model-selected deterministic excerpt IDs
+  deterministic excerpt resolution
+    ↓ one call per bound exact excerpt pair
   Consistency verifier /api/chat
         ↓
 all calls strict-parse and bind successfully
@@ -33,15 +35,17 @@ No partial Evaluation Record is written if any provider call or parser/binding s
 The current prompt identity is:
 
 ```text
-knowledge-note-evaluator-v5
-ca9755c7b448be9bb2a42ab41ba182deb7b45785a4099d6ac85d854131a06291
+knowledge-note-evaluator-v6
+45439ec5f3ae0d9dd31fa5af37c45c572b3e520ac87548f0a739acf1ee5f9041
 ```
 
 The historical identities `knowledge-note-evaluator-v3` /
-`bf6265294a4b346f12d1951f594760c80221380ccee9993c6ab866b6b1eca937` and
+`bf6265294a4b346f12d1951f594760c80221380ccee9993c6ab866b6b1eca937`,
 `knowledge-note-evaluator-v4` /
-`9411d74c10cd8c3450be6b79f12c644433862a4b292a26db7444d32606ddea3b` remain
-readable in recipes for audit. Current runtime preflight blocks historical
+`9411d74c10cd8c3450be6b79f12c644433862a4b292a26db7444d32606ddea3b`,
+and `knowledge-note-evaluator-v5` /
+`ca9755c7b448be9bb2a42ab41ba182deb7b45785a4099d6ac85d854131a06291`
+remain readable in recipes for audit. Current runtime preflight blocks historical
 recipes before provider contact; unknown and cross-paired prompt version/hash
 identities are rejected.
 
@@ -108,7 +112,7 @@ The model returns:
 }
 ```
 
-The Consistency proposer response additionally uses the v4 structured-conflict shape when
+The Consistency proposer response additionally uses the v5 structured-conflict shape when
 the assessment is `concern`:
 
 ```json
@@ -117,17 +121,18 @@ the assessment is `concern`:
   "findings": [{"detail": "concise observation"}],
   "conflicts": [
     {
-      "proposal_quote": "...",
-      "candidate_quote": "...",
+      "proposal_excerpt_id": "p0001",
+      "candidate_excerpt_id": "c0001",
       "incompatibility": "..."
     }
   ]
 }
 ```
 
-Each quote/evidence field is bounded to 1,000 characters and at most four
-proposals are accepted. Each proposal is exact-quote checked before its verifier
-call. A verifier returns `contradiction`, `compatible`, or `unknown`; only
+At most four proposals are accepted. The model selects deterministic excerpt IDs
+rather than reproducing quote bytes. The adapter resolves those IDs against the
+exact proposal/candidate excerpt tables before its verifier call; unknown IDs fail
+closed. A verifier returns `contradiction`, `compatible`, or `unknown`; only
 `contradiction` becomes persisted conflict evidence. Different topic or scope,
 missing framework/details, omissions, extra detail, formatting, and style are
 not conflicts.
@@ -135,8 +140,7 @@ not conflicts.
 The verifier receives only the two anchored quotes and the proposed
 incompatibility; it does not receive or control candidate identity or path. The
 model never controls dimension, candidate identity, candidate path,
-recommendation, model identity, or aggregation policy. The current output
- contract is `knowledge-note-evaluator-output-v4`.
+recommendation, model identity, or aggregation policy. The current output contract is `knowledge-note-evaluator-output-v5`.
 
 ## Evidence isolation
 
