@@ -32,7 +32,12 @@
           "type": "string",
           "pattern": "^[0-9a-f]{40,64}$"
         },
-        "prompt_template_version": {"const": "knowledge-note-generator-v0"},
+        "prompt_template_version": {
+          "enum": [
+            "knowledge-note-generator-v0",
+            "knowledge-note-generator-v1"
+          ]
+        },
         "prompt_template_sha256": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"
@@ -50,7 +55,25 @@
             "options": {"type": "object"}
           }
         }
-      }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "prompt_template_version": {"const": "knowledge-note-generator-v0"},
+            "prompt_template_sha256": {
+              "const": "820f86bf9f7e5495be64608690123ec31562441d4d774095d5d61ba7db9abafd"
+            }
+          }
+        },
+        {
+          "properties": {
+            "prompt_template_version": {"const": "knowledge-note-generator-v1"},
+            "prompt_template_sha256": {
+              "const": "ebdcbfdc5008a1c84366555debc15842e154cfaf51919d023c30d3d5c3fa9248"
+            }
+          }
+        }
+      ]
     },
     "validator": {
       "type": "object",

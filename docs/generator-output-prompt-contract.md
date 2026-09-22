@@ -112,6 +112,15 @@ backslash-`n` prose/list-boundary artifacts outside Markdown code contexts rathe
 than silently converting them; literal escape-sequence text remains representable
 in fenced/inline code and unambiguous technical prose.
 
+The wire representation and decoded semantic value are distinct. The provider
+returns a serialized JSON object, so a real LF character in the JSON `body`
+string is represented with normal JSON escaping on the wire. After JSON decoding,
+the `body` value must contain actual LF characters for Markdown line breaks. A
+double-escaped newline notation is invalid when it leaves the decoded value with
+the two literal characters backslash and `n` being used as a prose or list
+boundary. The deterministic #156 validator remains the final safety gate; this
+prompt correction does not make the Formatter perform semantic repair.
+
 Before strict parsing, the deterministic Generator formatter canonicalizes conventional CRLF provider output to LF. It deliberately does not rewrite titles, metadata values, lone CR characters, or other semantic content. A lone CR therefore remains invalid and is rejected by the parser. The assembler then normalizes final newlines to exactly one LF and adds the fixed metadata editor. Equivalent LF/CRLF provider representations converge to identical canonical semantic output, proposal bytes, and mutation identity.
 
 The formatter is intentionally narrow: it absorbs representation variance that has one unambiguous meaning-preserving canonical form. It is not a general Markdown sanitizer or LLM-output repair layer.
@@ -188,7 +197,19 @@ The Generator deliberately does not check whether the target filename already ex
 Prompt template version:
 
 ```text
-knowledge-note-generator-v0
+knowledge-note-generator-v1
+```
+
+New recipes bind the exact v1 prompt version and hash. Historical recipes may
+retain the exact v0 version/hash pair for readability and audit, but the current
+runtime never reinterprets them as v1; runtime preflight fails closed before
+provider contact when a historical recipe is not executable by the deployment.
+
+The supported immutable Generator prompt identities are:
+
+```text
+knowledge-note-generator-v0  820f86bf9f7e5495be64608690123ec31562441d4d774095d5d61ba7db9abafd
+knowledge-note-generator-v1  ebdcbfdc5008a1c84366555debc15842e154cfaf51919d023c30d3d5c3fa9248
 ```
 
 The prompt consists of:

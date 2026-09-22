@@ -28,7 +28,9 @@ from .evaluation_artifact import (
     EVALUATION_CONTEXT_POLICY_VERSION,
 )
 from .evaluator_contract import EVALUATOR_PROMPT_TEMPLATE_VERSION
-from .generator_contract import PROMPT_TEMPLATE_VERSION
+from .generator_contract import (
+    supported_prompt_template_hashes,
+)
 from .knowledge_note_policy import POLICY_NAME
 from .openai_compatible import (
     IDENTITY_BINDING,
@@ -146,8 +148,9 @@ def _parse_component(
     value: object,
     *,
     label: str,
-    prompt_version: str,
+    prompt_version: str | None,
     evaluator: bool,
+    prompt_hashes: Mapping[str, str] | None = None,
 ) -> RecipeComponent:
     required = {
         "implementation_revision",
@@ -161,14 +164,27 @@ def _parse_component(
     if not isinstance(value, dict) or set(value) != required:
         raise PreReviewJobError(f"{label} properties do not match contract")
 
+    stored_prompt_version = _metadata(
+        value["prompt_template_version"],
+        label=f"{label}.prompt_template_version",
+    )
+    expected_prompt_sha256: str | None = None
+    if prompt_hashes is None:
+        if stored_prompt_version != prompt_version:
+            raise PreReviewJobError(
+                f"{label}.prompt_template_version must be {prompt_version}"
+            )
+    else:
+        expected_prompt_sha256 = prompt_hashes.get(stored_prompt_version)
+        if expected_prompt_sha256 is None:
+            raise PreReviewJobError(
+                f"{label}.prompt_template_version is not supported"
+            )
+
     provider = _metadata(value["provider"], label=f"{label}.provider")
     if provider not in {OPENAI_PROVIDER_NAME, OLLAMA_PROVIDER_NAME}:
         raise PreReviewJobError(
             f"{label}.provider must be {OPENAI_PROVIDER_NAME} or {OLLAMA_PROVIDER_NAME}"
-        )
-    if value["prompt_template_version"] != prompt_version:
-        raise PreReviewJobError(
-            f"{label}.prompt_template_version must be {prompt_version}"
         )
 
     model_identifier = _metadata(
@@ -251,16 +267,22 @@ def _parse_component(
             f"{label}.model_config.strategy must be {EVALUATION_STRATEGY}"
         )
 
+    prompt_sha256 = _require_sha256(
+        value["prompt_template_sha256"],
+        label=f"{label}.prompt_template_sha256",
+    )
+    if expected_prompt_sha256 is not None and prompt_sha256 != expected_prompt_sha256:
+        raise PreReviewJobError(
+            f"{label}.prompt_template_sha256 does not match its supported version"
+        )
+
     return RecipeComponent(
         implementation_revision=_implementation_revision(
             value["implementation_revision"],
             label=f"{label}.implementation_revision",
         ),
-        prompt_template_version=prompt_version,
-        prompt_template_sha256=_require_sha256(
-            value["prompt_template_sha256"],
-            label=f"{label}.prompt_template_sha256",
-        ),
+        prompt_template_version=stored_prompt_version,
+        prompt_template_sha256=prompt_sha256,
         provider=provider,
         model_identifier=model_identifier,
         model_revision=model_revision,
@@ -318,8 +340,9 @@ def parse_recipe(data: bytes) -> PreReviewRecipe:
         generator=_parse_component(
             value["generator"],
             label="generator",
-            prompt_version=PROMPT_TEMPLATE_VERSION,
+            prompt_version=None,
             evaluator=False,
+            prompt_hashes=supported_prompt_template_hashes(),
         ),
         validator_policy=validator_policy,
         evaluation_context_policy=selection_policy,
@@ -346,8 +369,9 @@ def parse_recipe_roundtrip_guard(data: bytes) -> PreReviewRecipe:
         generator=_parse_component(
             value["generator"],
             label="generator",
-            prompt_version=PROMPT_TEMPLATE_VERSION,
+            prompt_version=None,
             evaluator=False,
+            prompt_hashes=supported_prompt_template_hashes(),
         ),
         validator_policy=_metadata(validator["policy"], label="validator.policy"),
         evaluation_context_policy=_metadata(

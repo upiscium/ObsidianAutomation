@@ -28,6 +28,8 @@ from obsidian_automation.generation_artifact import (
 )
 from obsidian_automation.human_projection import parse_request
 from obsidian_automation.generator_contract import (
+    PROMPT_TEMPLATE_V0_SHA256,
+    PROMPT_TEMPLATE_V0_VERSION,
     PROMPT_TEMPLATE_VERSION,
     prompt_template_sha256 as generator_prompt_sha256,
 )
@@ -548,6 +550,37 @@ def test_generator_revision_mismatch_blocks_without_provider_contact(
         state,
         base_url="https://openai.example.invalid/v1",
         deployed_revision="d" * 40,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["reason_code"] == "generator_recipe_runtime_mismatch"
+    assert called is False
+    assert job_status(state, job_id)["current_generation"]["state"] == "blocked"
+
+
+def test_historical_generator_recipe_is_readable_but_not_executable(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    recipe = json.loads(_recipe_bytes())
+    recipe["generator"]["prompt_template_version"] = PROMPT_TEMPLATE_V0_VERSION
+    recipe["generator"]["prompt_template_sha256"] = PROMPT_TEMPLATE_V0_SHA256
+    state, _vault, job_id, _ = _fixture(
+        tmp_path,
+        recipe_bytes=(json.dumps(recipe, separators=(",", ":")) + "\n").encode(),
+    )
+    called = False
+
+    def should_not_call(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("historical prompt recipe must not reach the provider")
+
+    monkeypatch.setattr(worker, "generate_knowledge_note_with_openai_compatible", should_not_call)
+    result = worker.run_generator_worker(
+        state,
+        base_url="https://openai.example.invalid/v1",
+        deployed_revision=REVISION,
     )
 
     assert result["status"] == "blocked"
