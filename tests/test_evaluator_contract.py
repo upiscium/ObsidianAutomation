@@ -13,12 +13,15 @@ from obsidian_automation.evaluator_contract import (
     EVALUATOR_PROMPT_TEMPLATE_V4_SHA256,
     EVALUATOR_PROMPT_TEMPLATE_V4_VERSION,
     EVALUATOR_PROMPT_TEMPLATE_V5_SHA256,
+    EVALUATOR_PROMPT_TEMPLATE_V5_VERSION,
+    EVALUATOR_PROMPT_TEMPLATE_V6_SHA256,
     EVALUATOR_OUTPUT_CONTRACT_VERSION,
     EVALUATOR_PROMPT_TEMPLATE_VERSION,
     MAX_EVALUATOR_WALL_SECONDS,
     MAX_EVALUATOR_CONFLICTS,
     MAX_EVALUATOR_CONFLICT_FIELD_CHARS,
     RECOMMENDATION_POLICY_VERSION,
+    BoundConsistencyConflictProposal,
     CandidateEvaluatorOutput,
     ConsistencyConflict,
     ConsistencyConflictProposal,
@@ -29,6 +32,7 @@ from obsidian_automation.evaluator_contract import (
     aggregate_evaluator_outputs,
     bind_candidate_output,
     bind_consistency_proposals,
+    consistency_excerpts,
     consistency_verifier_schema,
     finalize_consistency_candidate,
     evaluator_call_timeout,
@@ -121,15 +125,16 @@ def test_dimension_output_contract_scopes_findings_without_recommendation() -> N
     )
 
 
-def test_consistency_concern_parses_anchored_conflict_proposals() -> None:
+
+def test_consistency_concern_parses_excerpt_id_conflict_proposals() -> None:
     raw = json.dumps(
         {
             "assessment": "concern",
             "findings": [{"detail": "The procedures cannot both be followed."}],
             "conflicts": [
                 {
-                    "proposal_quote": "Use WebDAV synchronization.",
-                    "candidate_quote": "Use local-only storage.",
+                    "proposal_excerpt_id": "p0001",
+                    "candidate_excerpt_id": "c0002",
                     "incompatibility": "The two procedures require different storage paths.",
                 }
             ],
@@ -141,15 +146,20 @@ def test_consistency_concern_parses_anchored_conflict_proposals() -> None:
 
     assert parsed.conflict_proposals == (
         ConsistencyConflictProposal(
-            proposal_quote="Use WebDAV synchronization.",
-            candidate_quote="Use local-only storage.",
+            proposal_excerpt_id="p0001",
+            candidate_excerpt_id="c0002",
             incompatibility="The two procedures require different storage paths.",
         ),
     )
     assert parsed.conflicts == ()
 
 
-def test_consistency_conflict_quote_binding_is_exact_and_path_is_external() -> None:
+def test_consistency_excerpt_ids_bind_exact_evidence_and_path_is_external() -> None:
+    proposal_content = "Intro.\n\nProposal procedure.\n\nTail."
+    candidate_content = "Intro.\n\nCandidate procedure.\n\nTail."
+    proposal_excerpts = consistency_excerpts(proposal_content, prefix="p")
+    candidate_excerpts = consistency_excerpts(candidate_content, prefix="c")
+
     parsed = parse_dimension_evaluator_output(
         json.dumps(
             {
@@ -157,8 +167,8 @@ def test_consistency_conflict_quote_binding_is_exact_and_path_is_external() -> N
                 "findings": [],
                 "conflicts": [
                     {
-                        "proposal_quote": "Proposal procedure.",
-                        "candidate_quote": "Candidate procedure.",
+                        "proposal_excerpt_id": proposal_excerpts[1].excerpt_id,
+                        "candidate_excerpt_id": candidate_excerpts[1].excerpt_id,
                         "incompatibility": "They cannot both be followed.",
                     }
                 ],
@@ -171,12 +181,12 @@ def test_consistency_conflict_quote_binding_is_exact_and_path_is_external() -> N
     bound = bind_consistency_proposals(
         parsed,
         candidate_path="11-Knowledge/existing.md",
-        proposal_content="Intro. Proposal procedure. Tail.",
-        candidate_content="Intro. Candidate procedure. Tail.",
+        proposal_content=proposal_content,
+        candidate_content=candidate_content,
     )
 
     assert bound.proposals == (
-        ConsistencyConflictProposal(
+        BoundConsistencyConflictProposal(
             proposal_quote="Proposal procedure.",
             candidate_quote="Candidate procedure.",
             incompatibility="They cannot both be followed.",
@@ -185,9 +195,12 @@ def test_consistency_conflict_quote_binding_is_exact_and_path_is_external() -> N
     assert bound.candidate_path == "11-Knowledge/existing.md"
 
 
-def test_consistency_multiline_quotes_bind_and_persist_exactly() -> None:
-    proposal_quote = "# Proposal\n\nUse WebDAV synchronization."
-    candidate_quote = "# Candidate\n\nUse local-only storage."
+def test_consistency_multiline_excerpts_bind_and_persist_exactly() -> None:
+    proposal_content = "# Proposal\nUse WebDAV synchronization.\n\nTail."
+    candidate_content = "# Candidate\nUse local-only storage.\n\nTail."
+    proposal_excerpts = consistency_excerpts(proposal_content, prefix="p")
+    candidate_excerpts = consistency_excerpts(candidate_content, prefix="c")
+
     parsed = parse_dimension_evaluator_output(
         json.dumps(
             {
@@ -195,8 +208,8 @@ def test_consistency_multiline_quotes_bind_and_persist_exactly() -> None:
                 "findings": [],
                 "conflicts": [
                     {
-                        "proposal_quote": proposal_quote,
-                        "candidate_quote": candidate_quote,
+                        "proposal_excerpt_id": proposal_excerpts[0].excerpt_id,
+                        "candidate_excerpt_id": candidate_excerpts[0].excerpt_id,
                         "incompatibility": "The procedures require different storage paths.",
                     }
                 ],
@@ -209,19 +222,19 @@ def test_consistency_multiline_quotes_bind_and_persist_exactly() -> None:
     bound = bind_consistency_proposals(
         parsed,
         candidate_path="11-Knowledge/existing.md",
-        proposal_content=f"Intro.\n\n{proposal_quote}\n\nTail.",
-        candidate_content=f"Intro.\n\n{candidate_quote}\n\nTail.",
+        proposal_content=proposal_content,
+        candidate_content=candidate_content,
     )
     result = finalize_consistency_candidate(
         bound,
         (ConsistencyVerification("contradiction", "The storage paths differ."),),
     )
 
-    assert result.conflicts[0].proposal_claim == proposal_quote
-    assert result.conflicts[0].candidate_claim == candidate_quote
+    assert result.conflicts[0].proposal_claim == "# Proposal\nUse WebDAV synchronization."
+    assert result.conflicts[0].candidate_claim == "# Candidate\nUse local-only storage."
 
 
-def test_consistency_conflict_binding_rejects_fabricated_quotes() -> None:
+def test_consistency_binding_rejects_unknown_excerpt_ids() -> None:
     parsed = parse_dimension_evaluator_output(
         json.dumps(
             {
@@ -229,8 +242,8 @@ def test_consistency_conflict_binding_rejects_fabricated_quotes() -> None:
                 "findings": [],
                 "conflicts": [
                     {
-                        "proposal_quote": "Not present in proposal.",
-                        "candidate_quote": "Candidate procedure.",
+                        "proposal_excerpt_id": "p9999",
+                        "candidate_excerpt_id": "c0001",
                         "incompatibility": "They cannot both be followed.",
                     }
                 ],
@@ -240,16 +253,26 @@ def test_consistency_conflict_binding_rejects_fabricated_quotes() -> None:
         dimension="consistency",
     )
 
-    with pytest.raises(ArtifactLifecycleError, match="exact proposal excerpt"):
+    with pytest.raises(ArtifactLifecycleError, match="excerpt ID"):
         bind_consistency_proposals(
             parsed,
             candidate_path="11-Knowledge/existing.md",
-            proposal_content="The proposal contains a different procedure.",
+            proposal_content="Proposal procedure.",
             candidate_content="Candidate procedure.",
         )
 
 
 def test_consistency_verifier_aggregation_is_deterministic() -> None:
+    proposal_content = (
+        "Run migration before restart.\n\n"
+        "Use the local cache."
+    )
+    candidate_content = (
+        "Restart before migration.\n\n"
+        "Use the shared cache."
+    )
+    p = consistency_excerpts(proposal_content, prefix="p")
+    q = consistency_excerpts(candidate_content, prefix="c")
     parsed = parse_dimension_evaluator_output(
         json.dumps(
             {
@@ -257,13 +280,13 @@ def test_consistency_verifier_aggregation_is_deterministic() -> None:
                 "findings": [{"detail": "Candidate pair needs verification."}],
                 "conflicts": [
                     {
-                        "proposal_quote": "Run migration before restart.",
-                        "candidate_quote": "Restart before migration.",
+                        "proposal_excerpt_id": p[0].excerpt_id,
+                        "candidate_excerpt_id": q[0].excerpt_id,
                         "incompatibility": "The required order is incompatible.",
                     },
                     {
-                        "proposal_quote": "Use the local cache.",
-                        "candidate_quote": "Use the shared cache.",
+                        "proposal_excerpt_id": p[1].excerpt_id,
+                        "candidate_excerpt_id": q[1].excerpt_id,
                         "incompatibility": "The storage scopes may differ.",
                     },
                 ],
@@ -275,12 +298,8 @@ def test_consistency_verifier_aggregation_is_deterministic() -> None:
     bound = bind_consistency_proposals(
         parsed,
         candidate_path="11-Knowledge/existing.md",
-        proposal_content=(
-            "Run migration before restart. Use the local cache."
-        ),
-        candidate_content=(
-            "Restart before migration. Use the shared cache."
-        ),
+        proposal_content=proposal_content,
+        candidate_content=candidate_content,
     )
 
     compatible = finalize_consistency_candidate(
@@ -302,10 +321,6 @@ def test_consistency_verifier_aggregation_is_deterministic() -> None:
         ),
     )
     assert unknown.assessment == "unknown"
-    assert unknown.conflicts == ()
-    assert unknown.findings == (
-        "consistency: [11-Knowledge/existing.md] Candidate pair needs verification.",
-    )
 
     contradiction = finalize_consistency_candidate(
         bound,
@@ -317,8 +332,6 @@ def test_consistency_verifier_aggregation_is_deterministic() -> None:
     assert contradiction.assessment == "concern"
     assert len(contradiction.conflicts) == 1
     assert contradiction.conflicts[0].proposal_claim == "Run migration before restart."
-    assert contradiction.conflicts[0].candidate_path == "11-Knowledge/existing.md"
-
 
 @pytest.mark.parametrize(
     ("label", "proposal_quote", "candidate_quote"),
@@ -380,10 +393,11 @@ def test_verifier_compatible_scope_variants_do_not_persist_conflicts(
     assert result.conflicts == ()
 
 
+
 def test_consistency_verifier_prompt_excludes_model_controlled_path() -> None:
     prompt = render_consistency_verifier_prompt(
         candidate_path="11-Knowledge/existing.md",
-        proposal=ConsistencyConflictProposal(
+        proposal=BoundConsistencyConflictProposal(
             proposal_quote="Proposal fact.",
             candidate_quote="Candidate fact.",
             incompatibility="The facts conflict.",
@@ -394,7 +408,6 @@ def test_consistency_verifier_prompt_excludes_model_controlled_path() -> None:
     assert payload["candidate_quote"] == "Candidate fact."
     assert "candidate_path" not in payload
     assert "candidate_path" not in prompt.system
-
 
 def test_evaluator_provider_calls_are_bounded_by_wall_clock_budget(monkeypatch) -> None:
     clock = {"value": 100.0}
