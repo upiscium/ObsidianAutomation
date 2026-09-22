@@ -210,11 +210,17 @@ class EvaluatorPrompt:
 
 
 @dataclass(frozen=True)
+class ConsistencyExcerpt:
+    excerpt_id: str
+    text: str
+
+
+@dataclass(frozen=True)
 class ConsistencyCandidateProposalOutput:
     candidate_path: str
     assessment: str
     findings: tuple[str, ...]
-    proposals: tuple[ConsistencyConflictProposal, ...]
+    proposals: tuple[BoundConsistencyConflictProposal, ...]
 
 
 def _require_dimension(value: object) -> str:
@@ -266,6 +272,14 @@ def _conflict_field_schema() -> dict[str, object]:
     }
 
 
+def _conflict_excerpt_id_schema() -> dict[str, object]:
+    return {
+        "type": "string",
+        "minLength": MAX_EVALUATOR_EXCERPT_ID_CHARS,
+        "maxLength": MAX_EVALUATOR_EXCERPT_ID_CHARS,
+    }
+
+
 def _conflict_proposal_schema() -> dict[str, object]:
     return {
         "type": "array",
@@ -274,10 +288,14 @@ def _conflict_proposal_schema() -> dict[str, object]:
         "items": {
             "type": "object",
             "additionalProperties": False,
-            "required": ["proposal_quote", "candidate_quote", "incompatibility"],
+            "required": [
+                "proposal_excerpt_id",
+                "candidate_excerpt_id",
+                "incompatibility",
+            ],
             "properties": {
-                "proposal_quote": _conflict_field_schema(),
-                "candidate_quote": _conflict_field_schema(),
+                "proposal_excerpt_id": _conflict_excerpt_id_schema(),
+                "candidate_excerpt_id": _conflict_excerpt_id_schema(),
                 "incompatibility": _conflict_field_schema(),
             },
         },
