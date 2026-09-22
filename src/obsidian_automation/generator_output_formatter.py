@@ -29,4 +29,7 @@ def format_generator_output(data: bytes) -> bytes:
     if isinstance(body, str):
         value["body"] = body.replace("\r\n", "\n")
 
-    return _canonical_json_bytes(value)
+    try:
+        return _canonical_json_bytes(value)
+    except UnicodeEncodeError as exc:
+        raise ArtifactLifecycleError("generator output must be UTF-8 encodable") from exc

@@ -106,7 +106,11 @@ other
 
 `body` is Markdown body content only. It must not contain the Knowledge Note YAML frontmatter envelope.
 
-The strict parser requires UTF-8-encodable, non-empty, bounded LF-only text. It does not repair line endings or semantic mistakes.
+The strict parser requires UTF-8-encodable, non-empty, bounded LF-only text. It
+does not repair line endings or semantic mistakes. It rejects clear literal
+backslash-`n` prose/list-boundary artifacts outside Markdown code contexts rather
+than silently converting them; literal escape-sequence text remains representable
+in fenced/inline code and unambiguous technical prose.
 
 Before strict parsing, the deterministic Generator formatter canonicalizes conventional CRLF provider output to LF. It deliberately does not rewrite titles, metadata values, lone CR characters, or other semantic content. A lone CR therefore remains invalid and is rejected by the parser. The assembler then normalizes final newlines to exactly one LF and adds the fixed metadata editor. Equivalent LF/CRLF provider representations converge to identical canonical semantic output, proposal bytes, and mutation identity.
 
