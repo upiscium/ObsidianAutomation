@@ -264,7 +264,7 @@
               "required": ["adapter_version", "identity_binding", "strategy", "options"],
               "properties": {
                 "adapter_version": {
-                  "const": "openai-evaluator-chat-completions-json-schema-v2"
+                  "const": "openai-evaluator-chat-completions-json-schema-v3"
                 },
                 "identity_binding": {"const": "identifier-only"},
                 "strategy": {
@@ -327,7 +327,7 @@
               "additionalProperties": false,
               "required": ["adapter_version", "think", "strategy", "options"],
               "properties": {
-                "adapter_version": {"const": "ollama-evaluator-chat-structured-v3"},
+                "adapter_version": {"const": "ollama-evaluator-chat-structured-v4"},
                 "think": {"enum": [false, "low"]},
                 "strategy": {
                   "const": "groundedness-plus-pairwise-candidates-with-verifier-v1"
