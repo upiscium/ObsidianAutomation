@@ -1336,7 +1336,7 @@ def prompt_template_bytes() -> bytes:
                 dimension: {
                     "system": _DIMENSION_SYSTEMS[dimension],
                     "output_schema": _output_schema_for(dimension),
-                    "user_payload_version": 5,
+                    "user_payload_version": 6,
                 }
                 for dimension in _DIMENSIONS
             }
@@ -1344,7 +1344,7 @@ def prompt_template_bytes() -> bytes:
                 "consistency_verifier": {
                     "system": _CONSISTENCY_VERIFIER_SYSTEM,
                     "output_schema": consistency_verifier_schema(),
-                    "user_payload_version": 5,
+                    "user_payload_version": 6,
                 }
             },
             "aggregation": {
@@ -1492,10 +1492,10 @@ def render_evaluator_prompts(
 def render_consistency_verifier_prompt(
     *,
     candidate_path: str,
-    proposal: ConsistencyConflictProposal,
+    proposal: BoundConsistencyConflictProposal,
 ) -> EvaluatorPrompt:
     path = _validated_candidate_path(candidate_path)
-    normalized = _validated_conflict_proposal(proposal)
+    normalized = _validated_bound_conflict_proposal(proposal)
     payload = {
         "payload_version": 6,
         "dimension": "consistency_verifier",
