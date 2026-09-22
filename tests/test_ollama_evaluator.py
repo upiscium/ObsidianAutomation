@@ -248,8 +248,8 @@ def test_near_duplicate_e2e_uses_pairwise_candidate_passes_and_persists_likely(t
     consistency_schema = chat_calls[2]["payload"]["format"]
     assert set(consistency_schema["required"]) == set(consistency_schema["properties"])
     assert set(consistency_schema["properties"]["conflicts"]["items"]["required"]) == {
-        "proposal_quote",
-        "candidate_quote",
+        "proposal_excerpt_id",
+        "candidate_excerpt_id",
         "incompatibility",
     }
     assert consistency_schema["properties"]["conflicts"]["minItems"] == 0
@@ -264,8 +264,8 @@ def test_consistency_concern_persists_structured_conflict_evidence(tmp_path: Pat
         "findings": [{"detail": "The procedures cannot both be followed."}],
         "conflicts": [
             {
-                "proposal_quote": "Nextcloud の WebDAV と RemotelySave で Obsidian Vault を共有する方法。",
-                "candidate_quote": "Nextcloud の WebDAV と RemotelySave で Obsidian Vault を共有する方法。",
+                "proposal_excerpt_id": "p0003",
+                "candidate_excerpt_id": "c0003",
                 "incompatibility": "The procedures cannot both be followed in the same setup.",
             }
         ],
@@ -335,12 +335,8 @@ def test_openai_compatible_verifier_path_preserves_pass_order(tmp_path: Path) ->
                 "findings": [],
                 "conflicts": [
                     {
-                        "proposal_quote": (
-                            "Nextcloud の WebDAV と RemotelySave で Obsidian Vault を共有する方法。"
-                        ),
-                        "candidate_quote": (
-                            "Nextcloud の WebDAV と RemotelySave で Obsidian Vault を共有する方法。"
-                        ),
+                        "proposal_excerpt_id": "p0003",
+                        "candidate_excerpt_id": "c0003",
                         "incompatibility": "The procedures cannot both be followed.",
                     }
                 ],
