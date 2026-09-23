@@ -97,9 +97,9 @@ Current Evaluation Records use version 2 and bind:
 The current prompt/output identities are:
 
 ```text
-output: knowledge-note-evaluator-output-v5
-prompt: knowledge-note-evaluator-v6
-SHA:    45439ec5f3ae0d9dd31fa5af37c45c572b3e520ac87548f0a739acf1ee5f9041
+output: knowledge-note-evaluator-output-v6
+prompt: knowledge-note-evaluator-v7
+SHA:    1e3b5b820b9569dc99230abd3c352e7223c1b84a3b93b66667f4a7fc1da9dbac
 ```
 
 The historical prompts `knowledge-note-evaluator-v3` with SHA
@@ -107,7 +107,9 @@ The historical prompts `knowledge-note-evaluator-v3` with SHA
 `knowledge-note-evaluator-v4` with SHA
 `9411d74c10cd8c3450be6b79f12c644433862a4b292a26db7444d32606ddea3b`,
 and `knowledge-note-evaluator-v5` with SHA
-`ca9755c7b448be9bb2a42ab41ba182deb7b45785a4099d6ac85d854131a06291`
+`ca9755c7b448be9bb2a42ab41ba182deb7b45785a4099d6ac85d854131a06291`,
+and `knowledge-note-evaluator-v6` with SHA
+`45439ec5f3ae0d9dd31fa5af37c45c572b3e520ac87548f0a739acf1ee5f9041`
 remain readable in recipes for audit. Current runtime preflight blocks historical
 recipes before provider contact. Unknown and cross-paired prompt version/hash
 identities are rejected.
@@ -140,8 +142,7 @@ model-facing proposal shape omits the deterministic path:
   "conflicts": [
     {
       "proposal_excerpt_id": "p0001",
-      "candidate_excerpt_id": "c0001",
-      "incompatibility": "..."
+      "candidate_excerpt_id": "c0001"
     }
   ]
 }
@@ -150,8 +151,7 @@ model-facing proposal shape omits the deterministic path:
 At most four proposals are accepted. Proposal/candidate text is partitioned into
 deterministic bounded excerpt tables before the proposer call. The model selects
 excerpt IDs; deterministic code resolves those IDs to exact source bytes and
-binds `candidate_path` to the exact supplied candidate before verification. A compatible proposal is removed; an
-unknown verifier yields `unknown` unless another proposal is contradictory.
+binds `candidate_path` to the exact supplied candidate before verification. The verifier receives only the exact quote pair, never proposer rationale. A `not_conflict` proposal is removed; an unknown verifier yields `unknown` unless another proposal is contradictory.
 Different topic/scope,
 missing framework/details, omissions, extra detail, formatting, and style are
 not conflicts.

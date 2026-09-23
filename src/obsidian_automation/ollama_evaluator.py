@@ -18,6 +18,7 @@ from .evaluation_artifact import (
 )
 from .evaluator_contract import (
     EVALUATOR_STRATEGY_V4,
+    EVALUATOR_STRATEGY_V5,
     EVALUATOR_STRATEGY_VERSION,
     MAX_EVALUATOR_WALL_SECONDS,
     MAX_EVALUATOR_OUTPUT_BYTES,
@@ -52,10 +53,12 @@ from .ollama_generator import (
 
 
 PROVIDER_NAME = "ollama"
-ADAPTER_VERSION = "ollama-evaluator-chat-structured-v4"
-PREVIOUS_ADAPTER_VERSION = "ollama-evaluator-chat-structured-v3"
+ADAPTER_VERSION = "ollama-evaluator-chat-structured-v5"
+PREVIOUS_ADAPTER_VERSION = "ollama-evaluator-chat-structured-v4"
+V5_ADAPTER_VERSION = "ollama-evaluator-chat-structured-v3"
 LEGACY_ADAPTER_VERSION = "ollama-evaluator-chat-structured-v2"
 EVALUATION_STRATEGY = EVALUATOR_STRATEGY_VERSION
+PREVIOUS_EVALUATION_STRATEGY = EVALUATOR_STRATEGY_V5
 LEGACY_EVALUATION_STRATEGY = EVALUATOR_STRATEGY_V4
 MAX_OPTIONS_BYTES = 12 * 1024
 

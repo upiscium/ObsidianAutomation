@@ -272,7 +272,9 @@
           "enum": [
             "knowledge-note-evaluator-v3",
             "knowledge-note-evaluator-v4",
-            "knowledge-note-evaluator-v5"
+            "knowledge-note-evaluator-v5",
+            "knowledge-note-evaluator-v6",
+            "knowledge-note-evaluator-v7"
           ]
         },
         "prompt_template_sha256": {
@@ -313,7 +315,8 @@
             "strategy": {
               "enum": [
                 "groundedness-plus-pairwise-candidates-v0",
-                "groundedness-plus-pairwise-candidates-with-verifier-v1"
+                "groundedness-plus-pairwise-candidates-with-verifier-v1",
+                "groundedness-plus-pairwise-candidates-with-independent-verifier-v2"
               ]
             },
             "options": {
@@ -639,6 +642,87 @@
                 },
                 "strategy": {
                   "const": "groundedness-plus-pairwise-candidates-with-verifier-v1"
+                },
+                "options": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "prompt_template_version": {
+              "const": "knowledge-note-evaluator-v7"
+            },
+            "prompt_template_sha256": {
+              "const": "1e3b5b820b9569dc99230abd3c352e7223c1b84a3b93b66667f4a7fc1da9dbac"
+            },
+            "provider": {
+              "const": "openai-compatible"
+            },
+            "model_revision": {
+              "pattern": "^identifier:.{1,500}$"
+            },
+            "model_config": {
+              "additionalProperties": false,
+              "required": [
+                "adapter_version",
+                "identity_binding",
+                "strategy",
+                "options"
+              ],
+              "properties": {
+                "adapter_version": {
+                  "const": "openai-evaluator-chat-completions-json-schema-v4"
+                },
+                "identity_binding": {
+                  "const": "identifier-only"
+                },
+                "strategy": {
+                  "const": "groundedness-plus-pairwise-candidates-with-independent-verifier-v2"
+                },
+                "options": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "prompt_template_version": {
+              "const": "knowledge-note-evaluator-v7"
+            },
+            "prompt_template_sha256": {
+              "const": "1e3b5b820b9569dc99230abd3c352e7223c1b84a3b93b66667f4a7fc1da9dbac"
+            },
+            "provider": {
+              "const": "ollama"
+            },
+            "model_revision": {
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "model_config": {
+              "additionalProperties": false,
+              "required": [
+                "adapter_version",
+                "think",
+                "strategy",
+                "options"
+              ],
+              "properties": {
+                "adapter_version": {
+                  "const": "ollama-evaluator-chat-structured-v5"
+                },
+                "think": {
+                  "enum": [
+                    false,
+                    "low"
+                  ]
+                },
+                "strategy": {
+                  "const": "groundedness-plus-pairwise-candidates-with-independent-verifier-v2"
                 },
                 "options": {
                   "type": "object"

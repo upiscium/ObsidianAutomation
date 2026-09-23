@@ -15,6 +15,7 @@ from .evaluation_artifact import (
 )
 from .evaluator_contract import (
     EVALUATOR_STRATEGY_V4,
+    EVALUATOR_STRATEGY_V5,
     EVALUATOR_STRATEGY_VERSION,
     MAX_EVALUATOR_WALL_SECONDS,
     MAX_EVALUATOR_OUTPUT_BYTES,
@@ -49,10 +50,12 @@ from .openai_compatible import (
 )
 
 
-ADAPTER_VERSION = "openai-evaluator-chat-completions-json-schema-v3"
-PREVIOUS_ADAPTER_VERSION = "openai-evaluator-chat-completions-json-schema-v2"
+ADAPTER_VERSION = "openai-evaluator-chat-completions-json-schema-v4"
+PREVIOUS_ADAPTER_VERSION = "openai-evaluator-chat-completions-json-schema-v3"
+V5_ADAPTER_VERSION = "openai-evaluator-chat-completions-json-schema-v2"
 LEGACY_ADAPTER_VERSION = "openai-evaluator-chat-completions-json-schema-v1"
 EVALUATION_STRATEGY = EVALUATOR_STRATEGY_VERSION
+PREVIOUS_EVALUATION_STRATEGY = EVALUATOR_STRATEGY_V5
 LEGACY_EVALUATION_STRATEGY = EVALUATOR_STRATEGY_V4
 
 

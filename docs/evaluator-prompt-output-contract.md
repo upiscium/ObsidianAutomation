@@ -1,8 +1,8 @@
-# Evaluator Prompt / Output Contract (output v5, prompt v6)
+# Evaluator Prompt / Output Contract (output v6, prompt v7)
 
 ## Purpose
 
-The Evaluator is an advisory semantic assessment stage between deterministic Validation and Human Review. Its current model-facing output contract is v5 and its current prompt/input template is v6.
+The Evaluator is an advisory semantic assessment stage between deterministic Validation and Human Review. Its current model-facing output contract is v6 and its current prompt/input template is v7.
 
 Production testing showed two independent interference modes:
 
@@ -64,8 +64,7 @@ For a Consistency pass, the model always returns a `conflicts` array. A concern 
   "conflicts": [
     {
       "proposal_excerpt_id": "p0001",
-      "candidate_excerpt_id": "c0001",
-      "incompatibility": "why the claims cannot both apply"
+      "candidate_excerpt_id": "c0001"
     }
   ]
 }
@@ -74,24 +73,27 @@ For a Consistency pass, the model always returns a `conflicts` array. A concern 
 The current output contract version is:
 
 ```text
-knowledge-note-evaluator-output-v5
+knowledge-note-evaluator-output-v6
 ```
 
 The current prompt/input contract is:
 
 ```text
-knowledge-note-evaluator-v6
+knowledge-note-evaluator-v7
 ```
 
 The current prompt-template SHA-256 is:
 
 ```text
-45439ec5f3ae0d9dd31fa5af37c45c572b3e520ac87548f0a739acf1ee5f9041
+1e3b5b820b9569dc99230abd3c352e7223c1b84a3b93b66667f4a7fc1da9dbac
 ```
 
 Historical readable prompt identities remain exact version/hash pairs:
 
 ```text
+knowledge-note-evaluator-v6
+45439ec5f3ae0d9dd31fa5af37c45c572b3e520ac87548f0a739acf1ee5f9041
+
 knowledge-note-evaluator-v5
 ca9755c7b448be9bb2a42ab41ba182deb7b45785a4099d6ac85d854131a06291
 
@@ -102,7 +104,7 @@ knowledge-note-evaluator-v3
 bf6265294a4b346f12d1951f594760c80221380ccee9993c6ab866b6b1eca937
 ```
 
-Recipe parsing accepts the historical v3, v4, and v5 pairs for readability and audit, but current runtime preflight requires the v6 pair and blocks historical recipes before provider contact. Unknown prompt identities and cross-paired version/hash values are rejected. The dimension, candidate identity, and recommendation are fixed outside the model; the model cannot return `candidate_path` or `recommendation`.
+Recipe parsing accepts the historical v3, v4, v5, and v6 pairs for readability and audit, but current runtime preflight requires the v7 pair and blocks historical recipes before provider contact. Unknown prompt identities and cross-paired version/hash values are rejected. The dimension, candidate identity, and recommendation are fixed outside the model; the model cannot return `candidate_path` or `recommendation`.
 
 ## Groundedness pass
 
@@ -157,7 +159,7 @@ The first Consistency call is a proposer pass for each candidate. Deterministic
 code first partitions the exact proposal and candidate bytes into bounded excerpt
 tables with stable IDs such as `p0001` and `c0001`. The model may return zero
 or more plausible conflicts by selecting one proposal excerpt ID and one candidate
-excerpt ID plus an incompatibility description. It never reproduces quote text.
+excerpt ID only. It never reproduces quote text or supplies a conflict rationale.
 
 Deterministic code resolves the selected IDs back to the exact excerpt bytes.
 Unknown or malformed IDs fail closed before any verifier call. Only these resolved
@@ -173,21 +175,23 @@ unknown
 concern
 ```
 
-The proposer asks only whether material factual or procedural claims explicitly
-conflict with that one candidate. The verifier receives the two exact quotes and
-the proposed incompatibility, and returns only a verdict:
+The proposer asks only which exact excerpt pair warrants independent checking; it
+cannot tell the verifier why the pair is supposedly incompatible. The verifier
+receives only the two exact resolved quotes and returns:
 
 ```json
 {
-  "verdict": "contradiction | compatible | unknown",
+  "verdict": "contradiction | not_conflict | unknown",
   "explanation": "bounded explanation"
 }
 ```
 
-`contradiction` means the anchored claims cannot both be true or followed in the
-same relevant context. `compatible` includes different topics, scopes, papers,
-frameworks, environments, or complementary details. `unknown` is used when the
-anchored excerpts are insufficient or ambiguous.
+`contradiction` requires two material claims about the same relevant context that
+cannot both be true or followed. `not_conflict` is the default when the pair does
+not establish a contradiction, including different topics/papers/scopes,
+complementary details, metadata/title/heading-only text, or when either excerpt
+lacks an opposing material claim. `unknown` is reserved for genuinely ambiguous
+same-context competing claims. The burden of proof is on `contradiction`.
 
 Only a verifier `contradiction` becomes persisted conflict evidence.
 
@@ -200,14 +204,13 @@ Only a verifier `contradiction` becomes persisted conflict evidence.
   "conflicts": [
     {
       "proposal_excerpt_id": "p0001",
-      "candidate_excerpt_id": "c0001",
-      "incompatibility": "..."
+      "candidate_excerpt_id": "c0001"
     }
   ]
 }
 ```
 
-`proposal_excerpt_id` and `candidate_excerpt_id` are fixed-shape identifiers selected from the deterministic tables supplied in that exact pass. `incompatibility` is a non-empty, trimmed, single-line string of at most 1,000 characters. Excerpt text itself is not model output. After deterministic ID resolution, exact excerpt bytes are carried into verification and persisted without model-side rewriting. There may be at most four proposals, with no duplicate evidence triples. `pass` and `unknown` have no proposals: the model returns `"conflicts": []`, while the parser rejects a non-empty array on either assessment. `concern` with an empty array is also rejected.
+`proposal_excerpt_id` and `candidate_excerpt_id` are fixed-shape identifiers selected from the deterministic tables supplied in that exact pass. Excerpt text and incompatibility rationale are not proposer output. After deterministic ID resolution, exact excerpt bytes are carried into verification without model-side rewriting. For a verified contradiction, the persisted `incompatibility` is the verifier's bounded explanation. There may be at most four proposals, with no duplicate excerpt-ID pairs. `pass` and `unknown` have no proposals: the model returns `"conflicts": []`, while the parser rejects a non-empty array on either assessment. `concern` with an empty array is also rejected.
 
 The following are not conflicts by themselves: different topic or scope, a missing framework or detail, omissions, extra detail, formatting, and style. Those differences can coexist; a conflict requires the explicit material incompatibility above.
 
@@ -240,7 +243,7 @@ Consistency severity:
 pass < unknown < concern
 ```
 
-The strongest assessment across all candidates becomes the final dimension assessment. Findings are taken only from pairwise results at the winning severity, deduplicated, and bounded deterministically. Consistency conflicts are created only from verifier `contradiction` results, then taken only from the winning consistency severity, deduplicated by their three quote/evidence fields, and bounded to four. A verifier `compatible` removes the proposal; an `unknown` verifier produces `unknown` unless another proposal is contradictory.
+The strongest assessment across all candidates becomes the final dimension assessment. Findings are taken only from pairwise results at the winning severity, deduplicated, and bounded deterministically. Consistency conflicts are created only from verifier `contradiction` results, then taken only from the winning consistency severity, deduplicated by their three quote/evidence fields, and bounded to four. A verifier `not_conflict` removes the proposal; an `unknown` verifier produces `unknown` unless another proposal is contradictory.
 
 If Evaluation Context contains zero candidates:
 
@@ -334,12 +337,12 @@ Recommendation remains advisory and is not Human approval or execution authority
 
 The current prompt-template SHA binds:
 
-- `knowledge-note-evaluator-v5`;
-- output contract `knowledge-note-evaluator-output-v4`;
+- `knowledge-note-evaluator-v7`;
+- output contract `knowledge-note-evaluator-output-v6`;
 - pairwise strategy identifier;
 - all dimension-specific system prompts;
 - all JSON Schemas;
-- payload version 6;
+- payload version 7;
 - the Consistency proposer/verifier pass order and verdict aggregation;
 - deterministic severity order;
 - bounded finding and conflict aggregation policy;
@@ -382,11 +385,20 @@ Generated proposal:
 11-Knowledge/Nextcloud_RemotelySaveでObsidianVaultを共有する方法.md
 ```
 
-Expected minimum result:
+Expected minimum duplicate-note result:
 
 ```text
 redundancy = likely
 recommendation = do_not_proceed
 ```
 
-All earlier v1/v2 Evaluation artifacts remain immutable failure-corpus records.
+For the exact historical #154 SAMA failure corpus, post-merge production acceptance additionally requires:
+
+```text
+groundedness = pass
+redundancy = likely
+consistency = pass
+conflict_count = 0
+```
+
+A `do_not_proceed` recommendation remains acceptable there because Redundancy is independent of Consistency. All earlier Evaluation artifacts remain immutable failure-corpus records.

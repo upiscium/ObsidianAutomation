@@ -13,7 +13,9 @@ class ConsistencyConflictProposal:
 
     proposal_excerpt_id: str
     candidate_excerpt_id: str
-    incompatibility: str
+    # Historical internal callers may still populate this field. v7 model output
+    # never supplies it and deterministic binding/verifier logic ignores it.
+    incompatibility: str | None = None
 
 
 @dataclass(frozen=True)
@@ -22,7 +24,8 @@ class BoundConsistencyConflictProposal:
 
     proposal_quote: str
     candidate_quote: str
-    incompatibility: str
+    # Retained only for source compatibility; v7 verifier input omits it.
+    incompatibility: str | None = None
 
 
 @dataclass(frozen=True)
