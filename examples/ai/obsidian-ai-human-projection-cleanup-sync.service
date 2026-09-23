@@ -3,24 +3,25 @@ Description=Delete Human-facing projections for rejected Obsidian AI cases
 Requires=obsidian-ai-post-review-reconcile.service
 After=network-online.target obsidian-ai-post-review-reconcile.service
 Wants=network-online.target
-ConditionPathExists=/etc/obsidian-ai/human-projection.env
-ConditionPathExists=/etc/obsidian-ai/webdav-password
+ConditionPathExists=/etc/obsidian-ai/projection-cleanup.env
+ConditionPathExists=/etc/obsidian-ai/projection-cleanup-password
 
 [Service]
 Type=oneshot
 User=obsidian-ai-sync
 Group=obsidian-ai-sync
-EnvironmentFile=/etc/obsidian-ai/human-projection.env
+EnvironmentFile=/etc/obsidian-ai/projection-cleanup.env
 ExecStart=/opt/obsidian-ai/venv/bin/obsidian-ai-human-projection-cleanup-sync \
   --ai-root /var/lib/obsidian-ai/state \
-  --base-url ${NEXTCLOUD_BASE_URL} \
-  --username ${NEXTCLOUD_USERNAME} \
-  --password-file /etc/obsidian-ai/webdav-password
+  --base-url ${PROJECTION_CLEANUP_BASE_URL} \
+  --username ${PROJECTION_CLEANUP_USERNAME} \
+  --password-file /etc/obsidian-ai/projection-cleanup-password
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadOnlyPaths=/etc/obsidian-ai /var/lib/obsidian-ai/state/16-Human-Projection /var/lib/obsidian-ai/state/20-Review
+ReadOnlyPaths=/etc/obsidian-ai/projection-cleanup.env /etc/obsidian-ai/projection-cleanup-password /var/lib/obsidian-ai/state/16-Human-Projection /var/lib/obsidian-ai/state/20-Review
+InaccessiblePaths=/etc/obsidian-ai/webdav-password /etc/obsidian-ai/rclone.conf /etc/obsidian-ai/human-projection.env /etc/obsidian-ai/review-intake-password
 ReadWritePaths=/var/lib/obsidian-ai/state/17-Human-Projection-Result /var/lib/obsidian-ai/state/24-Locks
 UMask=0027
 TimeoutStartSec=5min
