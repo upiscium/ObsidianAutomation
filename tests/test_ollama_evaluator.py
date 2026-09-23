@@ -250,7 +250,6 @@ def test_near_duplicate_e2e_uses_pairwise_candidate_passes_and_persists_likely(t
     assert set(consistency_schema["properties"]["conflicts"]["items"]["required"]) == {
         "proposal_excerpt_id",
         "candidate_excerpt_id",
-        "incompatibility",
     }
     assert consistency_schema["properties"]["conflicts"]["minItems"] == 0
     assert "candidate_path" not in json.dumps(consistency_schema)
@@ -264,9 +263,8 @@ def test_consistency_concern_persists_structured_conflict_evidence(tmp_path: Pat
         "findings": [{"detail": "The procedures cannot both be followed."}],
         "conflicts": [
             {
-                "proposal_excerpt_id": "p0003",
-                "candidate_excerpt_id": "c0003",
-                "incompatibility": "The procedures cannot both be followed in the same setup.",
+                "proposal_excerpt_id": "p0002",
+                "candidate_excerpt_id": "c0002",
             }
         ],
     }
@@ -291,7 +289,7 @@ def test_consistency_concern_persists_structured_conflict_evidence(tmp_path: Pat
         ConsistencyConflict(
             proposal_claim="Nextcloud の WebDAV と RemotelySave で Obsidian Vault を共有する方法。",
             candidate_claim="Nextcloud の WebDAV と RemotelySave で Obsidian Vault を共有する方法。",
-            incompatibility="The procedures cannot both be followed in the same setup.",
+            incompatibility="The anchored procedures are incompatible.",
             candidate_path=EXISTING_PATH,
         ),
     )
@@ -306,7 +304,6 @@ def test_consistency_concern_persists_structured_conflict_evidence(tmp_path: Pat
             "candidate_path": EXISTING_PATH,
             "proposal_claim": "Nextcloud の WebDAV と RemotelySave で Obsidian Vault を共有する方法。",
             "candidate_claim": "Nextcloud の WebDAV と RemotelySave で Obsidian Vault を共有する方法。",
-            "incompatibility": "The procedures cannot both be followed in the same setup.",
         }
     ]
 
@@ -335,9 +332,8 @@ def test_openai_compatible_verifier_path_preserves_pass_order(tmp_path: Path) ->
                 "findings": [],
                 "conflicts": [
                     {
-                        "proposal_excerpt_id": "p0003",
-                        "candidate_excerpt_id": "c0003",
-                        "incompatibility": "The procedures cannot both be followed.",
+                        "proposal_excerpt_id": "p0002",
+                        "candidate_excerpt_id": "c0002",
                     }
                 ],
             }
@@ -381,6 +377,7 @@ def test_openai_compatible_verifier_path_preserves_pass_order(tmp_path: Path) ->
     ] == ["groundedness", "redundancy", "consistency", "consistency_verifier"]
     verifier_payload = json.loads(calls[-1]["payload"]["messages"][1]["content"])
     assert "candidate_path" not in verifier_payload
+    assert "proposed_incompatibility" not in verifier_payload
     assert calls[-1]["payload"]["response_format"]["json_schema"]["strict"] is True
 
 
@@ -541,3 +538,4 @@ def test_nonfinite_options_are_rejected_before_provider_contact(tmp_path: Path) 
             transport=lambda *args, **kwargs: calls.append(kwargs) or {},
         )
     assert calls == []
+
