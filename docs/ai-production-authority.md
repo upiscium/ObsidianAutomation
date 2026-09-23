@@ -166,13 +166,14 @@ Human reviewer
 ```
 
 Evaluator assesses groundedness, redundancy, and consistency using output
-contract `knowledge-note-evaluator-output-v5` and current prompt
-`knowledge-note-evaluator-v6` (SHA
-`45439ec5f3ae0d9dd31fa5af37c45c572b3e520ac87548f0a739acf1ee5f9041`). Its
+contract `knowledge-note-evaluator-output-v6` and current prompt
+`knowledge-note-evaluator-v7` (SHA
+`1e3b5b820b9569dc99230abd3c352e7223c1b84a3b93b66667f4a7fc1da9dbac`). Its
 recommendation is advisory machine output. For Consistency, deterministic code
 builds exact proposal/candidate excerpt tables and the model selects excerpt IDs.
 Code resolves those IDs back to exact source bytes before independent verifier
-calls; only a verifier `contradiction` becomes persisted evidence. Deterministic
+calls. The verifier receives only the exact quote pair and no proposer-generated
+rationale; only a verifier `contradiction` becomes persisted evidence. Deterministic
 code also binds each `candidate_path` outside the model. Current Evaluation Records are v2, while
 historical v1 records remain readable.
 
