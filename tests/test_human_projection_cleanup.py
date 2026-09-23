@@ -34,6 +34,7 @@ def _state(tmp_path: Path) -> tuple[Path, str]:
     state = tmp_path / "state"
     state.mkdir()
     ensure_artifact_layout(state)
+    (state / "24-Locks").mkdir()
     (state / "16-Human-Projection").mkdir()
     for role in (
         "reader",
