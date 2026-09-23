@@ -22,6 +22,9 @@ from obsidian_automation.human_projection import (
     emit_evaluation_and_review_projections,
     parse_request,
 )
+from obsidian_automation.human_projection_cleanup import (
+    parse_cleanup_request,
+)
 from obsidian_automation.review_intake import (
     RemoteReview,
     ReviewIntakeError,
@@ -187,6 +190,40 @@ def test_review_intake_creates_evaluation_bound_approval(tmp_path: Path) -> None
     assert review.record_version == 2
     assert review.evaluation_sha256 == evaluation_sha
     assert review.decision == "approve"
+
+
+def test_review_intake_reject_queues_projection_cleanup(tmp_path: Path) -> None:
+    state, validated, evaluation_sha, request = _setup(tmp_path)
+
+    result = run_review_intake(
+        state,
+        base_url="https://nextcloud.example/dav/Vault",
+        username="review-reader",
+        password="secret",
+        approver="human",
+        read_remote=lambda **_kwargs: RemoteReview(
+            200,
+            _edited(request.content, "reject"),
+            '"etag"',
+        ),
+    )
+
+    assert result["processed"] == 1
+    assert result["cleanup_requested"] == 1
+    review = load_review_record(state, validated.mutation_sha256)
+    assert review.decision == "reject"
+    assert review.evaluation_sha256 == evaluation_sha
+
+    cleanup_paths = list(
+        (state / "16-Human-Projection" / "reviewer").glob(
+            "*.projection-cleanup.json"
+        )
+    )
+    assert len(cleanup_paths) == 1
+    cleanup = parse_cleanup_request(cleanup_paths[0].read_bytes())
+    assert cleanup.case_id == CASE
+    assert cleanup.evaluation_sha256 == evaluation_sha
+    assert cleanup.mutation_sha256 == validated.mutation_sha256
 
 
 def test_review_intake_blank_decision_is_non_mutating(tmp_path: Path) -> None:
