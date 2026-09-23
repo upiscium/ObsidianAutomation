@@ -84,12 +84,12 @@ The currently executable pipeline contracts are:
 - Generator adapter `openai-chat-completions-json-schema-v1` or `ollama-chat-structured-v0`;
 - Validator policy `knowledge-note-v0`;
 - Evaluation Context policy `bm25-topk-recall-v0` with `top_k=5`;
-- Evaluator output contract `knowledge-note-evaluator-output-v5`;
-- Evaluator prompt `knowledge-note-evaluator-v6`;
-- Evaluator prompt SHA `45439ec5f3ae0d9dd31fa5af37c45c572b3e520ac87548f0a739acf1ee5f9041`;
+- Evaluator output contract `knowledge-note-evaluator-output-v6`;
+- Evaluator prompt `knowledge-note-evaluator-v7`;
+- Evaluator prompt SHA `1e3b5b820b9569dc99230abd3c352e7223c1b84a3b93b66667f4a7fc1da9dbac`;
 - Evaluator provider `openai-compatible` or `ollama`;
-- Evaluator adapter `openai-evaluator-chat-completions-json-schema-v3` or `ollama-evaluator-chat-structured-v4`;
-- Evaluator strategy `groundedness-plus-pairwise-candidates-with-verifier-v1`.
+- Evaluator adapter `openai-evaluator-chat-completions-json-schema-v4` or `ollama-evaluator-chat-structured-v5`;
+- Evaluator strategy `groundedness-plus-pairwise-candidates-with-independent-verifier-v2`.
 
 The exact historical Evaluator prompt identities
 `knowledge-note-evaluator-v3` /
@@ -97,8 +97,10 @@ The exact historical Evaluator prompt identities
 `knowledge-note-evaluator-v4` /
 `9411d74c10cd8c3450be6b79f12c644433862a4b292a26db7444d32606ddea3b`,
 and `knowledge-note-evaluator-v5` /
-`ca9755c7b448be9bb2a42ab41ba182deb7b45785a4099d6ac85d854131a06291`
-remain readable in recipes for audit. Runtime preflight requires the current v6
+`ca9755c7b448be9bb2a42ab41ba182deb7b45785a4099d6ac85d854131a06291`,
+plus `knowledge-note-evaluator-v6` /
+`45439ec5f3ae0d9dd31fa5af37c45c572b3e520ac87548f0a739acf1ee5f9041`
+remain readable in recipes for audit. Runtime preflight requires the current v7
 version/hash pair and blocks historical recipes before provider contact.
 Unknown prompt identities and cross-paired version/hash values are rejected;
 the same exact-pair rule applies to the Generator's supported v0/v1 prompt
