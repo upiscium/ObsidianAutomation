@@ -29,6 +29,14 @@ REQUIRED_UNITS = {
         "ConditionPathExists=/etc/obsidian-ai/human-projection.env",
         "ConditionPathExists=/etc/obsidian-ai/webdav-password",
     ),
+    "obsidian-ai-human-projection-cleanup-sync.service": (
+        "User=obsidian-ai-sync",
+        "obsidian-ai-human-projection-cleanup-sync",
+        "Requires=obsidian-ai-post-review-reconcile.service",
+        "ConditionPathExists=/etc/obsidian-ai/human-projection.env",
+        "ConditionPathExists=/etc/obsidian-ai/webdav-password",
+        "/var/lib/obsidian-ai/state/20-Review",
+    ),
     "obsidian-ai-review-intake.service": (
         "User=obsidian-ai-reviewer",
         "obsidian-ai-review-intake",
@@ -96,8 +104,8 @@ REQUIRED_UNITS = {
     ),
     "obsidian-pre-review-status.service": (
         "User=obsidian-ai-status",
-        "Requires=obsidian-pre-review-evaluator.service obsidian-ai-post-review-reconcile.service",
-        "After=obsidian-pre-review-evaluator.service obsidian-ai-human-projection-sync.service obsidian-ai-post-review-reconcile.service",
+        "Requires=obsidian-pre-review-evaluator.service obsidian-ai-post-review-reconcile.service obsidian-ai-human-projection-cleanup-sync.service",
+        "After=obsidian-pre-review-evaluator.service obsidian-ai-human-projection-sync.service obsidian-ai-post-review-reconcile.service obsidian-ai-human-projection-cleanup-sync.service",
         "PrivateNetwork=true",
         "obsidian-pre-review-status-project",
     ),
