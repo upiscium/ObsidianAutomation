@@ -668,7 +668,7 @@ def _validated_conflicts(
         )
 
     normalized: list[ConsistencyConflict] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, str]] = set()
     for raw_conflict in conflicts:
         conflict = _validated_conflict(
             raw_conflict,
@@ -817,7 +817,7 @@ def _validated_bound_conflict_proposals(
         )
 
     normalized: list[BoundConsistencyConflictProposal] = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[str, str]] = set()
     for raw_proposal in proposals:
         proposal = _validated_bound_conflict_proposal(raw_proposal)
         identity = (
