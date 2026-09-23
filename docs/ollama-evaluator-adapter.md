@@ -259,8 +259,8 @@ The Evaluator reuses the Generator transport policy:
 - current output contract `knowledge-note-evaluator-output-v4`;
 - provider `ollama`;
 - resolved model identifier and digest;
-- adapter version `ollama-evaluator-chat-structured-v3`;
-- strategy `groundedness-plus-pairwise-candidates-with-verifier-v1`;
+- adapter version `ollama-evaluator-chat-structured-v5`;
+- strategy `groundedness-plus-pairwise-candidates-with-independent-verifier-v2`;
 - the exact immutable recipe `think` value (`false` for new recipes; historical
   `low` remains supported);
 - exact inference options;
