@@ -27,6 +27,7 @@ PRE_REVIEW_SERVICES = (
     "obsidian-pre-review-status.service",
     "obsidian-ai-input-planner.service",
     "obsidian-ai-human-projection-sync.service",
+    "obsidian-ai-human-projection-cleanup-sync.service",
     "obsidian-ai-review-intake.service",
     "obsidian-ai-post-review-executor-prepare.service",
     "obsidian-ai-post-review-transport.service",
@@ -42,6 +43,7 @@ REQUIRED_UNITS = frozenset(
     {
         "obsidian-ai-input-planner.service",
         "obsidian-ai-human-projection-sync.service",
+        "obsidian-ai-human-projection-cleanup-sync.service",
         "obsidian-ai-review-intake.service",
         "obsidian-ai-post-review-executor-prepare.service",
         "obsidian-ai-post-review-transport.service",

@@ -181,7 +181,7 @@ Human-facing Obsidian views are projected through separate non-authoritative sta
 Reader, Generator, Validator, Evaluator, Reviewer, Executor and Sync may write only
 their own `16-Human-Projection/<role>` request queue. Sync may read those queues but
 cannot forge producer requests; only Sync writes `17-Human-Projection-Result` and
-performs conditional WebDAV CREATE below the fixed `03-AI/**` stage allowlist.
+performs conditional WebDAV CREATE below the fixed `03-AI/**` stage allowlist. For an exact evaluation-bound Reject Review, Reviewer may additionally enqueue a bounded cleanup intent; only Sync can execute the derived fixed-path WebDAV DELETEs.
 These projection artifacts never substitute for Validation, Human Review,
 Execution, Transport, or Receipt authority.
 
