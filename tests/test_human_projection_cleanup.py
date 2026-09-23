@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+import obsidian_automation.human_projection_cleanup as cleanup
 from obsidian_automation.artifact_lifecycle import (
     _canonical_json_bytes,
     ensure_artifact_layout,
@@ -228,3 +229,77 @@ def test_cleanup_requires_authoritative_reject(tmp_path: Path) -> None:
         )
 
     assert called is False
+
+
+class _Response:
+    def __init__(self, status: int):
+        self.status = status
+
+    def read(self) -> bytes:
+        return b""
+
+
+class _Connection:
+    def __init__(self, status: int, calls: list[str]):
+        self.status = status
+        self.calls = calls
+
+    def request(self, method: str, _path: str, **_kwargs: object) -> None:
+        self.calls.append(method)
+
+    def getresponse(self) -> _Response:
+        return _Response(self.status)
+
+    def close(self) -> None:
+        return None
+
+
+def test_delete_remote_target_verifies_absence_after_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    connections = [
+        _Connection(204, calls),
+        _Connection(404, calls),
+    ]
+    monkeypatch.setattr(
+        cleanup,
+        "_connection",
+        lambda _parsed, *, timeout: connections.pop(0),
+    )
+
+    result = cleanup._delete_remote_target(
+        base_url="https://nextcloud.example/dav/Vault",
+        target_path=f"03-AI/50-Review/{CASE}.md",
+        username="sync",
+        password="secret",
+        timeout=30.0,
+        allow_http=False,
+    )
+
+    assert result == "deleted"
+    assert calls == ["DELETE", "GET"]
+
+
+def test_delete_remote_target_accepts_already_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    connections = [_Connection(404, calls)]
+    monkeypatch.setattr(
+        cleanup,
+        "_connection",
+        lambda _parsed, *, timeout: connections.pop(0),
+    )
+
+    result = cleanup._delete_remote_target(
+        base_url="https://nextcloud.example/dav/Vault",
+        target_path=f"03-AI/50-Review/{CASE}.md",
+        username="sync",
+        password="secret",
+        timeout=30.0,
+        allow_http=False,
+    )
+
+    assert result == "already_absent"
+    assert calls == ["DELETE"]
