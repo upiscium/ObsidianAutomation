@@ -133,6 +133,20 @@ identity remains pinned by the submitted immutable recipe.
 Review Intake requires a dedicated **read-only** Nextcloud account/app password.
 Do not reuse the Sync writer credential.
 
+Rejected-projection cleanup additionally requires a dedicated Nextcloud account.
+Share only the existing `03-AI` folder to that account with Read + Delete
+(permission bitmask `9`) and do not grant access to canonical Knowledge or
+other Vault roots. Configure:
+
+```text
+/etc/obsidian-ai/projection-cleanup.env
+/etc/obsidian-ai/projection-cleanup-password
+```
+
+The cleanup env contains only `PROJECTION_CLEANUP_BASE_URL` and
+`PROJECTION_CLEANUP_USERNAME`. The base URL should point to the cleanup
+account's WebDAV root, where the shared folder is mounted as `03-AI`.
+
 Install:
 
 ```text
