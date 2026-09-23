@@ -304,6 +304,7 @@ def test_consistency_concern_persists_structured_conflict_evidence(tmp_path: Pat
             "candidate_path": EXISTING_PATH,
             "proposal_claim": "Nextcloud の WebDAV と RemotelySave で Obsidian Vault を共有する方法。",
             "candidate_claim": "Nextcloud の WebDAV と RemotelySave で Obsidian Vault を共有する方法。",
+            "incompatibility": "The anchored procedures are incompatible.",
         }
     ]
 
