@@ -148,8 +148,7 @@ Reader
   -> reconcile terminal state into orchestration metadata
 ```
 
-Reject creates authoritative Review and reconciles directly to
-`human_rejected`; it never invokes canonical transport.
+Reject creates authoritative Review and queues a content-addressed projection cleanup intent. After post-review reconciliation reaches `human_rejected`, a Sync-only cleanup service deletes the fixed `03-AI/00-Input` through `03-AI/50-Review` files for that exact case. Reject never invokes canonical Knowledge transport, and private lifecycle/audit artifacts are retained.
 
 ## Sync transport
 
@@ -179,6 +178,8 @@ The service is enabled only when both private deployment files exist:
 
 The env file contains only the non-secret Nextcloud base URL / username binding.
 The password file remains readable only by Sync.
+
+A separate `obsidian-ai-human-projection-cleanup-sync.service` runs after post-review reconciliation. It accepts no arbitrary path from Reviewer: cleanup targets are derived only from the exact `ai_case_id` and the fixed stage allowlist. Before DELETE, Sync revalidates the original published Review projection and the exact evaluation-bound authoritative Reject Review. DELETE is idempotent; an already-absent projection is accepted as success.
 
 ## Folder creation boundary
 
@@ -223,10 +224,11 @@ Implemented by this increment:
 - exact-byte idempotency and conflict detection;
 - fail-closed Review Intake into authoritative `20-Review`;
 - separated Executor / Sync / Executor post-review canonical path;
-- scheduler reconciliation for approve/reject/completed terminal states.
+- scheduler reconciliation for approve/reject/completed terminal states;
+- Sync-only automatic deletion of rejected-case Human-facing projections.
 
 Reserved for later increments:
 
 - Executor / Transport / Completed Human-facing projection emission;
 - explicit Failed projections for orchestration failures;
-- cleanup/retention policy for historical stage projections.
+- retention/GC policy for private lifecycle artifacts and non-rejected historical projections.
