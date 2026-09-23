@@ -256,7 +256,7 @@ The Evaluator reuses the Generator transport policy:
 - Evaluation Context SHA;
 - evaluator implementation revision;
 - prompt template version/SHA;
-- current output contract `knowledge-note-evaluator-output-v4`;
+- current output contract `knowledge-note-evaluator-output-v6`;
 - provider `ollama`;
 - resolved model identifier and digest;
 - adapter version `ollama-evaluator-chat-structured-v5`;
