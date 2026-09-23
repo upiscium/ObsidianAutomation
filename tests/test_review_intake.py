@@ -186,6 +186,12 @@ def test_review_intake_creates_evaluation_bound_approval(tmp_path: Path) -> None
     )
 
     assert result["processed"] == 1
+    assert result["cleanup_requested"] == 0
+    assert list(
+        (state / "16-Human-Projection" / "reviewer").glob(
+            "*.projection-cleanup.json"
+        )
+    ) == []
     review = load_review_record(state, validated.mutation_sha256)
     assert review.record_version == 2
     assert review.evaluation_sha256 == evaluation_sha
