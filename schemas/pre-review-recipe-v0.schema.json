@@ -656,7 +656,7 @@
               "const": "knowledge-note-evaluator-v7"
             },
             "prompt_template_sha256": {
-              "const": "0000000000000000000000000000000000000000000000000000000000000000"
+              "const": "1e3b5b820b9569dc99230abd3c352e7223c1b84a3b93b66667f4a7fc1da9dbac"
             },
             "provider": {
               "const": "openai-compatible"
@@ -695,7 +695,7 @@
               "const": "knowledge-note-evaluator-v7"
             },
             "prompt_template_sha256": {
-              "const": "0000000000000000000000000000000000000000000000000000000000000000"
+              "const": "1e3b5b820b9569dc99230abd3c352e7223c1b84a3b93b66667f4a7fc1da9dbac"
             },
             "provider": {
               "const": "ollama"
