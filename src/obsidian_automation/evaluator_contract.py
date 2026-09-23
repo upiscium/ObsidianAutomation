@@ -44,7 +44,7 @@ EVALUATOR_PROMPT_TEMPLATE_V6_SHA256 = (
     "45439ec5f3ae0d9dd31fa5af37c45c572b3e520ac87548f0a739acf1ee5f9041"
 )
 EVALUATOR_PROMPT_TEMPLATE_V7_SHA256 = (
-    "0000000000000000000000000000000000000000000000000000000000000000"
+    "1e3b5b820b9569dc99230abd3c352e7223c1b84a3b93b66667f4a7fc1da9dbac"
 )
 # The shorter names mirror the generator contract's historical identity
 # constants and make the compatibility pair easy to consume.
