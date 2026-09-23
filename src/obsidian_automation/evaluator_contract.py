@@ -283,10 +283,10 @@ def _validated_candidate_path(value: object) -> str:
 
 
 def _exact_excerpt_chunks(text: str) -> tuple[str, ...]:
-    if not text:
+    remaining = text.strip()
+    if not remaining:
         return ()
     chunks: list[str] = []
-    remaining = text
     while len(remaining) > MAX_EVALUATOR_EXCERPT_CHARS:
         limit = MAX_EVALUATOR_EXCERPT_CHARS
         split_at = remaining.rfind("\n", 0, limit + 1)
@@ -296,10 +296,10 @@ def _exact_excerpt_chunks(text: str) -> tuple[str, ...]:
         if split_at <= 0:
             split_at = limit
             delimiter_width = 0
-        chunk = remaining[:split_at]
+        chunk = remaining[:split_at].strip()
         if chunk:
             chunks.append(chunk)
-        remaining = remaining[split_at + delimiter_width :]
+        remaining = remaining[split_at + delimiter_width :].strip()
     if remaining:
         chunks.append(remaining)
     return tuple(chunks)
