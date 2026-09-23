@@ -27,6 +27,10 @@ from .human_projection import (
     parse_request,
     parse_result,
 )
+from .human_projection_cleanup import (
+    build_cleanup_request,
+    store_cleanup_request,
+)
 from .knowledge_review import create_evaluation_bound_review
 from .webdav_create import (
     WebDAVCreateError,
@@ -373,6 +377,39 @@ def _require_projection_result(
         raise ReviewIntakeError("review projection is not safely published")
 
 
+def _queue_reject_cleanup(
+    ai_root: Path,
+    *,
+    review_projection_request_sha256: str,
+    request: ProjectionRequest,
+    evaluation_sha256: str,
+    mutation_sha256: str,
+) -> tuple[str, Path] | None:
+    review_path = (
+        ensure_artifact_layout(ai_root).review
+        / f"{mutation_sha256}.approval.json"
+    )
+    review_bytes = _read_exact_file(review_path)
+    review = load_review_record(ai_root, mutation_sha256)
+    if review.record_version != 2 or review.evaluation_sha256 != evaluation_sha256:
+        raise ReviewIntakeError(
+            "Reject cleanup Review binding does not match selected Evaluation"
+        )
+    if review.decision != "reject":
+        return None
+    return store_cleanup_request(
+        ai_root,
+        build_cleanup_request(
+            case_id=request.case_id,
+            review_projection_request_sha256=review_projection_request_sha256,
+            evaluation_sha256=evaluation_sha256,
+            mutation_sha256=mutation_sha256,
+            review_sha256=sha256_bytes(review_bytes),
+            created_at=review.decided_at,
+        ),
+    )
+
+
 def run_review_intake(
     ai_root: Path,
     *,
@@ -395,6 +432,7 @@ def run_review_intake(
     waiting = 0
     missing = 0
     existing = 0
+    cleanup_requested = 0
 
     for request_sha, request in _review_requests(ai_root):
         _require_projection_result(ai_root, request_sha, request)
@@ -418,6 +456,15 @@ def run_review_intake(
                 raise ReviewIntakeError(
                     "existing authoritative Review is bound to another evaluation"
                 )
+            if review.decision == "reject":
+                _queue_reject_cleanup(
+                    ai_root,
+                    review_projection_request_sha256=request_sha,
+                    request=request,
+                    evaluation_sha256=evaluation_sha,
+                    mutation_sha256=evaluation.mutation_sha256,
+                )
+                cleanup_requested += 1
             existing += 1
             continue
 
@@ -438,12 +485,21 @@ def run_review_intake(
             waiting += 1
             continue
 
-        create_evaluation_bound_review(
+        review_result = create_evaluation_bound_review(
             ai_root,
             evaluation_sha256=evaluation_sha,
             decision=decision,
             approver=approver,
         )
+        if decision == "reject":
+            _queue_reject_cleanup(
+                ai_root,
+                review_projection_request_sha256=request_sha,
+                request=request,
+                evaluation_sha256=evaluation_sha,
+                mutation_sha256=review_result.mutation_sha256,
+            )
+            cleanup_requested += 1
         processed += 1
         if processed >= max_requests:
             break
@@ -455,6 +511,7 @@ def run_review_intake(
         "waiting": waiting,
         "missing": missing,
         "existing": existing,
+        "cleanup_requested": cleanup_requested,
     }
 
 
