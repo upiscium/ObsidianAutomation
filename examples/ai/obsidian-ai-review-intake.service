@@ -22,6 +22,6 @@ PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
 ReadOnlyPaths=/etc/obsidian-ai /var/lib/obsidian-ai/state/10-Validation /var/lib/obsidian-ai/state/15-Evaluation /var/lib/obsidian-ai/state/16-Human-Projection/evaluator /var/lib/obsidian-ai/state/17-Human-Projection-Result
-ReadWritePaths=/var/lib/obsidian-ai/state/20-Review
+ReadWritePaths=/var/lib/obsidian-ai/state/20-Review /var/lib/obsidian-ai/state/16-Human-Projection/reviewer
 UMask=0027
 TimeoutStartSec=2min
