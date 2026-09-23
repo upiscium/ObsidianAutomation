@@ -92,6 +92,8 @@ jobs:
             /etc/obsidian-ai/rclone.conf \
             /etc/obsidian-ai/vault-pull.filters \
             /etc/obsidian-ai/webdav-password \
+            /etc/obsidian-ai/projection-cleanup.env \
+            /etc/obsidian-ai/projection-cleanup-password \
             /etc/obsidian-ai/pre-review-generator.env \
             /etc/obsidian-ai/pre-review-evaluator.env \
             /etc/obsidian-ai/review-intake.env \

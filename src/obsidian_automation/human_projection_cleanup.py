@@ -437,7 +437,7 @@ def _delete_remote_target(
         return "already_absent"
     if not 200 <= status < 300:
         raise HumanProjectionCleanupError(
-            f"WebDAV DELETE returned unexpected HTTP status {status}"
+            f"WebDAV DELETE returned unexpected HTTP status {status} for {target_path}"
         )
 
     verify = _connection(parsed, timeout=timeout)

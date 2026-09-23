@@ -106,6 +106,8 @@ The initial manifest includes:
 /etc/obsidian-ai/pre-review-generator.env
 /etc/obsidian-ai/pre-review-evaluator.env
 /etc/obsidian-ai/human-projection.env
+/etc/obsidian-ai/projection-cleanup.env
+/etc/obsidian-ai/projection-cleanup-password
 /etc/obsidian-ai/pre-review-revision.env
 /var/lib/obsidian-ai/state
 /var/lib/obsidian-ai/deployments
@@ -116,7 +118,9 @@ The revision environment is derived and should be recreated by the deployment
 lifecycle. `human-projection.env` contains only the non-secret Nextcloud base
 URL / username binding and may be recreated on the consolidated host; the
 corresponding app password remains the existing Sync-owned
-`/etc/obsidian-ai/webdav-password`. The local Vault is a pull-only replica and should normally be rebuilt.
+`/etc/obsidian-ai/webdav-password`. Rejected-projection cleanup uses a separate
+Sync-owned `projection-cleanup.env` / `projection-cleanup-password` pair whose
+Nextcloud account is shared only `03-AI` with Read + Delete. The local Vault is a pull-only replica and should normally be rebuilt.
 Durable lifecycle state must be migrated only while old writer-side automation
 is quiesced.
 
@@ -195,6 +199,8 @@ ai
   rclone.conf
   vault-pull.filters
   webdav-password when deployed
+  projection-cleanup.env when deployed
+  projection-cleanup-password when deployed
   pre-review-generator.env
   pre-review-evaluator.env
 

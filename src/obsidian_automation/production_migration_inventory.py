@@ -111,6 +111,19 @@ ROLE_MANIFESTS: dict[str, tuple[ManifestEntry, ...]] = {
             "copy_narrow_private_if_deployed",
         ),
         ManifestEntry(
+            "ai_projection_cleanup_env",
+            "/etc/obsidian-ai/projection-cleanup.env",
+            "deployment_config",
+            "copy_or_recreate_if_deployed",
+            ("PROJECTION_CLEANUP_BASE_URL", "PROJECTION_CLEANUP_USERNAME"),
+        ),
+        ManifestEntry(
+            "ai_projection_cleanup_password",
+            "/etc/obsidian-ai/projection-cleanup-password",
+            "credential",
+            "copy_narrow_private_if_deployed",
+        ),
+        ManifestEntry(
             "ai_generator_env",
             "/etc/obsidian-ai/pre-review-generator.env",
             "credential_config",

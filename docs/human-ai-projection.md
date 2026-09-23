@@ -181,6 +181,17 @@ The password file remains readable only by Sync.
 
 A separate `obsidian-ai-human-projection-cleanup-sync.service` runs after post-review reconciliation. It accepts no arbitrary path from Reviewer: cleanup targets are derived only from the exact `ai_case_id` and the fixed stage allowlist. Before DELETE, Sync revalidates the original published Review projection and the exact evaluation-bound authoritative Reject Review. DELETE is idempotent; an already-absent projection is accepted as success.
 
+Cleanup does not reuse the canonical AI writer credential. It uses a dedicated Nextcloud account shared only the existing `03-AI` folder with Read + Delete permission (permission bitmask `9`). The account root must expose that share as `03-AI`, because cleanup paths remain fixed below `03-AI/**`.
+
+Private deployment files:
+
+```text
+/etc/obsidian-ai/projection-cleanup.env
+/etc/obsidian-ai/projection-cleanup-password
+```
+
+The cleanup service explicitly hides the canonical `webdav-password` from its systemd sandbox.
+
 ## Folder creation boundary
 
 The WebDAV transport may create only:
