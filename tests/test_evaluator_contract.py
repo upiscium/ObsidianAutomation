@@ -540,6 +540,21 @@ def test_consistency_excerpt_builder_rejects_cr_source_content() -> None:
     with pytest.raises(ArtifactLifecycleError, match="LF line endings"):
         consistency_excerpts("Proposal\r\nclaim", prefix="p")
 
+def test_consistency_excerpt_boundaries_always_satisfy_quote_contract() -> None:
+    excerpts = consistency_excerpts(
+        "  Leading indentation is structural.  \n\n"
+        "Trailing spaces remain inside source bytes.   \n\n"
+        + ("x" * 995)
+        + "     tail",
+        prefix="c",
+    )
+
+    assert excerpts
+    assert all(item.text for item in excerpts)
+    assert all(item.text == item.text.strip() for item in excerpts)
+    assert all(len(item.text) <= MAX_EVALUATOR_CONFLICT_FIELD_CHARS for item in excerpts)
+
+
 def test_consistency_excerpts_drop_nonsemantic_markdown_structure() -> None:
     content = (
         "---\n"
