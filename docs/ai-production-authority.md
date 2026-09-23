@@ -32,7 +32,13 @@ Production v0 requires exactly one AI Writer host. The shared production lock is
 
 ## Credential boundary
 
-Only `obsidian-ai-sync` may hold the Nextcloud **writer** credential.
+Only `obsidian-ai-sync` may hold the canonical Nextcloud **writer** credential.
+
+Rejected-projection cleanup uses a separate Nextcloud credential that is also
+readable only by the Sync transport identity, but its remote share is restricted
+to `03-AI` and grants only Read + Delete. It cannot reach canonical
+`11-Knowledge` or other Vault roots. The ordinary AI writer credential does not
+gain Delete permission.
 
 Review Intake may hold a separate read-only Nextcloud credential scoped to the
 private Vault so it can observe the Human-edited `03-AI/50-Review` projection.
@@ -181,7 +187,7 @@ Human-facing Obsidian views are projected through separate non-authoritative sta
 Reader, Generator, Validator, Evaluator, Reviewer, Executor and Sync may write only
 their own `16-Human-Projection/<role>` request queue. Sync may read those queues but
 cannot forge producer requests; only Sync writes `17-Human-Projection-Result` and
-performs conditional WebDAV CREATE below the fixed `03-AI/**` stage allowlist. For an exact evaluation-bound Reject Review, Reviewer may additionally enqueue a bounded cleanup intent; only Sync can execute the derived fixed-path WebDAV DELETEs.
+performs conditional WebDAV CREATE below the fixed `03-AI/**` stage allowlist. For an exact evaluation-bound Reject Review, Reviewer may additionally enqueue a bounded cleanup intent; only Sync can execute the derived fixed-path WebDAV DELETEs, using the dedicated `03-AI`-scoped cleanup credential rather than the canonical writer credential.
 These projection artifacts never substitute for Validation, Human Review,
 Execution, Transport, or Receipt authority.
 
