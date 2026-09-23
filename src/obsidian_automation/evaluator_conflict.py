@@ -13,7 +13,6 @@ class ConsistencyConflictProposal:
 
     proposal_excerpt_id: str
     candidate_excerpt_id: str
-    incompatibility: str
 
 
 @dataclass(frozen=True)
@@ -22,7 +21,6 @@ class BoundConsistencyConflictProposal:
 
     proposal_quote: str
     candidate_quote: str
-    incompatibility: str
 
 
 @dataclass(frozen=True)
