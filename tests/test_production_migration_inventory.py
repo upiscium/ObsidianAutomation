@@ -51,6 +51,11 @@ def test_ai_inventory_reports_metadata_without_reading_values(tmp_path: Path) ->
         "OPENAI_BASE_URL",
         "OPENAI_API_KEY",
     ]
+    assert by_id["ai_projection_cleanup_env"]["expected_fields"] == [
+        "PROJECTION_CLEANUP_BASE_URL",
+        "PROJECTION_CLEANUP_USERNAME",
+    ]
+    assert by_id["ai_projection_cleanup_password"]["category"] == "credential"
 
 
 def test_inventory_does_not_follow_symlink_or_emit_target(tmp_path: Path) -> None:
