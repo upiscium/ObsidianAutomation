@@ -41,6 +41,8 @@ def _populate_required(root: Path, role: str) -> None:
 def test_ai_bundle_round_trip_uses_only_declared_logical_ids(tmp_path: Path) -> None:
     _populate_required(tmp_path, "ai")
     _write(tmp_path, "/etc/obsidian-ai/webdav-password")
+    _write(tmp_path, "/etc/obsidian-ai/projection-cleanup.env")
+    _write(tmp_path, "/etc/obsidian-ai/projection-cleanup-password")
 
     stream = BytesIO()
     status = transfer.write_bundle("ai", stream, source_root=tmp_path)
@@ -48,7 +50,7 @@ def test_ai_bundle_round_trip_uses_only_declared_logical_ids(tmp_path: Path) -> 
     assert status == {
         "record_version": 1,
         "role": "ai",
-        "file_count": 5,
+        "file_count": 7,
         "values_printed": False,
     }
 
@@ -58,6 +60,8 @@ def test_ai_bundle_round_trip_uses_only_declared_logical_ids(tmp_path: Path) -> 
         "ai_pull_rclone",
         "ai_pull_filters",
         "ai_writer_webdav_password",
+        "ai_projection_cleanup_env",
+        "ai_projection_cleanup_password",
         "ai_generator_env",
         "ai_evaluator_env",
     }
@@ -190,6 +194,18 @@ def test_target_manifest_preserves_observed_owner_group_modes() -> None:
         by_role["ai"]["ai_writer_webdav_password"].owner,
         by_role["ai"]["ai_writer_webdav_password"].group,
         by_role["ai"]["ai_writer_webdav_password"].mode,
+    ) == ("obsidian-ai-sync", "obsidian-ai-sync", 0o400)
+
+    assert (
+        by_role["ai"]["ai_projection_cleanup_env"].owner,
+        by_role["ai"]["ai_projection_cleanup_env"].group,
+        by_role["ai"]["ai_projection_cleanup_env"].mode,
+    ) == ("root", "obsidian-ai-sync", 0o640)
+
+    assert (
+        by_role["ai"]["ai_projection_cleanup_password"].owner,
+        by_role["ai"]["ai_projection_cleanup_password"].group,
+        by_role["ai"]["ai_projection_cleanup_password"].mode,
     ) == ("obsidian-ai-sync", "obsidian-ai-sync", 0o400)
 
     assert (
