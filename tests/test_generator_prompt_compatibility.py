@@ -153,7 +153,7 @@ def test_historical_v1_recipe_round_trips_without_reinterpretation() -> None:
     parsed = parse_recipe(raw)
 
     assert parsed.generator.prompt_template_version == PROMPT_TEMPLATE_V1_VERSION
-    assert parsed.generator.prompt_template_sha256 == PROMPT_TEMPLATE_V2_SHA256
+    assert parsed.generator.prompt_template_sha256 == PROMPT_TEMPLATE_V1_SHA256
     assert parsed.to_json_bytes() == raw
 
 
@@ -162,7 +162,7 @@ def test_current_v2_recipe_round_trips_canonically() -> None:
     parsed = parse_recipe(raw)
 
     assert parsed.generator.prompt_template_version == PROMPT_TEMPLATE_VERSION
-    assert parsed.generator.prompt_template_sha256 == PROMPT_TEMPLATE_V1_SHA256
+    assert parsed.generator.prompt_template_sha256 == PROMPT_TEMPLATE_V2_SHA256
     assert parsed.to_json_bytes() == raw
     assert parse_recipe(parsed.to_json_bytes()) == parsed
 
