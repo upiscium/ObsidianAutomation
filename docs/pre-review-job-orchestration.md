@@ -72,14 +72,16 @@ The immutable recipe pins only bounded processing identity:
 - Evaluator provider/model identity and model configuration.
 
 Recipe v0 stores the immutable processing contracts. New recipes use the current
-Generator prompt identity, while the exact historical Generator v0 identity is
-also accepted for readability and audit. Historical Generator v0 recipes remain
-bound to their stored version/hash and are blocked by current runtime preflight
-before provider contact rather than being silently reinterpreted as v1.
+Generator prompt identity, while the exact historical Generator v0 and v1
+identities are also accepted for readability and audit. Historical Generator
+recipes remain bound to their stored version/hash and are blocked by current
+runtime preflight before provider contact rather than being silently
+reinterpreted as v2.
 
 The currently executable pipeline contracts are:
 
-- Generator prompt `knowledge-note-generator-v1`;
+- Generator prompt `knowledge-note-generator-v2`;
+- Generator prompt SHA `8c2b1635a4c6eb6775de764e58dff669c123232ee11a7320f20c3c87598300d5`;
 - Generator provider `openai-compatible` or `ollama`;
 - Generator adapter `openai-chat-completions-json-schema-v1` or `ollama-chat-structured-v0`;
 - Validator policy `knowledge-note-v0`;
@@ -103,9 +105,9 @@ plus `knowledge-note-evaluator-v6` /
 remain readable in recipes for audit. Runtime preflight requires the current v7
 version/hash pair and blocks historical recipes before provider contact.
 Unknown prompt identities and cross-paired version/hash values are rejected;
-the same exact-pair rule applies to the Generator's supported v0/v1 prompt
-identities. This preserves Generator v0/v1 recipe readability without
-silently reinterpreting v0 as v1.
+the same exact-pair rule applies to the Generator's supported v0/v1/v2 prompt
+identities. This preserves Generator v0/v1 recipe readability without silently
+reinterpreting either historical identity as v2.
 
 The supported provider boundary is either the bounded OpenAI-compatible Chat
 Completions API or the native Ollama `/api/chat` adapter. Generator and
