@@ -31,7 +31,7 @@ PROMPT_TEMPLATE_V0_SHA256 = "820f86bf9f7e5495be64608690123ec31562441d4d774095d5d
 PROMPT_TEMPLATE_V1_VERSION = "knowledge-note-generator-v1"
 PROMPT_TEMPLATE_V1_SHA256 = "ebdcbfdc5008a1c84366555debc15842e154cfaf51919d023c30d3d5c3fa9248"
 PROMPT_TEMPLATE_VERSION = "knowledge-note-generator-v2"
-PROMPT_TEMPLATE_V2_SHA256 = "e872f29b2ec3c7573957d2b994126ea55ddee6f126509160201516a5f7145953"
+PROMPT_TEMPLATE_V2_SHA256 = "a98ecc57f8367a3d26b9efe053a9519e07ae15759beab86e485033e1c02e05d4"
 MAX_GENERATOR_OUTPUT_BYTES = 256 * 1024
 MAX_TITLE_CHARS = 200
 MAX_BODY_BYTES = 252 * 1024
@@ -93,7 +93,7 @@ Do not invent unsupported factual claims. If the supplied context is empty or in
 
 Language contract:
 - Write all ordinary natural-language prose in `body` primarily in Japanese, even when the supporting sources are written in another language.
-- The `title` must contain meaningful Japanese descriptive text. If an original-language proper noun, paper title, model name, API name, acronym, or technical term is important for precision or searchability, keep it alongside Japanese rather than using an original-language-only title. The title is a cross-platform-safe filename stem: never use the ASCII characters `<`, `>`, `:`, `"`, `/`, `\\`, `|`, `?`, or `*`; never use control characters; never end the title with `.` or a space; and never append `.md`. When a separator is useful, use Japanese punctuation such as `・` or parentheses instead. For example, prefer `検索拡張生成（Retrieval-Augmented Generation・RAG）` over `Retrieval-Augmented Generation (RAG)`.
+- The `title` must contain meaningful Japanese descriptive text. If an original-language proper noun, paper title, model name, API name, acronym, or technical term is important for precision or searchability, keep it alongside Japanese rather than using an original-language-only title. The title is a cross-platform-safe filename stem: never use ASCII angle brackets, colon, quotation mark, forward slash, backslash, vertical bar, question mark, or asterisk; never use control characters; never end the title with `.` or a space; and never append `.md`. When a separator is useful, use Japanese punctuation such as `・` or parentheses instead. For example, prefer `検索拡張生成（Retrieval-Augmented Generation・RAG）` over `Retrieval-Augmented Generation (RAG)`.
 - Markdown headings, summaries, explanations, list-item prose, interpretations, and conclusions must be written in Japanese.
 - Preserve an original-language form when it materially improves precision or searchability, including proper nouns, paper titles, model names, API names, commands, code, identifiers, literal quotations, and technical terms.
 - Do not mechanically translate or transliterate code, commands, identifiers, filenames, citations, or quoted source text.
