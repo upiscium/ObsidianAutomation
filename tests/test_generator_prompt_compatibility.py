@@ -111,6 +111,9 @@ def test_current_generator_prompt_identity_is_pinned_v2() -> None:
     assert "Wire JSON and decoded body representation are distinct" in manifest
     assert "actual LF characters" in manifest
     assert "primarily in Japanese" in manifest
+    assert "title` must contain meaningful Japanese descriptive text" in manifest
+    assert "rather than using an original-language-only title" in manifest
+    assert "検索拡張生成（Retrieval-Augmented Generation / RAG）" in manifest
     assert "Markdown headings, summaries, explanations, list-item prose" in manifest
     assert "paper titles, model names, API names, commands, code" in manifest
     assert "do not translate those machine fields" in manifest
