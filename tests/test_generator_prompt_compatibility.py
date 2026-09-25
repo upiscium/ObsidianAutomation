@@ -115,7 +115,12 @@ def test_current_generator_prompt_identity_is_pinned_v2() -> None:
     assert "rather than using an original-language-only title" in manifest
     assert "検索拡張生成（Retrieval-Augmented Generation・RAG）" in manifest
     assert "cross-platform-safe filename stem" in manifest
-    assert "path separators" in manifest
+    assert "never use the ASCII characters" in manifest
+    for forbidden in ("<", ">", ":", '"', "/", "\\", "|", "?", "*"):
+        assert f"`{forbidden}`" in manifest
+    assert "never end the title with `.` or a space" in manifest
+    assert "never append `.md`" in manifest
+    assert "path separators" not in manifest or "never use the ASCII characters" in manifest
     assert "Markdown headings, summaries, explanations, list-item prose" in manifest
     assert "paper titles, model names, API names, commands, code" in manifest
     assert "do not translate those machine fields" in manifest
