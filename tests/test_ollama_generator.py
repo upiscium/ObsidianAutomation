@@ -8,6 +8,10 @@ import pytest
 from obsidian_automation.artifact_lifecycle import ArtifactLifecycleError
 from obsidian_automation.context_bundle import ContextBundle, store_context_bundle
 from obsidian_automation.generation_artifact import load_generation_record
+from obsidian_automation.generator_contract import (
+    PROMPT_TEMPLATE_V2_SHA256,
+    PROMPT_TEMPLATE_VERSION,
+)
 from obsidian_automation.ollama_generator import (
     ADAPTER_VERSION,
     OllamaProviderError,
@@ -172,6 +176,9 @@ def test_generator_e2e_persists_proposal_and_generation_provenance(tmp_path: Pat
     assert record.generator.implementation_revision == IMPLEMENTATION_REVISION
     assert record.generator.prompt_template_version == result.prompt_template_version
     assert record.generator.prompt_template_sha256 == result.prompt_template_sha256
+    assert result.prompt_template_version == PROMPT_TEMPLATE_VERSION
+    assert result.prompt_template_version == "knowledge-note-generator-v2"
+    assert result.prompt_template_sha256 == PROMPT_TEMPLATE_V2_SHA256
     assert record.model.provider == "ollama"
     assert record.model.identifier == "gemma3:latest"
     assert record.model.revision == MODEL_DIGEST

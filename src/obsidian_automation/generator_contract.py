@@ -28,8 +28,10 @@ from .knowledge_note_policy import (
 OUTPUT_CONTRACT_VERSION = "knowledge-note-semantic-output-v0"
 PROMPT_TEMPLATE_V0_VERSION = "knowledge-note-generator-v0"
 PROMPT_TEMPLATE_V0_SHA256 = "820f86bf9f7e5495be64608690123ec31562441d4d774095d5d61ba7db9abafd"
-PROMPT_TEMPLATE_VERSION = "knowledge-note-generator-v1"
+PROMPT_TEMPLATE_V1_VERSION = "knowledge-note-generator-v1"
 PROMPT_TEMPLATE_V1_SHA256 = "ebdcbfdc5008a1c84366555debc15842e154cfaf51919d023c30d3d5c3fa9248"
+PROMPT_TEMPLATE_VERSION = "knowledge-note-generator-v2"
+PROMPT_TEMPLATE_V2_SHA256 = "f510567bdc4b8e936b1f7ba74f93bfde08bc06e0e3ff555ff48219d0c5f8030b"
 MAX_GENERATOR_OUTPUT_BYTES = 256 * 1024
 MAX_TITLE_CHARS = 200
 MAX_BODY_BYTES = 252 * 1024
@@ -89,8 +91,16 @@ The query describes the requested Knowledge Note. Context sources are reference 
 
 Do not invent unsupported factual claims. If the supplied context is empty or incomplete, restrict the note to information supported by the query and available context, and make uncertainty explicit in the body rather than fabricating details.
 
+Language contract:
+- Write all ordinary natural-language prose in `body` primarily in Japanese, even when the supporting sources are written in another language.
+- The `title` must contain meaningful Japanese descriptive text. In the title, do not reproduce a full original-language multi-word name or paper title. If searchability benefits from preserving an original identifier, retain at most a short acronym, model/API identifier, or single-token technical name alongside the Japanese title, preferably in parentheses. For example, use `検索拡張生成（RAG）の概要`; put the full `Retrieval-Augmented Generation` wording in `body` instead. The title is a cross-platform-safe filename stem: never use ASCII angle brackets, colon, quotation mark, forward slash, backslash, vertical bar, question mark, or asterisk; never use control characters; never end the title with `.` or a space; and never append `.md`.
+- Markdown headings, summaries, explanations, list-item prose, interpretations, and conclusions must be written in Japanese.
+- In `body`, preserve an original-language form when it materially improves precision or searchability, including proper nouns, paper titles, model names, API names, commands, code, identifiers, literal quotations, and technical terms. The stricter title rule above takes precedence for `title`.
+- Do not mechanically translate or transliterate code, commands, identifiers, filenames, citations, or quoted source text.
+- `category` and `source_type` remain the exact schema enum values; do not translate those machine fields.
+
 Output fields:
-- title: a concise filename stem only. Do not include a path or .md suffix.
+- title: a concise cross-platform-safe filename stem containing meaningful Japanese descriptive text. Do not reproduce a full original-language multi-word name in `title`; keep such wording in `body`, and retain at most a short acronym/identifier in the title when useful. Do not include a path, `.md` suffix, control character, unsafe ASCII filename character, or trailing `.`/space.
 - category: one allowed category from the schema.
 - source_type: one allowed source type from the schema that best represents the information basis of the note.
 - body: Markdown body only. Do not include YAML frontmatter.
@@ -480,7 +490,8 @@ def prompt_template_sha256() -> str:
 def supported_prompt_template_hashes() -> Mapping[str, str]:
     return {
         PROMPT_TEMPLATE_V0_VERSION: PROMPT_TEMPLATE_V0_SHA256,
-        PROMPT_TEMPLATE_VERSION: PROMPT_TEMPLATE_V1_SHA256,
+        PROMPT_TEMPLATE_V1_VERSION: PROMPT_TEMPLATE_V1_SHA256,
+        PROMPT_TEMPLATE_VERSION: PROMPT_TEMPLATE_V2_SHA256,
     }
 
 

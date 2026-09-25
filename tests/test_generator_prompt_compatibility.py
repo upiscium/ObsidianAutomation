@@ -19,6 +19,8 @@ from obsidian_automation.generator_contract import (
     PROMPT_TEMPLATE_V0_SHA256,
     PROMPT_TEMPLATE_V0_VERSION,
     PROMPT_TEMPLATE_V1_SHA256,
+    PROMPT_TEMPLATE_V1_VERSION,
+    PROMPT_TEMPLATE_V2_SHA256,
     PROMPT_TEMPLATE_VERSION,
     OUTPUT_CONTRACT_VERSION,
     parse_generator_output,
@@ -43,7 +45,7 @@ EVALUATOR_PROMPT_SHA256 = evaluator_prompt_sha256()
 def _recipe_value(
     *,
     generator_version: str = PROMPT_TEMPLATE_VERSION,
-    generator_sha256: str = PROMPT_TEMPLATE_V1_SHA256,
+    generator_sha256: str = PROMPT_TEMPLATE_V2_SHA256,
 ) -> dict[str, object]:
     return {
         "record_version": 1,
@@ -98,15 +100,38 @@ def _semantic_output(body: str) -> bytes:
     )
 
 
-def test_current_generator_prompt_identity_is_pinned_v1() -> None:
+def test_current_generator_prompt_identity_is_pinned_v2() -> None:
     assert OUTPUT_CONTRACT_VERSION == "knowledge-note-semantic-output-v0"
-    assert PROMPT_TEMPLATE_VERSION == "knowledge-note-generator-v1"
-    assert prompt_template_sha256() == PROMPT_TEMPLATE_V1_SHA256
-    assert sha256_bytes(prompt_template_bytes()) == PROMPT_TEMPLATE_V1_SHA256
+    assert PROMPT_TEMPLATE_VERSION == "knowledge-note-generator-v2"
+    assert prompt_template_sha256() == PROMPT_TEMPLATE_V2_SHA256
+    assert sha256_bytes(prompt_template_bytes()) == PROMPT_TEMPLATE_V2_SHA256
+    assert PROMPT_TEMPLATE_V2_SHA256 != PROMPT_TEMPLATE_V1_SHA256
     assert PROMPT_TEMPLATE_V1_SHA256 != PROMPT_TEMPLATE_V0_SHA256
     manifest = prompt_template_bytes().decode("utf-8")
     assert "Wire JSON and decoded body representation are distinct" in manifest
     assert "actual LF characters" in manifest
+    assert "primarily in Japanese" in manifest
+    assert "title` must contain meaningful Japanese descriptive text" in manifest
+    assert "do not reproduce a full original-language multi-word name or paper title" in manifest
+    assert "retain at most a short acronym, model/API identifier, or single-token technical name" in manifest
+    assert "検索拡張生成（RAG）の概要" in manifest
+    assert "put the full `Retrieval-Augmented Generation` wording in `body` instead" in manifest
+    assert "cross-platform-safe filename stem" in manifest
+    assert "ASCII angle brackets" in manifest
+    assert "colon" in manifest
+    assert "quotation mark" in manifest
+    assert "forward slash" in manifest
+    assert "backslash" in manifest
+    assert "vertical bar" in manifest
+    assert "question mark" in manifest
+    assert "asterisk" in manifest
+    assert "never end the title with `.` or a space" in manifest
+    assert "never append `.md`" in manifest
+    assert "Markdown headings, summaries, explanations, list-item prose" in manifest
+    assert "In `body`, preserve an original-language form" in manifest
+    assert "paper titles, model names, API names, commands, code" in manifest
+    assert "The stricter title rule above takes precedence for `title`" in manifest
+    assert "do not translate those machine fields" in manifest
 
 
 def test_planner_emits_the_current_generator_prompt_pair() -> None:
@@ -121,7 +146,7 @@ def test_planner_emits_the_current_generator_prompt_pair() -> None:
     )
 
     assert recipe.generator.prompt_template_version == PROMPT_TEMPLATE_VERSION
-    assert recipe.generator.prompt_template_sha256 == PROMPT_TEMPLATE_V1_SHA256
+    assert recipe.generator.prompt_template_sha256 == PROMPT_TEMPLATE_V2_SHA256
 
 
 def test_historical_v0_recipe_round_trips_without_reinterpretation() -> None:
@@ -137,12 +162,25 @@ def test_historical_v0_recipe_round_trips_without_reinterpretation() -> None:
     assert parsed.to_json_bytes() == raw
 
 
-def test_current_v1_recipe_round_trips_canonically() -> None:
+def test_historical_v1_recipe_round_trips_without_reinterpretation() -> None:
+    raw = _recipe_bytes(
+        generator_version=PROMPT_TEMPLATE_V1_VERSION,
+        generator_sha256=PROMPT_TEMPLATE_V1_SHA256,
+    )
+
+    parsed = parse_recipe(raw)
+
+    assert parsed.generator.prompt_template_version == PROMPT_TEMPLATE_V1_VERSION
+    assert parsed.generator.prompt_template_sha256 == PROMPT_TEMPLATE_V1_SHA256
+    assert parsed.to_json_bytes() == raw
+
+
+def test_current_v2_recipe_round_trips_canonically() -> None:
     raw = _recipe_bytes()
     parsed = parse_recipe(raw)
 
     assert parsed.generator.prompt_template_version == PROMPT_TEMPLATE_VERSION
-    assert parsed.generator.prompt_template_sha256 == PROMPT_TEMPLATE_V1_SHA256
+    assert parsed.generator.prompt_template_sha256 == PROMPT_TEMPLATE_V2_SHA256
     assert parsed.to_json_bytes() == raw
     assert parse_recipe(parsed.to_json_bytes()) == parsed
 
@@ -150,8 +188,10 @@ def test_current_v1_recipe_round_trips_canonically() -> None:
 @pytest.mark.parametrize(
     ("generator_version", "generator_sha256"),
     [
-        ("knowledge-note-generator-v9", PROMPT_TEMPLATE_V1_SHA256),
-        (PROMPT_TEMPLATE_V0_VERSION, PROMPT_TEMPLATE_V1_SHA256),
+        ("knowledge-note-generator-v9", PROMPT_TEMPLATE_V2_SHA256),
+        (PROMPT_TEMPLATE_V0_VERSION, PROMPT_TEMPLATE_V2_SHA256),
+        (PROMPT_TEMPLATE_V1_VERSION, PROMPT_TEMPLATE_V2_SHA256),
+        (PROMPT_TEMPLATE_VERSION, PROMPT_TEMPLATE_V1_SHA256),
         (PROMPT_TEMPLATE_VERSION, PROMPT_TEMPLATE_V0_SHA256),
         (PROMPT_TEMPLATE_VERSION, "f" * 64),
     ],
@@ -169,7 +209,7 @@ def test_generator_prompt_identity_allowlist_fails_closed(
         )
 
 
-def test_same_context_and_model_get_distinct_v0_and_v1_job_identity(
+def test_same_context_and_model_get_distinct_v1_and_v2_job_identity(
     tmp_path: Path,
 ) -> None:
     state = tmp_path / "state"
@@ -185,15 +225,15 @@ def test_same_context_and_model_get_distinct_v0_and_v1_job_identity(
         ),
     )
 
-    v0 = parse_recipe(
+    v1 = parse_recipe(
         _recipe_bytes(
-            generator_version=PROMPT_TEMPLATE_V0_VERSION,
-            generator_sha256=PROMPT_TEMPLATE_V0_SHA256,
+            generator_version=PROMPT_TEMPLATE_V1_VERSION,
+            generator_sha256=PROMPT_TEMPLATE_V1_SHA256,
         )
     )
-    v1 = parse_recipe(_recipe_bytes())
-    old_job = submit_job(state, context_sha256=context_sha256, recipe=v0)
-    new_job = submit_job(state, context_sha256=context_sha256, recipe=v1)
+    v2 = parse_recipe(_recipe_bytes())
+    old_job = submit_job(state, context_sha256=context_sha256, recipe=v1)
+    new_job = submit_job(state, context_sha256=context_sha256, recipe=v2)
 
     assert old_job["recipe_sha256"] != new_job["recipe_sha256"]
     assert old_job["job_id"] != new_job["job_id"]

@@ -39,7 +39,8 @@
         "prompt_template_version": {
           "enum": [
             "knowledge-note-generator-v0",
-            "knowledge-note-generator-v1"
+            "knowledge-note-generator-v1",
+            "knowledge-note-generator-v2"
           ]
         },
         "prompt_template_sha256": {
@@ -193,6 +194,76 @@
             },
             "prompt_template_sha256": {
               "const": "ebdcbfdc5008a1c84366555debc15842e154cfaf51919d023c30d3d5c3fa9248"
+            },
+            "provider": {
+              "const": "ollama"
+            },
+            "model_revision": {
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "model_config": {
+              "additionalProperties": false,
+              "required": [
+                "adapter_version",
+                "think",
+                "options"
+              ],
+              "properties": {
+                "adapter_version": {
+                  "const": "ollama-chat-structured-v0"
+                },
+                "think": {
+                  "const": false
+                },
+                "options": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "prompt_template_version": {
+              "const": "knowledge-note-generator-v2"
+            },
+            "prompt_template_sha256": {
+              "const": "f510567bdc4b8e936b1f7ba74f93bfde08bc06e0e3ff555ff48219d0c5f8030b"
+            },
+            "provider": {
+              "const": "openai-compatible"
+            },
+            "model_revision": {
+              "pattern": "^identifier:.{1,500}$"
+            },
+            "model_config": {
+              "additionalProperties": false,
+              "required": [
+                "adapter_version",
+                "identity_binding",
+                "options"
+              ],
+              "properties": {
+                "adapter_version": {
+                  "const": "openai-chat-completions-json-schema-v1"
+                },
+                "identity_binding": {
+                  "const": "identifier-only"
+                },
+                "options": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "prompt_template_version": {
+              "const": "knowledge-note-generator-v2"
+            },
+            "prompt_template_sha256": {
+              "const": "f510567bdc4b8e936b1f7ba74f93bfde08bc06e0e3ff555ff48219d0c5f8030b"
             },
             "provider": {
               "const": "ollama"

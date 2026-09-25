@@ -197,20 +197,42 @@ The Generator deliberately does not check whether the target filename already ex
 Prompt template version:
 
 ```text
-knowledge-note-generator-v1
+knowledge-note-generator-v2
 ```
 
-New recipes bind the exact v1 prompt version and hash. Historical recipes may
-retain the exact v0 version/hash pair for readability and audit, but the current
-runtime never reinterprets them as v1; runtime preflight fails closed before
-provider contact when a historical recipe is not executable by the deployment.
+New recipes bind the exact v2 prompt version and hash. Historical recipes may
+retain the exact v0 or v1 version/hash pair for readability and audit, but the
+current runtime never reinterprets them as v2; runtime preflight fails closed
+before provider contact when a historical recipe is not executable by the
+deployment.
 
 The supported immutable Generator prompt identities are:
 
 ```text
 knowledge-note-generator-v0  820f86bf9f7e5495be64608690123ec31562441d4d774095d5d61ba7db9abafd
 knowledge-note-generator-v1  ebdcbfdc5008a1c84366555debc15842e154cfaf51919d023c30d3d5c3fa9248
+knowledge-note-generator-v2  f510567bdc4b8e936b1f7ba74f93bfde08bc06e0e3ff555ff48219d0c5f8030b
 ```
+
+Generator v2 adds a language contract: ordinary natural-language Markdown
+prose is generated primarily in Japanese, and the title must contain meaningful
+Japanese descriptive text. Headings, summaries, explanations, list-item prose,
+interpretations and conclusions are Japanese even when source material is
+English.
+
+The title has a stricter original-language exception than the body. It must not
+reproduce a full original-language multi-word name or paper title. When
+searchability benefits from preserving an identifier, the title may retain at
+most a short acronym, model/API identifier, or single-token technical name
+alongside Japanese. For example, `検索拡張生成（RAG）の概要` is valid, while
+the full `Retrieval-Augmented Generation` wording belongs in the body. The
+title must also remain a cross-platform-safe filename stem.
+
+In the body, proper nouns, paper titles, model/API names, commands, code,
+identifiers, literal quotations and technical terms may preserve their
+original-language form when that improves precision or searchability. Machine
+enum fields such as `category` and `source_type` are never translated. This
+is a prompt contract, not a deterministic translation/rewrite pass.
 
 The prompt consists of:
 
@@ -265,7 +287,7 @@ Prompt-injection resistance is not treated as a substitute for those authority b
 
 Reader retrieval may intentionally produce an empty Context Bundle when no candidate passes selection policy.
 
-Generator v0 does not silently inject a fallback document. The prompt instructs the model not to fabricate unsupported factual claims. When Context is empty or insufficient, generated body text must remain limited to information supported by the query and available context and should state uncertainty where appropriate.
+The Generator does not silently inject a fallback document. The prompt instructs the model not to fabricate unsupported factual claims. When Context is empty or insufficient, generated body text must remain limited to information supported by the query and available context and should state uncertainty where appropriate.
 
 This is not a factual-validity guarantee. Semantic/factual evaluation remains a later Evaluator/Human responsibility.
 
