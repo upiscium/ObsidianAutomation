@@ -656,10 +656,10 @@ def test_public_cli_and_json_schemas_are_pinned() -> None:
     } == {
         ("knowledge-note-generator-v0", "820f86bf9f7e5495be64608690123ec31562441d4d774095d5d61ba7db9abafd", "openai-compatible"),
         ("knowledge-note-generator-v1", "ebdcbfdc5008a1c84366555debc15842e154cfaf51919d023c30d3d5c3fa9248", "openai-compatible"),
-        ("knowledge-note-generator-v2", "8c2b1635a4c6eb6775de764e58dff669c123232ee11a7320f20c3c87598300d5", "openai-compatible"),
+        ("knowledge-note-generator-v2", "f54aff175f9a3aa4ef6b56f1656dd99224d0d7af31af1e1a3fbe31ed5102f23b", "openai-compatible"),
         ("knowledge-note-generator-v0", "820f86bf9f7e5495be64608690123ec31562441d4d774095d5d61ba7db9abafd", "ollama"),
         ("knowledge-note-generator-v1", "ebdcbfdc5008a1c84366555debc15842e154cfaf51919d023c30d3d5c3fa9248", "ollama"),
-        ("knowledge-note-generator-v2", "8c2b1635a4c6eb6775de764e58dff669c123232ee11a7320f20c3c87598300d5", "ollama"),
+        ("knowledge-note-generator-v2", "f54aff175f9a3aa4ef6b56f1656dd99224d0d7af31af1e1a3fbe31ed5102f23b", "ollama"),
     }
     evaluator_schema = recipe_schema["properties"]["evaluator"]
     assert all(
