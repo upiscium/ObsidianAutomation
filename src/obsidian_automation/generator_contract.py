@@ -31,7 +31,7 @@ PROMPT_TEMPLATE_V0_SHA256 = "820f86bf9f7e5495be64608690123ec31562441d4d774095d5d
 PROMPT_TEMPLATE_V1_VERSION = "knowledge-note-generator-v1"
 PROMPT_TEMPLATE_V1_SHA256 = "ebdcbfdc5008a1c84366555debc15842e154cfaf51919d023c30d3d5c3fa9248"
 PROMPT_TEMPLATE_VERSION = "knowledge-note-generator-v2"
-PROMPT_TEMPLATE_V2_SHA256 = "1083128cf82dad4a3eafdfb92333ab39df23efda72870aa036cda9b46293f97a"
+PROMPT_TEMPLATE_V2_SHA256 = "e872f29b2ec3c7573957d2b994126ea55ddee6f126509160201516a5f7145953"
 MAX_GENERATOR_OUTPUT_BYTES = 256 * 1024
 MAX_TITLE_CHARS = 200
 MAX_BODY_BYTES = 252 * 1024
@@ -100,7 +100,7 @@ Language contract:
 - `category` and `source_type` remain the exact schema enum values; do not translate those machine fields.
 
 Output fields:
-- title: a concise filename stem only. Do not include a path or .md suffix.
+- title: a concise cross-platform-safe filename stem containing meaningful Japanese descriptive text. Do not include a path, `.md` suffix, control character, unsafe ASCII filename character, or trailing `.`/space.
 - category: one allowed category from the schema.
 - source_type: one allowed source type from the schema that best represents the information basis of the note.
 - body: Markdown body only. Do not include YAML frontmatter.
