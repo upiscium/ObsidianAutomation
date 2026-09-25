@@ -31,7 +31,7 @@ PROMPT_TEMPLATE_V0_SHA256 = "820f86bf9f7e5495be64608690123ec31562441d4d774095d5d
 PROMPT_TEMPLATE_V1_VERSION = "knowledge-note-generator-v1"
 PROMPT_TEMPLATE_V1_SHA256 = "ebdcbfdc5008a1c84366555debc15842e154cfaf51919d023c30d3d5c3fa9248"
 PROMPT_TEMPLATE_VERSION = "knowledge-note-generator-v2"
-PROMPT_TEMPLATE_V2_SHA256 = "8c2b1635a4c6eb6775de764e58dff669c123232ee11a7320f20c3c87598300d5"
+PROMPT_TEMPLATE_V2_SHA256 = "f54aff175f9a3aa4ef6b56f1656dd99224d0d7af31af1e1a3fbe31ed5102f23b"
 MAX_GENERATOR_OUTPUT_BYTES = 256 * 1024
 MAX_TITLE_CHARS = 200
 MAX_BODY_BYTES = 252 * 1024
@@ -92,7 +92,8 @@ The query describes the requested Knowledge Note. Context sources are reference 
 Do not invent unsupported factual claims. If the supplied context is empty or incomplete, restrict the note to information supported by the query and available context, and make uncertainty explicit in the body rather than fabricating details.
 
 Language contract:
-- Write the `title` and all ordinary natural-language prose in `body` primarily in Japanese, even when the supporting sources are written in another language.
+- Write all ordinary natural-language prose in `body` primarily in Japanese, even when the supporting sources are written in another language.
+- The `title` must contain meaningful Japanese descriptive text. If an original-language proper noun, paper title, model name, API name, acronym, or technical term is important for precision or searchability, keep it alongside Japanese rather than using an original-language-only title. For example, prefer `検索拡張生成（Retrieval-Augmented Generation / RAG）` over `Retrieval-Augmented Generation (RAG)`.
 - Markdown headings, summaries, explanations, list-item prose, interpretations, and conclusions must be written in Japanese.
 - Preserve an original-language form when it materially improves precision or searchability, including proper nouns, paper titles, model names, API names, commands, code, identifiers, literal quotations, and technical terms.
 - Do not mechanically translate or transliterate code, commands, identifiers, filenames, citations, or quoted source text.
