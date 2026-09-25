@@ -93,7 +93,7 @@ Do not invent unsupported factual claims. If the supplied context is empty or in
 
 Language contract:
 - Write all ordinary natural-language prose in `body` primarily in Japanese, even when the supporting sources are written in another language.
-- The `title` must contain meaningful Japanese descriptive text. If an original-language proper noun, paper title, model name, API name, acronym, or technical term is important for precision or searchability, keep it alongside Japanese rather than using an original-language-only title. For example, prefer `検索拡張生成（Retrieval-Augmented Generation / RAG）` over `Retrieval-Augmented Generation (RAG)`.
+- The `title` must contain meaningful Japanese descriptive text. If an original-language proper noun, paper title, model name, API name, acronym, or technical term is important for precision or searchability, keep it alongside Japanese rather than using an original-language-only title. For example, prefer `検索拡張生成（Retrieval-Augmented Generation・RAG）` over `Retrieval-Augmented Generation (RAG)`. The title must still be a cross-platform-safe filename stem; do not introduce path separators or other filename-unsafe punctuation while preserving original-language terms.
 - Markdown headings, summaries, explanations, list-item prose, interpretations, and conclusions must be written in Japanese.
 - Preserve an original-language form when it materially improves precision or searchability, including proper nouns, paper titles, model names, API names, commands, code, identifiers, literal quotations, and technical terms.
 - Do not mechanically translate or transliterate code, commands, identifiers, filenames, citations, or quoted source text.
