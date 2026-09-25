@@ -228,7 +228,7 @@
               "const": "knowledge-note-generator-v2"
             },
             "prompt_template_sha256": {
-              "const": "9d94a1b3c34816677c21fbaaf36cc4162b615e16ebc7ed373732a7a9abf80941"
+              "const": "1083128cf82dad4a3eafdfb92333ab39df23efda72870aa036cda9b46293f97a"
             },
             "provider": {
               "const": "openai-compatible"
@@ -263,7 +263,7 @@
               "const": "knowledge-note-generator-v2"
             },
             "prompt_template_sha256": {
-              "const": "9d94a1b3c34816677c21fbaaf36cc4162b615e16ebc7ed373732a7a9abf80941"
+              "const": "1083128cf82dad4a3eafdfb92333ab39df23efda72870aa036cda9b46293f97a"
             },
             "provider": {
               "const": "ollama"
