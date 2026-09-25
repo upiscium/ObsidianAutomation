@@ -214,14 +214,18 @@ knowledge-note-generator-v1  ebdcbfdc5008a1c84366555debc15842e154cfaf51919d023c3
 knowledge-note-generator-v2  f54aff175f9a3aa4ef6b56f1656dd99224d0d7af31af1e1a3fbe31ed5102f23b
 ```
 
-Generator v2 adds a language contract: the title and ordinary natural-language
-Markdown prose are generated primarily in Japanese. Headings, summaries,
-explanations, list-item prose, interpretations and conclusions are Japanese even
-when source material is English. Proper nouns, paper titles, model/API names,
-commands, code, identifiers, literal quotations and technical terms may preserve
-their original-language form when that improves precision or searchability.
-Machine enum fields such as `category` and `source_type` are never translated.
-This is a prompt contract, not a deterministic translation/rewrite pass.
+Generator v2 adds a language contract: ordinary natural-language Markdown
+prose is generated primarily in Japanese, and the title must contain meaningful
+Japanese descriptive text. Headings, summaries, explanations, list-item prose,
+interpretations and conclusions are Japanese even when source material is
+English. Proper nouns, paper titles, model/API names, commands, code,
+identifiers, literal quotations and technical terms may preserve their
+original-language form when that improves precision or searchability, but the
+title may not consist only of that original-language form. For example,
+`検索拡張生成（Retrieval-Augmented Generation / RAG）` is valid where
+`Retrieval-Augmented Generation (RAG)` alone is not. Machine enum fields such
+as `category` and `source_type` are never translated. This is a prompt
+contract, not a deterministic translation/rewrite pass.
 
 The prompt consists of:
 
