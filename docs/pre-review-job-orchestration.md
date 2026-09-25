@@ -81,7 +81,7 @@ reinterpreted as v2.
 The currently executable pipeline contracts are:
 
 - Generator prompt `knowledge-note-generator-v2`;
-- Generator prompt SHA `e872f29b2ec3c7573957d2b994126ea55ddee6f126509160201516a5f7145953`;
+- Generator prompt SHA `a98ecc57f8367a3d26b9efe053a9519e07ae15759beab86e485033e1c02e05d4`;
 - Generator provider `openai-compatible` or `ollama`;
 - Generator adapter `openai-chat-completions-json-schema-v1` or `ollama-chat-structured-v0`;
 - Validator policy `knowledge-note-v0`;
