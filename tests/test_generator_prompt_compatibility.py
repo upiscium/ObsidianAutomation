@@ -112,8 +112,10 @@ def test_current_generator_prompt_identity_is_pinned_v2() -> None:
     assert "actual LF characters" in manifest
     assert "primarily in Japanese" in manifest
     assert "title` must contain meaningful Japanese descriptive text" in manifest
-    assert "rather than using an original-language-only title" in manifest
-    assert "検索拡張生成（Retrieval-Augmented Generation・RAG）" in manifest
+    assert "do not reproduce a full original-language multi-word name or paper title" in manifest
+    assert "retain at most a short acronym, model/API identifier, or single-token technical name" in manifest
+    assert "検索拡張生成（RAG）の概要" in manifest
+    assert "put the full `Retrieval-Augmented Generation` wording in `body` instead" in manifest
     assert "cross-platform-safe filename stem" in manifest
     assert "ASCII angle brackets" in manifest
     assert "colon" in manifest
@@ -126,7 +128,9 @@ def test_current_generator_prompt_identity_is_pinned_v2() -> None:
     assert "never end the title with `.` or a space" in manifest
     assert "never append `.md`" in manifest
     assert "Markdown headings, summaries, explanations, list-item prose" in manifest
+    assert "In `body`, preserve an original-language form" in manifest
     assert "paper titles, model names, API names, commands, code" in manifest
+    assert "The stricter title rule above takes precedence for `title`" in manifest
     assert "do not translate those machine fields" in manifest
 
 
