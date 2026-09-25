@@ -211,7 +211,7 @@ The supported immutable Generator prompt identities are:
 ```text
 knowledge-note-generator-v0  820f86bf9f7e5495be64608690123ec31562441d4d774095d5d61ba7db9abafd
 knowledge-note-generator-v1  ebdcbfdc5008a1c84366555debc15842e154cfaf51919d023c30d3d5c3fa9248
-knowledge-note-generator-v2  f54aff175f9a3aa4ef6b56f1656dd99224d0d7af31af1e1a3fbe31ed5102f23b
+knowledge-note-generator-v2  9d94a1b3c34816677c21fbaaf36cc4162b615e16ebc7ed373732a7a9abf80941
 ```
 
 Generator v2 adds a language contract: ordinary natural-language Markdown
@@ -222,7 +222,7 @@ English. Proper nouns, paper titles, model/API names, commands, code,
 identifiers, literal quotations and technical terms may preserve their
 original-language form when that improves precision or searchability, but the
 title may not consist only of that original-language form. For example,
-`検索拡張生成（Retrieval-Augmented Generation / RAG）` is valid where
+`検索拡張生成（Retrieval-Augmented Generation・RAG）` is valid where
 `Retrieval-Augmented Generation (RAG)` alone is not. Machine enum fields such
 as `category` and `source_type` are never translated. This is a prompt
 contract, not a deterministic translation/rewrite pass.
