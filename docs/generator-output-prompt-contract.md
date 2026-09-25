@@ -211,7 +211,7 @@ The supported immutable Generator prompt identities are:
 ```text
 knowledge-note-generator-v0  820f86bf9f7e5495be64608690123ec31562441d4d774095d5d61ba7db9abafd
 knowledge-note-generator-v1  ebdcbfdc5008a1c84366555debc15842e154cfaf51919d023c30d3d5c3fa9248
-knowledge-note-generator-v2  a98ecc57f8367a3d26b9efe053a9519e07ae15759beab86e485033e1c02e05d4
+knowledge-note-generator-v2  f510567bdc4b8e936b1f7ba74f93bfde08bc06e0e3ff555ff48219d0c5f8030b
 ```
 
 Generator v2 adds a language contract: ordinary natural-language Markdown
