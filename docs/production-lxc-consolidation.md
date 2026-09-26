@@ -120,7 +120,7 @@ URL / username binding and may be recreated on the consolidated host; the
 corresponding app password remains the existing Sync-owned
 `/etc/obsidian-ai/webdav-password`. Rejected-projection cleanup uses a separate
 Sync-owned `projection-cleanup.env` / `projection-cleanup-password` pair whose
-Nextcloud account is shared only `03-AI` with Read + Delete. The local Vault is a pull-only replica and should normally be rebuilt.
+Nextcloud account is shared only `04-AI` with Read + Delete. The local Vault is a pull-only replica and should normally be rebuilt.
 Durable lifecycle state must be migrated only while old writer-side automation
 is quiesced.
 
