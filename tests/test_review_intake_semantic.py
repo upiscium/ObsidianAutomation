@@ -15,7 +15,7 @@ SOURCE = "b" * 64
 PROPOSAL = "c" * 64
 MUTATION = "d" * 64
 EVALUATION = "e" * 64
-TARGET = f"03-AI/50-Review/{CASE}.md"
+TARGET = f"04-AI/50-Review/{CASE}.md"
 BODY = "# Human Review\n\nThe candidate is ready for review."
 
 PROTECTED_LINES = (
@@ -155,7 +155,7 @@ def test_body_change_is_rejected() -> None:
         ("type", "type: different-projection"),
         ("ai_stage", "ai_stage: evaluation"),
         ("source_sha256", f"source_sha256: {'c' * 64}"),
-        ("target_path", "target_path: 03-AI/50-Review/other.md"),
+        ("target_path", "target_path: 04-AI/50-Review/other.md"),
         ("recommendation", "recommendation: reject"),
     ],
 )
