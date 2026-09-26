@@ -19,7 +19,7 @@ The v0 source pool is deliberately limited to:
   parent Project status != cancelled
 ```
 
-`03-AI/**` is never an input source. Human-facing AI projections must not feed
+`04-AI/**` is never an input source. Human-facing AI projections must not feed
 back into generation.
 
 The existing Evaluation corpus is unchanged: BM25 Index and Evaluation Context
@@ -255,6 +255,6 @@ providers.
 
 The source / selection / objective concepts are intentionally separate. Future
 source adapters can add ChatGPT Export, Daily Notes, Papers, or other bounded
-sources without changing Generator authority. Human-facing `03-AI` remains
+sources without changing Generator authority. Human-facing `04-AI` remains
 excluded from the input corpus even though its Review control now feeds a
 separate fail-closed Review Intake path.

@@ -143,21 +143,21 @@ def test_ensure_collection_is_idempotent_and_verified() -> None:
         base = f"http://127.0.0.1:{server.server_port}/dav/Vault"
         first = ensure_collection(
             base_url=base,
-            target_path="03-AI",
+            target_path="04-AI",
             username="writer",
             password="secret",
             allow_http=True,
         )
         second = ensure_collection(
             base_url=base,
-            target_path="03-AI",
+            target_path="04-AI",
             username="writer",
             password="secret",
             allow_http=True,
         )
         assert first == "created"
         assert second == "existing"
-        assert "/dav/Vault/03-AI" in state.collections
+        assert "/dav/Vault/04-AI" in state.collections
     finally:
         server.shutdown()
         thread.join()

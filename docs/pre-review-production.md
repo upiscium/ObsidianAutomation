@@ -16,7 +16,7 @@ Input Planner -> Generator -> Validator -> Reader -> Evaluator
 ```
 
 Human-facing projection sync remains a separate Sync-owned conditional-create
-path restricted to `03-AI/**`. The Human-facing Review field is only a request;
+path restricted to `04-AI/**`. The Human-facing Review field is only a request;
 Review Intake must create authoritative `20-Review` before Executor can proceed.
 The Input Planner runs as Reader and is skipped unless
 `/etc/obsidian-ai/pre-review-input.env` exists.
@@ -134,7 +134,7 @@ Review Intake requires a dedicated **read-only** Nextcloud account/app password.
 Do not reuse the Sync writer credential.
 
 Rejected-projection cleanup additionally requires a dedicated Nextcloud account.
-Share only the existing `03-AI` folder to that account with Read + Delete
+Share only the existing `04-AI` folder to that account with Read + Delete
 (permission bitmask `9`) and do not grant access to canonical Knowledge or
 other Vault roots. Configure:
 
@@ -145,7 +145,7 @@ other Vault roots. Configure:
 
 The cleanup env contains only `PROJECTION_CLEANUP_BASE_URL` and
 `PROJECTION_CLEANUP_USERNAME`. The base URL should point to the cleanup
-account's WebDAV root, where the shared folder is mounted as `03-AI`.
+account's WebDAV root, where the shared folder is mounted as `04-AI`.
 
 Install:
 
@@ -167,6 +167,21 @@ account must be unable to write the Vault. Intake compares the fetched Review
 projection with the exact published projection and accepts only a change to
 `review_request`; all other changes fail closed.
 
+
+## 04-AI migration
+
+The current Human-facing root is `04-AI`. Before enabling a deployment that
+emits new projections:
+
+1. ensure the ordinary Sync writer can create/read `04-AI/**`;
+2. share the canonical `04-AI` folder to the dedicated projection-cleanup
+   account with Read + Delete only;
+3. keep the legacy `03-AI` share temporarily only when an active historical
+   Review request still targets `03-AI/**`;
+4. remove the legacy share/folder after those historical cases are terminal.
+
+Review Intake reads the exact immutable request target and therefore supports
+both the legacy `03-AI` and current `04-AI` roots during migration.
 
 ## First updater bootstrap
 

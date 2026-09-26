@@ -22,11 +22,15 @@ from .artifact_lifecycle import (
     sha256_bytes,
 )
 from .human_projection import (
+    LEGACY_PROJECTION_ROOT,
+    PROJECTION_ROOT,
+    PROJECTION_ROOTS,
     REQUEST_STAGE,
     RESULT_STAGE,
     STAGE_FOLDERS,
     parse_request,
     parse_result,
+    projection_root_from_target_path,
 )
 from .production_io import ProductionIOError, canonical_io_lock
 from .webdav_create import (
@@ -116,10 +120,16 @@ def _case_id(value: object) -> str:
     return _require_sha256(value, label="cleanup case_id")
 
 
-def cleanup_target_paths(case_id: str) -> tuple[str, ...]:
+def cleanup_target_paths(
+    case_id: str,
+    *,
+    projection_root: str = PROJECTION_ROOT,
+) -> tuple[str, ...]:
     case = _case_id(case_id)
+    if projection_root not in PROJECTION_ROOTS:
+        raise HumanProjectionCleanupError("cleanup projection root is unsupported")
     return tuple(
-        f"03-AI/{STAGE_FOLDERS[stage]}/{case}.md"
+        f"{projection_root}/{STAGE_FOLDERS[stage]}/{case}.md"
         for stage in CLEANUP_STAGES
     )
 
@@ -247,10 +257,22 @@ def parse_cleanup_result(data: bytes) -> ProjectionCleanupResult:
         label="cleanup_request_sha256",
     )
     case = _case_id(value["case_id"])
-    expected_paths = cleanup_target_paths(case)
     raw_targets = value["targets"]
-    if not isinstance(raw_targets, list) or len(raw_targets) != len(expected_paths):
+    if not isinstance(raw_targets, list) or len(raw_targets) != len(CLEANUP_STAGES):
         raise HumanProjectionCleanupError("projection cleanup target results are invalid")
+    if not raw_targets or not isinstance(raw_targets[0], dict):
+        raise HumanProjectionCleanupError("projection cleanup target results are invalid")
+    first_target = raw_targets[0].get("target_path")
+    try:
+        projection_root = projection_root_from_target_path(first_target)
+    except HumanProjectionError as exc:
+        raise HumanProjectionCleanupError(
+            "projection cleanup target root is invalid"
+        ) from exc
+    expected_paths = cleanup_target_paths(
+        case,
+        projection_root=projection_root,
+    )
     targets: list[ProjectionCleanupTargetResult] = []
     for raw, expected_path in zip(raw_targets, expected_paths):
         if (
@@ -336,7 +358,10 @@ def _load_cleanup_request_path(path: Path) -> tuple[str, ProjectionCleanupReques
     return digest, parse_cleanup_request(data)
 
 
-def _verify_cleanup_binding(ai_root: Path, request: ProjectionCleanupRequest) -> None:
+def _verify_cleanup_binding(
+    ai_root: Path,
+    request: ProjectionCleanupRequest,
+) -> str:
     root = ai_root.absolute()
 
     projection_path = (
@@ -396,6 +421,12 @@ def _verify_cleanup_binding(ai_root: Path, request: ProjectionCleanupRequest) ->
         raise HumanProjectionCleanupError(
             "cleanup requires an exact evaluation-bound Reject Review"
         )
+    try:
+        return projection_root_from_target_path(projection.target_path)
+    except HumanProjectionError as exc:
+        raise HumanProjectionCleanupError(
+            "review projection target root is invalid"
+        ) from exc
 
 
 def _delete_remote_target(
@@ -489,9 +520,12 @@ def run_cleanup_sync(
             if _existing_cleanup_result(ai_root, digest) is not None:
                 continue
 
-            _verify_cleanup_binding(ai_root, request)
+            projection_root = _verify_cleanup_binding(ai_root, request)
             targets: list[ProjectionCleanupTargetResult] = []
-            for target_path in cleanup_target_paths(request.case_id):
+            for target_path in cleanup_target_paths(
+                request.case_id,
+                projection_root=projection_root,
+            ):
                 result = deleter(
                     base_url=base_url,
                     target_path=target_path,

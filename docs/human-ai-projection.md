@@ -12,7 +12,7 @@ Obsidian users should not need shell access to inspect that lifecycle. v0 projec
 bounded, sanitized Markdown views into the private Live Vault:
 
 ```text
-03-AI/
+04-AI/
 ├── 00-Input/
 ├── 10-Context/
 ├── 20-Generation/
@@ -26,7 +26,7 @@ bounded, sanitized Markdown views into the private Live Vault:
 ```
 
 These notes are **human-facing projections**, not lifecycle authority. A note in
-`03-AI` cannot validate a mutation, approve it, authorize Executor, attest a
+`04-AI` cannot validate a mutation, approve it, authorize Executor, attest a
 transport result, or manufacture a Receipt.
 
 The System UI that renders them is owned by ObsidianCore under
@@ -81,7 +81,7 @@ Validation and Evaluation Context. Therefore it can build the Human Review
 projection without widening Reviewer access to Untrusted Generator artifacts.
 
 The authoritative Human Review stage remains `20-Review`. Creating
-`03-AI/50-Review/<case>.md` does not create an approval.
+`04-AI/50-Review/<case>.md` does not create an approval.
 
 ## Projection request contract
 
@@ -90,7 +90,7 @@ A request is immutable and content-addressed. It binds:
 - one `ai_case_id` (the orchestration generation ID);
 - one fixed projection stage;
 - exact source artifact kind and SHA-256;
-- deterministic `03-AI/<stage>/<case>.md` target path;
+- deterministic `04-AI/<stage>/<case>.md` target path;
 - exact Markdown SHA-256 and Markdown bytes;
 - source-artifact timestamp.
 
@@ -104,7 +104,7 @@ executed as an Obsidian embed, Dataview block, or Meta Bind control.
 
 ## Review projection
 
-`03-AI/50-Review/<case>.md` contains:
+`04-AI/50-Review/<case>.md` contains:
 
 - exact target path;
 - accepted deterministic Validation evidence;
@@ -118,7 +118,7 @@ The control updates only the Human-facing note. It does not write
 
 `obsidian-ai-review-intake.service` runs as `obsidian-ai-reviewer`. It uses
 a dedicated read-only Nextcloud credential to fetch the exact
-`03-AI/50-Review/<case>.md` note. Intake accepts the Human edit only when:
+`04-AI/50-Review/<case>.md` note. Intake accepts the Human edit only when:
 
 1. the original immutable review Projection Request exists;
 2. its successful Projection Result proves the expected note was published;
@@ -148,7 +148,7 @@ Reader
   -> reconcile terminal state into orchestration metadata
 ```
 
-Reject creates authoritative Review and queues a content-addressed projection cleanup intent. After post-review reconciliation reaches `human_rejected`, a Sync-only cleanup service deletes the fixed `03-AI/00-Input` through `03-AI/50-Review` files for that exact case. Reject never invokes canonical Knowledge transport, and private lifecycle/audit artifacts are retained.
+Reject creates authoritative Review and queues a content-addressed projection cleanup intent. After post-review reconciliation reaches `human_rejected`, a Sync-only cleanup service deletes the fixed `04-AI/00-Input` through `04-AI/50-Review` files for that exact case. Reject never invokes canonical Knowledge transport, and private lifecycle/audit artifacts are retained.
 
 ## Sync transport
 
@@ -159,7 +159,7 @@ Only Sync holds the Nextcloud writer credential. It:
 
 1. acquires the existing global canonical I/O lock;
 2. reads immutable role-produced projection requests;
-3. creates only the allowlisted `03-AI` collection and fixed stage collections;
+3. creates only the allowlisted `04-AI` collection and fixed stage collections;
 4. performs conditional WebDAV CREATE for the deterministic note target;
 5. verifies exact remote bytes;
 6. persists `17-Human-Projection-Result/<request-sha>.projection-result.json`.
@@ -181,7 +181,7 @@ The password file remains readable only by Sync.
 
 A separate `obsidian-ai-human-projection-cleanup-sync.service` runs after post-review reconciliation. It accepts no arbitrary path from Reviewer: cleanup targets are derived only from the exact `ai_case_id` and the fixed stage allowlist. Before DELETE, Sync revalidates the original published Review projection and the exact evaluation-bound authoritative Reject Review. DELETE is idempotent; an already-absent projection is accepted as success.
 
-Cleanup does not reuse the canonical AI writer credential. It uses a dedicated Nextcloud account shared only the existing `03-AI` folder with Read + Delete permission (permission bitmask `9`). The account root must expose that share as `03-AI`, because cleanup paths remain fixed below `03-AI/**`.
+Cleanup does not reuse the canonical AI writer credential. It uses a dedicated Nextcloud account shared only the existing `04-AI` folder with Read + Delete permission (permission bitmask `9`). The account root must expose that share as `04-AI`, because cleanup paths remain fixed below `04-AI/**`.
 
 Private deployment files:
 
@@ -192,22 +192,38 @@ Private deployment files:
 
 The cleanup service explicitly hides the canonical `webdav-password` from its systemd sandbox.
 
+## Projection root migration
+
+The canonical Human-facing projection root is `04-AI`. Historical immutable
+Projection Request / Result artifacts created before this migration may still
+bind exact `03-AI/**` target paths. Runtime parsers retain read/cleanup
+compatibility for that legacy root so existing audit records are not rewritten.
+
+New Projection Requests are always emitted below `04-AI/**`. No third root is
+accepted. During migration, a legacy case continues to use its exact stored
+`03-AI/**` target for Review Intake and Reject cleanup; new cases use
+`04-AI/**`.
+
+The old `03-AI` Vault folder can be removed after no active historical case
+depends on it. It is not lifecycle authority; private state remains under
+`/var/lib/obsidian-ai/state/**`.
+
 ## Folder creation boundary
 
 The WebDAV transport may create only:
 
 ```text
-03-AI
-03-AI/00-Input
-03-AI/10-Context
-03-AI/20-Generation
-03-AI/30-Validation
-03-AI/40-Evaluation
-03-AI/50-Review
-03-AI/60-Execution
-03-AI/70-Transport
-03-AI/80-Completed
-03-AI/90-Failed
+04-AI
+04-AI/00-Input
+04-AI/10-Context
+04-AI/20-Generation
+04-AI/30-Validation
+04-AI/40-Evaluation
+04-AI/50-Review
+04-AI/60-Execution
+04-AI/70-Transport
+04-AI/80-Completed
+04-AI/90-Failed
 ```
 
 Stage names come from a closed code allowlist. Projection requests cannot choose
@@ -215,13 +231,13 @@ an arbitrary collection.
 
 ## Public projection boundary
 
-`03-AI/**` remains outside the ObsidianCore public-export allowlist. Regression
+`04-AI/**` remains outside the ObsidianCore public-export allowlist. Regression
 tests enforce that private AI lifecycle projections cannot appear in the public
 Core repository.
 
 ## Input recursion boundary
 
-AI Input Planner never reads `03-AI/**`. Human-facing generated projections
+AI Input Planner never reads `04-AI/**`. Human-facing generated projections
 therefore cannot recursively become Generation evidence.
 
 ## Current scope

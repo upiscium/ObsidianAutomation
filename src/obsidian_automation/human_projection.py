@@ -39,6 +39,9 @@ from .webdav_create import (
 
 REQUEST_STAGE = "16-Human-Projection"
 RESULT_STAGE = "17-Human-Projection-Result"
+PROJECTION_ROOT = "04-AI"
+LEGACY_PROJECTION_ROOT = "03-AI"
+PROJECTION_ROOTS = (PROJECTION_ROOT, LEGACY_PROJECTION_ROOT)
 RECORD_VERSION = 1
 MAX_MARKDOWN_BYTES = 512 * 1024
 MAX_REQUEST_BYTES = 768 * 1024
@@ -86,7 +89,7 @@ class HumanProjectionError(ArtifactLifecycleError):
 
 
 class HumanProjectionConflict(HumanProjectionError):
-    """Raised when a canonical 03-AI projection path contains different bytes."""
+    """Raised when a canonical AI projection path contains different bytes."""
 
 
 @dataclass(frozen=True)
@@ -156,6 +159,21 @@ def _stage(value: str) -> str:
     if value not in STAGE_FOLDERS:
         raise HumanProjectionError(f"unsupported human projection stage: {value}")
     return value
+
+
+def projection_root_from_target_path(target_path: str) -> str:
+    if not isinstance(target_path, str):
+        raise HumanProjectionError("projection target_path is invalid")
+    for root in PROJECTION_ROOTS:
+        if target_path.startswith(f"{root}/"):
+            return root
+    raise HumanProjectionError("projection target_path uses an unsupported root")
+
+
+def _projection_target(root: str, stage: str, case_id: str) -> str:
+    if root not in PROJECTION_ROOTS:
+        raise HumanProjectionError("projection root is unsupported")
+    return f"{root}/{STAGE_FOLDERS[_stage(stage)]}/{_case_id(case_id)}.md"
 
 
 def _source_kind(value: str) -> str:
@@ -262,7 +280,7 @@ def build_request(
     timestamp = created_at or _utc_now()
     if not isinstance(timestamp, str) or not timestamp.endswith("Z"):
         raise HumanProjectionError("projection created_at must be a UTC Z timestamp")
-    target = f"03-AI/{STAGE_FOLDERS[stage_name]}/{case}.md"
+    target = _projection_target(PROJECTION_ROOT, stage_name, case)
     request = ProjectionRequest(
         case_id=case,
         stage=stage_name,
@@ -297,8 +315,12 @@ def parse_request(data: bytes) -> ProjectionRequest:
     stage_name = _stage(value["stage"])
     source_kind = _source_kind(value["source_kind"])
     source_sha = _require_sha256(value["source_sha256"], label="projection source_sha256")
-    expected_target = f"03-AI/{STAGE_FOLDERS[stage_name]}/{case}.md"
-    if value["target_path"] != expected_target:
+    target_path = value["target_path"]
+    valid_targets = {
+        _projection_target(root, stage_name, case)
+        for root in PROJECTION_ROOTS
+    }
+    if target_path not in valid_targets:
         raise HumanProjectionError("projection target_path is not deterministic")
     content = value["content"]
     if not isinstance(content, str) or not content:
@@ -317,7 +339,7 @@ def parse_request(data: bytes) -> ProjectionRequest:
         stage=stage_name,
         source_kind=source_kind,
         source_sha256=source_sha,
-        target_path=expected_target,
+        target_path=target_path,
         content_sha256=content_sha,
         content=content,
         created_at=created_at,
@@ -372,7 +394,8 @@ def parse_result(data: bytes) -> ProjectionResult:
     request_sha = _require_sha256(value["request_sha256"], label="request_sha256")
     content_sha = _require_sha256(value["content_sha256"], label="content_sha256")
     target = value["target_path"]
-    if not isinstance(target, str) or not target.startswith("03-AI/") or not target.endswith(".md"):
+    projection_root_from_target_path(target)
+    if not target.endswith(".md"):
         raise HumanProjectionError("projection result target_path is invalid")
     result = value["result"]
     if result not in {"created", "already_matching", "conflict"}:
@@ -442,9 +465,13 @@ def _ensure_target_parent(
     timeout: float,
     allow_http: bool,
 ) -> None:
+    root = projection_root_from_target_path(request.target_path)
+    expected_target = _projection_target(root, request.stage, request.case_id)
+    if request.target_path != expected_target:
+        raise HumanProjectionError("projection target_path is not deterministic")
     ensure_collection(
         base_url=base_url,
-        target_path="03-AI",
+        target_path=root,
         username=username,
         password=password,
         timeout=timeout,
@@ -452,7 +479,7 @@ def _ensure_target_parent(
     )
     ensure_collection(
         base_url=base_url,
-        target_path=f"03-AI/{STAGE_FOLDERS[request.stage]}",
+        target_path=f"{root}/{STAGE_FOLDERS[request.stage]}",
         username=username,
         password=password,
         timeout=timeout,

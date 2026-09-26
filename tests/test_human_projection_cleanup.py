@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -31,7 +32,7 @@ EVALUATION = "b" * 64
 MUTATION = "c" * 64
 
 
-def _state(tmp_path: Path) -> tuple[Path, str]:
+def _state(tmp_path: Path, *, legacy_root: bool = False) -> tuple[Path, str]:
     state = tmp_path / "state"
     state.mkdir()
     ensure_artifact_layout(state)
@@ -57,6 +58,11 @@ def _state(tmp_path: Path) -> tuple[Path, str]:
         content="# Human Review\n",
         created_at="2026-09-23T00:00:00Z",
     )
+    if legacy_root:
+        review_projection = replace(
+            review_projection,
+            target_path=review_projection.target_path.replace("04-AI/", "03-AI/", 1),
+        )
     review_request_sha, _ = store_request(
         state,
         role="evaluator",
@@ -148,6 +154,30 @@ def test_reject_cleanup_deletes_exact_six_projection_paths_and_is_idempotent(
     )
     assert second["processed"] == 0
     assert calls == []
+
+
+def test_reject_cleanup_preserves_legacy_03_ai_root(
+    tmp_path: Path,
+) -> None:
+    state, _cleanup_sha = _state(tmp_path, legacy_root=True)
+    calls: list[str] = []
+
+    def delete_remote(**kwargs: object) -> str:
+        calls.append(str(kwargs["target_path"]))
+        return "already_absent"
+
+    result = run_cleanup_sync(
+        state,
+        base_url="https://nextcloud.example/dav/Vault",
+        username="sync",
+        password="secret",
+        delete_remote=delete_remote,
+    )
+
+    assert result["processed"] == 1
+    assert calls == list(
+        cleanup_target_paths(CASE, projection_root="03-AI")
+    )
 
 
 def test_cleanup_rejects_case_not_bound_to_review_projection(tmp_path: Path) -> None:
@@ -270,7 +300,7 @@ def test_delete_remote_target_verifies_absence_after_success(
 
     result = cleanup._delete_remote_target(
         base_url="https://nextcloud.example/dav/Vault",
-        target_path=f"03-AI/50-Review/{CASE}.md",
+        target_path=f"04-AI/50-Review/{CASE}.md",
         username="sync",
         password="secret",
         timeout=30.0,
@@ -294,7 +324,7 @@ def test_delete_remote_target_accepts_already_absent(
 
     result = cleanup._delete_remote_target(
         base_url="https://nextcloud.example/dav/Vault",
-        target_path=f"03-AI/50-Review/{CASE}.md",
+        target_path=f"04-AI/50-Review/{CASE}.md",
         username="sync",
         password="secret",
         timeout=30.0,
