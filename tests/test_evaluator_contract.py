@@ -231,6 +231,46 @@ def test_consistency_multiline_excerpts_bind_and_persist_exactly() -> None:
     assert result.conflicts[0].candidate_claim == "# Candidate\nUse local-only storage."
 
 
+def test_consistency_tabbed_excerpt_binds_and_persists_exactly() -> None:
+    proposal_content = "# Proposal\nUse WebDAV synchronization."
+    candidate_content = "# Candidate\n\tUse local-only storage."
+
+    proposal_excerpts = consistency_excerpts(proposal_content, prefix="p")
+    candidate_excerpts = consistency_excerpts(candidate_content, prefix="c")
+
+    assert candidate_excerpts[0].text == "# Candidate\n\tUse local-only storage."
+
+    parsed = parse_dimension_evaluator_output(
+        json.dumps(
+            {
+                "assessment": "concern",
+                "findings": [],
+                "conflicts": [
+                    {
+                        "proposal_excerpt_id": proposal_excerpts[0].excerpt_id,
+                        "candidate_excerpt_id": candidate_excerpts[0].excerpt_id,
+                    }
+                ],
+            },
+            separators=(",", ":"),
+        ).encode(),
+        dimension="consistency",
+    )
+
+    bound = bind_consistency_proposals(
+        parsed,
+        candidate_path="11-Knowledge/existing.md",
+        proposal_content=proposal_content,
+        candidate_content=candidate_content,
+    )
+    result = finalize_consistency_candidate(
+        bound,
+        (ConsistencyVerification("contradiction", "The storage paths differ."),),
+    )
+
+    assert result.conflicts[0].candidate_claim == "# Candidate\n\tUse local-only storage."
+
+
 def test_consistency_binding_rejects_unknown_excerpt_ids() -> None:
     parsed = parse_dimension_evaluator_output(
         json.dumps(
@@ -539,6 +579,14 @@ def test_consistency_parser_rejects_extra_wrong_duplicate_and_oversized_conflict
 def test_consistency_excerpt_builder_rejects_cr_source_content() -> None:
     with pytest.raises(ArtifactLifecycleError, match="LF line endings"):
         consistency_excerpts("Proposal\r\nclaim", prefix="p")
+
+@pytest.mark.parametrize("control", ["\x00", "\x0b", "\x0c", "\x1f", "\x7f"])
+def test_consistency_excerpt_builder_rejects_unsupported_control_characters(
+    control: str,
+) -> None:
+    with pytest.raises(ArtifactLifecycleError, match="unsupported control characters"):
+        consistency_excerpts(f"Proposal{control}claim", prefix="p")
+
 
 def test_consistency_excerpt_boundaries_always_satisfy_quote_contract() -> None:
     excerpts = consistency_excerpts(

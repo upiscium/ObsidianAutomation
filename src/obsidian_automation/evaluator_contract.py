@@ -359,6 +359,13 @@ def consistency_excerpts(
         raise ArtifactLifecycleError(
             "consistency excerpt source must be UTF-8 encodable"
         ) from exc
+    if any(
+        unicodedata.category(ch) == "Cc" and ch not in {"\n", "\t"}
+        for ch in content
+    ):
+        raise ArtifactLifecycleError(
+            "consistency excerpt source must not contain unsupported control characters"
+        )
 
     semantic_content = _consistency_semantic_source(content)
     blocks: list[str] = []
@@ -592,7 +599,7 @@ def _validated_conflict_quote(value: object, *, field: str) -> str:
             f"{MAX_EVALUATOR_CONFLICT_FIELD_CHARS} characters"
         )
     if any(
-        unicodedata.category(ch) == "Cc" and ch != "\n"
+        unicodedata.category(ch) == "Cc" and ch not in {"\n", "\t"}
         for ch in value
     ):
         raise ArtifactLifecycleError(
