@@ -11,7 +11,17 @@ Type=oneshot
 User=obsidian-ai-sync
 Group=obsidian-ai-sync
 EnvironmentFile=/etc/obsidian-ai/human-projection.env
+ExecStartPre=-/opt/obsidian-ai/venv/bin/obsidian-ai-human-projection-sync \
+  --ai-root /var/lib/obsidian-ai/state \
+  --base-url ${NEXTCLOUD_BASE_URL} \
+  --username ${NEXTCLOUD_USERNAME} \
+  --password-file /etc/obsidian-ai/webdav-password
 ExecStart=/opt/obsidian-ai/venv/bin/obsidian-production-knowledge-webdav-dispatch \
+  --ai-root /var/lib/obsidian-ai/state \
+  --base-url ${NEXTCLOUD_BASE_URL} \
+  --username ${NEXTCLOUD_USERNAME} \
+  --password-file /etc/obsidian-ai/webdav-password
+ExecStartPost=-/opt/obsidian-ai/venv/bin/obsidian-ai-human-projection-sync \
   --ai-root /var/lib/obsidian-ai/state \
   --base-url ${NEXTCLOUD_BASE_URL} \
   --username ${NEXTCLOUD_USERNAME} \
@@ -20,7 +30,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadOnlyPaths=/etc/obsidian-ai /var/lib/obsidian-ai/state/10-Validation /var/lib/obsidian-ai/state/20-Review /var/lib/obsidian-ai/state/25-Execution
-ReadWritePaths=/var/lib/obsidian-ai/state/24-Locks /var/lib/obsidian-ai/state/27-Transport
+ReadOnlyPaths=/etc/obsidian-ai /var/lib/obsidian-ai/state/10-Validation /var/lib/obsidian-ai/state/16-Human-Projection /var/lib/obsidian-ai/state/20-Review /var/lib/obsidian-ai/state/25-Execution
+ReadWritePaths=/var/lib/obsidian-ai/state/16-Human-Projection/sync /var/lib/obsidian-ai/state/17-Human-Projection-Result /var/lib/obsidian-ai/state/24-Locks /var/lib/obsidian-ai/state/27-Transport
 UMask=0027
 TimeoutStartSec=5min

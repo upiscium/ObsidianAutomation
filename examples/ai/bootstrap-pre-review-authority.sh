@@ -73,6 +73,7 @@ setfacl -m "u:$REVIEWER_USER:r-x" "$AI_ROOT/16-Human-Projection/evaluator"
 setfacl -m "u:$REVIEWER_USER:r-x" "$AI_ROOT/17-Human-Projection-Result"
 setfacl -m "u:$READER_USER:r-x" "$AI_ROOT/20-Review"
 setfacl -m "u:$READER_USER:r-x" "$AI_ROOT/30-Receipts"
+setfacl -m "u:$SYNC_USER:r-x" "$AI_ROOT/30-Receipts"
 
 # Reader needs traverse-only access to 24-Locks and rw only in read-view.
 setfacl -m "u:$READER_USER:--x" "$LOCKS"
@@ -119,7 +120,8 @@ python3 - \
   "$EVALUATOR_PROJECTIONS" '.projection.json' "$REVIEWER_USER" \
   "$PROJECTION_RESULTS" '.projection-result.json' "$REVIEWER_USER" \
   "$REVIEWS" '.approval.json' "$READER_USER" \
-  "$RECEIPTS" '.receipt.json' "$READER_USER" <<'PY'
+  "$RECEIPTS" '.receipt.json' "$READER_USER" \
+  "$RECEIPTS" '.receipt.json' "$SYNC_USER" <<'PY'
 import os
 import pwd
 import stat

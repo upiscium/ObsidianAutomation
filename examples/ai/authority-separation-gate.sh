@@ -193,6 +193,7 @@ probe_read "$SYNC_USER" "$review_seed" allow "Sync reads Review"
 probe_read "$SYNC_USER" "$execution_seed" allow "Sync reads Execution request"
 probe_read "$SYNC_USER" "$projection_generator_seed" allow "Sync reads human projection request"
 probe_read "$SYNC_USER" "$projection_result_seed" allow "Sync reads human projection result"
+probe_read "$SYNC_USER" "$receipts_seed" allow "Sync reads Receipts for terminal projection cleanup"
 
 # Negative reads protecting trust boundaries.
 probe_read "$GENERATOR_USER" "$knowledge_seed" deny "Generator cannot read canonical Knowledge directly"
@@ -211,7 +212,6 @@ probe_read "$REVIEWER_USER" "$knowledge_seed" deny "Reviewer has no canonical Kn
 probe_read "$EXECUTOR_USER" "$untrusted_seed" deny "Executor cannot read Untrusted proposals directly"
 probe_read "$SYNC_USER" "$untrusted_seed" deny "Sync cannot read Untrusted proposals"
 probe_read "$SYNC_USER" "$evaluation_seed" deny "Sync cannot read Evaluation"
-probe_read "$SYNC_USER" "$receipts_seed" deny "Sync cannot read Receipts"
 probe_read "$VALIDATOR_USER" "$projection_generator_seed" deny "Validator cannot read Generator projection request"
 probe_read "$STATUS_USER" "$projection_generator_seed" deny "Status cannot read human projection request payload"
 for path in "$knowledge_seed" "$untrusted_seed" "$index_seed" "$context_seed" "$validation_seed" "$evaluation_request_seed" "$evaluation_context_seed" "$evaluation_seed" "$review_seed" "$execution_seed" "$transport_seed" "$receipts_seed"; do

@@ -58,6 +58,7 @@ Relevant artifacts are named by SHA-256:
 10-Validation/<proposal_sha256>.validation.json
 15-Evaluation/<evaluation_sha256>.evaluation.json
 20-Review/<mutation_sha256>.approval.json
+20-Review/<mutation_sha256>.projection-binding.json
 30-Receipts/<mutation_sha256>.receipt.json
 ```
 
@@ -130,6 +131,14 @@ New Evaluator-backed Human Review creates one immutable decision bound to both t
 5. the exact validated mutation artifact exists and hashes to that mutation digest.
 
 Only then is `20-Review/<mutation_sha256>.approval.json` created with `O_CREAT | O_EXCL` semantics.
+
+When the decision originates from the Human-facing `04-AI/50-Review`
+projection, Review Intake also stores
+`20-Review/<mutation_sha256>.projection-binding.json`. This immutable
+reviewer-owned support artifact binds the exact `ai_case_id`, published Review
+projection request SHA, Evaluation SHA and mutation SHA. It grants no approval
+authority by itself; Executor and Sync use it only to resolve the Human-facing
+case after Review without gaining read access to `02-Orchestration`.
 
 Human authority is independent from the Evaluator recommendation. A Human may explicitly approve a `do_not_proceed` evaluation or reject a `proceed` evaluation. The Evaluator remains advisory.
 

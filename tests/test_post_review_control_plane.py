@@ -244,6 +244,134 @@ def test_executor_dispatch_skips_reject_and_advances_approve(
     assert layout.review.is_dir()
 
 
+def test_executor_dispatch_projection_failure_is_non_authoritative(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "state-projection-failure"
+    state.mkdir()
+    ensure_artifact_layout(state)
+    vault = tmp_path / "vault-projection-failure"
+    (vault / "11-Knowledge").mkdir(parents=True)
+
+    digest = "2" * 64
+    (state / "20-Review" / f"{digest}.approval.json").write_bytes(
+        _canonical_json_bytes(
+            {
+                "record_version": 2,
+                "mutation_sha256": digest,
+                "evaluation_sha256": "b" * 64,
+                "decision": "approve",
+                "decided_at": "2026-09-27T00:00:00Z",
+                "approver": "human",
+            }
+        )
+    )
+
+    monkeypatch.setattr(
+        production,
+        "advance_production_executor",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            status="transport_pending",
+            reason=None,
+        ),
+    )
+    monkeypatch.setattr(
+        production,
+        "_emit_execution_if_enabled",
+        lambda *_args, **_kwargs: False,
+    )
+
+    result = production.dispatch_pending_executor(state, vault)
+
+    assert result["processed"] == 1
+    assert result["transport_pending"] == 1
+    assert result["projection_errors"] == 1
+
+
+def test_transport_dispatch_projection_failure_is_non_authoritative(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "transport-projection-failure"
+    state.mkdir()
+    ensure_artifact_layout(state)
+    (state / "25-Execution").mkdir()
+    (state / "27-Transport").mkdir()
+    (state / "24-Locks").mkdir()
+
+    (state / "25-Execution" / f"{MUTATION}.transport-request.json").write_text(
+        "{}\n",
+        encoding="utf-8",
+    )
+    (state / "20-Review" / f"{MUTATION}.approval.json").write_bytes(
+        _canonical_json_bytes(
+            {
+                "record_version": 2,
+                "mutation_sha256": MUTATION,
+                "evaluation_sha256": EVALUATION,
+                "decision": "approve",
+                "decided_at": "2026-09-27T00:00:00Z",
+                "approver": "human",
+            }
+        )
+    )
+
+    monkeypatch.setattr(
+        production,
+        "_load_context",
+        lambda *_args, **_kwargs: (
+            b"",
+            SimpleNamespace(
+                content="# Example\n",
+                target_path="11-Knowledge/example.md",
+            ),
+            b"",
+            SimpleNamespace(decision="approve"),
+        ),
+    )
+    monkeypatch.setattr(
+        production,
+        "validate_knowledge_note_v0",
+        lambda _mutation: None,
+    )
+
+    class Lock:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(
+        production,
+        "canonical_io_lock",
+        lambda _root: Lock(),
+    )
+    monkeypatch.setattr(
+        production,
+        "process_transport_request",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            result="created_verified",
+        ),
+    )
+    monkeypatch.setattr(
+        production,
+        "_emit_transport_if_enabled",
+        lambda *_args, **_kwargs: False,
+    )
+
+    result = production.dispatch_pending_transport(
+        state,
+        base_url="https://nextcloud.example/dav/Vault",
+        username="sync",
+        password="secret",
+    )
+
+    assert result["processed"] == 1
+    assert result["projection_errors"] == 1
+
+
 def test_executor_dispatch_never_auto_executes_legacy_review_v1(
     monkeypatch,
     tmp_path: Path,

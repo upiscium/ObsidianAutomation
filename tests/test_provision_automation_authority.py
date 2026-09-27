@@ -148,6 +148,12 @@ def test_ai_acl_matrix_keeps_semantic_authorities_distinct() -> None:
     assert "u:obsidian-ai-reader:r-x" in acls[
         "/var/lib/obsidian-ai/state/30-Receipts"
     ]
+    assert "u:obsidian-ai-sync:r-x" in acls[
+        "/var/lib/obsidian-ai/state/30-Receipts"
+    ]
+    assert "u:obsidian-ai-sync:rwx" not in acls[
+        "/var/lib/obsidian-ai/state/30-Receipts"
+    ]
 
 
 def test_status_identity_gets_metadata_projection_only() -> None:

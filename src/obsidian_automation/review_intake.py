@@ -24,8 +24,10 @@ from .evaluation_artifact import load_evaluation_record
 from .human_projection import (
     HumanProjectionError,
     ProjectionRequest,
+    build_post_review_projection_binding,
     parse_request,
     parse_result,
+    store_post_review_projection_binding,
 )
 from .human_projection_cleanup import (
     build_cleanup_request,
@@ -377,6 +379,32 @@ def _require_projection_result(
         raise ReviewIntakeError("review projection is not safely published")
 
 
+def _store_post_review_binding(
+    ai_root: Path,
+    *,
+    review_projection_request_sha256: str,
+    request: ProjectionRequest,
+    evaluation_sha256: str,
+    mutation_sha256: str,
+) -> tuple[str, Path]:
+    review = load_review_record(ai_root, mutation_sha256)
+    if (
+        review.record_version != 2
+        or review.evaluation_sha256 != evaluation_sha256
+    ):
+        raise ReviewIntakeError(
+            "post-review projection binding does not match authoritative Review"
+        )
+    binding = build_post_review_projection_binding(
+        case_id=request.case_id,
+        review_projection_request_sha256=review_projection_request_sha256,
+        evaluation_sha256=evaluation_sha256,
+        mutation_sha256=mutation_sha256,
+        created_at=review.decided_at,
+    )
+    return store_post_review_projection_binding(ai_root, binding)
+
+
 def _queue_reject_cleanup(
     ai_root: Path,
     *,
@@ -456,6 +484,13 @@ def run_review_intake(
                 raise ReviewIntakeError(
                     "existing authoritative Review is bound to another evaluation"
                 )
+            _store_post_review_binding(
+                ai_root,
+                review_projection_request_sha256=request_sha,
+                request=request,
+                evaluation_sha256=evaluation_sha,
+                mutation_sha256=evaluation.mutation_sha256,
+            )
             if review.decision == "reject":
                 _queue_reject_cleanup(
                     ai_root,
@@ -490,6 +525,13 @@ def run_review_intake(
             evaluation_sha256=evaluation_sha,
             decision=decision,
             approver=approver,
+        )
+        _store_post_review_binding(
+            ai_root,
+            review_projection_request_sha256=request_sha,
+            request=request,
+            evaluation_sha256=evaluation_sha,
+            mutation_sha256=review_result.mutation_sha256,
         )
         if decision == "reject":
             _queue_reject_cleanup(

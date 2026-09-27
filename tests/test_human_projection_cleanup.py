@@ -14,16 +14,21 @@ from obsidian_automation.artifact_lifecycle import (
 from obsidian_automation.human_projection import (
     ProjectionResult,
     _store_result,
+    build_post_review_projection_binding,
     build_request,
+    store_post_review_projection_binding,
     store_request,
 )
 from obsidian_automation.human_projection_cleanup import (
     HumanProjectionCleanupError,
+    TERMINAL_CLEANUP_STAGES,
     build_cleanup_request,
+    build_terminal_cleanup_request,
     cleanup_target_paths,
     parse_cleanup_result,
     run_cleanup_sync,
     store_cleanup_request,
+    store_terminal_cleanup_request,
 )
 
 
@@ -126,6 +131,7 @@ def test_reject_cleanup_deletes_exact_six_projection_paths_and_is_idempotent(
         "event": "ai-human-projection-cleanup-sync",
         "status": "completed",
         "processed": 1,
+        "pending_terminal": 0,
         "deleted": 6,
         "already_absent": 0,
     }
@@ -178,6 +184,202 @@ def test_reject_cleanup_preserves_legacy_03_ai_root(
     assert calls == list(
         cleanup_target_paths(CASE, projection_root="03-AI")
     )
+
+
+def _completed_state(
+    tmp_path: Path,
+    *,
+    published: bool,
+) -> tuple[Path, str]:
+    state = tmp_path / "completed-state"
+    state.mkdir()
+    ensure_artifact_layout(state)
+    (state / "24-Locks").mkdir()
+    requests = state / "16-Human-Projection"
+    requests.mkdir()
+    for role in (
+        "reader",
+        "generator",
+        "validator",
+        "evaluator",
+        "reviewer",
+        "executor",
+        "sync",
+    ):
+        (requests / role).mkdir()
+    (state / "17-Human-Projection-Result").mkdir()
+
+    receipt_bytes = _canonical_json_bytes(
+        {
+            "mutation_id": "completed-cleanup-test",
+            "mutation_sha256": MUTATION,
+            "target_path": "11-Knowledge/completed.md",
+            "content_sha256": "d" * 64,
+            "executed_at": "2026-09-23T01:00:00Z",
+            "result": "success",
+        }
+    )
+    (state / "30-Receipts" / f"{MUTATION}.receipt.json").write_bytes(
+        receipt_bytes
+    )
+    receipt_sha = sha256_bytes(receipt_bytes)
+
+    review_bytes = _canonical_json_bytes(
+        {
+            "record_version": 2,
+            "mutation_sha256": MUTATION,
+            "evaluation_sha256": EVALUATION,
+            "decision": "approve",
+            "decided_at": "2026-09-23T00:59:00Z",
+            "approver": "human",
+        }
+    )
+    (state / "20-Review" / f"{MUTATION}.approval.json").write_bytes(
+        review_bytes
+    )
+    store_post_review_projection_binding(
+        state,
+        build_post_review_projection_binding(
+            case_id=CASE,
+            review_projection_request_sha256="e" * 64,
+            evaluation_sha256=EVALUATION,
+            mutation_sha256=MUTATION,
+            created_at="2026-09-23T00:59:00Z",
+        ),
+    )
+
+    completed_projection = build_request(
+        case_id=CASE,
+        stage="completed",
+        source_kind="execution_receipt",
+        source_sha256=receipt_sha,
+        content="# Knowledge Note Completed\n",
+        created_at="2026-09-23T01:00:00Z",
+    )
+    completed_request_sha, _ = store_request(
+        state,
+        role="executor",
+        request=completed_projection,
+    )
+    if published:
+        _store_result(
+            state,
+            ProjectionResult(
+                request_sha256=completed_request_sha,
+                target_path=completed_projection.target_path,
+                content_sha256=completed_projection.content_sha256,
+                result="created",
+                completed_at="2026-09-23T01:00:01Z",
+            ),
+        )
+
+    request = build_terminal_cleanup_request(
+        case_id=CASE,
+        completed_projection_request_sha256=completed_request_sha,
+        mutation_sha256=MUTATION,
+        receipt_sha256=receipt_sha,
+        created_at="2026-09-23T01:00:00Z",
+    )
+    cleanup_sha, _ = store_terminal_cleanup_request(state, request)
+    return state, cleanup_sha
+
+
+def test_completed_cleanup_preserves_80_completed_and_deletes_earlier_stages(
+    tmp_path: Path,
+) -> None:
+    state, cleanup_sha = _completed_state(tmp_path, published=True)
+    calls: list[str] = []
+
+    def delete_remote(**kwargs: object) -> str:
+        calls.append(str(kwargs["target_path"]))
+        return "deleted"
+
+    result = run_cleanup_sync(
+        state,
+        base_url="https://nextcloud.example/dav/Vault",
+        username="sync",
+        password="secret",
+        delete_remote=delete_remote,
+    )
+
+    expected = list(
+        cleanup_target_paths(
+            CASE,
+            stages=TERMINAL_CLEANUP_STAGES,
+        )
+    )
+    assert calls == expected
+    assert f"04-AI/80-Completed/{CASE}.md" not in calls
+    assert result["processed"] == 1
+    assert result["pending_terminal"] == 0
+    assert result["deleted"] == len(TERMINAL_CLEANUP_STAGES)
+
+    stored = parse_cleanup_result(
+        (
+            state
+            / "17-Human-Projection-Result"
+            / f"{cleanup_sha}.projection-cleanup-result.json"
+        ).read_bytes()
+    )
+    assert [item.target_path for item in stored.targets] == expected
+
+
+def test_completed_cleanup_waits_until_80_completed_is_published(
+    tmp_path: Path,
+) -> None:
+    state, _cleanup_sha = _completed_state(tmp_path, published=False)
+    calls: list[str] = []
+
+    result = run_cleanup_sync(
+        state,
+        base_url="https://nextcloud.example/dav/Vault",
+        username="sync",
+        password="secret",
+        delete_remote=lambda **kwargs: calls.append(
+            str(kwargs["target_path"])
+        ) or "deleted",
+    )
+
+    assert result["processed"] == 0
+    assert result["pending_terminal"] == 1
+    assert calls == []
+
+
+def test_completed_cleanup_rejects_mismatched_reviewer_binding(
+    tmp_path: Path,
+) -> None:
+    state, _cleanup_sha = _completed_state(tmp_path, published=True)
+    binding_path = (
+        state
+        / "20-Review"
+        / f"{MUTATION}.projection-binding.json"
+    )
+    binding_path.write_bytes(
+        build_post_review_projection_binding(
+            case_id="f" * 64,
+            review_projection_request_sha256="e" * 64,
+            evaluation_sha256=EVALUATION,
+            mutation_sha256=MUTATION,
+            created_at="2026-09-23T00:59:00Z",
+        ).to_json_bytes()
+    )
+    calls: list[str] = []
+
+    with pytest.raises(
+        HumanProjectionCleanupError,
+        match="reviewer-owned projection binding",
+    ):
+        run_cleanup_sync(
+            state,
+            base_url="https://nextcloud.example/dav/Vault",
+            username="sync",
+            password="secret",
+            delete_remote=lambda **kwargs: calls.append(
+                str(kwargs["target_path"])
+            ) or "deleted",
+        )
+
+    assert calls == []
 
 
 def test_cleanup_rejects_case_not_bound_to_review_projection(tmp_path: Path) -> None:

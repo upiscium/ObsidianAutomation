@@ -28,10 +28,12 @@ from .human_projection import (
     REQUEST_STAGE,
     RESULT_STAGE,
     STAGE_FOLDERS,
+    load_post_review_projection_binding,
     parse_request,
     parse_result,
     projection_root_from_target_path,
 )
+from .execution_orchestrator import _parse_receipt
 from .production_io import ProductionIOError, canonical_io_lock
 from .webdav_create import (
     WebDAVCreateError,
@@ -44,6 +46,7 @@ from .webdav_create import (
 
 RECORD_VERSION = 1
 CLEANUP_REQUEST_SUFFIX = ".projection-cleanup.json"
+TERMINAL_CLEANUP_REQUEST_SUFFIX = ".projection-terminal-cleanup.json"
 CLEANUP_RESULT_SUFFIX = ".projection-cleanup-result.json"
 PROJECTION_REQUEST_SUFFIX = ".projection.json"
 PROJECTION_RESULT_SUFFIX = ".projection-result.json"
@@ -55,11 +58,21 @@ CLEANUP_STAGES = (
     "evaluation",
     "review",
 )
+TERMINAL_CLEANUP_STAGES = (
+    "input",
+    "context",
+    "generation",
+    "validation",
+    "evaluation",
+    "review",
+    "execution",
+    "transport",
+)
 MAX_BATCH = 64
 
 
 class HumanProjectionCleanupError(ArtifactLifecycleError):
-    """Raised when a rejected-case projection cleanup is unsafe or invalid."""
+    """Raised when a Human-facing projection cleanup is unsafe or invalid."""
 
 
 @dataclass(frozen=True)
@@ -80,6 +93,27 @@ class ProjectionCleanupRequest:
                 "evaluation_sha256": self.evaluation_sha256,
                 "mutation_sha256": self.mutation_sha256,
                 "review_sha256": self.review_sha256,
+                "created_at": self.created_at,
+            }
+        )
+
+
+@dataclass(frozen=True)
+class TerminalProjectionCleanupRequest:
+    case_id: str
+    completed_projection_request_sha256: str
+    mutation_sha256: str
+    receipt_sha256: str
+    created_at: str
+
+    def to_json_bytes(self) -> bytes:
+        return _canonical_json_bytes(
+            {
+                "record_version": RECORD_VERSION,
+                "case_id": self.case_id,
+                "completed_projection_request_sha256": self.completed_projection_request_sha256,
+                "mutation_sha256": self.mutation_sha256,
+                "receipt_sha256": self.receipt_sha256,
                 "created_at": self.created_at,
             }
         )
@@ -124,13 +158,17 @@ def cleanup_target_paths(
     case_id: str,
     *,
     projection_root: str = PROJECTION_ROOT,
+    stages: Sequence[str] = CLEANUP_STAGES,
 ) -> tuple[str, ...]:
     case = _case_id(case_id)
     if projection_root not in PROJECTION_ROOTS:
         raise HumanProjectionCleanupError("cleanup projection root is unsupported")
+    stage_names = tuple(stages)
+    if stage_names not in {CLEANUP_STAGES, TERMINAL_CLEANUP_STAGES}:
+        raise HumanProjectionCleanupError("cleanup stage set is unsupported")
     return tuple(
         f"{projection_root}/{STAGE_FOLDERS[stage]}/{case}.md"
-        for stage in CLEANUP_STAGES
+        for stage in stage_names
     )
 
 
@@ -208,6 +246,72 @@ def parse_cleanup_request(data: bytes) -> ProjectionCleanupRequest:
     )
 
 
+def build_terminal_cleanup_request(
+    *,
+    case_id: str,
+    completed_projection_request_sha256: str,
+    mutation_sha256: str,
+    receipt_sha256: str,
+    created_at: str,
+) -> TerminalProjectionCleanupRequest:
+    request = TerminalProjectionCleanupRequest(
+        case_id=_case_id(case_id),
+        completed_projection_request_sha256=_require_sha256(
+            completed_projection_request_sha256,
+            label="completed_projection_request_sha256",
+        ),
+        mutation_sha256=_require_sha256(
+            mutation_sha256,
+            label="terminal cleanup mutation_sha256",
+        ),
+        receipt_sha256=_require_sha256(
+            receipt_sha256,
+            label="terminal cleanup receipt_sha256",
+        ),
+        created_at=created_at,
+    )
+    return parse_terminal_cleanup_request(request.to_json_bytes())
+
+
+def parse_terminal_cleanup_request(data: bytes) -> TerminalProjectionCleanupRequest:
+    from .artifact_lifecycle import _decode_json_object
+
+    value = _decode_json_object(data, label="terminal projection cleanup request")
+    required = {
+        "record_version",
+        "case_id",
+        "completed_projection_request_sha256",
+        "mutation_sha256",
+        "receipt_sha256",
+        "created_at",
+    }
+    if set(value) != required or value["record_version"] != RECORD_VERSION:
+        raise HumanProjectionCleanupError(
+            "terminal cleanup request properties do not match contract"
+        )
+    created_at = value["created_at"]
+    if not isinstance(created_at, str) or not created_at.endswith("Z"):
+        raise HumanProjectionCleanupError(
+            "terminal cleanup created_at is invalid"
+        )
+    return TerminalProjectionCleanupRequest(
+        case_id=_case_id(value["case_id"]),
+        completed_projection_request_sha256=_require_sha256(
+            value["completed_projection_request_sha256"],
+            label="completed_projection_request_sha256",
+        ),
+        mutation_sha256=_require_sha256(
+            value["mutation_sha256"],
+            label="terminal cleanup mutation_sha256",
+        ),
+        receipt_sha256=_require_sha256(
+            value["receipt_sha256"],
+            label="terminal cleanup receipt_sha256",
+        ),
+        created_at=created_at,
+    )
+
+
 def _reviewer_request_dir(ai_root: Path) -> Path:
     root = ai_root.absolute()
     _require_safe_directory(root, create=False)
@@ -216,6 +320,16 @@ def _reviewer_request_dir(ai_root: Path) -> Path:
     reviewer = requests / "reviewer"
     _require_safe_directory(reviewer, create=False)
     return reviewer
+
+
+def _executor_request_dir(ai_root: Path) -> Path:
+    root = ai_root.absolute()
+    _require_safe_directory(root, create=False)
+    requests = root / REQUEST_STAGE
+    _require_safe_directory(requests, create=False)
+    executor = requests / "executor"
+    _require_safe_directory(executor, create=False)
+    return executor
 
 
 def _result_dir(ai_root: Path) -> Path:
@@ -234,6 +348,17 @@ def store_cleanup_request(
     data = normalized.to_json_bytes()
     digest = sha256_bytes(data)
     path = _reviewer_request_dir(ai_root) / f"{digest}{CLEANUP_REQUEST_SUFFIX}"
+    return digest, _store_immutable(path, data)
+
+
+def store_terminal_cleanup_request(
+    ai_root: Path,
+    request: TerminalProjectionCleanupRequest,
+) -> tuple[str, Path]:
+    normalized = parse_terminal_cleanup_request(request.to_json_bytes())
+    data = normalized.to_json_bytes()
+    digest = sha256_bytes(data)
+    path = _executor_request_dir(ai_root) / f"{digest}{TERMINAL_CLEANUP_REQUEST_SUFFIX}"
     return digest, _store_immutable(path, data)
 
 
@@ -258,7 +383,10 @@ def parse_cleanup_result(data: bytes) -> ProjectionCleanupResult:
     )
     case = _case_id(value["case_id"])
     raw_targets = value["targets"]
-    if not isinstance(raw_targets, list) or len(raw_targets) != len(CLEANUP_STAGES):
+    if (
+        not isinstance(raw_targets, list)
+        or len(raw_targets) not in {len(CLEANUP_STAGES), len(TERMINAL_CLEANUP_STAGES)}
+    ):
         raise HumanProjectionCleanupError("projection cleanup target results are invalid")
     if not raw_targets or not isinstance(raw_targets[0], dict):
         raise HumanProjectionCleanupError("projection cleanup target results are invalid")
@@ -269,9 +397,15 @@ def parse_cleanup_result(data: bytes) -> ProjectionCleanupResult:
         raise HumanProjectionCleanupError(
             "projection cleanup target root is invalid"
         ) from exc
+    stages = (
+        CLEANUP_STAGES
+        if len(raw_targets) == len(CLEANUP_STAGES)
+        else TERMINAL_CLEANUP_STAGES
+    )
     expected_paths = cleanup_target_paths(
         case,
         projection_root=projection_root,
+        stages=stages,
     )
     targets: list[ProjectionCleanupTargetResult] = []
     for raw, expected_path in zip(raw_targets, expected_paths):
@@ -358,6 +492,40 @@ def _load_cleanup_request_path(path: Path) -> tuple[str, ProjectionCleanupReques
     return digest, parse_cleanup_request(data)
 
 
+def _iter_terminal_cleanup_requests(ai_root: Path) -> list[Path]:
+    directory = _executor_request_dir(ai_root)
+    paths: list[Path] = []
+    for path in sorted(directory.iterdir(), key=lambda item: item.name):
+        if path.name.startswith(".") or not path.name.endswith(TERMINAL_CLEANUP_REQUEST_SUFFIX):
+            continue
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            raise HumanProjectionCleanupError(
+                "terminal cleanup queue contains unsafe entry"
+            )
+        paths.append(path)
+    return paths
+
+
+def _load_terminal_cleanup_request_path(
+    path: Path,
+) -> tuple[str, TerminalProjectionCleanupRequest]:
+    if not path.name.endswith(TERMINAL_CLEANUP_REQUEST_SUFFIX):
+        raise HumanProjectionCleanupError(
+            "terminal cleanup filename is invalid"
+        )
+    digest = _require_sha256(
+        path.name[: -len(TERMINAL_CLEANUP_REQUEST_SUFFIX)],
+        label="terminal cleanup request SHA",
+    )
+    data = _read_exact_file(path)
+    if sha256_bytes(data) != digest:
+        raise HumanProjectionCleanupError(
+            "terminal cleanup request artifact hash mismatch"
+        )
+    return digest, parse_terminal_cleanup_request(data)
+
+
 def _verify_cleanup_binding(
     ai_root: Path,
     request: ProjectionCleanupRequest,
@@ -429,6 +597,99 @@ def _verify_cleanup_binding(
         ) from exc
 
 
+def _verify_terminal_cleanup_binding(
+    ai_root: Path,
+    request: TerminalProjectionCleanupRequest,
+) -> str | None:
+    root = ai_root.absolute()
+
+    projection_path = (
+        root
+        / REQUEST_STAGE
+        / "executor"
+        / f"{request.completed_projection_request_sha256}{PROJECTION_REQUEST_SUFFIX}"
+    )
+    projection_data = _read_exact_file(projection_path)
+    if sha256_bytes(projection_data) != request.completed_projection_request_sha256:
+        raise HumanProjectionCleanupError(
+            "completed projection request artifact hash mismatch"
+        )
+    projection = parse_request(projection_data)
+    if (
+        projection.stage != "completed"
+        or projection.case_id != request.case_id
+        or projection.source_sha256 != request.receipt_sha256
+    ):
+        raise HumanProjectionCleanupError(
+            "terminal cleanup does not match completed projection"
+        )
+
+    result_path = (
+        root
+        / RESULT_STAGE
+        / f"{request.completed_projection_request_sha256}{PROJECTION_RESULT_SUFFIX}"
+    )
+    if not os.path.lexists(result_path):
+        return None
+    projection_result = parse_result(_read_exact_file(result_path))
+    if (
+        projection_result.request_sha256
+        != request.completed_projection_request_sha256
+        or projection_result.target_path != projection.target_path
+        or projection_result.content_sha256 != projection.content_sha256
+        or projection_result.result not in {"created", "already_matching"}
+    ):
+        raise HumanProjectionCleanupError(
+            "completed projection was not safely published"
+        )
+
+    receipt_path = (
+        root
+        / "30-Receipts"
+        / f"{request.mutation_sha256}.receipt.json"
+    )
+    receipt_data = _read_exact_file(receipt_path)
+    if sha256_bytes(receipt_data) != request.receipt_sha256:
+        raise HumanProjectionCleanupError(
+            "terminal cleanup receipt SHA does not match authoritative Receipt"
+        )
+    receipt = _parse_receipt(receipt_data)
+    if receipt.mutation_sha256 != request.mutation_sha256:
+        raise HumanProjectionCleanupError(
+            "terminal cleanup Receipt is bound to another mutation"
+        )
+
+    binding = load_post_review_projection_binding(
+        root,
+        request.mutation_sha256,
+    )
+    if (
+        binding is None
+        or binding.case_id != request.case_id
+        or binding.mutation_sha256 != request.mutation_sha256
+    ):
+        raise HumanProjectionCleanupError(
+            "terminal cleanup does not match reviewer-owned projection binding"
+        )
+
+    review = load_review_record(root, request.mutation_sha256)
+    if (
+        review.record_version != 2
+        or review.decision != "approve"
+        or review.evaluation_sha256 != binding.evaluation_sha256
+    ):
+        raise HumanProjectionCleanupError(
+            "terminal cleanup requires the exact evaluation-bound Approve Review"
+        )
+
+    try:
+        return projection_root_from_target_path(projection.target_path)
+    except HumanProjectionError as exc:
+        raise HumanProjectionCleanupError(
+            "completed projection target root is invalid"
+        ) from exc
+
+
 def _delete_remote_target(
     *,
     base_url: str,
@@ -494,6 +755,51 @@ def _delete_remote_target(
 RemoteDelete = Callable[..., str]
 
 
+def _delete_cleanup_targets(
+    *,
+    case_id: str,
+    projection_root: str,
+    stages: Sequence[str],
+    deleter: RemoteDelete,
+    base_url: str,
+    username: str,
+    password: str,
+    timeout: float,
+    allow_http: bool,
+) -> tuple[tuple[ProjectionCleanupTargetResult, ...], int, int]:
+    targets: list[ProjectionCleanupTargetResult] = []
+    deleted = 0
+    already_absent = 0
+    for target_path in cleanup_target_paths(
+        case_id,
+        projection_root=projection_root,
+        stages=stages,
+    ):
+        result = deleter(
+            base_url=base_url,
+            target_path=target_path,
+            username=username,
+            password=password,
+            timeout=timeout,
+            allow_http=allow_http,
+        )
+        if result not in {"deleted", "already_absent"}:
+            raise HumanProjectionCleanupError(
+                "cleanup transport returned an invalid result"
+            )
+        targets.append(
+            ProjectionCleanupTargetResult(
+                target_path=target_path,
+                result=result,
+            )
+        )
+        if result == "deleted":
+            deleted += 1
+        else:
+            already_absent += 1
+    return tuple(targets), deleted, already_absent
+
+
 def run_cleanup_sync(
     ai_root: Path,
     *,
@@ -511,6 +817,7 @@ def run_cleanup_sync(
         )
     deleter = delete_remote or _delete_remote_target
     processed = 0
+    pending_terminal = 0
     deleted = 0
     already_absent = 0
 
@@ -521,40 +828,25 @@ def run_cleanup_sync(
                 continue
 
             projection_root = _verify_cleanup_binding(ai_root, request)
-            targets: list[ProjectionCleanupTargetResult] = []
-            for target_path in cleanup_target_paths(
-                request.case_id,
+            targets, removed, absent = _delete_cleanup_targets(
+                case_id=request.case_id,
                 projection_root=projection_root,
-            ):
-                result = deleter(
-                    base_url=base_url,
-                    target_path=target_path,
-                    username=username,
-                    password=password,
-                    timeout=timeout,
-                    allow_http=allow_http,
-                )
-                if result not in {"deleted", "already_absent"}:
-                    raise HumanProjectionCleanupError(
-                        "cleanup transport returned an invalid result"
-                    )
-                targets.append(
-                    ProjectionCleanupTargetResult(
-                        target_path=target_path,
-                        result=result,
-                    )
-                )
-                if result == "deleted":
-                    deleted += 1
-                else:
-                    already_absent += 1
-
+                stages=CLEANUP_STAGES,
+                deleter=deleter,
+                base_url=base_url,
+                username=username,
+                password=password,
+                timeout=timeout,
+                allow_http=allow_http,
+            )
+            deleted += removed
+            already_absent += absent
             _store_cleanup_result(
                 ai_root,
                 ProjectionCleanupResult(
                     cleanup_request_sha256=digest,
                     case_id=request.case_id,
-                    targets=tuple(targets),
+                    targets=targets,
                     completed_at=_utc_now(),
                 ),
             )
@@ -562,14 +854,51 @@ def run_cleanup_sync(
             if processed >= max_requests:
                 break
 
+        if processed < max_requests:
+            for path in _iter_terminal_cleanup_requests(ai_root):
+                digest, request = _load_terminal_cleanup_request_path(path)
+                if _existing_cleanup_result(ai_root, digest) is not None:
+                    continue
+
+                projection_root = _verify_terminal_cleanup_binding(ai_root, request)
+                if projection_root is None:
+                    pending_terminal += 1
+                    continue
+
+                targets, removed, absent = _delete_cleanup_targets(
+                    case_id=request.case_id,
+                    projection_root=projection_root,
+                    stages=TERMINAL_CLEANUP_STAGES,
+                    deleter=deleter,
+                    base_url=base_url,
+                    username=username,
+                    password=password,
+                    timeout=timeout,
+                    allow_http=allow_http,
+                )
+                deleted += removed
+                already_absent += absent
+                _store_cleanup_result(
+                    ai_root,
+                    ProjectionCleanupResult(
+                        cleanup_request_sha256=digest,
+                        case_id=request.case_id,
+                        targets=targets,
+                        completed_at=_utc_now(),
+                    ),
+                )
+                processed += 1
+                if processed >= max_requests:
+                    break
+
     return {
         "event": "ai-human-projection-cleanup-sync",
         "status": "completed",
         "processed": processed,
+        "pending_terminal": pending_terminal,
         "deleted": deleted,
         "already_absent": already_absent,
     }
-
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(

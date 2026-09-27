@@ -10,12 +10,29 @@ from typing import Sequence
 
 from .artifact_lifecycle import (
     ArtifactLifecycleError,
+    _read_exact_file,
     _require_sha256,
     ensure_artifact_layout,
     load_review_record,
+    sha256_bytes,
 )
 from .canonical_mutation import MutationValidationError
-from .execution_orchestrator import ExecutionOrchestrationError, _load_context
+from .execution_orchestrator import (
+    ExecutionOrchestrationError,
+    _load_context,
+    _parse_receipt,
+)
+from .human_projection import (
+    emit_completed_projection,
+    emit_execution_projection,
+    emit_transport_projection,
+    load_post_review_projection_binding,
+    projection_enabled,
+)
+from .human_projection_cleanup import (
+    build_terminal_cleanup_request,
+    store_terminal_cleanup_request,
+)
 from .knowledge_note_policy import KNOWLEDGE_ROOT, validate_knowledge_note_v0
 from .production_io import ProductionIOError, canonical_io_lock
 from .production_orchestrator import (
@@ -141,6 +158,118 @@ def _digest_files(directory: Path, suffix: str) -> list[tuple[str, Path]]:
     return rows
 
 
+def _case_id_for_projection(
+    ai_root: Path,
+    mutation_sha256: str,
+) -> str | None:
+    if not projection_enabled(ai_root):
+        return None
+    binding = load_post_review_projection_binding(ai_root, mutation_sha256)
+    if binding is None:
+        return None
+    review = load_review_record(ai_root, mutation_sha256)
+    if (
+        review.record_version != 2
+        or review.decision != "approve"
+        or review.evaluation_sha256 != binding.evaluation_sha256
+    ):
+        raise ProductionOrchestrationError(
+            "post-review projection binding does not match authoritative Approve Review"
+        )
+    return binding.case_id
+
+
+def _emit_execution_if_enabled(
+    ai_root: Path,
+    mutation_sha256: str,
+) -> bool:
+    try:
+        case_id = _case_id_for_projection(ai_root, mutation_sha256)
+        if case_id is None:
+            return True
+        emit_execution_projection(
+            ai_root,
+            case_id=case_id,
+            mutation_sha256=mutation_sha256,
+        )
+        return True
+    except (
+        ArtifactLifecycleError,
+        ExecutionOrchestrationError,
+        ProductionOrchestrationError,
+        OSError,
+    ):
+        return False
+
+
+def _emit_transport_if_enabled(
+    ai_root: Path,
+    mutation_sha256: str,
+) -> bool:
+    try:
+        case_id = _case_id_for_projection(ai_root, mutation_sha256)
+        if case_id is None:
+            return True
+        emit_transport_projection(
+            ai_root,
+            case_id=case_id,
+            mutation_sha256=mutation_sha256,
+        )
+        return True
+    except (
+        ArtifactLifecycleError,
+        ExecutionOrchestrationError,
+        ProductionOrchestrationError,
+        OSError,
+    ):
+        return False
+
+
+def _emit_completed_and_queue_cleanup(
+    ai_root: Path,
+    *,
+    mutation_sha256: str,
+) -> bool:
+    try:
+        case_id = _case_id_for_projection(ai_root, mutation_sha256)
+        if case_id is None:
+            return True
+        emitted = emit_completed_projection(
+            ai_root,
+            case_id=case_id,
+            mutation_sha256=mutation_sha256,
+        )
+        if emitted is None:
+            return True
+
+        request_sha256, _request_path = emitted
+        receipt_path = (
+            ensure_artifact_layout(ai_root).receipts
+            / f"{mutation_sha256}.receipt.json"
+        )
+        receipt_bytes = _read_exact_file(receipt_path)
+        receipt = _parse_receipt(receipt_bytes)
+        if receipt.mutation_sha256 != mutation_sha256:
+            return False
+
+        cleanup = build_terminal_cleanup_request(
+            case_id=case_id,
+            completed_projection_request_sha256=request_sha256,
+            mutation_sha256=mutation_sha256,
+            receipt_sha256=sha256_bytes(receipt_bytes),
+            created_at=receipt.executed_at,
+        )
+        store_terminal_cleanup_request(ai_root, cleanup)
+        return True
+    except (
+        ArtifactLifecycleError,
+        ExecutionOrchestrationError,
+        ProductionOrchestrationError,
+        OSError,
+    ):
+        return False
+
+
 def dispatch_pending_executor(
     ai_root: Path,
     vault_root: Path,
@@ -156,6 +285,7 @@ def dispatch_pending_executor(
     completed = 0
     transport_pending = 0
     legacy_ignored = 0
+    projection_errors = 0
 
     for digest, _path in _digest_files(layout.review, ".approval.json"):
         review = load_review_record(ai_root, digest)
@@ -168,6 +298,11 @@ def dispatch_pending_executor(
 
         receipt_path = layout.receipts / f"{digest}.receipt.json"
         if os.path.lexists(receipt_path):
+            if not _emit_completed_and_queue_cleanup(
+                ai_root,
+                mutation_sha256=digest,
+            ):
+                projection_errors += 1
             completed += 1
             continue
 
@@ -181,8 +316,15 @@ def dispatch_pending_executor(
         processed += 1
 
         if state.status == "completed":
+            if not _emit_completed_and_queue_cleanup(
+                ai_root,
+                mutation_sha256=digest,
+            ):
+                projection_errors += 1
             completed += 1
         elif state.status in {"request_pending", "transport_pending"}:
+            if not _emit_execution_if_enabled(ai_root, digest):
+                projection_errors += 1
             transport_pending += 1
         elif state.status == "remote_verified_pending_receipt":
             # advance_production_executor normally consumes this state before
@@ -215,6 +357,7 @@ def dispatch_pending_executor(
         "completed": completed,
         "transport_pending": transport_pending,
         "legacy_ignored": legacy_ignored,
+        "projection_errors": projection_errors,
     }
 
 
@@ -234,6 +377,7 @@ def dispatch_pending_transport(
     transport = ai_root.absolute() / "27-Transport"
     processed = 0
     existing = 0
+    projection_errors = 0
 
     for digest, _path in _digest_files(execution, ".transport-request.json"):
         review = load_review_record(ai_root, digest)
@@ -242,6 +386,8 @@ def dispatch_pending_transport(
 
         result_path = transport / f"{digest}.transport-result.json"
         if os.path.lexists(result_path):
+            if not _emit_transport_if_enabled(ai_root, digest):
+                projection_errors += 1
             existing += 1
             continue
 
@@ -268,6 +414,8 @@ def dispatch_pending_transport(
             raise ProductionOrchestrationError(
                 f"transport dispatcher requires Human recovery: {result.result}"
             )
+        if not _emit_transport_if_enabled(ai_root, digest):
+            projection_errors += 1
         if processed >= max_items:
             break
 
@@ -276,6 +424,7 @@ def dispatch_pending_transport(
         "status": "completed",
         "processed": processed,
         "existing": existing,
+        "projection_errors": projection_errors,
     }
 
 

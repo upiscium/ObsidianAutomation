@@ -20,13 +20,16 @@ from .artifact_lifecycle import (
     _require_sha256,
     _store_immutable,
     _utc_now,
+    load_review_record,
     parse_validation_record,
     sha256_bytes,
 )
 from .context_bundle import ContextBundle
 from .evaluation_artifact import load_evaluation_record
 from .generation_artifact import load_generation_record
+from .execution_orchestrator import _parse_receipt
 from .production_io import ProductionIOError, canonical_io_lock
+from .production_orchestrator import parse_transport_request, parse_transport_result
 from .webdav_create import (
     WebDAVCreateError,
     WebDAVTargetExists,
@@ -43,6 +46,7 @@ PROJECTION_ROOT = "04-AI"
 LEGACY_PROJECTION_ROOT = "03-AI"
 PROJECTION_ROOTS = (PROJECTION_ROOT, LEGACY_PROJECTION_ROOT)
 RECORD_VERSION = 1
+POST_REVIEW_BINDING_SUFFIX = ".projection-binding.json"
 MAX_MARKDOWN_BYTES = 512 * 1024
 MAX_REQUEST_BYTES = 768 * 1024
 MAX_BATCH = 64
@@ -140,6 +144,27 @@ class ProjectionResult:
         )
 
 
+@dataclass(frozen=True)
+class PostReviewProjectionBinding:
+    case_id: str
+    review_projection_request_sha256: str
+    evaluation_sha256: str
+    mutation_sha256: str
+    created_at: str
+
+    def to_json_bytes(self) -> bytes:
+        return _canonical_json_bytes(
+            {
+                "record_version": RECORD_VERSION,
+                "case_id": self.case_id,
+                "review_projection_request_sha256": self.review_projection_request_sha256,
+                "evaluation_sha256": self.evaluation_sha256,
+                "mutation_sha256": self.mutation_sha256,
+                "created_at": self.created_at,
+            }
+        )
+
+
 def projection_enabled(ai_root: Path) -> bool:
     path = ai_root.absolute() / REQUEST_STAGE
     try:
@@ -153,6 +178,117 @@ def projection_enabled(ai_root: Path) -> bool:
 
 def _case_id(value: str) -> str:
     return _require_sha256(value, label="ai_case_id")
+
+
+def build_post_review_projection_binding(
+    *,
+    case_id: str,
+    review_projection_request_sha256: str,
+    evaluation_sha256: str,
+    mutation_sha256: str,
+    created_at: str,
+) -> PostReviewProjectionBinding:
+    binding = PostReviewProjectionBinding(
+        case_id=_case_id(case_id),
+        review_projection_request_sha256=_require_sha256(
+            review_projection_request_sha256,
+            label="review_projection_request_sha256",
+        ),
+        evaluation_sha256=_require_sha256(
+            evaluation_sha256,
+            label="projection binding evaluation_sha256",
+        ),
+        mutation_sha256=_require_sha256(
+            mutation_sha256,
+            label="projection binding mutation_sha256",
+        ),
+        created_at=created_at,
+    )
+    return parse_post_review_projection_binding(binding.to_json_bytes())
+
+
+def parse_post_review_projection_binding(data: bytes) -> PostReviewProjectionBinding:
+    value = _decode_json_object(data, label="post-review projection binding")
+    required = {
+        "record_version",
+        "case_id",
+        "review_projection_request_sha256",
+        "evaluation_sha256",
+        "mutation_sha256",
+        "created_at",
+    }
+    if set(value) != required or value["record_version"] != RECORD_VERSION:
+        raise HumanProjectionError(
+            "post-review projection binding properties do not match contract"
+        )
+    created_at = value["created_at"]
+    if not isinstance(created_at, str) or not created_at.endswith("Z"):
+        raise HumanProjectionError(
+            "post-review projection binding created_at is invalid"
+        )
+    return PostReviewProjectionBinding(
+        case_id=_case_id(value["case_id"]),
+        review_projection_request_sha256=_require_sha256(
+            value["review_projection_request_sha256"],
+            label="review_projection_request_sha256",
+        ),
+        evaluation_sha256=_require_sha256(
+            value["evaluation_sha256"],
+            label="projection binding evaluation_sha256",
+        ),
+        mutation_sha256=_require_sha256(
+            value["mutation_sha256"],
+            label="projection binding mutation_sha256",
+        ),
+        created_at=created_at,
+    )
+
+
+def _post_review_projection_binding_path(
+    ai_root: Path,
+    mutation_sha256: str,
+) -> Path:
+    root = ai_root.absolute()
+    _require_safe_directory(root, create=False)
+    review = root / "20-Review"
+    _require_safe_directory(review, create=False)
+    mutation = _require_sha256(
+        mutation_sha256,
+        label="projection binding mutation_sha256",
+    )
+    return review / f"{mutation}{POST_REVIEW_BINDING_SUFFIX}"
+
+
+def store_post_review_projection_binding(
+    ai_root: Path,
+    binding: PostReviewProjectionBinding,
+) -> tuple[str, Path]:
+    normalized = parse_post_review_projection_binding(binding.to_json_bytes())
+    data = normalized.to_json_bytes()
+    digest = sha256_bytes(data)
+    path = _post_review_projection_binding_path(
+        ai_root,
+        normalized.mutation_sha256,
+    )
+    return digest, _store_immutable(path, data)
+
+
+def load_post_review_projection_binding(
+    ai_root: Path,
+    mutation_sha256: str,
+) -> PostReviewProjectionBinding | None:
+    path = _post_review_projection_binding_path(ai_root, mutation_sha256)
+    if not os.path.lexists(path):
+        return None
+    binding = parse_post_review_projection_binding(_read_exact_file(path))
+    if binding.mutation_sha256 != _require_sha256(
+        mutation_sha256,
+        label="projection binding mutation_sha256",
+    ):
+        raise HumanProjectionError(
+            "post-review projection binding is bound to another mutation"
+        )
+    return binding
 
 
 def _stage(value: str) -> str:
@@ -966,6 +1102,249 @@ def emit_evaluation_and_review_projections(
         ),
     )
     return evaluation_stored, review_stored
+
+
+
+def _approved_review(ai_root: Path, mutation_sha256: str):
+    mutation = _require_sha256(mutation_sha256, label="mutation_sha256")
+    review = load_review_record(ai_root, mutation)
+    if (
+        review.record_version != 2
+        or review.evaluation_sha256 is None
+        or review.decision != "approve"
+    ):
+        raise HumanProjectionError(
+            "post-review projection requires an evaluation-bound Approve Review"
+        )
+    return review
+
+
+def _post_review_artifact(
+    ai_root: Path,
+    *,
+    directory: str,
+    filename: str,
+) -> tuple[bytes, str]:
+    path = ai_root.absolute() / directory / filename
+    data = _read_exact_file(path)
+    return data, sha256_bytes(data)
+
+
+def emit_execution_projection(
+    ai_root: Path,
+    *,
+    case_id: str,
+    mutation_sha256: str,
+) -> tuple[str, Path] | None:
+    if not projection_enabled(ai_root):
+        return None
+    mutation = _require_sha256(mutation_sha256, label="mutation_sha256")
+    _approved_review(ai_root, mutation)
+
+    data, source_sha = _post_review_artifact(
+        ai_root,
+        directory="25-Execution",
+        filename=f"{mutation}.transport-request.json",
+    )
+    request = parse_transport_request(data)
+    if request.mutation_sha256 != mutation:
+        raise HumanProjectionError(
+            "execution projection request is bound to another mutation"
+        )
+
+    markdown = _projection_markdown(
+        case_id=case_id,
+        stage="execution",
+        source_kind="transport_request",
+        source_sha256=source_sha,
+        created_at=request.requested_at,
+        title="Approved Knowledge Execution",
+        body="\n".join(
+            [
+                "Human approval has been accepted by the authoritative Review stage.",
+                "",
+                f"Target: {_inline_code(request.target_path)}",
+                f"Content SHA-256: {_inline_code(request.content_sha256)}",
+                "",
+                "The canonical write is prepared and waiting for Sync transport.",
+            ]
+        ),
+        extra_frontmatter={
+            "mutation_sha256": mutation,
+            "target_path": request.target_path,
+            "content_sha256": request.content_sha256,
+        },
+    )
+    return store_request(
+        ai_root,
+        role="executor",
+        request=build_request(
+            case_id=case_id,
+            stage="execution",
+            source_kind="transport_request",
+            source_sha256=source_sha,
+            content=markdown,
+            created_at=request.requested_at,
+        ),
+    )
+
+
+def emit_transport_projection(
+    ai_root: Path,
+    *,
+    case_id: str,
+    mutation_sha256: str,
+) -> tuple[str, Path] | None:
+    if not projection_enabled(ai_root):
+        return None
+    mutation = _require_sha256(mutation_sha256, label="mutation_sha256")
+    _approved_review(ai_root, mutation)
+
+    request_data, request_sha = _post_review_artifact(
+        ai_root,
+        directory="25-Execution",
+        filename=f"{mutation}.transport-request.json",
+    )
+    request = parse_transport_request(request_data)
+    result_data, source_sha = _post_review_artifact(
+        ai_root,
+        directory="27-Transport",
+        filename=f"{mutation}.transport-result.json",
+    )
+    result = parse_transport_result(result_data)
+
+    if (
+        request.mutation_sha256 != mutation
+        or result.mutation_sha256 != mutation
+        or result.request_sha256 != request_sha
+        or result.result != "created_verified"
+        or result.target_path != request.target_path
+        or result.expected_content_sha256 != request.content_sha256
+        or result.observed_content_sha256 != request.content_sha256
+    ):
+        raise HumanProjectionError(
+            "transport projection artifacts do not form an exact verified chain"
+        )
+
+    markdown = _projection_markdown(
+        case_id=case_id,
+        stage="transport",
+        source_kind="transport_result",
+        source_sha256=source_sha,
+        created_at=result.observed_at,
+        title="Knowledge Transport Verified",
+        body="\n".join(
+            [
+                "Sync transport verified the canonical remote bytes.",
+                "",
+                f"Target: {_inline_code(result.target_path)}",
+                f"Content SHA-256: {_inline_code(result.expected_content_sha256)}",
+                f"HTTP status: {result.http_status}",
+                "",
+                "Executor receipt finalization is pending.",
+            ]
+        ),
+        extra_frontmatter={
+            "mutation_sha256": mutation,
+            "target_path": result.target_path,
+            "content_sha256": result.expected_content_sha256,
+        },
+    )
+    return store_request(
+        ai_root,
+        role="sync",
+        request=build_request(
+            case_id=case_id,
+            stage="transport",
+            source_kind="transport_result",
+            source_sha256=source_sha,
+            content=markdown,
+            created_at=result.observed_at,
+        ),
+    )
+
+
+def emit_completed_projection(
+    ai_root: Path,
+    *,
+    case_id: str,
+    mutation_sha256: str,
+) -> tuple[str, Path] | None:
+    if not projection_enabled(ai_root):
+        return None
+    mutation = _require_sha256(mutation_sha256, label="mutation_sha256")
+    _approved_review(ai_root, mutation)
+
+    request_data, request_sha = _post_review_artifact(
+        ai_root,
+        directory="25-Execution",
+        filename=f"{mutation}.transport-request.json",
+    )
+    request = parse_transport_request(request_data)
+    result_data, _result_sha = _post_review_artifact(
+        ai_root,
+        directory="27-Transport",
+        filename=f"{mutation}.transport-result.json",
+    )
+    result = parse_transport_result(result_data)
+    receipt_data, source_sha = _post_review_artifact(
+        ai_root,
+        directory="30-Receipts",
+        filename=f"{mutation}.receipt.json",
+    )
+    receipt = _parse_receipt(receipt_data)
+
+    if (
+        request.mutation_sha256 != mutation
+        or result.mutation_sha256 != mutation
+        or result.request_sha256 != request_sha
+        or result.result != "created_verified"
+        or receipt.mutation_sha256 != mutation
+        or receipt.target_path != request.target_path
+        or receipt.target_path != result.target_path
+        or receipt.content_sha256 != request.content_sha256
+        or receipt.content_sha256 != result.expected_content_sha256
+        or receipt.executed_at != result.observed_at
+    ):
+        raise HumanProjectionError(
+            "completed projection artifacts do not form an exact receipt-bound chain"
+        )
+
+    markdown = _projection_markdown(
+        case_id=case_id,
+        stage="completed",
+        source_kind="execution_receipt",
+        source_sha256=source_sha,
+        created_at=receipt.executed_at,
+        title="Knowledge Note Completed",
+        body="\n".join(
+            [
+                "The approved candidate has been committed to canonical Knowledge.",
+                "",
+                f"Target: {_inline_code(receipt.target_path)}",
+                f"Content SHA-256: {_inline_code(receipt.content_sha256)}",
+                "",
+                "The execution receipt is authoritative and the case is terminal.",
+            ]
+        ),
+        extra_frontmatter={
+            "mutation_sha256": mutation,
+            "target_path": receipt.target_path,
+            "content_sha256": receipt.content_sha256,
+        },
+    )
+    return store_request(
+        ai_root,
+        role="executor",
+        request=build_request(
+            case_id=case_id,
+            stage="completed",
+            source_kind="execution_receipt",
+            source_sha256=source_sha,
+            content=markdown,
+            created_at=receipt.executed_at,
+        ),
+    )
 
 
 def sync_main(argv: Sequence[str] | None = None) -> int:
