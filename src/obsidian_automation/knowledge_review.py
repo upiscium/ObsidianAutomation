@@ -105,8 +105,8 @@ def create_evaluation_bound_review(
     )
     review_bytes = _read_exact_file(review_path)
     review = load_review_record(ai_root, evaluation.mutation_sha256)
-    if review.record_version != 2:
-        raise ArtifactLifecycleError("new Human Review must use record_version 2")
+    if review.record_version != 3:
+        raise ArtifactLifecycleError("new Human Review must use record_version 3")
     if review.evaluation_sha256 != evaluation_digest:
         raise ArtifactLifecycleError("review record is bound to another evaluation")
 
@@ -124,7 +124,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="obsidian-knowledge-review")
     parser.add_argument("--ai-root", type=Path, required=True)
     parser.add_argument("--evaluation-sha256", required=True)
-    parser.add_argument("--decision", choices=("approve", "reject"), required=True)
+    parser.add_argument("--decision", choices=("approve", "reject", "keep_as_idea"), required=True)
     parser.add_argument("--approver", required=True)
     args = parser.parse_args(argv)
 
