@@ -47,6 +47,7 @@ from obsidian_automation.pre_review_job import (
     claim_next_attempt,
     complete_attempt,
     job_status,
+    main as pre_review_job_main,
     parse_recipe,
     regenerate_job,
     retire_historical_runtime_generation,
@@ -523,6 +524,42 @@ def test_retire_historical_blocked_runtime_mismatch_preserves_evidence(
     )
     assert replay["state"] == "superseded"
     assert replay["reused"] is True
+
+
+def test_retire_historical_runtime_cli_uses_exact_generation_and_revision(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    root, context_sha = _state(tmp_path)
+    submitted = submit_job(root, context_sha256=context_sha, recipe=_parsed_recipe())
+    generation = str(submitted["generation_id"])
+    _advance_to_evaluation(root, generation)
+
+    attempt = start_attempt(root, generation, "evaluation")
+    complete_attempt(
+        root,
+        str(attempt["attempt_id"]),
+        outcome="blocked",
+        reason_code="evaluator_recipe_runtime_mismatch",
+    )
+
+    rc = pre_review_job_main(
+        [
+            "retire-historical-runtime",
+            "--ai-root",
+            str(root),
+            "--generation-id",
+            generation,
+            "--deployed-revision",
+            "b" * 40,
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["generation_id"] == generation
+    assert payload["state"] == "superseded"
+    assert payload["stage"] == "evaluation"
+    assert payload["deployed_revision"] == "b" * 40
 
 
 def test_retire_historical_retry_exhausted_evaluator_provider_failure(
