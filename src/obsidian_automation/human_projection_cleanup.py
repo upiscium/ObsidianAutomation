@@ -28,6 +28,7 @@ from .human_projection import (
     REQUEST_STAGE,
     RESULT_STAGE,
     STAGE_FOLDERS,
+    load_post_review_projection_binding,
     parse_request,
     parse_result,
     projection_root_from_target_path,
@@ -71,7 +72,7 @@ MAX_BATCH = 64
 
 
 class HumanProjectionCleanupError(ArtifactLifecycleError):
-    """Raised when a rejected-case projection cleanup is unsafe or invalid."""
+    """Raised when a Human-facing projection cleanup is unsafe or invalid."""
 
 
 @dataclass(frozen=True)
@@ -658,14 +659,27 @@ def _verify_terminal_cleanup_binding(
             "terminal cleanup Receipt is bound to another mutation"
         )
 
+    binding = load_post_review_projection_binding(
+        root,
+        request.mutation_sha256,
+    )
+    if (
+        binding is None
+        or binding.case_id != request.case_id
+        or binding.mutation_sha256 != request.mutation_sha256
+    ):
+        raise HumanProjectionCleanupError(
+            "terminal cleanup does not match reviewer-owned projection binding"
+        )
+
     review = load_review_record(root, request.mutation_sha256)
     if (
         review.record_version != 2
         or review.decision != "approve"
-        or review.evaluation_sha256 is None
+        or review.evaluation_sha256 != binding.evaluation_sha256
     ):
         raise HumanProjectionCleanupError(
-            "terminal cleanup requires an evaluation-bound Approve Review"
+            "terminal cleanup requires the exact evaluation-bound Approve Review"
         )
 
     try:
