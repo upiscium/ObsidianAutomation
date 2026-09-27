@@ -9,7 +9,7 @@ from obsidian_automation.artifact_lifecycle import (
     ArtifactLifecycleError,
     _canonical_json_bytes,
     ensure_artifact_layout,
-    evaluation_bound_review_record_bytes,
+    disposition_review_record_bytes,
     load_review_record,
     sha256_bytes,
     store_untrusted_proposal,
@@ -115,7 +115,7 @@ def test_human_can_approve_do_not_proceed_evaluation(tmp_path: Path) -> None:
     assert result.review_sha256 == sha256_bytes(result.review_path.read_bytes())
 
     review = load_review_record(ai_root, validated.mutation_sha256)
-    assert review.record_version == 2
+    assert review.record_version == 3
     assert review.evaluation_sha256 == evaluation_sha
     assert review.approved is True
 
@@ -153,6 +153,27 @@ def test_human_can_reject_proceed_evaluation(tmp_path: Path) -> None:
 
     assert result.decision == "reject"
     review = load_review_record(ai_root, validated.mutation_sha256)
+    assert review.evaluation_sha256 == evaluation_sha
+    assert review.approved is False
+
+
+def test_human_can_keep_candidate_as_idea_without_approval(tmp_path: Path) -> None:
+    _, ai_root, validated, _, evaluation_sha, _ = _setup(
+        tmp_path,
+        recommendation="manual_review",
+    )
+
+    result = create_evaluation_bound_review(
+        ai_root,
+        evaluation_sha256=evaluation_sha,
+        decision="keep_as_idea",
+        approver="human",
+        decided_at="2026-09-15T00:02:00Z",
+    )
+
+    assert result.decision == "keep_as_idea"
+    review = load_review_record(ai_root, validated.mutation_sha256)
+    assert review.record_version == 3
     assert review.evaluation_sha256 == evaluation_sha
     assert review.approved is False
 
@@ -264,7 +285,7 @@ def test_review_persistence_is_immutable_and_idempotent(tmp_path: Path) -> None:
         )
 
 
-def test_v2_review_bytes_are_bound_into_execution_intent(tmp_path: Path) -> None:
+def test_v3_review_bytes_are_bound_into_execution_intent(tmp_path: Path) -> None:
     vault, ai_root, validated, _, evaluation_sha, _ = _setup(tmp_path)
     review_result = create_evaluation_bound_review(
         ai_root,
@@ -284,7 +305,7 @@ def test_v2_review_bytes_are_bound_into_execution_intent(tmp_path: Path) -> None
     assert intent.approval_sha256 == review_result.review_sha256
 
     review_result.review_path.write_bytes(
-        evaluation_bound_review_record_bytes(
+        disposition_review_record_bytes(
             mutation_sha256=validated.mutation_sha256,
             evaluation_sha256=evaluation_sha,
             decision="approve",
