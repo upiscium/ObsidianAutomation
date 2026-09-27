@@ -1109,7 +1109,7 @@ def _approved_review(ai_root: Path, mutation_sha256: str):
     mutation = _require_sha256(mutation_sha256, label="mutation_sha256")
     review = load_review_record(ai_root, mutation)
     if (
-        review.record_version != 2
+        review.record_version not in {2, 3}
         or review.evaluation_sha256 is None
         or review.decision != "approve"
     ):
