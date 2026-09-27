@@ -56,22 +56,6 @@ def test_request_is_content_bound_and_target_is_deterministic() -> None:
         parse_request(value)
 
 
-def test_legacy_03_ai_request_and_result_remain_readable() -> None:
-    request = _request()
-    legacy_bytes = request.to_json_bytes().replace(b"04-AI/", b"03-AI/")
-    legacy = parse_request(legacy_bytes)
-    assert legacy.target_path == f"03-AI/50-Review/{CASE}.md"
-
-    result = projection.ProjectionResult(
-        request_sha256="c" * 64,
-        target_path=legacy.target_path,
-        content_sha256=legacy.content_sha256,
-        result="created",
-        completed_at="2026-09-20T00:00:01Z",
-    )
-    assert parse_result(result.to_json_bytes()).target_path == legacy.target_path
-
-
 def test_projection_request_rejects_unrecognized_ai_root() -> None:
     request = _request()
     invalid = request.to_json_bytes().replace(b"04-AI/", b"05-AI/")

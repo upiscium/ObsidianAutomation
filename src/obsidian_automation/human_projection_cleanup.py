@@ -22,9 +22,7 @@ from .artifact_lifecycle import (
     sha256_bytes,
 )
 from .human_projection import (
-    LEGACY_PROJECTION_ROOT,
     PROJECTION_ROOT,
-    PROJECTION_ROOTS,
     REQUEST_STAGE,
     RESULT_STAGE,
     STAGE_FOLDERS,
@@ -161,7 +159,7 @@ def cleanup_target_paths(
     stages: Sequence[str] = CLEANUP_STAGES,
 ) -> tuple[str, ...]:
     case = _case_id(case_id)
-    if projection_root not in PROJECTION_ROOTS:
+    if projection_root != PROJECTION_ROOT:
         raise HumanProjectionCleanupError("cleanup projection root is unsupported")
     stage_names = tuple(stages)
     if stage_names not in {CLEANUP_STAGES, TERMINAL_CLEANUP_STAGES}:
