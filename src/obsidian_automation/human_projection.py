@@ -43,8 +43,6 @@ from .webdav_create import (
 REQUEST_STAGE = "16-Human-Projection"
 RESULT_STAGE = "17-Human-Projection-Result"
 PROJECTION_ROOT = "04-AI"
-LEGACY_PROJECTION_ROOT = "03-AI"
-PROJECTION_ROOTS = (PROJECTION_ROOT, LEGACY_PROJECTION_ROOT)
 RECORD_VERSION = 1
 POST_REVIEW_BINDING_SUFFIX = ".projection-binding.json"
 MAX_MARKDOWN_BYTES = 512 * 1024
@@ -300,14 +298,13 @@ def _stage(value: str) -> str:
 def projection_root_from_target_path(target_path: str) -> str:
     if not isinstance(target_path, str):
         raise HumanProjectionError("projection target_path is invalid")
-    for root in PROJECTION_ROOTS:
-        if target_path.startswith(f"{root}/"):
-            return root
+    if target_path.startswith(f"{PROJECTION_ROOT}/"):
+        return PROJECTION_ROOT
     raise HumanProjectionError("projection target_path uses an unsupported root")
 
 
 def _projection_target(root: str, stage: str, case_id: str) -> str:
-    if root not in PROJECTION_ROOTS:
+    if root != PROJECTION_ROOT:
         raise HumanProjectionError("projection root is unsupported")
     return f"{root}/{STAGE_FOLDERS[_stage(stage)]}/{_case_id(case_id)}.md"
 
@@ -452,11 +449,8 @@ def parse_request(data: bytes) -> ProjectionRequest:
     source_kind = _source_kind(value["source_kind"])
     source_sha = _require_sha256(value["source_sha256"], label="projection source_sha256")
     target_path = value["target_path"]
-    valid_targets = {
-        _projection_target(root, stage_name, case)
-        for root in PROJECTION_ROOTS
-    }
-    if target_path not in valid_targets:
+    expected_target = _projection_target(PROJECTION_ROOT, stage_name, case)
+    if target_path != expected_target:
         raise HumanProjectionError("projection target_path is not deterministic")
     content = value["content"]
     if not isinstance(content, str) or not content:
