@@ -133,7 +133,7 @@ identity remains pinned by the submitted immutable recipe.
 Review Intake requires a dedicated **read-only** Nextcloud account/app password.
 Do not reuse the Sync writer credential.
 
-Rejected-projection cleanup additionally requires a dedicated Nextcloud account.
+Rejected/kept-as-idea projection cleanup additionally requires a dedicated Nextcloud account.
 Share only the existing `04-AI` folder to that account with Read + Delete
 (permission bitmask `9`) and do not grant access to canonical Knowledge or
 other Vault roots. Configure:
@@ -475,8 +475,9 @@ Enable recurrence only after all of these pass:
 - production identity idle-chain passes;
 - status projection is readable and contains no sensitive identifiers;
 - Review Intake uses a dedicated read-only credential;
-- one controlled approve/reject E2E proves Review/Executor/Transport/Receipt
-  binding and scheduler terminal reconciliation.
+- one controlled Approve E2E proves Review/Executor/Transport/Receipt binding;
+- controlled Reject and Keep as Idea E2Es prove non-execution terminal
+  reconciliation and bounded projection cleanup.
 
 Then:
 

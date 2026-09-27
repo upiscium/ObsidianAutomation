@@ -1071,6 +1071,12 @@ def emit_evaluation_and_review_projections(
                 "",
                 "**Review request:** `INPUT[inlineSelect(option(approve, '✅ Approve'), option(reject, '❌ Reject'), option(null, '▫️ Pending')):review_request]`",
                 "",
+                "```meta-bind-embed",
+                "[[98-System/02-embed/01-button/ai-review-buttons|ai-review-buttons]]",
+                "```",
+                "",
+                "Keep as Idea first creates/adopts a context-bound `05-Idea` note in the Human client and only then requests the terminal `keep_as_idea` disposition.",
+                "",
                 "This field is a Human request only. Authoritative Review is created separately after exact binding verification.",
             ]
         ),
@@ -1103,7 +1109,7 @@ def _approved_review(ai_root: Path, mutation_sha256: str):
     mutation = _require_sha256(mutation_sha256, label="mutation_sha256")
     review = load_review_record(ai_root, mutation)
     if (
-        review.record_version != 2
+        review.record_version not in {2, 3}
         or review.evaluation_sha256 is None
         or review.decision != "approve"
     ):

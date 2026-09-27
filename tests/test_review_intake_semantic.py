@@ -76,7 +76,7 @@ def test_expected_blank_and_null_equivalents_are_pending(serialized: str) -> Non
     assert extract_review_decision(expected, remote.encode("utf-8")) == "reject"
 
 
-@pytest.mark.parametrize("decision", ["approve", "reject"])
+@pytest.mark.parametrize("decision", ["approve", "reject", "keep_as_idea"])
 def test_raw_line_decisions_are_extracted(decision: str) -> None:
     expected = _review("")
     remote = _review(decision)
@@ -129,6 +129,9 @@ def test_meta_bind_reserialization_allows_reordered_equivalent_frontmatter() -> 
         ("reject", "reject"),
         ('"reject"', "reject"),
         ("'reject'", "reject"),
+        ("keep_as_idea", "keep_as_idea"),
+        ('"keep_as_idea"', "keep_as_idea"),
+        ("'keep_as_idea'", "keep_as_idea"),
     ],
 )
 def test_review_request_blank_null_and_decision_equivalents(

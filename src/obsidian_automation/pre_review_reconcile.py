@@ -43,6 +43,7 @@ def reconcile_post_review(
     changed = 0
     approved_pending = 0
     rejected = 0
+    kept_as_idea = 0
     completed = 0
 
     try:
@@ -89,7 +90,7 @@ def reconcile_post_review(
 
             review = load_review_record(ai_root, mutation_sha)
             if (
-                review.record_version != 2
+                review.record_version not in {2, 3}
                 or review.evaluation_sha256 != evaluation_sha
             ):
                 raise PreReviewReconcileError(
@@ -98,14 +99,18 @@ def reconcile_post_review(
 
             receipt_path = layout.receipts / f"{mutation_sha}.receipt.json"
 
-            if review.decision == "reject":
+            if review.decision in {"reject", "keep_as_idea"}:
                 if os.path.lexists(receipt_path):
                     raise PreReviewReconcileError(
-                        "rejected Review unexpectedly has an execution Receipt"
+                        "non-execution Review unexpectedly has an execution Receipt"
                     )
-                target = "human_rejected"
-                rejected += 1
-            else:
+                if review.decision == "reject":
+                    target = "human_rejected"
+                    rejected += 1
+                else:
+                    target = "human_kept_as_idea"
+                    kept_as_idea += 1
+            elif review.decision == "approve":
                 if os.path.lexists(receipt_path):
                     receipt = _parse_receipt(_read_exact_file(receipt_path))
                     if receipt.mutation_sha256 != mutation_sha:
@@ -117,6 +122,8 @@ def reconcile_post_review(
                 else:
                     target = "approved_pending_execution"
                     approved_pending += 1
+            else:
+                raise PreReviewReconcileError("authoritative Review decision is unsupported")
 
             if row["state"] != target:
                 conn.execute(
@@ -140,6 +147,7 @@ def reconcile_post_review(
         "changed": changed,
         "approved_pending_execution": approved_pending,
         "human_rejected": rejected,
+        "human_kept_as_idea": kept_as_idea,
         "completed": completed,
     }
 

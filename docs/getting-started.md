@@ -123,6 +123,7 @@ The projection contains a `review_request` control with:
 
 - `approve`;
 - `reject`;
+- `keep_as_idea`, set by the Core-owned Keep as Idea action after the Idea is saved;
 - pending/blank.
 
 Changing this field is a Human request only.
@@ -195,6 +196,22 @@ On the Human-facing side:
         ↓
 04-AI/80-Completed
 ```
+
+## Keeping a candidate as an Idea
+
+Use the `Keep as Idea` action shown in the Review projection.
+
+ObsidianCore first asks for a required Workspace and optional Project, creates or
+reuses a provenance-bound note under `05-Idea/`, and only after that succeeds
+sets `review_request` to `keep_as_idea`.
+
+Review Intake then records Review v3 and reconciliation moves the case to
+`human_kept_as_idea`. Knowledge Executor/Transport never runs for this
+decision. The pre-terminal `04-AI` projections are cleaned up while the
+canonical Idea remains visible through Idea HUB and its Workspace/Project views.
+
+Automation does not read or write `05-Idea`; the Human client action is the
+attestation that the candidate was retained.
 
 ## Rejecting a Review
 

@@ -111,7 +111,8 @@ executed as an Obsidian embed, Dataview block, or Meta Bind control.
 - Evaluator groundedness / redundancy / consistency / recommendation;
 - bounded findings;
 - the proposed Knowledge Note as inert code;
-- a Meta Bind `review_request` control for `approve` / `reject`.
+- a Meta Bind `review_request` control for `approve` / `reject`;
+- a Core-owned `Keep as Idea` action that first saves the candidate under `05-Idea` and then requests `keep_as_idea`.
 
 The control updates only the Human-facing note. It does not write
 `20-Review` and therefore is not approval authority.
@@ -124,9 +125,13 @@ a dedicated read-only Nextcloud credential to fetch the exact
 2. its successful Projection Result proves the expected note was published;
 3. the remote note differs from the original projection only in the single
    `review_request` frontmatter value;
-4. the requested value is blank, `approve`, or `reject`;
+4. the requested value is blank, `approve`, `reject`, or `keep_as_idea`;
 5. the exact Evaluation, accepted Validation, and validated mutation still
-   satisfy the existing Review v2 binding contract.
+   satisfy the Review binding contract.
+
+New authoritative Human decisions use Review v3. Historical v1/v2 Review
+artifacts remain readable without reinterpretation. Only v3 may encode
+`keep_as_idea`.
 
 Only then does the existing `obsidian-knowledge-review` logic create
 `20-Review/<mutation_sha>.approval.json`. Any other Human edit, stale binding,
@@ -148,7 +153,12 @@ Reader
   -> reconcile terminal state into orchestration metadata
 ```
 
-Reject creates authoritative Review and queues a content-addressed projection cleanup intent. After post-review reconciliation reaches `human_rejected`, a Sync-only cleanup service deletes the fixed `04-AI/00-Input` through `04-AI/50-Review` files for that exact case. Reject never invokes canonical Knowledge transport, and private lifecycle/audit artifacts are retained.
+Reject and Keep as Idea both create authoritative non-execution Review outcomes
+and queue the same bounded projection cleanup intent. Reconciliation maps them
+to `human_rejected` and `human_kept_as_idea` respectively. Neither outcome
+invokes canonical Knowledge transport. For Keep as Idea, the actual `05-Idea`
+write is a prior Human client-side ObsidianCore action; Automation never gains
+`05-Idea` read/write authority. Private lifecycle/audit artifacts are retained.
 
 ## Sync transport
 
@@ -179,7 +189,7 @@ The service is enabled only when both private deployment files exist:
 The env file contains only the non-secret Nextcloud base URL / username binding.
 The password file remains readable only by Sync.
 
-A separate `obsidian-ai-human-projection-cleanup-sync.service` runs after post-review reconciliation. It accepts no arbitrary path from Reviewer: cleanup targets are derived only from the exact `ai_case_id` and the fixed stage allowlist. Before DELETE, Sync revalidates the original published Review projection and the exact evaluation-bound authoritative Reject Review. DELETE is idempotent; an already-absent projection is accepted as success.
+A separate `obsidian-ai-human-projection-cleanup-sync.service` runs after post-review reconciliation. It accepts no arbitrary path from Reviewer: cleanup targets are derived only from the exact `ai_case_id` and the fixed stage allowlist. Before DELETE, Sync revalidates the original published Review projection and the exact evaluation-bound authoritative terminal non-execution Review. DELETE is idempotent; an already-absent projection is accepted as success.
 
 Cleanup does not reuse the canonical AI writer credential. It uses a dedicated Nextcloud account shared only the existing `04-AI` folder with Read + Delete permission (permission bitmask `9`). The account root must expose that share as `04-AI`, because cleanup paths remain fixed below `04-AI/**`.
 
@@ -285,8 +295,8 @@ Implemented by this increment:
 - exact-byte idempotency and conflict detection;
 - fail-closed Review Intake into authoritative `20-Review`;
 - separated Executor / Sync / Executor post-review canonical path;
-- scheduler reconciliation for approve/reject/completed terminal states;
-- Sync-only automatic deletion of rejected-case Human-facing projections.
+- scheduler reconciliation for approve/reject/keep-as-idea/completed terminal states;
+- Sync-only automatic deletion of rejected/kept-as-idea pre-terminal Human-facing projections.
 
 Reserved for later increments:
 

@@ -28,6 +28,7 @@ ALL_STATES = (
     "awaiting_human_review",
     "approved_pending_execution",
     "human_rejected",
+    "human_kept_as_idea",
     "completed",
     "retryable_failure",
     "retry_exhausted",
