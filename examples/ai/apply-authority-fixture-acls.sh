@@ -253,6 +253,7 @@ apply_directory_acl "$TRANSPORT" \
   "u:$EXECUTOR_USER:r-x"
 
 apply_directory_acl "$RECEIPTS" \
+  "u:$SYNC_USER:r-x" \
   "u:$READER_USER:r-x" \
   "u:$REVIEWER_USER:r-x" \
   "u:$EXECUTOR_USER:rwx"
