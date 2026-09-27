@@ -367,11 +367,7 @@ def dispatch_pending_transport(
             raise ProductionOrchestrationError(
                 f"transport dispatcher requires Human recovery: {result.result}"
             )
-        emit_transport_projection(
-            ai_root,
-            case_id=generation_id_for_mutation(ai_root, digest),
-            mutation_sha256=digest,
-        )
+        _emit_transport_if_enabled(ai_root, digest)
         if processed >= max_items:
             break
 
