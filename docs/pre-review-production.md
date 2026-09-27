@@ -180,6 +180,11 @@ their authoritative artifacts:
 - Executor finalize queues `04-AI/80-Completed` only after the exact
   `30-Receipts` receipt is present and bound to the verified transport.
 
+Review Intake persists the case/evaluation/mutation mapping as an immutable
+reviewer-owned projection binding in `20-Review`. Executor and Sync read that
+binding instead of reading the scheduler database, so post-review projection does
+not widen scheduler authority.
+
 These are read-model side effects only. A projection failure does not turn an
 approved canonical execution into a failure. The dispatcher records a
 `projection_errors` count and the next recurring cycle retries projection
