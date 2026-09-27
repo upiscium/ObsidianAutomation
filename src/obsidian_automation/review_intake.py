@@ -55,7 +55,6 @@ _UTC_TIMESTAMP = re.compile(
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z\Z"
 )
 _DATE_LIKE = re.compile(r"[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}(?:$|[Tt ].*)\Z")
-_PLAIN_PUNCTUATION = frozenset(" _./:@+,-")
 _PLAIN_RESERVED = frozenset(
     {
         "true",
@@ -70,6 +69,10 @@ _PLAIN_RESERVED = frozenset(
 
 class ReviewIntakeError(ArtifactLifecycleError):
     """Raised when a Human Review projection cannot be accepted safely."""
+
+
+class RemoteReviewDocumentError(ReviewIntakeError):
+    """Raised when one remote Human Review document is semantically unsafe."""
 
 
 @dataclass(frozen=True)
@@ -197,17 +200,14 @@ def _parse_frontmatter_scalar(raw: str, *, key: str, label: str) -> str | None:
             raise ReviewIntakeError(f"{label} contains unsupported quoted scalar")
         return result
 
-    # This is intentionally not a YAML plain-scalar parser. Only the small
-    # string subset emitted by Review projections is accepted. In particular,
-    # YAML structural punctuation, comments, tags, aliases, and ambiguous
-    # implicit scalar types are rejected instead of being interpreted.
+    # This is intentionally not a general YAML parser. A top-level plain
+    # scalar is accepted only when it cannot introduce YAML structure or an
+    # implicit comment. Protected values are compared semantically against the
+    # immutable projection afterwards, so punctuation inside an otherwise
+    # scalar string (for example a legal Knowledge target path) does not grant
+    # mutation authority.
     if (
-        not value[0].isalnum()
-        or not value[-1].isalnum()
-        or any(
-            not character.isalnum() and character not in _PLAIN_PUNCTUATION
-            for character in value
-        )
+        value[0] in "-?:,[]{}#&*!|>@`%"
         or ": " in value
         or " #" in value
         or value.endswith(":")
@@ -272,29 +272,31 @@ def extract_review_decision(
         expected_content.encode("utf-8"),
         label="expected review projection",
     )
-    remote = _canonical_text(
-        remote_content,
-        label="remote review projection",
-    )
-
     expected_document = _parse_review_document(
         expected,
         label="expected review projection",
     )
-    remote_document = _parse_review_document(
-        remote,
-        label="remote review projection",
-    )
-
     if expected_document.frontmatter["review_request"] not in {None, ""}:
         raise ReviewIntakeError("expected projection already contains a review decision")
 
+    try:
+        remote = _canonical_text(
+            remote_content,
+            label="remote review projection",
+        )
+        remote_document = _parse_review_document(
+            remote,
+            label="remote review projection",
+        )
+    except ReviewIntakeError as exc:
+        raise RemoteReviewDocumentError(str(exc)) from exc
+
     if expected_document.body != remote_document.body:
-        raise ReviewIntakeError(
+        raise RemoteReviewDocumentError(
             "remote review projection changed outside review_request"
         )
     if set(expected_document.frontmatter) != set(remote_document.frontmatter):
-        raise ReviewIntakeError(
+        raise RemoteReviewDocumentError(
             "remote review projection changed outside review_request"
         )
 
@@ -309,7 +311,7 @@ def extract_review_decision(
         if key != "review_request"
     }
     if expected_protected != remote_protected:
-        raise ReviewIntakeError(
+        raise RemoteReviewDocumentError(
             "remote review projection changed outside review_request"
         )
 
@@ -321,7 +323,9 @@ def extract_review_decision(
     elif raw_value == "reject":
         decision = "reject"
     else:
-        raise ReviewIntakeError("review_request must be blank, approve, or reject")
+        raise RemoteReviewDocumentError(
+            "review_request must be blank, approve, or reject"
+        )
     return decision
 
 
@@ -461,6 +465,7 @@ def run_review_intake(
     missing = 0
     existing = 0
     cleanup_requested = 0
+    invalid_remote = 0
 
     for request_sha, request in _review_requests(ai_root):
         _require_projection_result(ai_root, request_sha, request)
@@ -515,7 +520,11 @@ def run_review_intake(
             missing += 1
             continue
 
-        decision = extract_review_decision(request.content, remote.content)
+        try:
+            decision = extract_review_decision(request.content, remote.content)
+        except RemoteReviewDocumentError:
+            invalid_remote += 1
+            continue
         if decision is None:
             waiting += 1
             continue
@@ -553,6 +562,7 @@ def run_review_intake(
         "waiting": waiting,
         "missing": missing,
         "existing": existing,
+        "invalid_remote": invalid_remote,
         "cleanup_requested": cleanup_requested,
     }
 

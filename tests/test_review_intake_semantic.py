@@ -141,6 +141,25 @@ def test_review_request_blank_null_and_decision_equivalents(
     assert extract_review_decision(expected, remote.encode("utf-8")) == decision
 
 
+def test_meta_bind_plain_scalar_accepts_legal_target_path_punctuation() -> None:
+    target = "11-Knowledge/RAG (Retrieval-Augmented Generation) & Agents [2026].md"
+    expected_lines = _replace_field(
+        PROTECTED_LINES,
+        "target_path",
+        f'target_path: "{target}"',
+    )
+    remote_lines = _replace_field(
+        PROTECTED_LINES,
+        "target_path",
+        f"target_path: {target}",
+    )
+
+    expected = _review("", protected_lines=expected_lines)
+    remote = _review("approve", protected_lines=remote_lines)
+
+    assert extract_review_decision(expected, remote.encode("utf-8")) == "approve"
+
+
 def test_body_change_is_rejected() -> None:
     expected = _review("")
     remote = _review("approve", body=BODY + "\n\nHuman edit.")
