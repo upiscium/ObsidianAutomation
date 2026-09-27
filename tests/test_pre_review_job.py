@@ -46,7 +46,6 @@ from obsidian_automation.pre_review_job import (
     PreReviewJobError,
     claim_next_attempt,
     complete_attempt,
-    generation_id_for_mutation,
     job_status,
     parse_recipe,
     regenerate_job,
@@ -485,32 +484,6 @@ def test_generation_attempts_advance_state_machine_transactionally(tmp_path: Pat
 
     with pytest.raises(PreReviewJobError, match="selected successful output"):
         start_attempt(root, generation, "generation")
-
-
-def test_generation_id_for_mutation_resolves_current_evaluated_generation(
-    tmp_path: Path,
-) -> None:
-    root, context_sha = _state(tmp_path)
-    submitted = submit_job(
-        root,
-        context_sha256=context_sha,
-        recipe=_parsed_recipe(),
-    )
-    generation = str(submitted["generation_id"])
-
-    for stage in ("generation", "validation", "evaluation_context", "evaluation"):
-        attempt = start_attempt(root, generation, stage)
-        complete_attempt(
-            root,
-            str(attempt["attempt_id"]),
-            outcome="succeeded",
-            output=_stage_output(stage),
-        )
-
-    assert generation_id_for_mutation(root, "3" * 64) == generation
-
-    with pytest.raises(PreReviewJobError, match="exactly one current evaluated"):
-        generation_id_for_mutation(root, "f" * 64)
 
 
 def test_retryable_failure_retries_same_generation_with_new_attempt(tmp_path: Path) -> None:
