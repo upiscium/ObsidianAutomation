@@ -158,6 +158,10 @@ def test_extract_review_decision_accepts_only_review_request_change() -> None:
         expected,
         _edited(expected, '"reject"', crlf=True),
     ) == "reject"
+    assert extract_review_decision(
+        expected,
+        _edited(expected, "keep_as_idea"),
+    ) == "keep_as_idea"
     assert extract_review_decision(expected, expected.encode()) is None
 
     with pytest.raises(ReviewIntakeError, match="outside review_request"):
@@ -194,7 +198,7 @@ def test_review_intake_creates_evaluation_bound_approval(tmp_path: Path) -> None
         )
     ) == []
     review = load_review_record(state, validated.mutation_sha256)
-    assert review.record_version == 2
+    assert review.record_version == 3
     assert review.evaluation_sha256 == evaluation_sha
     assert review.decision == "approve"
     binding = load_post_review_projection_binding(
@@ -235,6 +239,41 @@ def test_review_intake_reject_queues_projection_cleanup(tmp_path: Path) -> None:
     assert binding is not None
     assert binding.case_id == CASE
     assert binding.evaluation_sha256 == evaluation_sha
+
+    cleanup_paths = list(
+        (state / "16-Human-Projection" / "reviewer").glob(
+            "*.projection-cleanup.json"
+        )
+    )
+    assert len(cleanup_paths) == 1
+    cleanup = parse_cleanup_request(cleanup_paths[0].read_bytes())
+    assert cleanup.case_id == CASE
+    assert cleanup.evaluation_sha256 == evaluation_sha
+    assert cleanup.mutation_sha256 == validated.mutation_sha256
+
+
+def test_review_intake_keep_as_idea_queues_projection_cleanup(tmp_path: Path) -> None:
+    state, validated, evaluation_sha, request = _setup(tmp_path)
+
+    result = run_review_intake(
+        state,
+        base_url="https://nextcloud.example/dav/Vault",
+        username="review-reader",
+        password="secret",
+        approver="human",
+        read_remote=lambda **_kwargs: RemoteReview(
+            200,
+            _edited(request.content, "keep_as_idea"),
+            '"etag"',
+        ),
+    )
+
+    assert result["processed"] == 1
+    assert result["cleanup_requested"] == 1
+    review = load_review_record(state, validated.mutation_sha256)
+    assert review.record_version == 3
+    assert review.decision == "keep_as_idea"
+    assert review.evaluation_sha256 == evaluation_sha
 
     cleanup_paths = list(
         (state / "16-Human-Projection" / "reviewer").glob(
