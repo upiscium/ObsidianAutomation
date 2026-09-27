@@ -1,7 +1,7 @@
 [Unit]
 Description=Reconcile authoritative post-review artifacts into pre-review scheduler metadata
-Requires=obsidian-ai-post-review-executor-finalize.service
-After=obsidian-ai-post-review-executor-finalize.service
+Requires=obsidian-ai-post-review-projection-sync.service
+After=obsidian-ai-post-review-projection-sync.service
 
 [Service]
 Type=oneshot
