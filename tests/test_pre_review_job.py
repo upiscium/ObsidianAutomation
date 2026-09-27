@@ -49,6 +49,7 @@ from obsidian_automation.pre_review_job import (
     job_status,
     parse_recipe,
     regenerate_job,
+    retire_historical_runtime_generation,
     retry_generation,
     stage_output,
     start_attempt,
@@ -414,6 +415,216 @@ def test_supersede_allows_generation_retryable_failure_without_selected_output(t
     assert result["state"] == "superseded"
     assert result["reused"] is False
     assert job_status(root, str(submitted["job_id"]))["current_generation"]["state"] == "superseded"
+
+
+def _advance_to_evaluation(root: Path, generation: str) -> None:
+    for stage in ("generation", "validation", "evaluation_context"):
+        attempt = start_attempt(root, generation, stage)
+        complete_attempt(
+            root,
+            str(attempt["attempt_id"]),
+            outcome="succeeded",
+            output=_stage_output(stage),
+        )
+
+
+def _exhaust_evaluator(root: Path, generation: str) -> None:
+    for attempt_index in range(1, 4):
+        work = claim_next_attempt(
+            root,
+            "evaluation",
+            max_attempts=3,
+            recover_running=True,
+        )
+        assert work is not None
+        assert work.generation_id == generation
+        assert work.attempt_index == attempt_index
+        complete_attempt(
+            root,
+            work.attempt_id,
+            outcome="retryable_failure",
+            reason_code="evaluator_provider_or_output_error",
+        )
+    assert claim_next_attempt(
+        root,
+        "evaluation",
+        max_attempts=3,
+        recover_running=True,
+    ) is None
+    assert job_status(root, _job_id_from_db(root))["current_generation"]["state"] == "retry_exhausted"
+
+
+def test_retire_historical_blocked_runtime_mismatch_preserves_evidence(
+    tmp_path: Path,
+) -> None:
+    root, context_sha = _state(tmp_path)
+    submitted = submit_job(root, context_sha256=context_sha, recipe=_parsed_recipe())
+    generation = str(submitted["generation_id"])
+    _advance_to_evaluation(root, generation)
+
+    attempt = start_attempt(root, generation, "evaluation")
+    complete_attempt(
+        root,
+        str(attempt["attempt_id"]),
+        outcome="blocked",
+        reason_code="evaluator_recipe_runtime_mismatch",
+    )
+
+    db = root / "02-Orchestration" / "pre-review-jobs.sqlite3"
+    conn = sqlite3.connect(db)
+    try:
+        before_attempts = conn.execute(
+            "SELECT COUNT(*) FROM attempts WHERE generation_id = ?",
+            (generation,),
+        ).fetchone()[0]
+        before_outputs = conn.execute(
+            "SELECT COUNT(*) FROM stage_outputs WHERE generation_id = ?",
+            (generation,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    result = retire_historical_runtime_generation(
+        root,
+        generation,
+        deployed_revision="b" * 40,
+    )
+
+    assert result["previous_state"] == "blocked"
+    assert result["state"] == "superseded"
+    assert result["stage"] == "evaluation"
+    assert result["recipe_implementation_revision"] == REV
+    assert result["deployed_revision"] == "b" * 40
+    assert result["reused"] is False
+    assert job_status(root, str(submitted["job_id"]))["current_generation"]["state"] == "superseded"
+
+    conn = sqlite3.connect(db)
+    try:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM attempts WHERE generation_id = ?",
+            (generation,),
+        ).fetchone()[0] == before_attempts
+        assert conn.execute(
+            "SELECT COUNT(*) FROM stage_outputs WHERE generation_id = ?",
+            (generation,),
+        ).fetchone()[0] == before_outputs
+        audit = conn.execute(
+            "SELECT reason_code FROM supersessions WHERE generation_id = ?",
+            (generation,),
+        ).fetchone()
+        assert audit == ("operator_historical_runtime_retire",)
+    finally:
+        conn.close()
+
+    replay = retire_historical_runtime_generation(
+        root,
+        generation,
+        deployed_revision="b" * 40,
+    )
+    assert replay["state"] == "superseded"
+    assert replay["reused"] is True
+
+
+def test_retire_historical_retry_exhausted_evaluator_provider_failure(
+    tmp_path: Path,
+) -> None:
+    root, context_sha = _state(tmp_path)
+    submitted = submit_job(root, context_sha256=context_sha, recipe=_parsed_recipe())
+    generation = str(submitted["generation_id"])
+    _advance_to_evaluation(root, generation)
+    _exhaust_evaluator(root, generation)
+
+    result = retire_historical_runtime_generation(
+        root,
+        generation,
+        deployed_revision="b" * 40,
+    )
+
+    assert result["previous_state"] == "retry_exhausted"
+    assert result["state"] == "superseded"
+    assert result["stage"] == "evaluation"
+    assert result["recipe_implementation_revision"] == REV
+    assert job_status(root, str(submitted["job_id"]))["current_generation"]["state"] == "superseded"
+
+
+def test_retire_historical_runtime_rejects_same_revision(
+    tmp_path: Path,
+) -> None:
+    root, context_sha = _state(tmp_path)
+    submitted = submit_job(root, context_sha256=context_sha, recipe=_parsed_recipe())
+    generation = str(submitted["generation_id"])
+    _advance_to_evaluation(root, generation)
+    _exhaust_evaluator(root, generation)
+
+    with pytest.raises(PreReviewJobError, match="already matches deployed revision"):
+        retire_historical_runtime_generation(
+            root,
+            generation,
+            deployed_revision=REV,
+        )
+
+
+def test_retire_historical_runtime_rejects_non_model_stage_exhaustion(
+    tmp_path: Path,
+) -> None:
+    root, context_sha = _state(tmp_path)
+    submitted = submit_job(root, context_sha256=context_sha, recipe=_parsed_recipe())
+    generation = str(submitted["generation_id"])
+
+    generation_attempt = start_attempt(root, generation, "generation")
+    complete_attempt(
+        root,
+        str(generation_attempt["attempt_id"]),
+        outcome="succeeded",
+        output=_stage_output("generation"),
+    )
+
+    for attempt_index in range(1, 4):
+        work = claim_next_attempt(
+            root,
+            "validation",
+            max_attempts=3,
+            recover_running=True,
+        )
+        assert work is not None
+        assert work.attempt_index == attempt_index
+        complete_attempt(
+            root,
+            work.attempt_id,
+            outcome="retryable_failure",
+            reason_code="validator_io_error",
+        )
+    assert claim_next_attempt(
+        root,
+        "validation",
+        max_attempts=3,
+        recover_running=True,
+    ) is None
+
+    with pytest.raises(PreReviewJobError, match="only Generator or Evaluator"):
+        retire_historical_runtime_generation(
+            root,
+            generation,
+            deployed_revision="b" * 40,
+        )
+
+
+def test_retire_historical_runtime_rejects_noncurrent_generation(
+    tmp_path: Path,
+) -> None:
+    root, context_sha = _state(tmp_path)
+    submitted = submit_job(root, context_sha256=context_sha, recipe=_parsed_recipe())
+    generation = str(submitted["generation_id"])
+    _advance_to_evaluation(root, generation)
+    _exhaust_evaluator(root, generation)
+    regenerate_job(root, str(submitted["job_id"]))
+
+    with pytest.raises(PreReviewJobError, match="not the current job generation"):
+        retire_historical_runtime_generation(
+            root,
+            generation,
+            deployed_revision="b" * 40,
+        )
 
 
 def test_regenerate_is_explicit_and_creates_next_generation(tmp_path: Path) -> None:
