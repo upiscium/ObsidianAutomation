@@ -20,7 +20,12 @@ from obsidian_automation.evaluator_contract import (
     prompt_template_sha256 as evaluator_prompt_sha256,
 )
 from obsidian_automation.human_projection import parse_request
-from obsidian_automation.pre_review_job import job_status
+from obsidian_automation.pre_review_job import (
+    claim_next_attempt,
+    complete_attempt,
+    job_status,
+    retire_historical_runtime_generation,
+)
 
 
 REVISION = "a" * 40
@@ -290,6 +295,93 @@ def test_plan_once_supersedes_stale_queued_job_when_revision_changes(
     assert str(by_job[new_job]["context_sha256"]) == old_context
     assert str(recovered["generation_id"]) != old_generation
     assert not (state / "02-Orchestration" / "input-planner-pending.json").exists()
+
+
+def test_historical_runtime_retire_clears_planner_unhealthy_gate(
+    tmp_path: Path,
+) -> None:
+    vault = _vault(tmp_path)
+    state = _state(tmp_path)
+    _enable_human_projection(state)
+
+    first = plan_once(
+        state,
+        vault,
+        deployed_revision=REVISION,
+        generator_model="gemma4:12b",
+        evaluator_model="gemma4:12b",
+        batch_size=2,
+        target_inflight=1,
+        coverage_cycles=1,
+        random_cycles=0,
+    )
+    generation = str(
+        job_status(state, str(first["job_id"]))["current_generation"]["generation_id"]
+    )
+
+    for attempt_index in range(1, 4):
+        work = claim_next_attempt(
+            state,
+            "generation",
+            max_attempts=3,
+            recover_running=True,
+        )
+        assert work is not None
+        assert work.generation_id == generation
+        assert work.attempt_index == attempt_index
+        complete_attempt(
+            state,
+            work.attempt_id,
+            outcome="retryable_failure",
+            reason_code="generator_provider_or_output_error",
+        )
+
+    assert claim_next_attempt(
+        state,
+        "generation",
+        max_attempts=3,
+        recover_running=True,
+    ) is None
+    assert job_status(state, str(first["job_id"]))["current_generation"]["state"] == "retry_exhausted"
+
+    new_revision = "b" * 40
+    paused = plan_once(
+        state,
+        vault,
+        deployed_revision=new_revision,
+        generator_model="gemma4:12b",
+        evaluator_model="gemma4:12b",
+        batch_size=2,
+        target_inflight=1,
+        coverage_cycles=1,
+        random_cycles=0,
+    )
+    assert paused["status"] == "paused_pipeline_unhealthy"
+    assert paused["states"]["retry_exhausted"] == 1
+
+    retired = retire_historical_runtime_generation(
+        state,
+        generation,
+        deployed_revision=new_revision,
+    )
+    assert retired["state"] == "superseded"
+
+    resumed = plan_once(
+        state,
+        vault,
+        deployed_revision=new_revision,
+        generator_model="gemma4:12b",
+        evaluator_model="gemma4:12b",
+        batch_size=2,
+        target_inflight=1,
+        coverage_cycles=1,
+        random_cycles=0,
+    )
+    assert resumed["status"] == "submitted"
+    resumed_generation = str(
+        job_status(state, str(resumed["job_id"]))["current_generation"]["generation_id"]
+    )
+    assert resumed_generation != generation
 
 
 def test_plan_once_creates_mixed_context_and_one_durable_job(tmp_path: Path) -> None:

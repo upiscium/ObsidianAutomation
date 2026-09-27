@@ -76,6 +76,7 @@ RECORD_VERSION = 1
 MAX_RECIPE_BYTES = 64 * 1024
 MAX_METADATA_CHARS = 512
 _IMPLEMENTATION_REVISION_RE = re.compile(r"^[0-9a-f]{40,64}$")
+HISTORICAL_RUNTIME_SUPERSESSION_REASON = "operator_historical_runtime_retire"
 
 
 @dataclass(frozen=True)
@@ -928,6 +929,167 @@ def supersede_unstarted_generation(
     }
 
 
+def retire_historical_runtime_generation(
+    ai_root: Path,
+    generation_id: str,
+    *,
+    deployed_revision: str,
+) -> dict[str, object]:
+    """Retire one current generation that cannot safely resume on this runtime.
+
+    This is an operator-only metadata recovery. It preserves every attempt,
+    selected stage output, recipe and projection artifact. Only the generation
+    state and supersession audit row are changed.
+    """
+
+    digest = _require_sha256(generation_id, label="generation_id")
+    deployed = _implementation_revision(
+        deployed_revision,
+        label="deployed_revision",
+    )
+    now = _utc_now()
+
+    conn = _connect_rw(ai_root)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT g.generation_id, g.job_id, g.generation_index, g.state, "
+            "j.recipe_sha256 "
+            "FROM generations g JOIN jobs j ON j.job_id = g.job_id "
+            "WHERE g.generation_id = ?",
+            (digest,),
+        ).fetchone()
+        if row is None:
+            raise PreReviewJobError("generation does not exist")
+
+        if row["state"] == "superseded":
+            existing = conn.execute(
+                "SELECT reason_code, superseded_at FROM supersessions "
+                "WHERE generation_id = ?",
+                (digest,),
+            ).fetchone()
+            if (
+                existing is None
+                or existing["reason_code"] != HISTORICAL_RUNTIME_SUPERSESSION_REASON
+            ):
+                raise PreReviewJobError(
+                    "superseded generation audit record does not match historical runtime recovery"
+                )
+            conn.commit()
+            return {
+                "record_version": RECORD_VERSION,
+                "generation_id": digest,
+                "job_id": row["job_id"],
+                "generation_index": row["generation_index"],
+                "previous_state": "superseded",
+                "state": "superseded",
+                "stage": None,
+                "recipe_implementation_revision": None,
+                "deployed_revision": deployed,
+                "reason_code": existing["reason_code"],
+                "superseded_at": existing["superseded_at"],
+                "reused": True,
+            }
+
+        if row["state"] not in {"blocked", "retry_exhausted"}:
+            raise PreReviewJobError(
+                "historical runtime recovery requires blocked or retry_exhausted state"
+            )
+
+        newer = conn.execute(
+            "SELECT generation_id FROM generations "
+            "WHERE job_id = ? AND generation_index > ? LIMIT 1",
+            (row["job_id"], row["generation_index"]),
+        ).fetchone()
+        if newer is not None:
+            raise PreReviewJobError("generation is not the current job generation")
+
+        running = conn.execute(
+            "SELECT attempt_id FROM attempts "
+            "WHERE generation_id = ? AND status = 'running' LIMIT 1",
+            (digest,),
+        ).fetchone()
+        if running is not None:
+            raise PreReviewJobError("generation still has a running attempt")
+
+        latest = conn.execute(
+            "SELECT stage, status, reason_code FROM attempts "
+            "WHERE generation_id = ? ORDER BY rowid DESC LIMIT 1",
+            (digest,),
+        ).fetchone()
+        if latest is None:
+            raise PreReviewJobError("generation has no attempt evidence")
+
+        stage = str(latest["stage"])
+        if stage not in {"generation", "evaluation"}:
+            raise PreReviewJobError(
+                "historical runtime recovery supports only Generator or Evaluator stages"
+            )
+
+        if row["state"] == "blocked":
+            expected_status = "blocked"
+            expected_reason = (
+                "generator_recipe_runtime_mismatch"
+                if stage == "generation"
+                else "evaluator_recipe_runtime_mismatch"
+            )
+        else:
+            expected_status = "retryable_failure"
+            expected_reason = (
+                "generator_provider_or_output_error"
+                if stage == "generation"
+                else "evaluator_provider_or_output_error"
+            )
+
+        if (
+            latest["status"] != expected_status
+            or latest["reason_code"] != expected_reason
+        ):
+            raise PreReviewJobError(
+                "latest attempt is not an allowed historical runtime recovery case"
+            )
+
+        recipe = load_recipe(ai_root, str(row["recipe_sha256"]))
+        component = recipe.generator if stage == "generation" else recipe.evaluator
+        recipe_revision = component.implementation_revision
+        if recipe_revision == deployed:
+            raise PreReviewJobError(
+                "generation recipe already matches deployed revision"
+            )
+
+        conn.execute(
+            "UPDATE generations SET state = 'superseded', updated_at = ? "
+            "WHERE generation_id = ?",
+            (now, digest),
+        )
+        conn.execute(
+            "INSERT INTO supersessions(generation_id, reason_code, superseded_at) "
+            "VALUES(?, ?, ?)",
+            (digest, HISTORICAL_RUNTIME_SUPERSESSION_REASON, now),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    return {
+        "record_version": RECORD_VERSION,
+        "generation_id": digest,
+        "job_id": row["job_id"],
+        "generation_index": row["generation_index"],
+        "previous_state": row["state"],
+        "state": "superseded",
+        "stage": stage,
+        "recipe_implementation_revision": recipe_revision,
+        "deployed_revision": deployed,
+        "reason_code": HISTORICAL_RUNTIME_SUPERSESSION_REASON,
+        "superseded_at": now,
+        "reused": False,
+    }
+
+
 def _validated_stage(stage: str) -> str:
     value = _metadata(stage, label="stage")
     if value not in _STAGE_START:
@@ -1517,6 +1679,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     supersede.add_argument("--generation-id", required=True)
     supersede.add_argument("--reason-code", required=True)
 
+    retire = sub.add_parser("retire-historical-runtime")
+    retire.add_argument("--ai-root", type=Path, required=True)
+    retire.add_argument("--generation-id", required=True)
+    retire.add_argument("--deployed-revision", required=True)
+
     args = parser.parse_args(argv)
     try:
         if args.command == "submit":
@@ -1532,6 +1699,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.ai_root,
                 args.generation_id,
                 reason_code=args.reason_code,
+            )
+        elif args.command == "retire-historical-runtime":
+            result = retire_historical_runtime_generation(
+                args.ai_root,
+                args.generation_id,
+                deployed_revision=args.deployed_revision,
             )
         else:
             result = job_status(args.ai_root, args.job_id)

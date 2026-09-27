@@ -213,6 +213,28 @@ obsidian-pre-review-job status \
   --job-id <job-id>
 ```
 
+Explicitly retire one historical runtime-incompatible current generation:
+
+```bash
+obsidian-pre-review-job retire-historical-runtime \
+  --ai-root /var/lib/obsidian-ai/state \
+  --generation-id <exact-generation-id> \
+  --deployed-revision <exact-current-runtime-sha>
+```
+
+This recovery is operator-only and fail closed. It accepts only Generator or
+Evaluator generations whose immutable recipe implementation revision differs
+from the supplied current runtime revision. Supported terminal evidence is:
+
+- `blocked` with the matching `*_recipe_runtime_mismatch` reason;
+- `retry_exhausted` after the matching `*_provider_or_output_error` reason.
+
+It preserves attempts, selected stage outputs, recipe artifacts and Human-facing
+projection evidence. Only the generation state becomes `superseded` and the
+existing supersession audit table records
+`operator_historical_runtime_retire`. Same-revision generations, non-current
+generations, Reader/Validator exhaustion and arbitrary reasons are rejected.
+
 Status output contains only hashes, timestamps, generation count/state and the
 literal authority marker `orchestration_metadata_only`. It does not include
 Context text, proposal text, credentials, provider endpoints, or Review content.
