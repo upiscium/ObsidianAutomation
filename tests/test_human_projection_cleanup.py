@@ -14,7 +14,9 @@ from obsidian_automation.artifact_lifecycle import (
 from obsidian_automation.human_projection import (
     ProjectionResult,
     _store_result,
+    build_post_review_projection_binding,
     build_request,
+    store_post_review_projection_binding,
     store_request,
 )
 from obsidian_automation.human_projection_cleanup import (
@@ -234,6 +236,16 @@ def _completed_state(
     )
     (state / "20-Review" / f"{MUTATION}.approval.json").write_bytes(
         review_bytes
+    )
+    store_post_review_projection_binding(
+        state,
+        build_post_review_projection_binding(
+            case_id=CASE,
+            review_projection_request_sha256="e" * 64,
+            evaluation_sha256=EVALUATION,
+            mutation_sha256=MUTATION,
+            created_at="2026-09-23T00:59:00Z",
+        ),
     )
 
     completed_projection = build_request(
