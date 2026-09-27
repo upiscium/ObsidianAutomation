@@ -157,6 +157,22 @@ def _write_v2_review(state: Path, decision: str) -> None:
     )
 
 
+def _write_v3_review(state: Path, decision: str) -> None:
+    path = state / "20-Review" / f"{MUTATION}.approval.json"
+    path.write_bytes(
+        _canonical_json_bytes(
+            {
+                "record_version": 3,
+                "mutation_sha256": MUTATION,
+                "evaluation_sha256": EVALUATION,
+                "decision": decision,
+                "decided_at": "2026-09-27T00:01:00Z",
+                "approver": "human",
+            }
+        )
+    )
+
+
 def _write_receipt(state: Path) -> None:
     path = state / "30-Receipts" / f"{MUTATION}.receipt.json"
     path.write_bytes(
@@ -181,6 +197,23 @@ def test_reconcile_reject_is_terminal(tmp_path: Path) -> None:
 
     assert result["human_rejected"] == 1
     assert job_status(state, job_id)["current_generation"]["state"] == "human_rejected"
+
+
+def test_reconcile_keep_as_idea_is_terminal_without_receipt(
+    tmp_path: Path,
+) -> None:
+    state, job_id, _generation = _awaiting(tmp_path)
+    _write_v3_review(state, "keep_as_idea")
+
+    result = reconcile_post_review(state)
+
+    assert result["human_kept_as_idea"] == 1
+    assert result["approved_pending_execution"] == 0
+    assert result["completed"] == 0
+    assert (
+        job_status(state, job_id)["current_generation"]["state"]
+        == "human_kept_as_idea"
+    )
 
 
 def test_reconcile_approve_tracks_execution_then_completion(tmp_path: Path) -> None:
@@ -211,14 +244,15 @@ def test_executor_dispatch_skips_reject_and_advances_approve(
     vault = tmp_path / "vault"
     (vault / "11-Knowledge").mkdir(parents=True)
 
-    for digest, decision, evaluation in (
-        ("1" * 64, "reject", "a" * 64),
-        ("2" * 64, "approve", "b" * 64),
+    for digest, decision, evaluation, version in (
+        ("1" * 64, "reject", "a" * 64, 2),
+        ("2" * 64, "approve", "b" * 64, 2),
+        ("3" * 64, "keep_as_idea", "c" * 64, 3),
     ):
         (state / "20-Review" / f"{digest}.approval.json").write_bytes(
             _canonical_json_bytes(
                 {
-                    "record_version": 2,
+                    "record_version": version,
                     "mutation_sha256": digest,
                     "evaluation_sha256": evaluation,
                     "decision": decision,
@@ -240,6 +274,7 @@ def test_executor_dispatch_skips_reject_and_advances_approve(
 
     assert called == ["2" * 64]
     assert result["rejected"] == 1
+    assert result["kept_as_idea"] == 1
     assert result["transport_pending"] == 1
     assert layout.review.is_dir()
 
