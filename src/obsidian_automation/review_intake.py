@@ -207,7 +207,7 @@ def _parse_frontmatter_scalar(raw: str, *, key: str, label: str) -> str | None:
     # scalar string (for example a legal Knowledge target path) does not grant
     # mutation authority.
     if (
-        value[0] in "-?:,[]{}#&*!|>@\`%"
+        value[0] in "-?:,[]{}#&*!|>@`%"
         or ": " in value
         or " #" in value
         or value.endswith(":")
