@@ -140,7 +140,7 @@ projection request SHA, Evaluation SHA and mutation SHA. It grants no approval
 authority by itself; Executor and Sync use it only to resolve the Human-facing
 case after Review without gaining read access to `02-Orchestration`.
 
-Human authority is independent from the Evaluator recommendation. A Human may explicitly approve a `do_not_proceed` evaluation or reject a `proceed` evaluation. The Evaluator remains advisory.
+Human authority is independent from the Evaluator recommendation. A Human may explicitly approve a `do_not_proceed` evaluation, reject a `proceed` evaluation, or retain the candidate as an Idea without granting Knowledge execution authority. The Evaluator remains advisory.
 
 `approver` is audit metadata, not cryptographic proof of human identity. Human authority comes from the production permission boundary around the review writer. Generator, Validator, Evaluator, and Executor processes must not be able to write `20-Review`.
 
@@ -158,18 +158,22 @@ Legacy Review Record v1 remains parseable for existing artifacts:
 }
 ```
 
-New Evaluator-backed review creation uses v2. The legacy writer exists only for compatibility with earlier workflows and tests.
+Historical evaluation-bound Review v2 remains parseable for existing artifacts.
+New Evaluator-backed Human decisions use Review v3. v3 preserves the exact
+Evaluation binding and permits `approve`, `reject`, or `keep_as_idea`.
+Only `approve` yields affirmative execution approval. The legacy v1 writer
+exists only for compatibility with earlier workflows and tests.
 
 ### Executor binding
 
 The Executor does not receive read access to `15-Evaluation`. It parses the Human approval from `20-Review` and continues to bind the SHA-256 of the exact approval bytes into durable Execution Intent.
 
-For v2 this gives a transitive audit chain:
+For evaluation-bound v2/v3 Review this gives a transitive audit chain:
 
 ```text
 Execution Intent
   -> approval_sha256
-     -> exact Review Record v2 bytes
+     -> exact Review Record v2/v3 bytes
         -> evaluation_sha256
            -> exact Evaluation Record bytes
 ```
