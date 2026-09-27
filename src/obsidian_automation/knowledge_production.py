@@ -17,8 +17,11 @@ from .artifact_lifecycle import (
     sha256_bytes,
 )
 from .canonical_mutation import MutationValidationError
-from .execution_orchestrator import ExecutionOrchestrationError, _load_context
-from .knowledge_note_policy import KNOWLEDGE_ROOT, validate_knowledge_note_v0
+from .execution_orchestrator import (
+    ExecutionOrchestrationError,
+    _load_context,
+    _parse_receipt,
+)
 from .human_projection import (
     emit_completed_projection,
     emit_execution_projection,
@@ -30,7 +33,7 @@ from .human_projection_cleanup import (
     build_terminal_cleanup_request,
     store_terminal_cleanup_request,
 )
-from .execution_orchestrator import _parse_receipt
+from .knowledge_note_policy import KNOWLEDGE_ROOT, validate_knowledge_note_v0
 from .production_io import ProductionIOError, canonical_io_lock
 from .production_orchestrator import (
     ProductionOrchestrationError,
@@ -265,6 +268,7 @@ def _emit_completed_and_queue_cleanup(
         OSError,
     ):
         return False
+
 
 def dispatch_pending_executor(
     ai_root: Path,
