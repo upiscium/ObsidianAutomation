@@ -985,49 +985,6 @@ def stage_output(
         conn.close()
 
 
-def generation_id_for_mutation(
-    ai_root: Path,
-    mutation_sha256: str,
-) -> str:
-    mutation = _require_sha256(mutation_sha256, label="mutation_sha256")
-    conn = _connect_ro(ai_root)
-    try:
-        rows = conn.execute(
-            """
-            SELECT g.generation_id
-            FROM generations g
-            WHERE NOT EXISTS (
-                SELECT 1
-                FROM generations newer
-                WHERE newer.job_id = g.job_id
-                  AND newer.generation_index > g.generation_index
-            )
-              AND EXISTS (
-                SELECT 1
-                FROM stage_outputs output
-                WHERE output.generation_id = g.generation_id
-                  AND output.stage = 'evaluation'
-            )
-            ORDER BY g.generation_id
-            """
-        ).fetchall()
-
-        matches: list[str] = []
-        for row in rows:
-            generation_id = str(row["generation_id"])
-            output = _load_stage_output_conn(conn, generation_id, "evaluation")
-            if output is not None and output.get("mutation_sha256") == mutation:
-                matches.append(generation_id)
-    finally:
-        conn.close()
-
-    if len(matches) != 1:
-        raise PreReviewJobError(
-            "mutation must bind exactly one current evaluated generation"
-        )
-    return matches[0]
-
-
 def _validate_output_chain(
     conn: sqlite3.Connection,
     generation_id: str,
