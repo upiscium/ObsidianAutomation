@@ -580,12 +580,12 @@ def _verify_cleanup_binding(
         )
     review = load_review_record(root, request.mutation_sha256)
     if (
-        review.record_version != 2
-        or review.decision != "reject"
+        review.record_version not in {2, 3}
+        or review.decision not in {"reject", "keep_as_idea"}
         or review.evaluation_sha256 != request.evaluation_sha256
     ):
         raise HumanProjectionCleanupError(
-            "cleanup requires an exact evaluation-bound Reject Review"
+            "cleanup requires an exact evaluation-bound terminal non-execution Review"
         )
     try:
         return projection_root_from_target_path(projection.target_path)
@@ -672,7 +672,7 @@ def _verify_terminal_cleanup_binding(
 
     review = load_review_record(root, request.mutation_sha256)
     if (
-        review.record_version != 2
+        review.record_version not in {2, 3}
         or review.decision != "approve"
         or review.evaluation_sha256 != binding.evaluation_sha256
     ):
