@@ -214,10 +214,13 @@ The same authoritative artifacts now drive Human-facing read-model projections:
 30-Receipts   -> 04-AI/80-Completed
 ```
 
-Each projection is bound to the current evaluated generation selected for the
-exact mutation. Projection failures never roll back or block the canonical
-post-review execution path; dispatch reports the projection error and a later
-cycle can fill the missing read model.
+Review Intake also persists an immutable reviewer-owned projection binding
+under `20-Review`, binding the exact case ID, Review projection request,
+Evaluation and mutation. Executor and Sync derive the post-review case only from
+that binding; they do not gain read authority over scheduler internals.
+Projection failures never roll back or block the canonical post-review execution
+path; dispatch reports the projection error and a later cycle can fill the
+missing read model.
 
 After `80-Completed` has itself been safely published and recorded in
 `17-Human-Projection-Result`, the dedicated cleanup transport deletes only
