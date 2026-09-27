@@ -199,20 +199,15 @@ Terminal cleanup preserves `04-AI/80-Completed/<case>.md` and removes the
 earlier `00-Input` through `70-Transport` projections only after the
 completed projection has a successful immutable projection-result artifact.
 
-## 04-AI migration
+## 04-AI projection root
 
-The current Human-facing root is `04-AI`. Before enabling a deployment that
-emits new projections:
+The Human-facing runtime root is `04-AI`. Before enabling projection:
 
 1. ensure the ordinary Sync writer can create/read `04-AI/**`;
 2. share the canonical `04-AI` folder to the dedicated projection-cleanup
-   account with Read + Delete only;
-3. keep the legacy `03-AI` share temporarily only when an active historical
-   Review request still targets `03-AI/**`;
-4. remove the legacy share/folder after those historical cases are terminal.
+   account with Read + Delete only.
 
-Review Intake reads the exact immutable request target and therefore supports
-both the legacy `03-AI` and current `04-AI` roots during migration.
+Review Intake and cleanup accept only deterministic `04-AI/**` targets.
 
 ## First updater bootstrap
 
