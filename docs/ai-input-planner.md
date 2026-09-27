@@ -83,11 +83,13 @@ target. New planning pauses when the target is already satisfied. It also pauses
 on `blocked` or `retry_exhausted` generations instead of hiding an
 operational problem by creating more work.
 
-Human-facing post-review projection follows the same scheduler lifecycle but is
-not scheduler authority. `60-Execution`, `70-Transport`, and
-`80-Completed` are derived from durable Execution, Transport, and Receipt
-artifacts respectively; `80-Completed` remains after terminal projection
-cleanup.
+Human-facing post-review projection follows the same lifecycle but is not
+scheduler authority. Review Intake persists the exact case/evaluation/mutation
+mapping as a reviewer-owned immutable binding in `20-Review`; post-review
+services consume that binding rather than querying scheduler internals.
+`60-Execution`, `70-Transport`, and `80-Completed` are derived from
+durable Execution, Transport, and Receipt artifacts respectively;
+`80-Completed` remains after terminal projection cleanup.
 
 Post-review reconciliation observes authoritative `20-Review` and
 `30-Receipts` artifacts and projects their outcome back into scheduler
