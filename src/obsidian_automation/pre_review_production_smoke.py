@@ -73,6 +73,15 @@ REQUIRED_UNITS = {
         "/var/lib/obsidian-ai/state/30-Receipts",
         "/var/lib/obsidian-ai/state/16-Human-Projection/executor",
     ),
+    "obsidian-ai-post-review-projection-sync.service": (
+        "User=obsidian-ai-sync",
+        "obsidian-ai-human-projection-sync",
+        "Requires=obsidian-ai-post-review-executor-finalize.service",
+        "ConditionPathExists=/etc/obsidian-ai/human-projection.env",
+        "ConditionPathExists=/etc/obsidian-ai/webdav-password",
+        "/var/lib/obsidian-ai/state/16-Human-Projection",
+        "/var/lib/obsidian-ai/state/17-Human-Projection-Result",
+    ),
     "obsidian-ai-post-review-reconcile.service": (
         "User=obsidian-ai-reader",
         "obsidian-pre-review-post-review-reconcile",

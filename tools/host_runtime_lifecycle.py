@@ -30,6 +30,7 @@ SERVICES = (
     "obsidian-ai-post-review-executor-prepare.service",
     "obsidian-ai-post-review-transport.service",
     "obsidian-ai-post-review-executor-finalize.service",
+    "obsidian-ai-post-review-projection-sync.service",
     "obsidian-ai-post-review-reconcile.service",
     "obsidian-pre-review-generator.service",
     "obsidian-pre-review-validator.service", "obsidian-pre-review-reader.service",
