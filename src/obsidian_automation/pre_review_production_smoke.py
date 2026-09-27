@@ -55,6 +55,7 @@ REQUIRED_UNITS = {
         "Requires=obsidian-ai-review-intake.service",
         "PrivateNetwork=true",
         "/var/lib/obsidian-ai/state/25-Execution",
+        "/var/lib/obsidian-ai/state/16-Human-Projection/executor",
     ),
     "obsidian-ai-post-review-transport.service": (
         "User=obsidian-ai-sync",
@@ -62,6 +63,7 @@ REQUIRED_UNITS = {
         "Requires=obsidian-ai-post-review-executor-prepare.service",
         "ConditionPathExists=/etc/obsidian-ai/webdav-password",
         "/var/lib/obsidian-ai/state/27-Transport",
+        "/var/lib/obsidian-ai/state/16-Human-Projection/sync",
     ),
     "obsidian-ai-post-review-executor-finalize.service": (
         "User=obsidian-ai-executor",
@@ -69,6 +71,7 @@ REQUIRED_UNITS = {
         "Requires=obsidian-ai-post-review-transport.service",
         "PrivateNetwork=true",
         "/var/lib/obsidian-ai/state/30-Receipts",
+        "/var/lib/obsidian-ai/state/16-Human-Projection/executor",
     ),
     "obsidian-ai-post-review-reconcile.service": (
         "User=obsidian-ai-reader",
