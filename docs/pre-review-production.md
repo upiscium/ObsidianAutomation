@@ -168,6 +168,32 @@ projection with the exact published projection and accepts only a change to
 `review_request`; all other changes fail closed.
 
 
+## Post-review Human-facing projection
+
+The post-review services now queue bounded Human-facing status projections from
+their authoritative artifacts:
+
+- Executor prepare queues `04-AI/60-Execution` from the exact
+  `25-Execution` transport request.
+- Sync queues `04-AI/70-Transport` only after an exact
+  `created_verified` `27-Transport` result.
+- Executor finalize queues `04-AI/80-Completed` only after the exact
+  `30-Receipts` receipt is present and bound to the verified transport.
+
+These are read-model side effects only. A projection failure does not turn an
+approved canonical execution into a failure. The dispatcher records a
+`projection_errors` count and the next recurring cycle retries projection
+completion from durable authoritative artifacts.
+
+The cleanup Sync identity additionally needs **read-only** access to
+`30-Receipts` so it can verify terminal cleanup binding. It must remain unable
+to write Receipts. Its Nextcloud cleanup credential remains restricted to
+`04-AI` with Read + Delete only.
+
+Terminal cleanup preserves `04-AI/80-Completed/<case>.md` and removes the
+earlier `00-Input` through `70-Transport` projections only after the
+completed projection has a successful immutable projection-result artifact.
+
 ## 04-AI migration
 
 The current Human-facing root is `04-AI`. Before enabling a deployment that
