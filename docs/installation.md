@@ -275,9 +275,7 @@ A fresh deployment should additionally complete the production acceptance sequen
 
 Before enabling AI projection, ensure the canonical Vault contains the `04-AI` root and that the appropriate accounts can access it according to their authority.
 
-New projection requests target only `04-AI/**`.
-
-Legacy `03-AI` compatibility currently exists only for historical immutable projection requests and cleanup. Do not configure new workflows to write `03-AI`.
+Projection requests target only `04-AI/**`.
 
 For how projection works after installation, continue with [Getting started](getting-started.md).
 
