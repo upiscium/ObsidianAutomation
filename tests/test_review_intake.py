@@ -20,6 +20,7 @@ from obsidian_automation.human_projection import (
     ProjectionResult,
     _store_result,
     emit_evaluation_and_review_projections,
+    load_post_review_projection_binding,
     parse_request,
 )
 from obsidian_automation.human_projection_cleanup import (
@@ -196,6 +197,14 @@ def test_review_intake_creates_evaluation_bound_approval(tmp_path: Path) -> None
     assert review.record_version == 2
     assert review.evaluation_sha256 == evaluation_sha
     assert review.decision == "approve"
+    binding = load_post_review_projection_binding(
+        state,
+        validated.mutation_sha256,
+    )
+    assert binding is not None
+    assert binding.case_id == CASE
+    assert binding.evaluation_sha256 == evaluation_sha
+    assert binding.mutation_sha256 == validated.mutation_sha256
 
 
 def test_review_intake_reject_queues_projection_cleanup(tmp_path: Path) -> None:
@@ -219,6 +228,13 @@ def test_review_intake_reject_queues_projection_cleanup(tmp_path: Path) -> None:
     review = load_review_record(state, validated.mutation_sha256)
     assert review.decision == "reject"
     assert review.evaluation_sha256 == evaluation_sha
+    binding = load_post_review_projection_binding(
+        state,
+        validated.mutation_sha256,
+    )
+    assert binding is not None
+    assert binding.case_id == CASE
+    assert binding.evaluation_sha256 == evaluation_sha
 
     cleanup_paths = list(
         (state / "16-Human-Projection" / "reviewer").glob(
