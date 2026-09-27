@@ -349,6 +349,9 @@ Input Planner -> Generator -> Validator -> Reader -> Evaluator
                               Executor finalize
                                          |
                                          v
+                         Post-review Projection Sync
+                                         |
+                                         v
                             post-review reconcile
                                          |
                                          v

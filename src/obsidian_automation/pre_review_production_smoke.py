@@ -85,7 +85,8 @@ REQUIRED_UNITS = {
     "obsidian-ai-post-review-reconcile.service": (
         "User=obsidian-ai-reader",
         "obsidian-pre-review-post-review-reconcile",
-        "Requires=obsidian-ai-post-review-executor-finalize.service",
+        "Requires=obsidian-ai-post-review-projection-sync.service",
+        "After=obsidian-ai-post-review-projection-sync.service",
         "PrivateNetwork=true",
         "/var/lib/obsidian-ai/state/02-Orchestration",
     ),
