@@ -192,6 +192,44 @@ Private deployment files:
 
 The cleanup service explicitly hides the canonical `webdav-password` from its systemd sandbox.
 
+## Post-review projection lifecycle
+
+Approve does not make the Human-facing Review note authoritative. Review Intake
+first creates the exact evaluation-bound `20-Review` artifact. The existing
+Executor / Sync / Executor authority chain then remains canonical:
+
+```text
+04-AI/50-Review
+  -> 20-Review approve
+  -> 25-Execution
+  -> 27-Transport
+  -> 30-Receipts
+```
+
+The same authoritative artifacts now drive Human-facing read-model projections:
+
+```text
+25-Execution  -> 04-AI/60-Execution
+27-Transport  -> 04-AI/70-Transport
+30-Receipts   -> 04-AI/80-Completed
+```
+
+Each projection is bound to the current evaluated generation selected for the
+exact mutation. Projection failures never roll back or block the canonical
+post-review execution path; dispatch reports the projection error and a later
+cycle can fill the missing read model.
+
+After `80-Completed` has itself been safely published and recorded in
+`17-Human-Projection-Result`, the dedicated cleanup transport deletes only
+that case's `00-Input` through `70-Transport` Human-facing projections.
+`80-Completed` remains as the terminal visible case. Canonical
+`11-Knowledge/**`, Review, Execution, Transport, Receipt and other private
+audit artifacts are never cleanup targets.
+
+A terminal cleanup request may be queued before `80-Completed` reaches
+Nextcloud. That is expected: cleanup remains pending without deleting anything
+until the exact completed projection result proves publication.
+
 ## Projection root migration
 
 The canonical Human-facing projection root is `04-AI`. Historical immutable
