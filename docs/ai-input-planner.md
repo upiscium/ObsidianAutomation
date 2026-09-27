@@ -102,6 +102,9 @@ awaiting_human_review
 
 awaiting_human_review
   -> human_rejected
+
+awaiting_human_review
+  -> human_kept_as_idea
 ```
 
 The database does not grant approval or completion authority. Review and Receipt
