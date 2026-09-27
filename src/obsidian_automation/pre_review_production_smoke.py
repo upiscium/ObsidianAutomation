@@ -38,6 +38,7 @@ REQUIRED_UNITS = {
         "PROJECTION_CLEANUP_BASE_URL",
         "PROJECTION_CLEANUP_USERNAME",
         "/var/lib/obsidian-ai/state/20-Review",
+        "/var/lib/obsidian-ai/state/30-Receipts",
         "InaccessiblePaths=/etc/obsidian-ai/webdav-password",
     ),
     "obsidian-ai-review-intake.service": (
