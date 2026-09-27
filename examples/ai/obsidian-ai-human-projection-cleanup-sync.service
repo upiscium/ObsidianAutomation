@@ -1,5 +1,5 @@
 [Unit]
-Description=Delete Human-facing projections for rejected Obsidian AI cases
+Description=Delete terminal Human-facing Obsidian AI projections
 Requires=obsidian-ai-post-review-reconcile.service
 After=network-online.target obsidian-ai-post-review-reconcile.service
 Wants=network-online.target
@@ -20,7 +20,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadOnlyPaths=/etc/obsidian-ai/projection-cleanup.env /etc/obsidian-ai/projection-cleanup-password /var/lib/obsidian-ai/state/16-Human-Projection /var/lib/obsidian-ai/state/20-Review
+ReadOnlyPaths=/etc/obsidian-ai/projection-cleanup.env /etc/obsidian-ai/projection-cleanup-password /var/lib/obsidian-ai/state/16-Human-Projection /var/lib/obsidian-ai/state/20-Review /var/lib/obsidian-ai/state/30-Receipts
 InaccessiblePaths=/etc/obsidian-ai/webdav-password /etc/obsidian-ai/rclone.conf /etc/obsidian-ai/human-projection.env /etc/obsidian-ai/review-intake-password
 ReadWritePaths=/var/lib/obsidian-ai/state/17-Human-Projection-Result /var/lib/obsidian-ai/state/24-Locks
 UMask=0027
