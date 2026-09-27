@@ -1071,6 +1071,12 @@ def emit_evaluation_and_review_projections(
                 "",
                 "**Review request:** `INPUT[inlineSelect(option(approve, '✅ Approve'), option(reject, '❌ Reject'), option(null, '▫️ Pending')):review_request]`",
                 "",
+                "```meta-bind-embed",
+                "[[98-System/02-embed/01-button/ai-review-buttons|ai-review-buttons]]",
+                "```",
+                "",
+                "Keep as Idea first creates/adopts a context-bound `05-Idea` note in the Human client and only then requests the terminal `keep_as_idea` disposition.",
+                "",
                 "This field is a Human request only. Authoritative Review is created separately after exact binding verification.",
             ]
         ),
