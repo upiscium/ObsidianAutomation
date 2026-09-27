@@ -10,9 +10,11 @@ from typing import Sequence
 
 from .artifact_lifecycle import (
     ArtifactLifecycleError,
+    _read_exact_file,
     _require_sha256,
     ensure_artifact_layout,
     load_review_record,
+    sha256_bytes,
 )
 from .canonical_mutation import MutationValidationError
 from .execution_orchestrator import ExecutionOrchestrationError, _load_context
@@ -22,6 +24,11 @@ from .human_projection import (
     emit_execution_projection,
     emit_transport_projection,
 )
+from .human_projection_cleanup import (
+    build_terminal_cleanup_request,
+    store_terminal_cleanup_request,
+)
+from .execution_orchestrator import _parse_receipt
 from .pre_review_job import generation_id_for_mutation
 from .production_io import ProductionIOError, canonical_io_lock
 from .production_orchestrator import (
@@ -147,6 +154,42 @@ def _digest_files(directory: Path, suffix: str) -> list[tuple[str, Path]]:
     return rows
 
 
+def _emit_completed_and_queue_cleanup(
+    ai_root: Path,
+    *,
+    case_id: str,
+    mutation_sha256: str,
+) -> None:
+    emitted = emit_completed_projection(
+        ai_root,
+        case_id=case_id,
+        mutation_sha256=mutation_sha256,
+    )
+    if emitted is None:
+        return
+
+    request_sha256, _request_path = emitted
+    receipt_path = (
+        ensure_artifact_layout(ai_root).receipts
+        / f"{mutation_sha256}.receipt.json"
+    )
+    receipt_bytes = _read_exact_file(receipt_path)
+    receipt = _parse_receipt(receipt_bytes)
+    if receipt.mutation_sha256 != mutation_sha256:
+        raise ProductionOrchestrationError(
+            "completed cleanup Receipt is bound to another mutation"
+        )
+
+    cleanup = build_terminal_cleanup_request(
+        case_id=case_id,
+        completed_projection_request_sha256=request_sha256,
+        mutation_sha256=mutation_sha256,
+        receipt_sha256=sha256_bytes(receipt_bytes),
+        created_at=receipt.executed_at,
+    )
+    store_terminal_cleanup_request(ai_root, cleanup)
+
+
 def dispatch_pending_executor(
     ai_root: Path,
     vault_root: Path,
@@ -174,7 +217,7 @@ def dispatch_pending_executor(
 
         receipt_path = layout.receipts / f"{digest}.receipt.json"
         if os.path.lexists(receipt_path):
-            emit_completed_projection(
+            _emit_completed_and_queue_cleanup(
                 ai_root,
                 case_id=generation_id_for_mutation(ai_root, digest),
                 mutation_sha256=digest,
@@ -192,7 +235,7 @@ def dispatch_pending_executor(
         processed += 1
 
         if state.status == "completed":
-            emit_completed_projection(
+            _emit_completed_and_queue_cleanup(
                 ai_root,
                 case_id=generation_id_for_mutation(ai_root, digest),
                 mutation_sha256=digest,
