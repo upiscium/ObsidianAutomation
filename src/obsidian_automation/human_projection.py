@@ -991,7 +991,6 @@ def _post_review_artifact(
     *,
     directory: str,
     filename: str,
-    label: str,
 ) -> tuple[bytes, str]:
     path = ai_root.absolute() / directory / filename
     data = _read_exact_file(path)
@@ -1013,7 +1012,6 @@ def emit_execution_projection(
         ai_root,
         directory="25-Execution",
         filename=f"{mutation}.transport-request.json",
-        label="transport request",
     )
     request = parse_transport_request(data)
     if request.mutation_sha256 != mutation:
@@ -1073,14 +1071,12 @@ def emit_transport_projection(
         ai_root,
         directory="25-Execution",
         filename=f"{mutation}.transport-request.json",
-        label="transport request",
     )
     request = parse_transport_request(request_data)
     result_data, source_sha = _post_review_artifact(
         ai_root,
         directory="27-Transport",
         filename=f"{mutation}.transport-result.json",
-        label="transport result",
     )
     result = parse_transport_result(result_data)
 
@@ -1150,21 +1146,18 @@ def emit_completed_projection(
         ai_root,
         directory="25-Execution",
         filename=f"{mutation}.transport-request.json",
-        label="transport request",
     )
     request = parse_transport_request(request_data)
-    result_data, result_sha = _post_review_artifact(
+    result_data, _result_sha = _post_review_artifact(
         ai_root,
         directory="27-Transport",
         filename=f"{mutation}.transport-result.json",
-        label="transport result",
     )
     result = parse_transport_result(result_data)
     receipt_data, source_sha = _post_review_artifact(
         ai_root,
         directory="30-Receipts",
         filename=f"{mutation}.receipt.json",
-        label="execution receipt",
     )
     receipt = _parse_receipt(receipt_data)
 
@@ -1173,7 +1166,6 @@ def emit_completed_projection(
         or result.mutation_sha256 != mutation
         or result.request_sha256 != request_sha
         or result.result != "created_verified"
-        or result_sha != sha256_bytes(result_data)
         or receipt.mutation_sha256 != mutation
         or receipt.target_path != request.target_path
         or receipt.target_path != result.target_path
@@ -1220,6 +1212,7 @@ def emit_completed_projection(
             created_at=receipt.executed_at,
         ),
     )
+
 
 def sync_main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="obsidian-ai-human-projection-sync")
