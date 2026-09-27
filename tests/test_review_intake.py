@@ -358,16 +358,17 @@ def test_review_intake_rejects_other_human_edits(tmp_path: Path) -> None:
         "approve",
     )
 
-    with pytest.raises(ReviewIntakeError, match="outside review_request"):
-        run_review_intake(
-            state,
-            base_url="https://nextcloud.example/dav/Vault",
-            username="review-reader",
-            password="secret",
-            approver="human",
-            read_remote=lambda **_kwargs: RemoteReview(200, changed, None),
-        )
+    result = run_review_intake(
+        state,
+        base_url="https://nextcloud.example/dav/Vault",
+        username="review-reader",
+        password="secret",
+        approver="human",
+        read_remote=lambda **_kwargs: RemoteReview(200, changed, None),
+    )
 
+    assert result["invalid_remote"] == 1
+    assert result["processed"] == 0
     assert not (
         state / "20-Review" / f"{validated.mutation_sha256}.approval.json"
     ).exists()
