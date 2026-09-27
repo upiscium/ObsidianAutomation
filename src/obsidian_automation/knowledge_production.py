@@ -23,6 +23,7 @@ from .human_projection import (
     emit_completed_projection,
     emit_execution_projection,
     emit_transport_projection,
+    load_post_review_projection_binding,
     projection_enabled,
 )
 from .human_projection_cleanup import (
@@ -30,7 +31,6 @@ from .human_projection_cleanup import (
     store_terminal_cleanup_request,
 )
 from .execution_orchestrator import _parse_receipt
-from .pre_review_job import generation_id_for_mutation
 from .production_io import ProductionIOError, canonical_io_lock
 from .production_orchestrator import (
     ProductionOrchestrationError,
@@ -161,7 +161,19 @@ def _case_id_for_projection(
 ) -> str | None:
     if not projection_enabled(ai_root):
         return None
-    return generation_id_for_mutation(ai_root, mutation_sha256)
+    binding = load_post_review_projection_binding(ai_root, mutation_sha256)
+    if binding is None:
+        return None
+    review = load_review_record(ai_root, mutation_sha256)
+    if (
+        review.record_version != 2
+        or review.decision != "approve"
+        or review.evaluation_sha256 != binding.evaluation_sha256
+    ):
+        raise ProductionOrchestrationError(
+            "post-review projection binding does not match authoritative Approve Review"
+        )
+    return binding.case_id
 
 
 def _emit_execution_if_enabled(
@@ -178,7 +190,12 @@ def _emit_execution_if_enabled(
             mutation_sha256=mutation_sha256,
         )
         return True
-    except (ArtifactLifecycleError, PreReviewJobError, OSError):
+    except (
+        ArtifactLifecycleError,
+        ExecutionOrchestrationError,
+        ProductionOrchestrationError,
+        OSError,
+    ):
         return False
 
 
@@ -196,7 +213,12 @@ def _emit_transport_if_enabled(
             mutation_sha256=mutation_sha256,
         )
         return True
-    except (ArtifactLifecycleError, PreReviewJobError, OSError):
+    except (
+        ArtifactLifecycleError,
+        ExecutionOrchestrationError,
+        ProductionOrchestrationError,
+        OSError,
+    ):
         return False
 
 
@@ -239,7 +261,7 @@ def _emit_completed_and_queue_cleanup(
     except (
         ArtifactLifecycleError,
         ExecutionOrchestrationError,
-        PreReviewJobError,
+        ProductionOrchestrationError,
         OSError,
     ):
         return False
