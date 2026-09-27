@@ -17,6 +17,12 @@ from .artifact_lifecycle import (
 from .canonical_mutation import MutationValidationError
 from .execution_orchestrator import ExecutionOrchestrationError, _load_context
 from .knowledge_note_policy import KNOWLEDGE_ROOT, validate_knowledge_note_v0
+from .human_projection import (
+    emit_completed_projection,
+    emit_execution_projection,
+    emit_transport_projection,
+)
+from .pre_review_job import generation_id_for_mutation
 from .production_io import ProductionIOError, canonical_io_lock
 from .production_orchestrator import (
     ProductionOrchestrationError,
@@ -168,6 +174,11 @@ def dispatch_pending_executor(
 
         receipt_path = layout.receipts / f"{digest}.receipt.json"
         if os.path.lexists(receipt_path):
+            emit_completed_projection(
+                ai_root,
+                case_id=generation_id_for_mutation(ai_root, digest),
+                mutation_sha256=digest,
+            )
             completed += 1
             continue
 
@@ -181,8 +192,18 @@ def dispatch_pending_executor(
         processed += 1
 
         if state.status == "completed":
+            emit_completed_projection(
+                ai_root,
+                case_id=generation_id_for_mutation(ai_root, digest),
+                mutation_sha256=digest,
+            )
             completed += 1
         elif state.status in {"request_pending", "transport_pending"}:
+            emit_execution_projection(
+                ai_root,
+                case_id=generation_id_for_mutation(ai_root, digest),
+                mutation_sha256=digest,
+            )
             transport_pending += 1
         elif state.status == "remote_verified_pending_receipt":
             # advance_production_executor normally consumes this state before
@@ -242,6 +263,11 @@ def dispatch_pending_transport(
 
         result_path = transport / f"{digest}.transport-result.json"
         if os.path.lexists(result_path):
+            emit_transport_projection(
+                ai_root,
+                case_id=generation_id_for_mutation(ai_root, digest),
+                mutation_sha256=digest,
+            )
             existing += 1
             continue
 
@@ -268,6 +294,11 @@ def dispatch_pending_transport(
             raise ProductionOrchestrationError(
                 f"transport dispatcher requires Human recovery: {result.result}"
             )
+        emit_transport_projection(
+            ai_root,
+            case_id=generation_id_for_mutation(ai_root, digest),
+            mutation_sha256=digest,
+        )
         if processed >= max_items:
             break
 
