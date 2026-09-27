@@ -315,7 +315,9 @@ def test_historical_runtime_retire_clears_planner_unhealthy_gate(
         coverage_cycles=1,
         random_cycles=0,
     )
-    generation = str(first["generation_id"])
+    generation = str(
+        job_status(state, str(first["job_id"]))["current_generation"]["generation_id"]
+    )
 
     for attempt_index in range(1, 4):
         work = claim_next_attempt(
@@ -376,7 +378,10 @@ def test_historical_runtime_retire_clears_planner_unhealthy_gate(
         random_cycles=0,
     )
     assert resumed["status"] == "submitted"
-    assert resumed["generation_id"] != generation
+    resumed_generation = str(
+        job_status(state, str(resumed["job_id"]))["current_generation"]["generation_id"]
+    )
+    assert resumed_generation != generation
 
 
 def test_plan_once_creates_mixed_context_and_one_durable_job(tmp_path: Path) -> None:
