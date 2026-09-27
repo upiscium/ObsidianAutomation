@@ -36,7 +36,12 @@ EVALUATION = "b" * 64
 MUTATION = "c" * 64
 
 
-def _state(tmp_path: Path) -> tuple[Path, str]:
+def _state(
+    tmp_path: Path,
+    *,
+    decision: str = "reject",
+    record_version: int = 2,
+) -> tuple[Path, str]:
     state = tmp_path / "state"
     state.mkdir()
     ensure_artifact_layout(state)
@@ -80,10 +85,10 @@ def _state(tmp_path: Path) -> tuple[Path, str]:
 
     review_bytes = _canonical_json_bytes(
         {
-            "record_version": 2,
+            "record_version": record_version,
             "mutation_sha256": MUTATION,
             "evaluation_sha256": EVALUATION,
-            "decision": "reject",
+            "decision": decision,
             "decided_at": "2026-09-23T00:01:00Z",
             "approver": "human",
         }
@@ -154,6 +159,29 @@ def test_reject_cleanup_deletes_exact_six_projection_paths_and_is_idempotent(
     )
     assert second["processed"] == 0
     assert calls == []
+
+
+def test_keep_as_idea_cleanup_uses_same_bounded_projection_paths(
+    tmp_path: Path,
+) -> None:
+    state, _cleanup_sha = _state(
+        tmp_path,
+        decision="keep_as_idea",
+        record_version=3,
+    )
+    calls: list[str] = []
+
+    result = run_cleanup_sync(
+        state,
+        base_url="https://nextcloud.example/dav/Vault",
+        username="sync",
+        password="secret",
+        delete_remote=lambda **kwargs: calls.append(str(kwargs["target_path"])) or "deleted",
+    )
+
+    assert result["processed"] == 1
+    assert result["deleted"] == 6
+    assert calls == list(cleanup_target_paths(CASE))
 
 
 def _completed_state(
