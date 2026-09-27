@@ -169,7 +169,7 @@ def _case_id_for_projection(
         return None
     review = load_review_record(ai_root, mutation_sha256)
     if (
-        review.record_version != 2
+        review.record_version not in {2, 3}
         or review.decision != "approve"
         or review.evaluation_sha256 != binding.evaluation_sha256
     ):
@@ -282,6 +282,7 @@ def dispatch_pending_executor(
     layout = ensure_artifact_layout(ai_root)
     processed = 0
     rejected = 0
+    kept_as_idea = 0
     completed = 0
     transport_pending = 0
     legacy_ignored = 0
@@ -289,12 +290,19 @@ def dispatch_pending_executor(
 
     for digest, _path in _digest_files(layout.review, ".approval.json"):
         review = load_review_record(ai_root, digest)
-        if review.record_version != 2 or review.evaluation_sha256 is None:
+        if review.record_version not in {2, 3} or review.evaluation_sha256 is None:
             legacy_ignored += 1
             continue
         if review.decision == "reject":
             rejected += 1
             continue
+        if review.decision == "keep_as_idea":
+            kept_as_idea += 1
+            continue
+        if review.decision != "approve":
+            raise ProductionOrchestrationError(
+                "executor dispatcher found unsupported Review decision"
+            )
 
         receipt_path = layout.receipts / f"{digest}.receipt.json"
         if os.path.lexists(receipt_path):
@@ -354,6 +362,7 @@ def dispatch_pending_executor(
         "status": "completed",
         "processed": processed,
         "rejected": rejected,
+        "kept_as_idea": kept_as_idea,
         "completed": completed,
         "transport_pending": transport_pending,
         "legacy_ignored": legacy_ignored,
@@ -381,8 +390,12 @@ def dispatch_pending_transport(
 
     for digest, _path in _digest_files(execution, ".transport-request.json"):
         review = load_review_record(ai_root, digest)
-        if review.record_version != 2 or review.evaluation_sha256 is None:
+        if review.record_version not in {2, 3} or review.evaluation_sha256 is None:
             continue
+        if review.decision != "approve":
+            raise ProductionOrchestrationError(
+                "transport request exists for a non-Approve Review"
+            )
 
         result_path = transport / f"{digest}.transport-result.json"
         if os.path.lexists(result_path):
