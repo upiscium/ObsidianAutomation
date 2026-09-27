@@ -203,11 +203,17 @@ projection result, revalidates the reviewer-owned binding, Approve Review and
 Receipt, then deletes only `00-Input` through `70-Transport`; the Completed
 projection is retained.
 
-For an exact evaluation-bound Reject Review, Reviewer may additionally enqueue a
-bounded cleanup intent; only Sync can execute the derived fixed-path WebDAV
-DELETEs, using the dedicated `04-AI`-scoped cleanup credential rather than the
-canonical writer credential. These projection artifacts never substitute for
-Validation, Human Review, Execution, Transport, or Receipt authority.
+For an exact evaluation-bound Reject or Keep as Idea Review, Reviewer may
+enqueue the same bounded pre-terminal projection cleanup intent; only Sync can
+execute the derived fixed-path WebDAV DELETEs, using the dedicated
+`04-AI`-scoped cleanup credential rather than the canonical writer credential.
+
+`keep_as_idea` is never a canonical write request from Automation. ObsidianCore
+first performs the Human client-side `05-Idea` save and then sets the Review
+request. Automation records that attestation as terminal
+`human_kept_as_idea`, does not grant Executor approval, and never gains
+`05-Idea` read/write authority. These projection artifacts never substitute
+for Validation, Human Review, Execution, Transport, or Receipt authority.
 
 ```text
 Evaluation != Validation
