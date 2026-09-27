@@ -601,6 +601,43 @@ def test_retire_historical_runtime_rejects_same_revision(
         )
 
 
+def test_retire_historical_runtime_rejects_arbitrary_retry_reason(
+    tmp_path: Path,
+) -> None:
+    root, context_sha = _state(tmp_path)
+    submitted = submit_job(root, context_sha256=context_sha, recipe=_parsed_recipe())
+    generation = str(submitted["generation_id"])
+
+    for attempt_index in range(1, 4):
+        work = claim_next_attempt(
+            root,
+            "generation",
+            max_attempts=3,
+            recover_running=True,
+        )
+        assert work is not None
+        assert work.attempt_index == attempt_index
+        complete_attempt(
+            root,
+            work.attempt_id,
+            outcome="retryable_failure",
+            reason_code="provider_timeout",
+        )
+    assert claim_next_attempt(
+        root,
+        "generation",
+        max_attempts=3,
+        recover_running=True,
+    ) is None
+
+    with pytest.raises(PreReviewJobError, match="not an allowed historical runtime"):
+        retire_historical_runtime_generation(
+            root,
+            generation,
+            deployed_revision="b" * 40,
+        )
+
+
 def test_retire_historical_runtime_rejects_non_model_stage_exhaustion(
     tmp_path: Path,
 ) -> None:
