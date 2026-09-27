@@ -7,6 +7,7 @@ import pytest
 
 from obsidian_automation.artifact_lifecycle import (
     ArtifactLifecycleError,
+    disposition_review_record_bytes,
     ensure_artifact_layout,
     load_review_record,
     parse_review_record,
@@ -179,6 +180,37 @@ def test_review_parser_rejects_unknown_and_duplicate_properties() -> None:
     ).encode()
     with pytest.raises(ArtifactLifecycleError, match="duplicate"):
         parse_review_record(duplicate)
+
+
+def test_review_v2_rejects_keep_as_idea_but_v3_accepts_it() -> None:
+    digest = "a" * 64
+    evaluation = "b" * 64
+
+    historical_v2 = (
+        "{"
+        '"record_version":2,'
+        f'"mutation_sha256":"{digest}",'
+        f'"evaluation_sha256":"{evaluation}",'
+        '"decision":"keep_as_idea",'
+        '"decided_at":"2026-09-27T00:00:00Z",'
+        '"approver":"human"'
+        "}\n"
+    ).encode()
+    with pytest.raises(ArtifactLifecycleError, match="record_version contract"):
+        parse_review_record(historical_v2)
+
+    current = parse_review_record(
+        disposition_review_record_bytes(
+            mutation_sha256=digest,
+            evaluation_sha256=evaluation,
+            decision="keep_as_idea",
+            approver="human",
+            decided_at="2026-09-27T00:00:00Z",
+        )
+    )
+    assert current.record_version == 3
+    assert current.decision == "keep_as_idea"
+    assert current.approved is False
 
 
 def test_review_requires_existing_exact_validated_artifact(tmp_path: Path) -> None:
