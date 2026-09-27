@@ -166,9 +166,10 @@ Evaluator
   read 14-Evaluation-Context
   write advisory 15-Evaluation
         ↓
-Human reviewer
-  read Validation + Evaluation
+Human reviewer / Review Intake
+  read Validation + Evaluation + published Review projection
   write exact-artifact decision in 20-Review
+  write immutable case/evaluation/mutation projection binding in 20-Review
 ```
 
 Evaluator assesses groundedness, redundancy, and consistency using output
@@ -185,11 +186,28 @@ historical v1 records remain readable.
 
 Human-facing Obsidian views are projected through separate non-authoritative stages.
 Reader, Generator, Validator, Evaluator, Reviewer, Executor and Sync may write only
-their own `16-Human-Projection/<role>` request queue. Sync may read those queues but
-cannot forge producer requests; only Sync writes `17-Human-Projection-Result` and
-performs conditional WebDAV CREATE below the fixed `04-AI/**` stage allowlist. For an exact evaluation-bound Reject Review, Reviewer may additionally enqueue a bounded cleanup intent; only Sync can execute the derived fixed-path WebDAV DELETEs, using the dedicated `04-AI`-scoped cleanup credential rather than the canonical writer credential.
-These projection artifacts never substitute for Validation, Human Review,
-Execution, Transport, or Receipt authority.
+their own `16-Human-Projection/<role>` request queue. Review Intake persists the
+exact case / Review-projection / Evaluation / mutation mapping as an immutable
+reviewer-owned `20-Review/<mutation>.projection-binding.json`; Executor and Sync
+consume that binding rather than reading `02-Orchestration`. Sync may read the
+projection queues but cannot forge producer requests; only Sync writes
+`17-Human-Projection-Result` and performs conditional WebDAV CREATE below the
+fixed `04-AI/**` stage allowlist.
+
+After Approve, Executor, Sync, and Executor respectively derive
+`60-Execution`, `70-Transport`, and `80-Completed` from authoritative
+Execution, verified Transport, and Receipt artifacts. Sync has read-only access to
+Receipts solely to verify terminal projection cleanup; Receipt write authority
+remains Executor-only. Terminal cleanup waits for the exact `80-Completed`
+projection result, revalidates the reviewer-owned binding, Approve Review and
+Receipt, then deletes only `00-Input` through `70-Transport`; the Completed
+projection is retained.
+
+For an exact evaluation-bound Reject Review, Reviewer may additionally enqueue a
+bounded cleanup intent; only Sync can execute the derived fixed-path WebDAV
+DELETEs, using the dedicated `04-AI`-scoped cleanup credential rather than the
+canonical writer credential. These projection artifacts never substitute for
+Validation, Human Review, Execution, Transport, or Receipt authority.
 
 ```text
 Evaluation != Validation
