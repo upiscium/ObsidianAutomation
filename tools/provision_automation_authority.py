@@ -268,6 +268,7 @@ AI_ACLS: dict[str, tuple[str, ...]] = {
         "u:obsidian-ai-executor:r-x",
     ),
     "/var/lib/obsidian-ai/state/30-Receipts": (
+        "u:obsidian-ai-sync:r-x",
         "u:obsidian-ai-reader:r-x",
         "u:obsidian-ai-reviewer:r-x",
         "u:obsidian-ai-executor:rwx",
@@ -545,6 +546,14 @@ def _apply_ai_acls(runner: Runner) -> None:
         path="/var/lib/obsidian-ai/state/27-Transport",
         expected=True,
         label="sync writes Transport",
+    )
+    _require_access(
+        runner,
+        user="obsidian-ai-sync",
+        flag="-r",
+        path="/var/lib/obsidian-ai/state/30-Receipts",
+        expected=True,
+        label="sync reads Receipts for terminal projection cleanup",
     )
     _require_access(
         runner,
