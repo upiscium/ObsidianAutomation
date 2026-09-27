@@ -249,7 +249,7 @@ The Hub groups the latest projection for each case into:
 
 Stage order is authoritative for the Human-facing current view. For example, an `80-Completed` projection wins over an older-stage `50-Review` projection even if filesystem timestamps are unusual.
 
-The current Core implementation reads canonical `04-AI` projections and temporarily retains a `03-AI` fallback for historical migration compatibility.
+The current Core implementation reads canonical `04-AI` projections only.
 
 ## Checking production status
 
@@ -319,15 +319,9 @@ A projection emission failure does not retroactively invalidate a correctly appr
 
 Conversely, the existence of a projection is never sufficient proof that a canonical mutation was authorized or completed. Authoritative evidence remains in Validation, Review, Execution, Transport, and Receipt artifacts.
 
-## Legacy 03-AI migration
+## Projection root
 
-New projection requests are always written below `04-AI`.
-
-The code currently retains limited `03-AI` support for historical immutable request/result parsing, Review Intake, cleanup, and Core read fallback.
-
-Do not create new `03-AI` cases.
-
-After `04-AI` has operated stably and no active historical case depends on `03-AI`, the legacy parser, cleanup compatibility, Core fallback, tests, and documentation can be removed together.
+Human-facing projection uses `04-AI` as its sole runtime root.
 
 ## Next references
 
