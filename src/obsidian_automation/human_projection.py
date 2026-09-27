@@ -46,6 +46,7 @@ PROJECTION_ROOT = "04-AI"
 LEGACY_PROJECTION_ROOT = "03-AI"
 PROJECTION_ROOTS = (PROJECTION_ROOT, LEGACY_PROJECTION_ROOT)
 RECORD_VERSION = 1
+POST_REVIEW_BINDING_SUFFIX = ".projection-binding.json"
 MAX_MARKDOWN_BYTES = 512 * 1024
 MAX_REQUEST_BYTES = 768 * 1024
 MAX_BATCH = 64
@@ -143,6 +144,27 @@ class ProjectionResult:
         )
 
 
+@dataclass(frozen=True)
+class PostReviewProjectionBinding:
+    case_id: str
+    review_projection_request_sha256: str
+    evaluation_sha256: str
+    mutation_sha256: str
+    created_at: str
+
+    def to_json_bytes(self) -> bytes:
+        return _canonical_json_bytes(
+            {
+                "record_version": RECORD_VERSION,
+                "case_id": self.case_id,
+                "review_projection_request_sha256": self.review_projection_request_sha256,
+                "evaluation_sha256": self.evaluation_sha256,
+                "mutation_sha256": self.mutation_sha256,
+                "created_at": self.created_at,
+            }
+        )
+
+
 def projection_enabled(ai_root: Path) -> bool:
     path = ai_root.absolute() / REQUEST_STAGE
     try:
@@ -156,6 +178,117 @@ def projection_enabled(ai_root: Path) -> bool:
 
 def _case_id(value: str) -> str:
     return _require_sha256(value, label="ai_case_id")
+
+
+def build_post_review_projection_binding(
+    *,
+    case_id: str,
+    review_projection_request_sha256: str,
+    evaluation_sha256: str,
+    mutation_sha256: str,
+    created_at: str,
+) -> PostReviewProjectionBinding:
+    binding = PostReviewProjectionBinding(
+        case_id=_case_id(case_id),
+        review_projection_request_sha256=_require_sha256(
+            review_projection_request_sha256,
+            label="review_projection_request_sha256",
+        ),
+        evaluation_sha256=_require_sha256(
+            evaluation_sha256,
+            label="projection binding evaluation_sha256",
+        ),
+        mutation_sha256=_require_sha256(
+            mutation_sha256,
+            label="projection binding mutation_sha256",
+        ),
+        created_at=created_at,
+    )
+    return parse_post_review_projection_binding(binding.to_json_bytes())
+
+
+def parse_post_review_projection_binding(data: bytes) -> PostReviewProjectionBinding:
+    value = _decode_json_object(data, label="post-review projection binding")
+    required = {
+        "record_version",
+        "case_id",
+        "review_projection_request_sha256",
+        "evaluation_sha256",
+        "mutation_sha256",
+        "created_at",
+    }
+    if set(value) != required or value["record_version"] != RECORD_VERSION:
+        raise HumanProjectionError(
+            "post-review projection binding properties do not match contract"
+        )
+    created_at = value["created_at"]
+    if not isinstance(created_at, str) or not created_at.endswith("Z"):
+        raise HumanProjectionError(
+            "post-review projection binding created_at is invalid"
+        )
+    return PostReviewProjectionBinding(
+        case_id=_case_id(value["case_id"]),
+        review_projection_request_sha256=_require_sha256(
+            value["review_projection_request_sha256"],
+            label="review_projection_request_sha256",
+        ),
+        evaluation_sha256=_require_sha256(
+            value["evaluation_sha256"],
+            label="projection binding evaluation_sha256",
+        ),
+        mutation_sha256=_require_sha256(
+            value["mutation_sha256"],
+            label="projection binding mutation_sha256",
+        ),
+        created_at=created_at,
+    )
+
+
+def _post_review_projection_binding_path(
+    ai_root: Path,
+    mutation_sha256: str,
+) -> Path:
+    root = ai_root.absolute()
+    _require_safe_directory(root, create=False)
+    review = root / "20-Review"
+    _require_safe_directory(review, create=False)
+    mutation = _require_sha256(
+        mutation_sha256,
+        label="projection binding mutation_sha256",
+    )
+    return review / f"{mutation}{POST_REVIEW_BINDING_SUFFIX}"
+
+
+def store_post_review_projection_binding(
+    ai_root: Path,
+    binding: PostReviewProjectionBinding,
+) -> tuple[str, Path]:
+    normalized = parse_post_review_projection_binding(binding.to_json_bytes())
+    data = normalized.to_json_bytes()
+    digest = sha256_bytes(data)
+    path = _post_review_projection_binding_path(
+        ai_root,
+        normalized.mutation_sha256,
+    )
+    return digest, _store_immutable(path, data)
+
+
+def load_post_review_projection_binding(
+    ai_root: Path,
+    mutation_sha256: str,
+) -> PostReviewProjectionBinding | None:
+    path = _post_review_projection_binding_path(ai_root, mutation_sha256)
+    if not os.path.lexists(path):
+        return None
+    binding = parse_post_review_projection_binding(_read_exact_file(path))
+    if binding.mutation_sha256 != _require_sha256(
+        mutation_sha256,
+        label="projection binding mutation_sha256",
+    ):
+        raise HumanProjectionError(
+            "post-review projection binding is bound to another mutation"
+        )
+    return binding
 
 
 def _stage(value: str) -> str:
