@@ -23,6 +23,7 @@ from .human_projection import (
     emit_completed_projection,
     emit_execution_projection,
     emit_transport_projection,
+    projection_enabled,
 )
 from .human_projection_cleanup import (
     build_terminal_cleanup_request,
@@ -154,12 +155,51 @@ def _digest_files(directory: Path, suffix: str) -> list[tuple[str, Path]]:
     return rows
 
 
+def _case_id_for_projection(
+    ai_root: Path,
+    mutation_sha256: str,
+) -> str | None:
+    if not projection_enabled(ai_root):
+        return None
+    return generation_id_for_mutation(ai_root, mutation_sha256)
+
+
+def _emit_execution_if_enabled(
+    ai_root: Path,
+    mutation_sha256: str,
+) -> None:
+    case_id = _case_id_for_projection(ai_root, mutation_sha256)
+    if case_id is None:
+        return
+    emit_execution_projection(
+        ai_root,
+        case_id=case_id,
+        mutation_sha256=mutation_sha256,
+    )
+
+
+def _emit_transport_if_enabled(
+    ai_root: Path,
+    mutation_sha256: str,
+) -> None:
+    case_id = _case_id_for_projection(ai_root, mutation_sha256)
+    if case_id is None:
+        return
+    emit_transport_projection(
+        ai_root,
+        case_id=case_id,
+        mutation_sha256=mutation_sha256,
+    )
+
+
 def _emit_completed_and_queue_cleanup(
     ai_root: Path,
     *,
-    case_id: str,
     mutation_sha256: str,
 ) -> None:
+    case_id = _case_id_for_projection(ai_root, mutation_sha256)
+    if case_id is None:
+        return
     emitted = emit_completed_projection(
         ai_root,
         case_id=case_id,
@@ -219,7 +259,6 @@ def dispatch_pending_executor(
         if os.path.lexists(receipt_path):
             _emit_completed_and_queue_cleanup(
                 ai_root,
-                case_id=generation_id_for_mutation(ai_root, digest),
                 mutation_sha256=digest,
             )
             completed += 1
@@ -237,16 +276,11 @@ def dispatch_pending_executor(
         if state.status == "completed":
             _emit_completed_and_queue_cleanup(
                 ai_root,
-                case_id=generation_id_for_mutation(ai_root, digest),
                 mutation_sha256=digest,
             )
             completed += 1
         elif state.status in {"request_pending", "transport_pending"}:
-            emit_execution_projection(
-                ai_root,
-                case_id=generation_id_for_mutation(ai_root, digest),
-                mutation_sha256=digest,
-            )
+            _emit_execution_if_enabled(ai_root, digest)
             transport_pending += 1
         elif state.status == "remote_verified_pending_receipt":
             # advance_production_executor normally consumes this state before
@@ -306,11 +340,7 @@ def dispatch_pending_transport(
 
         result_path = transport / f"{digest}.transport-result.json"
         if os.path.lexists(result_path):
-            emit_transport_projection(
-                ai_root,
-                case_id=generation_id_for_mutation(ai_root, digest),
-                mutation_sha256=digest,
-            )
+            _emit_transport_if_enabled(ai_root, digest)
             existing += 1
             continue
 
