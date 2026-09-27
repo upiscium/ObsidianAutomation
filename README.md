@@ -2,7 +2,15 @@
 
 Reusable automation software for maintaining and publishing an Obsidian Vault while keeping private Vault data and production deployment details outside this public repository.
 
-The first implementation target is a deterministic Public Exporter that generates the public `ObsidianCore` projection from an explicitly allowlisted subset of a private Vault.
+The repository includes deterministic Vault publication/synchronization components and the production AI lifecycle used to generate, validate, review, and conditionally publish Knowledge Notes while preserving explicit authority boundaries.
+
+## Start here
+
+For production deployment and first-host setup, see [Installation](docs/installation.md).
+
+For the Human-facing AI workflow, including `04-AI` projection, Human Review, post-review delivery, and Completed cleanup, see [Getting started](docs/getting-started.md).
+
+The detailed projection contract is documented in [Human-facing AI lifecycle projection](docs/human-ai-projection.md).
 
 ## Trust boundary
 
@@ -80,4 +88,20 @@ The design is documented in `docs/live-vault-snapshot.md`; the example policy is
 
 ## Current scope
 
-Git-backed deterministic synchronization and publication are being completed before any AI/LLM workflow or canonical Vault write path. AI proposal, evaluation, and execution remain out of scope for this stage.
+The repository currently covers:
+
+- deterministic public projection and publication of the managed ObsidianCore surface;
+- private Live Vault snapshot support;
+- pull-only AI input mirroring;
+- automatic Input Planner -> Generator -> Validator -> Reader -> Evaluator processing;
+- Human-facing `04-AI/**` lifecycle projection;
+- fail-closed Human Review Intake;
+- separated Executor -> Sync -> Executor canonical Knowledge creation;
+- post-review `60-Execution -> 70-Transport -> 80-Completed` projection;
+- terminal Human-facing projection cleanup while retaining `80-Completed`;
+- exact-SHA production bootstrap/update and authority verification;
+- GitHub Project status synchronization and Core promotion workflows.
+
+Production credentials, private Vault contents, environment-specific endpoints, and deployment secrets remain outside this repository.
+
+For installation and operational acceptance, follow [Installation](docs/installation.md) and [Pre-review production rollout and acceptance](docs/pre-review-production.md).
