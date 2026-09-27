@@ -233,20 +233,13 @@ A terminal cleanup request may be queued before `80-Completed` reaches
 Nextcloud. That is expected: cleanup remains pending without deleting anything
 until the exact completed projection result proves publication.
 
-## Projection root migration
+## Projection root
 
-The canonical Human-facing projection root is `04-AI`. Historical immutable
-Projection Request / Result artifacts created before this migration may still
-bind exact `03-AI/**` target paths. Runtime parsers retain read/cleanup
-compatibility for that legacy root so existing audit records are not rewritten.
+The Human-facing projection root is exclusively `04-AI`. Projection Requests,
+Results, Review Intake, post-review publication, and cleanup all reject any
+other runtime root.
 
-New Projection Requests are always emitted below `04-AI/**`. No third root is
-accepted. During migration, a legacy case continues to use its exact stored
-`03-AI/**` target for Review Intake and Reject cleanup; new cases use
-`04-AI/**`.
-
-The old `03-AI` Vault folder can be removed after no active historical case
-depends on it. It is not lifecycle authority; private state remains under
+Private lifecycle and audit authority remains under
 `/var/lib/obsidian-ai/state/**`.
 
 ## Folder creation boundary
