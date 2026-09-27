@@ -21,6 +21,6 @@ PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
 ReadOnlyPaths=/etc/obsidian-ai /var/lib/obsidian-ai/state/10-Validation /var/lib/obsidian-ai/state/20-Review /var/lib/obsidian-ai/state/25-Execution
-ReadWritePaths=/var/lib/obsidian-ai/state/24-Locks /var/lib/obsidian-ai/state/27-Transport
+ReadWritePaths=/var/lib/obsidian-ai/state/16-Human-Projection/sync /var/lib/obsidian-ai/state/24-Locks /var/lib/obsidian-ai/state/27-Transport
 UMask=0027
 TimeoutStartSec=5min
