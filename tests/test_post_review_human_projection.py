@@ -11,10 +11,12 @@ from obsidian_automation.artifact_lifecycle import (
 )
 from obsidian_automation.canonical_mutation import ExecutionReceipt
 from obsidian_automation.human_projection import (
+    build_post_review_projection_binding,
     emit_completed_projection,
     emit_execution_projection,
     emit_transport_projection,
     parse_request,
+    store_post_review_projection_binding,
 )
 from obsidian_automation.production_orchestrator import (
     TransportRequest,
@@ -62,6 +64,16 @@ def _state(tmp_path: Path) -> tuple[Path, bytes, bytes, bytes]:
                 "approver": "human",
             }
         )
+    )
+    store_post_review_projection_binding(
+        state,
+        build_post_review_projection_binding(
+            case_id=CASE,
+            review_projection_request_sha256="f" * 64,
+            evaluation_sha256=EVALUATION,
+            mutation_sha256=MUTATION,
+            created_at="2026-09-27T00:00:00Z",
+        ),
     )
 
     request = TransportRequest(
@@ -152,15 +164,9 @@ def test_post_review_projection_emitters_bind_authoritative_artifacts(
 
 
 def test_completed_hook_queues_terminal_cleanup(
-    monkeypatch,
     tmp_path: Path,
 ) -> None:
     state, _request_bytes, _result_bytes, _receipt_bytes = _state(tmp_path)
-    monkeypatch.setattr(
-        production,
-        "_case_id_for_projection",
-        lambda _root, _mutation: CASE,
-    )
 
     production._emit_completed_and_queue_cleanup(
         state,
