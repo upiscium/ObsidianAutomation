@@ -271,6 +271,86 @@ def test_review_intake_blank_decision_is_non_mutating(tmp_path: Path) -> None:
     ).exists()
 
 
+def test_invalid_remote_review_does_not_starve_later_case(tmp_path: Path) -> None:
+    state, validated, evaluation_sha, _request = _setup(tmp_path)
+    second_case = "f" * 64
+
+    emitted = emit_evaluation_and_review_projections(
+        state,
+        case_id=second_case,
+        evaluation_sha256=evaluation_sha,
+    )
+    assert emitted is not None
+
+    review_rows = []
+    for path in sorted(
+        (state / "16-Human-Projection" / "evaluator").glob("*.projection.json")
+    ):
+        request = parse_request(path.read_bytes())
+        if request.stage == "review":
+            review_rows.append(
+                (path.name.removesuffix(".projection.json"), request)
+            )
+    assert len(review_rows) == 2
+
+    for request_sha, request in review_rows:
+        result_path = (
+            state
+            / "17-Human-Projection-Result"
+            / f"{request_sha}.projection-result.json"
+        )
+        if not result_path.exists():
+            _store_result(
+                state,
+                ProjectionResult(
+                    request_sha256=request_sha,
+                    target_path=request.target_path,
+                    content_sha256=request.content_sha256,
+                    result="created",
+                    completed_at="2026-09-21T00:02:00Z",
+                ),
+            )
+
+    invalid_target = review_rows[0][1].target_path
+    valid_request = review_rows[1][1]
+
+    def read_remote(**kwargs):
+        target_path = str(kwargs["target_path"])
+        request = next(
+            request
+            for _request_sha, request in review_rows
+            if request.target_path == target_path
+        )
+        if target_path == invalid_target:
+            malformed = request.content.replace(
+                'target_path: "11-Knowledge/review-intake.md"',
+                "target_path: {child: changed}",
+                1,
+            )
+            return RemoteReview(200, malformed.encode("utf-8"), None)
+        return RemoteReview(200, _edited(request.content, "approve"), None)
+
+    result = run_review_intake(
+        state,
+        base_url="https://nextcloud.example/dav/Vault",
+        username="review-reader",
+        password="secret",
+        approver="human",
+        read_remote=read_remote,
+    )
+
+    assert result["invalid_remote"] == 1
+    assert result["processed"] == 1
+    review = load_review_record(state, validated.mutation_sha256)
+    assert review.decision == "approve"
+    binding = load_post_review_projection_binding(
+        state,
+        validated.mutation_sha256,
+    )
+    assert binding is not None
+    assert binding.case_id == valid_request.case_id
+
+
 def test_review_intake_rejects_other_human_edits(tmp_path: Path) -> None:
     state, validated, _evaluation_sha, request = _setup(tmp_path)
     changed = _edited(
