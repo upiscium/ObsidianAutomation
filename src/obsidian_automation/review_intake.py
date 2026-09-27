@@ -322,9 +322,11 @@ def extract_review_decision(
         decision = "approve"
     elif raw_value == "reject":
         decision = "reject"
+    elif raw_value == "keep_as_idea":
+        decision = "keep_as_idea"
     else:
         raise RemoteReviewDocumentError(
-            "review_request must be blank, approve, or reject"
+            "review_request must be blank, approve, reject, or keep_as_idea"
         )
     return decision
 
@@ -393,7 +395,7 @@ def _store_post_review_binding(
 ) -> tuple[str, Path]:
     review = load_review_record(ai_root, mutation_sha256)
     if (
-        review.record_version != 2
+        review.record_version not in {2, 3}
         or review.evaluation_sha256 != evaluation_sha256
     ):
         raise ReviewIntakeError(
@@ -409,7 +411,7 @@ def _store_post_review_binding(
     return store_post_review_projection_binding(ai_root, binding)
 
 
-def _queue_reject_cleanup(
+def _queue_terminal_review_cleanup(
     ai_root: Path,
     *,
     review_projection_request_sha256: str,
@@ -423,11 +425,11 @@ def _queue_reject_cleanup(
     )
     review_bytes = _read_exact_file(review_path)
     review = load_review_record(ai_root, mutation_sha256)
-    if review.record_version != 2 or review.evaluation_sha256 != evaluation_sha256:
+    if review.record_version not in {2, 3} or review.evaluation_sha256 != evaluation_sha256:
         raise ReviewIntakeError(
-            "Reject cleanup Review binding does not match selected Evaluation"
+            "terminal Review cleanup binding does not match selected Evaluation"
         )
-    if review.decision != "reject":
+    if review.decision not in {"reject", "keep_as_idea"}:
         return None
     return store_cleanup_request(
         ai_root,
@@ -483,7 +485,7 @@ def run_review_intake(
         if os.path.lexists(review_path):
             review = load_review_record(ai_root, evaluation.mutation_sha256)
             if (
-                review.record_version != 2
+                review.record_version not in {2, 3}
                 or review.evaluation_sha256 != evaluation_sha
             ):
                 raise ReviewIntakeError(
@@ -496,8 +498,8 @@ def run_review_intake(
                 evaluation_sha256=evaluation_sha,
                 mutation_sha256=evaluation.mutation_sha256,
             )
-            if review.decision == "reject":
-                _queue_reject_cleanup(
+            if review.decision in {"reject", "keep_as_idea"}:
+                _queue_terminal_review_cleanup(
                     ai_root,
                     review_projection_request_sha256=request_sha,
                     request=request,
@@ -542,8 +544,8 @@ def run_review_intake(
             evaluation_sha256=evaluation_sha,
             mutation_sha256=review_result.mutation_sha256,
         )
-        if decision == "reject":
-            _queue_reject_cleanup(
+        if decision in {"reject", "keep_as_idea"}:
+            _queue_terminal_review_cleanup(
                 ai_root,
                 review_projection_request_sha256=request_sha,
                 request=request,
