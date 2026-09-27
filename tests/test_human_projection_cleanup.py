@@ -345,6 +345,43 @@ def test_completed_cleanup_waits_until_80_completed_is_published(
     assert calls == []
 
 
+def test_completed_cleanup_rejects_mismatched_reviewer_binding(
+    tmp_path: Path,
+) -> None:
+    state, _cleanup_sha = _completed_state(tmp_path, published=True)
+    binding_path = (
+        state
+        / "20-Review"
+        / f"{MUTATION}.projection-binding.json"
+    )
+    binding_path.write_bytes(
+        build_post_review_projection_binding(
+            case_id="f" * 64,
+            review_projection_request_sha256="e" * 64,
+            evaluation_sha256=EVALUATION,
+            mutation_sha256=MUTATION,
+            created_at="2026-09-23T00:59:00Z",
+        ).to_json_bytes()
+    )
+    calls: list[str] = []
+
+    with pytest.raises(
+        HumanProjectionCleanupError,
+        match="reviewer-owned projection binding",
+    ):
+        run_cleanup_sync(
+            state,
+            base_url="https://nextcloud.example/dav/Vault",
+            username="sync",
+            password="secret",
+            delete_remote=lambda **kwargs: calls.append(
+                str(kwargs["target_path"])
+            ) or "deleted",
+        )
+
+    assert calls == []
+
+
 def test_cleanup_rejects_case_not_bound_to_review_projection(tmp_path: Path) -> None:
     state, _cleanup_sha = _state(tmp_path)
 
