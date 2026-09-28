@@ -330,6 +330,32 @@ def _chunk_bytes(lines: Sequence[tuple[int, str]]) -> bytes:
     return ("\n".join(line for _, line in lines).strip() + "\n").encode("utf-8")
 
 
+def _chunk_identity_sha256(
+    *,
+    source_path: str,
+    source_sha256: str,
+    ordinal: int,
+    start_line: int,
+    end_line: int,
+    heading_path: Sequence[str],
+    content_sha256: str,
+) -> str:
+    return sha256_bytes(
+        _canonical_json_bytes(
+            {
+                "source_path": source_path,
+                "source_sha256": source_sha256,
+                "chunk_policy": CHUNK_POLICY_VERSION,
+                "ordinal": ordinal,
+                "start_line": start_line,
+                "end_line": end_line,
+                "heading_path": list(heading_path),
+                "content_sha256": content_sha256,
+            }
+        )
+    )
+
+
 def _bounded_parts(
     lines: Sequence[tuple[int, str]],
 ) -> list[list[tuple[int, str]]]:
@@ -401,21 +427,18 @@ def _chunk_lines(
             content = _chunk_bytes(part)
             content_sha = sha256_bytes(content)
             ordinal = len(chunks)
-            identity = _canonical_json_bytes(
-                {
-                    "source_path": source_path,
-                    "source_sha256": source_sha256,
-                    "chunk_policy": CHUNK_POLICY_VERSION,
-                    "ordinal": ordinal,
-                    "start_line": part[0][0],
-                    "end_line": part[-1][0],
-                    "heading_path": list(heading_path),
-                    "content_sha256": content_sha,
-                }
+            chunk_id = _chunk_identity_sha256(
+                source_path=source_path,
+                source_sha256=source_sha256,
+                ordinal=ordinal,
+                start_line=part[0][0],
+                end_line=part[-1][0],
+                heading_path=heading_path,
+                content_sha256=content_sha,
             )
             chunks.append(
                 SemanticChunk(
-                    chunk_id=sha256_bytes(identity),
+                    chunk_id=chunk_id,
                     ordinal=ordinal,
                     start_line=part[0][0],
                     end_line=part[-1][0],
@@ -608,6 +631,15 @@ def parse_semantic_corpus_manifest(data: bytes) -> SemanticCorpusManifest:
         source_kind = raw["source_kind"]
         if source_kind not in {"daily", "idea", "project", "project-note", "knowledge"}:
             raise SemanticCorpusError("semantic source kind is invalid")
+        expected_root = {
+            "daily": DAILY_ROOT,
+            "idea": IDEA_ROOT,
+            "project": PROJECT_ROOT,
+            "project-note": PROJECT_ROOT,
+            "knowledge": KNOWLEDGE_ROOT,
+        }[source_kind]
+        if not path.startswith(expected_root + "/"):
+            raise SemanticCorpusError("semantic source path does not match source kind")
         digest = _require_sha256(raw["content_sha256"], label="semantic source SHA")
         byte_size = raw["byte_size"]
         if type(byte_size) is not int or not 0 <= byte_size <= MAX_SOURCE_BYTES:
@@ -644,17 +676,30 @@ def parse_semantic_corpus_manifest(data: bytes) -> SemanticCorpusManifest:
                 or not all(isinstance(part, str) for part in heading_path)
             ):
                 raise SemanticCorpusError("semantic chunk bounds are invalid")
+            chunk_id = _require_sha256(item["chunk_id"], label="semantic chunk id")
+            content_sha = _require_sha256(
+                item["content_sha256"],
+                label="semantic chunk content SHA",
+            )
+            expected_chunk_id = _chunk_identity_sha256(
+                source_path=path,
+                source_sha256=digest,
+                ordinal=expected_ordinal,
+                start_line=start_line,
+                end_line=end_line,
+                heading_path=heading_path,
+                content_sha256=content_sha,
+            )
+            if chunk_id != expected_chunk_id:
+                raise SemanticCorpusError("semantic chunk identity binding mismatch")
             chunks.append(
                 SemanticChunk(
-                    chunk_id=_require_sha256(item["chunk_id"], label="semantic chunk id"),
+                    chunk_id=chunk_id,
                     ordinal=expected_ordinal,
                     start_line=start_line,
                     end_line=end_line,
                     heading_path=tuple(heading_path),
-                    content_sha256=_require_sha256(
-                        item["content_sha256"],
-                        label="semantic chunk content SHA",
-                    ),
+                    content_sha256=content_sha,
                     byte_size=chunk_bytes,
                 )
             )
