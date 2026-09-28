@@ -22,6 +22,8 @@ EXECUTOR_USER=${EXECUTOR_USER:-obsidian-ai-executor}
 VAULT_MARKER="$VAULT_ROOT/.obsidian-ai-disposable-fixture"
 DEFAULT_AI_ROOT="$VAULT_ROOT/20-AI"
 STATE_MARKER="$AI_ROOT/.obsidian-ai-disposable-state"
+DAILY="$VAULT_ROOT/00-DailyNote"
+IDEAS="$VAULT_ROOT/05-Idea"
 KNOWLEDGE="$VAULT_ROOT/11-Knowledge"
 UNTRUSTED="$AI_ROOT/00-Untrusted"
 ORCHESTRATION="$AI_ROOT/02-Orchestration"
@@ -73,7 +75,7 @@ for user in \
 done
 
 for directory in \
-  "$KNOWLEDGE" "$UNTRUSTED" "$ORCHESTRATION" "$STATUS_DIR" "$INDEX" "$CONTEXT" "$VALIDATION" \
+  "$DAILY" "$IDEAS" "$KNOWLEDGE" "$UNTRUSTED" "$ORCHESTRATION" "$STATUS_DIR" "$INDEX" "$CONTEXT" "$VALIDATION" \
   "$EVALUATION_REQUEST" "$EVALUATION_CONTEXT" "$EVALUATION" "$PROJECTION" "$PROJECTION_RESULT" \
   "$PROJECTION/reader" "$PROJECTION/generator" "$PROJECTION/validator" "$PROJECTION/evaluator" \
   "$PROJECTION/reviewer" "$PROJECTION/executor" "$PROJECTION/sync" \
@@ -124,6 +126,8 @@ probe_read() {
   fi
 }
 
+daily_seed="$DAILY/.authority-gate-daily"
+idea_seed="$IDEAS/.authority-gate-idea"
 knowledge_seed="$KNOWLEDGE/.authority-gate-knowledge"
 untrusted_seed="$UNTRUSTED/.authority-gate-untrusted"
 index_seed="$INDEX/.authority-gate-index"
@@ -142,6 +146,8 @@ projection_generator_seed="$PROJECTION/generator/.authority-gate-projection-gene
 projection_evaluator_seed="$PROJECTION/evaluator/.authority-gate-projection-evaluator"
 projection_result_seed="$PROJECTION_RESULT/.authority-gate-projection-result"
 
+create_seed "$SYNC_USER" "$daily_seed"
+create_seed "$SYNC_USER" "$idea_seed"
 create_seed "$SYNC_USER" "$knowledge_seed"
 create_seed "$GENERATOR_USER" "$untrusted_seed"
 create_seed "$READER_USER" "$index_seed"
@@ -161,6 +167,8 @@ create_seed "$EVALUATOR_USER" "$projection_evaluator_seed"
 create_seed "$SYNC_USER" "$projection_result_seed"
 
 # Positive reads.
+probe_read "$READER_USER" "$daily_seed" allow "Reader reads Daily semantic corpus"
+probe_read "$READER_USER" "$idea_seed" allow "Reader reads Idea semantic corpus"
 probe_read "$READER_USER" "$knowledge_seed" allow "Reader reads canonical Knowledge"
 probe_read "$READER_USER" "$index_seed" allow "Reader reads Index"
 probe_read "$READER_USER" "$evaluation_request_seed" allow "Reader reads Evaluation Request"
@@ -196,6 +204,10 @@ probe_read "$SYNC_USER" "$projection_result_seed" allow "Sync reads human projec
 probe_read "$SYNC_USER" "$receipts_seed" allow "Sync reads Receipts for terminal projection cleanup"
 
 # Negative reads protecting trust boundaries.
+for user in "$GENERATOR_USER" "$VALIDATOR_USER" "$EVALUATOR_USER" "$REVIEWER_USER" "$EXECUTOR_USER"; do
+  probe_read "$user" "$daily_seed" deny "$user cannot read Daily semantic corpus directly"
+  probe_read "$user" "$idea_seed" deny "$user cannot read Idea semantic corpus directly"
+done
 probe_read "$GENERATOR_USER" "$knowledge_seed" deny "Generator cannot read canonical Knowledge directly"
 probe_read "$GENERATOR_USER" "$index_seed" deny "Generator cannot read Index"
 probe_read "$GENERATOR_USER" "$validation_seed" deny "Generator cannot read Validation"
@@ -219,6 +231,8 @@ for path in "$knowledge_seed" "$untrusted_seed" "$index_seed" "$context_seed" "$
 done
 
 # Positive writes: one semantic writer per stage; Locks are deliberately shared operational state.
+probe_write "$SYNC_USER" "$DAILY" allow "Sync writes Daily mirror corpus"
+probe_write "$SYNC_USER" "$IDEAS" allow "Sync writes Idea mirror corpus"
 probe_write "$SYNC_USER" "$KNOWLEDGE" allow "Sync writes local Vault mirror"
 probe_write "$READER_USER" "$INDEX" allow "Reader writes Index"
 probe_write "$READER_USER" "$CONTEXT" allow "Reader writes Context"
@@ -263,7 +277,7 @@ for user in "$SYNC_USER" "$REVIEWER_USER" "$EXECUTOR_USER"; do
 done
 
 # Reader writes only derived retrieval state and cannot write semantic authority stages.
-for directory in "$KNOWLEDGE" "$UNTRUSTED" "$VALIDATION" "$EVALUATION_REQUEST" "$EVALUATION" "$REVIEW" "$LOCKS" "$EXECUTION" "$TRANSPORT" "$RECEIPTS"; do
+for directory in "$DAILY" "$IDEAS" "$KNOWLEDGE" "$UNTRUSTED" "$VALIDATION" "$EVALUATION_REQUEST" "$EVALUATION" "$REVIEW" "$LOCKS" "$EXECUTION" "$TRANSPORT" "$RECEIPTS"; do
   probe_write "$READER_USER" "$directory" deny "Reader denied write: ${directory}"
 done
 
