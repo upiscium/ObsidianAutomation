@@ -122,7 +122,7 @@ runuser -u "$SYNC_USER" -- sh -c 'cat > "$1"' sh "$PROJECT_NOTE" <<EOF
 ---
 type: project-note
 lifecycle: active
-project: "[[10-Project/ReaderTraversalGate-$/ReaderTraversalGate-$|ReaderTraversalGate]]"
+project: "[[10-Project/$(basename "$PROJECT_DIR")/$(basename "$PROJECT_ENTRY" .md)|ReaderTraversalGate]]"
 workspace: "[[03-Workspace/Test/Test|Test]]"
 ---
 # Reader Project Note traversal Gate
