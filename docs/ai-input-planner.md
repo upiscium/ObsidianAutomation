@@ -264,8 +264,14 @@ providers.
 
 ## Future extensions
 
-The source / selection / objective concepts are intentionally separate. Future
-source adapters can add ChatGPT Export, Daily Notes, Papers, or other bounded
-sources without changing Generator authority. Human-facing `04-AI` remains
-excluded from the input corpus even though its Review control now feeds a
-separate fail-closed Review Intake path.
+The source / selection / objective concepts are intentionally separate. The
+reviewed next architecture is documented in
+[Semantic Planner v1](semantic-planner-v1.md), tracked by #198.
+
+Semantic Planner v1 extends the bounded corpus to Daily, Idea, Project,
+Project Note and Knowledge sources; introduces Reader-owned semantic retrieval;
+and keeps selection policy independent from generation objective. Generator
+authority remains unchanged: it still receives only exact Context Bundle bytes.
+
+Human-facing `04-AI` remains excluded from the input corpus even though its
+Review controls feed separate fail-closed Human actions.
