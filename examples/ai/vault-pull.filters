@@ -1,5 +1,9 @@
 # AI Writer pull-only mirror corpus.
-# Generation may use active Knowledge and active Project Notes.
+# Generation currently uses active Knowledge and active Project Notes.
+# Semantic Corpus v1 additionally indexes Daily and Idea content as Reader-owned
+# derived state; generation behavior is not changed by mirroring these roots.
++ /00-DailyNote/**
++ /05-Idea/**
 + /11-Knowledge/**
 + /10-Project/**
 - /**
