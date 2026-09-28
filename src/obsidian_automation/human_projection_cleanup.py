@@ -878,11 +878,9 @@ def run_cleanup_sync(
             projection_root = _verify_cleanup_binding(ai_root, request)
 
             if existing_result is not None:
-                review_target = cleanup_target_paths(
-                    request.case_id,
-                    projection_root=projection_root,
-                    stages=("review",),
-                )[0]
+                review_target = (
+                    f"{projection_root}/{STAGE_FOLDERS['review']}/{request.case_id}.md"
+                )
                 presence = observer(
                     base_url=base_url,
                     target_path=review_target,
