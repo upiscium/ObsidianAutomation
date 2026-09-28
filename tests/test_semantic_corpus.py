@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -258,3 +259,19 @@ def test_casefold_collision_and_symlink_fail_closed(tmp_path: Path) -> None:
     (knowledge / "Alias.md").symlink_to(target)
     with pytest.raises(SemanticCorpusError, match="symlink source"):
         build_semantic_corpus(vault)
+
+
+def test_manifest_rejects_tampered_chunk_identity(tmp_path: Path) -> None:
+    manifest = build_semantic_corpus(_vault(tmp_path))
+    value = json.loads(manifest.to_json_bytes())
+    value["sources"][0]["chunks"][0]["chunk_id"] = "f" * 64
+
+    with pytest.raises(SemanticCorpusError, match="identity binding mismatch"):
+        parse_semantic_corpus_manifest(
+            json.dumps(
+                value,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
