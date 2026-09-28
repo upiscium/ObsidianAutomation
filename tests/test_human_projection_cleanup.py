@@ -133,6 +133,8 @@ def test_reject_cleanup_deletes_exact_six_projection_paths_and_is_idempotent(
         "pending_terminal": 0,
         "deleted": 6,
         "already_absent": 0,
+        "rechecked_existing": 0,
+        "reconciled_resurrections": 0,
     }
     assert calls == list(cleanup_target_paths(CASE))
     assert (state / "20-Review" / f"{MUTATION}.approval.json").is_file()
@@ -150,15 +152,123 @@ def test_reject_cleanup_deletes_exact_six_projection_paths_and_is_idempotent(
     assert all(item.result == "deleted" for item in stored.targets)
 
     calls.clear()
+    presence_calls: list[str] = []
+
+    def observe_remote(**kwargs: object) -> str:
+        presence_calls.append(str(kwargs["target_path"]))
+        return "absent"
+
     second = run_cleanup_sync(
         state,
         base_url="https://nextcloud.example/dav/Vault",
         username="sync",
         password="secret",
         delete_remote=delete_remote,
+        observe_remote=observe_remote,
     )
     assert second["processed"] == 0
+    assert second["rechecked_existing"] == 1
+    assert second["reconciled_resurrections"] == 0
     assert calls == []
+    assert presence_calls == [
+        f"04-AI/50-Review/{CASE}.md",
+    ]
+
+
+def test_existing_reject_cleanup_redeletes_resurrected_projection_without_overwriting_result(
+    tmp_path: Path,
+) -> None:
+    state, cleanup_sha = _state(tmp_path)
+    calls: list[str] = []
+
+    def delete_remote(**kwargs: object) -> str:
+        calls.append(str(kwargs["target_path"]))
+        return "deleted"
+
+    first = run_cleanup_sync(
+        state,
+        base_url="https://nextcloud.example/dav/Vault",
+        username="sync",
+        password="secret",
+        delete_remote=delete_remote,
+    )
+    assert first["processed"] == 1
+
+    result_path = (
+        state
+        / "17-Human-Projection-Result"
+        / f"{cleanup_sha}.projection-cleanup-result.json"
+    )
+    original_result = result_path.read_bytes()
+
+    calls.clear()
+    presence_calls: list[str] = []
+    second = run_cleanup_sync(
+        state,
+        base_url="https://nextcloud.example/dav/Vault",
+        username="sync",
+        password="secret",
+        delete_remote=delete_remote,
+        observe_remote=lambda **kwargs: (
+            presence_calls.append(str(kwargs["target_path"])) or "present"
+        ),
+    )
+
+    assert second["processed"] == 1
+    assert second["deleted"] == 6
+    assert second["already_absent"] == 0
+    assert second["rechecked_existing"] == 1
+    assert second["reconciled_resurrections"] == 1
+    assert presence_calls == [f"04-AI/50-Review/{CASE}.md"]
+    assert calls == list(cleanup_target_paths(CASE))
+    assert result_path.read_bytes() == original_result
+
+
+def test_existing_keep_as_idea_cleanup_redeletes_resurrected_projection(
+    tmp_path: Path,
+) -> None:
+    state, cleanup_sha = _state(
+        tmp_path,
+        decision="keep_as_idea",
+        record_version=3,
+    )
+    calls: list[str] = []
+
+    first = run_cleanup_sync(
+        state,
+        base_url="https://nextcloud.example/dav/Vault",
+        username="sync",
+        password="secret",
+        delete_remote=lambda **kwargs: calls.append(
+            str(kwargs["target_path"])
+        ) or "deleted",
+    )
+    assert first["processed"] == 1
+
+    result_path = (
+        state
+        / "17-Human-Projection-Result"
+        / f"{cleanup_sha}.projection-cleanup-result.json"
+    )
+    original_result = result_path.read_bytes()
+    calls.clear()
+
+    second = run_cleanup_sync(
+        state,
+        base_url="https://nextcloud.example/dav/Vault",
+        username="sync",
+        password="secret",
+        delete_remote=lambda **kwargs: calls.append(
+            str(kwargs["target_path"])
+        ) or "deleted",
+        observe_remote=lambda **_kwargs: "present",
+    )
+
+    assert second["processed"] == 1
+    assert second["rechecked_existing"] == 1
+    assert second["reconciled_resurrections"] == 1
+    assert calls == list(cleanup_target_paths(CASE))
+    assert result_path.read_bytes() == original_result
 
 
 def test_keep_as_idea_cleanup_uses_same_bounded_projection_paths(
