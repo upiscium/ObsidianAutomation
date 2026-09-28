@@ -751,6 +751,54 @@ def _delete_remote_target(
 
 
 RemoteDelete = Callable[..., str]
+RemoteObserve = Callable[..., str]
+
+
+def _observe_remote_target_presence(
+    *,
+    base_url: str,
+    target_path: str,
+    username: str,
+    password: str,
+    timeout: float,
+    allow_http: bool,
+) -> str:
+    if not username:
+        raise HumanProjectionCleanupError("cleanup username must not be empty")
+    if not password:
+        raise HumanProjectionCleanupError("cleanup password must not be empty")
+
+    target_url = build_target_url(
+        base_url,
+        target_path,
+        allow_http=allow_http,
+    )
+    parsed = urlsplit(target_url)
+    auth = _authorization(username, password)
+
+    conn = _connection(parsed, timeout=timeout)
+    try:
+        conn.request("GET", parsed.path, headers={"Authorization": auth})
+        response = conn.getresponse()
+        # Presence reconciliation needs only the status code. Read a bounded
+        # prefix before closing the connection; projection bytes are not logged
+        # or persisted by this path.
+        response.read(1)
+        status = response.status
+    except OSError as exc:
+        raise HumanProjectionCleanupError(
+            f"WebDAV presence GET failed: {exc}"
+        ) from exc
+    finally:
+        conn.close()
+
+    if status == 404:
+        return "absent"
+    if status == 200:
+        return "present"
+    raise HumanProjectionCleanupError(
+        f"WebDAV presence GET returned unexpected HTTP status {status} for {target_path}"
+    )
 
 
 def _delete_cleanup_targets(
@@ -808,24 +856,68 @@ def run_cleanup_sync(
     max_requests: int = 16,
     allow_http: bool = False,
     delete_remote: RemoteDelete | None = None,
+    observe_remote: RemoteObserve | None = None,
 ) -> dict[str, object]:
     if type(max_requests) is not int or not 1 <= max_requests <= MAX_BATCH:
         raise HumanProjectionCleanupError(
             f"max_requests must be 1..{MAX_BATCH}"
         )
     deleter = delete_remote or _delete_remote_target
+    observer = observe_remote or _observe_remote_target_presence
     processed = 0
     pending_terminal = 0
     deleted = 0
     already_absent = 0
+    rechecked_existing = 0
+    reconciled_resurrections = 0
 
     with canonical_io_lock(ai_root):
         for path in _iter_cleanup_requests(ai_root):
             digest, request = _load_cleanup_request_path(path)
-            if _existing_cleanup_result(ai_root, digest) is not None:
+            existing_result = _existing_cleanup_result(ai_root, digest)
+            projection_root = _verify_cleanup_binding(ai_root, request)
+
+            if existing_result is not None:
+                review_target = cleanup_target_paths(
+                    request.case_id,
+                    projection_root=projection_root,
+                    stages=("review",),
+                )[0]
+                presence = observer(
+                    base_url=base_url,
+                    target_path=review_target,
+                    username=username,
+                    password=password,
+                    timeout=timeout,
+                    allow_http=allow_http,
+                )
+                if presence not in {"present", "absent"}:
+                    raise HumanProjectionCleanupError(
+                        "cleanup presence observer returned an invalid result"
+                    )
+                rechecked_existing += 1
+                if presence == "absent":
+                    continue
+
+                _targets, removed, absent = _delete_cleanup_targets(
+                    case_id=request.case_id,
+                    projection_root=projection_root,
+                    stages=CLEANUP_STAGES,
+                    deleter=deleter,
+                    base_url=base_url,
+                    username=username,
+                    password=password,
+                    timeout=timeout,
+                    allow_http=allow_http,
+                )
+                deleted += removed
+                already_absent += absent
+                reconciled_resurrections += 1
+                processed += 1
+                if processed >= max_requests:
+                    break
                 continue
 
-            projection_root = _verify_cleanup_binding(ai_root, request)
             targets, removed, absent = _delete_cleanup_targets(
                 case_id=request.case_id,
                 projection_root=projection_root,
@@ -896,6 +988,8 @@ def run_cleanup_sync(
         "pending_terminal": pending_terminal,
         "deleted": deleted,
         "already_absent": already_absent,
+        "rechecked_existing": rechecked_existing,
+        "reconciled_resurrections": reconciled_resurrections,
     }
 
 def main(argv: Sequence[str] | None = None) -> int:
