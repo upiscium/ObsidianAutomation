@@ -21,6 +21,8 @@ EXECUTOR_USER=${EXECUTOR_USER:-obsidian-ai-executor}
 VAULT_MARKER="$VAULT_ROOT/.obsidian-ai-disposable-fixture"
 DEFAULT_AI_ROOT="$VAULT_ROOT/20-AI"
 STATE_MARKER="$AI_ROOT/.obsidian-ai-disposable-state"
+DAILY="$VAULT_ROOT/00-DailyNote"
+IDEAS="$VAULT_ROOT/05-Idea"
 KNOWLEDGE="$VAULT_ROOT/11-Knowledge"
 PROJECTS="$VAULT_ROOT/10-Project"
 UNTRUSTED="$AI_ROOT/00-Untrusted"
@@ -74,6 +76,8 @@ done
 SYNC_GROUP=$(id -gn "$SYNC_USER")
 
 install -d -o "$SYNC_USER" -g "$SYNC_GROUP" -m 0700 "$VAULT_ROOT"
+install -d -o "$SYNC_USER" -g "$SYNC_GROUP" -m 0700 "$DAILY"
+install -d -o "$SYNC_USER" -g "$SYNC_GROUP" -m 0700 "$IDEAS"
 install -d -o "$SYNC_USER" -g "$SYNC_GROUP" -m 0700 "$KNOWLEDGE"
 install -d -o "$SYNC_USER" -g "$SYNC_GROUP" -m 0700 "$PROJECTS"
 setfacl -b "$VAULT_ROOT"
@@ -100,6 +104,15 @@ for entry in \
   "u:$VALIDATOR_USER:r-x" \
   "u:$EXECUTOR_USER:r-x"; do
   setfacl -m "d:$entry" "$KNOWLEDGE"
+done
+
+for corpus_root in "$DAILY" "$IDEAS"; do
+  setfacl -b "$corpus_root"
+  setfacl -k "$corpus_root" || true
+  setfacl -m u::rwx,g::---,o::---,m::rwx "$corpus_root"
+  setfacl -m "u:$READER_USER:r-x" "$corpus_root"
+  setfacl -m d:u::rwx,d:g::---,d:o::---,d:m::rwx "$corpus_root"
+  setfacl -m "d:u:$READER_USER:r-x" "$corpus_root"
 done
 
 setfacl -b "$PROJECTS"
