@@ -183,7 +183,7 @@ The lock does not claim that the local mirror is current with Nextcloud.
 
 ## Production mirror filter
 
-The AI mirror must include both input roots. A reusable example is:
+The AI mirror includes the current Generation roots plus Reader-owned Semantic Corpus roots. A reusable example is:
 
 ```text
 examples/ai/vault-pull.filters
@@ -192,10 +192,14 @@ examples/ai/vault-pull.filters
 with:
 
 ```text
++ /00-DailyNote/**
++ /05-Idea/**
 + /11-Knowledge/**
 + /10-Project/**
 - /**
 ```
+
+Input Planner v0 continues to select only active Knowledge and active Project Notes. Daily and Idea are mirrored for Semantic Corpus v1 and do not enter Generation Context until a later versioned selection policy enables them.
 
 The production file remains private deployment configuration at:
 
