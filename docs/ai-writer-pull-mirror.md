@@ -65,7 +65,7 @@ rclone sync <remote> <local-vault> \
   --delete-excluded
 ```
 
-The production AI filter must include both `11-Knowledge/**` and `10-Project/**` when automatic Input Planner support is enabled; see `examples/ai/vault-pull.filters`. Project Notes are mirrored only as Reader input and are not added to the Evaluation Knowledge corpus.\n\nThe source must be a named rclone remote. Local-path sources are rejected. The local Vault, rclone config, and filter file must already exist; config/filter symlinks are rejected.
+The production AI filter includes `00-DailyNote/**`, `05-Idea/**`, `10-Project/**`, and `11-Knowledge/**`; see `examples/ai/vault-pull.filters`. Daily and Idea are Reader-only Semantic Corpus material in v1 and do not change automatic Generation selection yet. Project Notes remain Reader input and are not added to the Evaluation Knowledge corpus.\n\nThe source must be a named rclone remote. Local-path sources are rejected. The local Vault, rclone config, and filter file must already exist; config/filter symlinks are rejected.
 
 Filter-excluded destination files are deleted from the local rebuildable mirror so narrowing the reviewed filter converges the local corpus exactly. This does not delete anything from the remote Nextcloud source.\n\nA non-zero rclone exit is a failed refresh and is never reported as success.
 
