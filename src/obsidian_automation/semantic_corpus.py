@@ -554,6 +554,10 @@ def build_semantic_corpus(vault_root: Path) -> SemanticCorpusManifest:
         )
 
     sources.sort(key=lambda source: (source.path.casefold(), source.path))
+    if len(sources) > MAX_DOCUMENTS:
+        raise SemanticCorpusError(
+            f"semantic corpus exceeds {MAX_DOCUMENTS} eligible sources"
+        )
     if sum(len(source.chunks) for source in sources) > MAX_CHUNKS:
         raise SemanticCorpusError(
             f"semantic corpus exceeds {MAX_CHUNKS} chunks"
