@@ -487,6 +487,19 @@ def test_retrieval_rechecks_canonical_source_before_return(tmp_path: Path) -> No
         )
 
 
+def test_repository_benchmark_example_matches_parser_contract() -> None:
+    path = Path("examples/ai/semantic-retrieval-benchmark.example.json")
+    benchmark = parse_benchmark_set(path.read_bytes())
+    assert {case.category for case in benchmark.cases} == {
+        "exact-technical",
+        "semantic-paraphrase",
+        "project-local",
+        "daily-knowledge",
+        "idea-project",
+        "cross-domain-bridge",
+    }
+
+
 def test_benchmark_requires_all_six_categories() -> None:
     value = json.loads(_benchmark_bytes())
     value["cases"] = value["cases"][:-1]
