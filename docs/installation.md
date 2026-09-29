@@ -137,13 +137,17 @@ Do not store these files in this repository. Model names and exact model revisio
 
 ## Vault mirror configuration
 
-The AI input mirror is pull-only. The default filter includes active Project and Knowledge content:
+The AI input mirror is pull-only. The reviewed default filter includes the current Generation roots plus Reader-owned Semantic Corpus roots:
 
 ```text
++ /00-DailyNote/**
++ /05-Idea/**
 + /11-Knowledge/**
 + /10-Project/**
 - /**
 ```
+
+Daily and Idea are mirrored for Reader-owned semantic indexing only. The current automatic Input Planner still submits Generation Context from active Knowledge and active Project Notes until the Semantic Planner rollout explicitly changes that contract.
 
 See `examples/ai/vault-pull.filters`.
 
