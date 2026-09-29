@@ -221,11 +221,17 @@ with:
 
 Input Planner v0 continues to select only active Knowledge and active Project Notes. Daily and Idea are mirrored for Semantic Corpus v1 and do not enter Generation Context until a later versioned selection policy enables them.
 
-The production file remains private deployment configuration at:
+The production file is a repository-reviewed managed policy staged from the
+exact deployed revision:
 
 ```text
-/etc/obsidian-ai/vault-pull.filters
+examples/ai/vault-pull.filters
+  -> /etc/obsidian-ai/vault-pull.filters
 ```
+
+The contract-4 exact-SHA updater installs it atomically as
+`root:obsidian-ai-sync 0640`. It is not part of private-config transfer and
+must not drift independently from the deployed revision.
 
 ## Production service
 
