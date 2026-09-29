@@ -163,6 +163,12 @@ The Embedder has no Vault access. Do not work around an ACL failure by granting
 it read access to `/var/lib/obsidian-ai/vault`; the bounded embedding request is
 the intended data boundary.
 
+Semantic retrieval query embeddings and offline benchmark queries reuse the same
+request/result subtrees and the same Reader -> Embedder -> Reader authority
+boundary. See [Semantic Hybrid Retrieval v1](semantic-hybrid-retrieval-v1.md).
+Phase C remains operator-driven and does not install or activate a recurring
+semantic retrieval service.
+
 ## Vault mirror configuration
 
 The AI input mirror is pull-only. The reviewed default filter includes the current Generation roots plus Reader-owned Semantic Corpus roots:

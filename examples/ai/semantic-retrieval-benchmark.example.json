@@ -1,0 +1,70 @@
+{
+  "benchmark_version": 1,
+  "name": "semantic-planner-production-benchmark",
+  "cases": [
+    {
+      "id": "exact-technical",
+      "category": "exact-technical",
+      "query": "CUDA_VISIBLE_DEVICES",
+      "relevant_paths": [
+        "11-Knowledge/Replace-With-Exact-Technical-Note.md"
+      ]
+    },
+    {
+      "id": "semantic-paraphrase-ja",
+      "category": "semantic-paraphrase",
+      "query": "表現は違うが同じ意味の日本語クエリ",
+      "relevant_paths": [
+        "11-Knowledge/Replace-With-Semantically-Equivalent-Note.md"
+      ]
+    },
+    {
+      "id": "project-local",
+      "category": "project-local",
+      "query": "プロジェクト内の概念を自然言語で説明したクエリ",
+      "relevant_paths": [
+        "10-Project/Replace-Project/Replace-Project-Note.md"
+      ],
+      "filters": {
+        "source_kinds": [
+          "project-note"
+        ],
+        "project_statuses": [
+          "running"
+        ]
+      }
+    },
+    {
+      "id": "daily-to-knowledge",
+      "category": "daily-knowledge",
+      "query": "Dailyに現れた観察から既存Knowledgeへつながるクエリ",
+      "relevant_paths": [
+        "00-DailyNote/2026/09/Replace-Date.md",
+        "11-Knowledge/Replace-With-Related-Knowledge.md"
+      ]
+    },
+    {
+      "id": "idea-to-project",
+      "category": "idea-project",
+      "query": "active Ideaと採用候補Projectを結ぶクエリ",
+      "relevant_paths": [
+        "05-Idea/Replace-Idea.md",
+        "10-Project/Replace-Project/Replace-Project.md"
+      ],
+      "filters": {
+        "idea_statuses": [
+          "active"
+        ]
+      }
+    },
+    {
+      "id": "cross-domain-bridge",
+      "category": "cross-domain-bridge",
+      "query": "異なる領域にまたがる共通構造を表すクエリ",
+      "relevant_paths": [
+        "11-Knowledge/Replace-Domain-A.md",
+        "10-Project/Replace-Domain-B/Replace-Note.md"
+      ]
+    }
+  ]
+}

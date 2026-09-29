@@ -301,4 +301,7 @@ It does not:
 - change Generator prompts/objectives;
 - grant Automation canonical Idea or Project mutation authority.
 
-BM25/vector/hybrid retrieval comparison remains issue #201.
+The next stage is
+[Semantic Hybrid Retrieval v1](semantic-hybrid-retrieval-v1.md), which implements
+issue #201 by comparing BM25-only, vector-only, and hybrid ranking over this exact
+index without changing automatic Planner behavior.
