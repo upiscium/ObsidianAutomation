@@ -195,7 +195,21 @@ def load_receipt(
     return receipt
 
 
+def _require_regular_file(path: Path, *, label: str) -> None:
+    try:
+        info = path.lstat()
+    except FileNotFoundError as exc:
+        raise SemanticProductionAcceptanceError(
+            f"{label} does not exist"
+        ) from exc
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise SemanticProductionAcceptanceError(
+            f"{label} must be a non-symlink regular file"
+        )
+
+
 def _read_revision_env(path: Path) -> str:
+    _require_regular_file(path, label="pre-review revision env")
     try:
         data = path.read_bytes()
     except OSError as exc:
@@ -221,12 +235,9 @@ def _read_revision_env(path: Path) -> str:
 
 
 def _read_input_mode(path: Path) -> tuple[str, str | None, str | None]:
-    if not path.exists():
+    if not os.path.lexists(path):
         return "absent", None, None
-    if path.is_symlink() or not path.is_file():
-        raise SemanticProductionAcceptanceError(
-            "pre-review input env path is unsafe"
-        )
+    _require_regular_file(path, label="pre-review input env")
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
@@ -318,6 +329,7 @@ def preflight_acceptance(
             "production checkout is dirty"
         )
 
+    _require_regular_file(planner_unit, label="Input Planner unit")
     try:
         unit_text = planner_unit.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
