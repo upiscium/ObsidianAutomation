@@ -525,10 +525,6 @@ def parse_embedding_plan(data: bytes) -> EmbeddingPlan:
         value["model_revision"],
         label="model revision",
     )
-    if value["vector_encoding"] != VECTOR_ENCODING:
-        raise SemanticIndexError(
-            "semantic index vector encoding is unsupported"
-        )
     counts = _require_counts(value["source_kind_counts"])
     raw_requests = value["requests"]
     if (
