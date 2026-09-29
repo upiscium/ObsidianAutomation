@@ -125,7 +125,10 @@ def _frontmatter(text: str, *, path: str) -> tuple[dict[str, str], int]:
     if not lines or lines[0].strip() != "---":
         return {}, 1
     values: dict[str, str] = {}
-    for index, line in enumerate(lines[1:128], start=1):
+    # Source bytes are already bounded by MAX_SOURCE_BYTES before parsing.
+    # Scan the whole bounded source so generated metadata arrays (for example
+    # GitHub-managed Status.md issue/PR lists) may legitimately exceed 128 lines.
+    for index, line in enumerate(lines[1:], start=1):
         if line.strip() == "---":
             return values, index + 2
         if not line or line[0].isspace() or ":" not in line:
