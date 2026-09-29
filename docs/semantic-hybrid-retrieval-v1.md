@@ -196,6 +196,21 @@ owns selection-policy integration.
 
 ## Benchmark contract
 
+Schema:
+
+```text
+schemas/semantic-retrieval-benchmark-v1.schema.json
+```
+
+Starter shape:
+
+```text
+examples/ai/semantic-retrieval-benchmark.example.json
+```
+
+Replace every placeholder path with an exact source in the selected Semantic
+Corpus before using the example as production evidence.
+
 The benchmark uses one fixed query corpus for all three modes.
 
 Required case categories:
