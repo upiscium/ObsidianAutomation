@@ -27,6 +27,14 @@ from .artifact_lifecycle import (
 from .context_bundle import ContextBundle
 from .evaluation_artifact import load_evaluation_record
 from .generation_artifact import load_generation_record
+from .semantic_objective import (
+    DEEP_KNOWLEDGE,
+    IDEA_DISCOVERY,
+    PROJECT_ADOPTION,
+    load_objective_candidate,
+    load_objective_context,
+    load_objective_generation,
+)
 from .execution_orchestrator import _parse_receipt
 from .production_io import ProductionIOError, canonical_io_lock
 from .production_orchestrator import parse_transport_request, parse_transport_result
@@ -892,6 +900,113 @@ def emit_generation_projection(
             source_sha256=generation_digest,
             content=markdown,
             created_at=record.generated_at,
+        ),
+    )
+
+
+def emit_semantic_objective_generation_projection(
+    ai_root: Path,
+    *,
+    case_id: str,
+    objective_generation_sha256: str,
+    candidate_sha256: str,
+) -> tuple[str, Path] | None:
+    if not projection_enabled(ai_root):
+        return None
+    generation_digest = _require_sha256(
+        objective_generation_sha256,
+        label="objective_generation_sha256",
+    )
+    candidate_digest = _require_sha256(
+        candidate_sha256,
+        label="objective_candidate_sha256",
+    )
+    generation = load_objective_generation(ai_root, generation_digest)
+    candidate = load_objective_candidate(ai_root, candidate_digest)
+    context = load_objective_context(
+        ai_root,
+        generation.objective_context_sha256,
+    )
+    if (
+        generation.candidate_sha256 != candidate_digest
+        or candidate.objective_context_sha256
+        != generation.objective_context_sha256
+        or candidate.selection_sha256 != generation.selection_sha256
+        or candidate.semantic_index_sha256
+        != generation.semantic_index_sha256
+        or candidate.objective_policy != generation.objective_policy
+        or context.selection_sha256 != generation.selection_sha256
+    ):
+        raise HumanProjectionError(
+            "semantic objective generation projection binding mismatch"
+        )
+
+    title = {
+        DEEP_KNOWLEDGE: "Generated Deep Knowledge Candidate",
+        IDEA_DISCOVERY: "Generated Idea Candidate",
+        PROJECT_ADOPTION: "Generated Project Adoption Proposal",
+    }[generation.objective_policy]
+    candidate_json = candidate.to_json_bytes().decode("utf-8").rstrip()
+    lines = [
+        f"Objective: {_inline_code(generation.objective_policy)}",
+        f"Candidate kind: {_inline_code(generation.candidate_kind)}",
+        f"Selection policy: {_inline_code(context.selection_policy)}",
+        f"Selection: {_inline_code(generation.selection_sha256)}",
+        f"Semantic index: {_inline_code(generation.semantic_index_sha256)}",
+        "",
+        "## Candidate",
+        "",
+        _code_fence(candidate_json, "json"),
+    ]
+    if generation.objective_policy == IDEA_DISCOVERY:
+        lines.extend(
+            [
+                "",
+                "Canonical action: **Human/Core save required**",
+            ]
+        )
+    elif generation.objective_policy == PROJECT_ADOPTION:
+        lines.extend(
+            [
+                "",
+                "Canonical action: **Human/Core adoption required**",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "",
+                "Canonical action: **not created by this projection**",
+            ]
+        )
+
+    markdown = _projection_markdown(
+        case_id=case_id,
+        stage="generation",
+        source_kind="semantic_objective_generation",
+        source_sha256=generation_digest,
+        created_at=generation.generated_at,
+        title=title,
+        body="\n".join(lines),
+        extra_frontmatter={
+            "objective_policy": generation.objective_policy,
+            "candidate_kind": generation.candidate_kind,
+            "selection_sha256": generation.selection_sha256,
+            "semantic_index_sha256": generation.semantic_index_sha256,
+            "objective_context_sha256": generation.objective_context_sha256,
+            "objective_candidate_sha256": candidate_digest,
+        },
+    )
+    return store_request(
+        ai_root,
+        role="generator",
+        request=build_request(
+            case_id=case_id,
+            stage="generation",
+            source_kind="semantic_objective_generation",
+            source_sha256=generation_digest,
+            content=markdown,
+            created_at=generation.generated_at,
         ),
     )
 

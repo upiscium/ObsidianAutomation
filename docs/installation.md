@@ -176,6 +176,15 @@ is switched to semantic selection by installation alone.
 
 See [Semantic Selection and Novelty v1](semantic-selection-novelty-v1.md).
 
+Semantic Planner Phase F adds an explicit operator-driven Objective Context and
+Generator path. Reader prepares the exact selected chunk bytes with
+`obsidian-semantic-objective-context`; Generator consumes only that immutable
+`05-Context` artifact through `obsidian-semantic-objective-generate`.
+OpenAI-compatible and Ollama providers are supported. This does not enable the
+automatic Planner or grant Generator Vault/index access.
+
+See [Semantic Generation Objectives v1](semantic-generation-objectives-v1.md).
+
 ## Vault mirror configuration
 
 The AI input mirror is pull-only. The reviewed default filter includes the current Generation roots plus Reader-owned Semantic Corpus roots:

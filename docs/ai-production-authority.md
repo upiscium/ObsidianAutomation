@@ -180,6 +180,20 @@ Validator
 
 Generator deliberately has no direct path to canonical Knowledge or Reader's Index. Generation provenance is audit provenance written by an untrusted identity; it is not a validation or approval attestation.
 
+Semantic Planner Phase F reuses the same authority boundary rather than adding a
+new privilege. Reader verifies one exact Semantic Selection and materializes only
+the selected bounded chunk bytes into a content-addressed
+`05-Context/<sha>.objective-context.json`. Generator may read that Context and
+write only objective candidate/generation artifacts under `00-Untrusted`.
+Those artifacts bind the Selection and Semantic Index identities but do not give
+Generator read access to either store.
+
+`idea-discovery-v0` and `project-adoption-proposal-v0` are Human-facing
+candidate paths only. They never enter Validator/Executor as Knowledge
+create-note mutations. `deep-knowledge-v1` is also kept as an Objective
+Candidate during Phase F until the production integration explicitly binds the
+new selection/objective lifecycle.
+
 ## Validator / Evaluator / Human sequence
 
 ```text

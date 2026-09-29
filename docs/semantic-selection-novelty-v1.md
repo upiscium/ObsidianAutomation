@@ -61,7 +61,8 @@ A record binds:
 - novelty observations;
 - policy-specific bounded observations.
 
-Generation Objective is intentionally absent. #203 owns objective selection.
+Generation Objective is intentionally absent. Objective execution is defined by
+[Semantic Generation Objectives v1](semantic-generation-objectives-v1.md).
 
 ## Initial policies
 
@@ -273,8 +274,8 @@ The safe rollout is:
 2. run Phase C benchmark;
 3. observe Phase E Selection Records across real Vault state;
 4. inspect skip frequency and selected source quality;
-5. implement #203 objectives;
-6. connect approved semantic selection + objective pairs to Generation Context.
+5. create and inspect Phase F Objective Contexts/candidates;
+6. connect approved semantic selection + objective pairs to durable production jobs.
 
 This avoids coupling a new source-selection policy to the legacy
 `synthesize-v0` objective before the objective contract is versioned.
