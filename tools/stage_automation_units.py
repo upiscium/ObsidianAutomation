@@ -431,7 +431,7 @@ def stage_units(
     source_root: Path = DEFAULT_SOURCE_ROOT,
     systemd_dir: Path = DEFAULT_SYSTEMD_DIR,
     revision_env: Path = DEFAULT_REVISION_ENV,
-    ai_filter: Path = DEFAULT_AI_FILTER,
+    ai_filter: Path | None = None,
     runner: Runner = _default_runner,
     require_root: bool = True,
 ) -> dict[str, object]:
@@ -441,9 +441,14 @@ def stage_units(
     _verify_source(source_root, target_sha, runner)
     _preflight_inert(runner)
     installed = _install_units(source_root, systemd_dir)
+    ai_filter_path = (
+        ai_filter
+        if ai_filter is not None
+        else revision_env.parent / DEFAULT_AI_FILTER.name
+    )
     ai_filter_sha256 = _install_ai_filter(
         source_root,
-        ai_filter,
+        ai_filter_path,
         chown_root=require_root,
     )
     _write_revision_env(
@@ -466,7 +471,7 @@ def stage_units(
         "installed_unit_count": len(installed),
         "installed_units": list(installed),
         "revision_env": str(revision_env),
-        "ai_vault_pull_filter": str(ai_filter),
+        "ai_vault_pull_filter": str(ai_filter_path),
         "ai_vault_pull_filter_sha256": ai_filter_sha256,
         "timers_enabled": False,
         "timers_active": False,
@@ -488,7 +493,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-root", type=Path, default=DEFAULT_SOURCE_ROOT)
     parser.add_argument("--systemd-dir", type=Path, default=DEFAULT_SYSTEMD_DIR)
     parser.add_argument("--revision-env", type=Path, default=DEFAULT_REVISION_ENV)
-    parser.add_argument("--ai-filter", type=Path, default=DEFAULT_AI_FILTER)
+    parser.add_argument("--ai-filter", type=Path)
     return parser
 
 
