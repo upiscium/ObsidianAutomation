@@ -624,6 +624,17 @@ def parse_semantic_corpus_manifest(data: bytes) -> SemanticCorpusManifest:
         path = raw["path"]
         if not isinstance(path, str) or not path or path.startswith("/"):
             raise SemanticCorpusError("semantic source path is invalid")
+        path_parts = PurePosixPath(path).parts
+        if (
+            not path_parts
+            or "\\" in path
+            or any(
+                part in {"", ".", ".."} or part.startswith(".")
+                for part in path_parts
+            )
+            or PurePosixPath(path).as_posix() != path
+        ):
+            raise SemanticCorpusError("semantic source path is unsafe")
         folded = path.casefold()
         if folded in seen_paths:
             raise SemanticCorpusError("semantic corpus contains duplicate source paths")
@@ -782,6 +793,73 @@ def verify_semantic_corpus_current(
     ]
     if actual != expected:
         raise SemanticCorpusError("semantic corpus manifest is stale")
+
+
+def materialize_semantic_chunk_bytes(
+    vault_root: Path,
+    source: SemanticSource,
+    chunk: SemanticChunk,
+) -> bytes:
+    if chunk not in source.chunks:
+        raise SemanticCorpusError("semantic chunk is not bound to source")
+
+    parts = PurePosixPath(source.path).parts
+    if (
+        not parts
+        or "\\" in source.path
+        or any(part in {"", ".", ".."} or part.startswith(".") for part in parts)
+    ):
+        raise SemanticCorpusError("semantic source path is unsafe")
+
+    path = vault_root.absolute().joinpath(*parts)
+    try:
+        info = path.lstat()
+    except FileNotFoundError as exc:
+        raise SemanticCorpusError(
+            f"semantic source disappeared while materializing chunk: {source.path}"
+        ) from exc
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise SemanticCorpusError(
+            f"semantic source is unsafe while materializing chunk: {source.path}"
+        )
+
+    data = path.read_bytes()
+    if (
+        len(data) != source.byte_size
+        or sha256_bytes(data) != source.content_sha256
+    ):
+        raise SemanticCorpusError(
+            f"semantic source changed while materializing chunk: {source.path}"
+        )
+
+    text = _normalized_text(data, path=source.path)
+    lines = text.split("\n")
+    if chunk.end_line > len(lines):
+        raise SemanticCorpusError("semantic chunk line range exceeds source")
+
+    selected = [
+        (line_number, lines[line_number - 1])
+        for line_number in range(chunk.start_line, chunk.end_line + 1)
+    ]
+    content = _chunk_bytes(_remove_meta_bind_blocks(selected))
+    if (
+        len(content) != chunk.byte_size
+        or sha256_bytes(content) != chunk.content_sha256
+    ):
+        raise SemanticCorpusError("semantic chunk content binding mismatch")
+
+    expected_chunk_id = _chunk_identity_sha256(
+        source_path=source.path,
+        source_sha256=source.content_sha256,
+        ordinal=chunk.ordinal,
+        start_line=chunk.start_line,
+        end_line=chunk.end_line,
+        heading_path=chunk.heading_path,
+        content_sha256=chunk.content_sha256,
+    )
+    if chunk.chunk_id != expected_chunk_id:
+        raise SemanticCorpusError("semantic chunk identity binding mismatch")
+    return content
 
 
 def build_and_store_semantic_corpus(
