@@ -58,6 +58,7 @@ from .planner_cadence import (
     PlannerCadenceError,
     cadence_snapshot,
     normalize_now,
+    parse_utc_z,
     record_submission,
     utc_z,
 )
@@ -635,8 +636,10 @@ def _parse_pending(data: bytes) -> dict[str, object]:
     if not isinstance(created_at, str) or not created_at.endswith("Z"):
         raise AIInputPlannerError("pending planner context_created_at is invalid")
     cadence_anchor = value.get("cadence_anchor_at", created_at)
-    if not isinstance(cadence_anchor, str) or not cadence_anchor.endswith("Z"):
-        raise AIInputPlannerError("pending planner cadence_anchor_at is invalid")
+    try:
+        parse_utc_z(cadence_anchor, label="cadence_anchor_at")
+    except PlannerCadenceError as exc:
+        raise AIInputPlannerError("pending planner cadence_anchor_at is invalid") from exc
     before = _state_from_payload(value["planner_state_before"], label="planner_state_before")
     after = _state_from_payload(value["planner_state_after"], label="planner_state_after")
     job_id = value["job_id"]
