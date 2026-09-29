@@ -757,7 +757,9 @@ def _selection_dir(ai_root: Path) -> Path:
     orchestration = root / "02-Orchestration"
     _require_safe_directory(orchestration, create=True)
     directory = orchestration / SELECTION_DIR
-    _require_safe_directory(directory, create=True)
+    # Production authority provisioning owns this Reader-only boundary.
+    # Refuse to create it under the shared orchestration default ACL.
+    _require_safe_directory(directory, create=False)
     return directory
 
 
