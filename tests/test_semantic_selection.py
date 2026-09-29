@@ -479,3 +479,14 @@ def test_selection_fails_closed_when_semantic_source_changes(
             policy="semantic-idea-development-v0",
             recent_context_limit=0,
         )
+
+def test_selection_schema_keeps_generation_objective_outside_contract() -> None:
+    schema_path = Path("schemas/semantic-selection-v1.schema.json")
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    assert schema["additionalProperties"] is False
+    assert "selection_policy" in schema["required"]
+    assert "semantic_index_sha256" in schema["required"]
+    text = schema_path.read_text(encoding="utf-8")
+    assert "objective_policy" not in text
+    assert "generation_objective" not in text
+
