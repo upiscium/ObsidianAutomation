@@ -493,8 +493,14 @@ the actual semantic novelty decision.
 
 ### Phase E — semantic selection
 
-Implement #202 and observe selection output without changing canonical
-generation behavior first.
+Implement #202 via
+[Semantic Selection and Novelty v1](semantic-selection-novelty-v1.md).
+
+Six versioned policies produce content-addressed Selection Records from one
+exact Semantic Index. Novelty observations cover recent generated Contexts,
+active Knowledge coverage and selected-cluster coherence. Initial rollout is
+observation-first: semantic selections are not yet fed into the legacy
+`synthesize-v0` Generation Objective.
 
 ### Phase F — generation objectives
 
