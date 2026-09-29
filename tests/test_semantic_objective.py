@@ -381,7 +381,7 @@ def _deep_wire() -> bytes:
             "candidate_kind": "knowledge_candidate",
             "candidate": {
                 "title": "資産識別子と来歴管理",
-                "category": "system",
+                "category": "summary",
                 "source_type": "self",
                 "body": (
                     "# 中心概念\n\n"
