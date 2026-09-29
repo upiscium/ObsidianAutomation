@@ -1311,6 +1311,83 @@ def _recover_pending_submission(
     }
 
 
+def _semantic_selected_payload(context) -> list[dict[str, object]]:
+    return [
+        {
+            "path": item.path,
+            "source_kind": item.source_kind,
+            "content_sha256": item.content_sha256,
+            "byte_size": len(item.content.encode("utf-8")),
+            "project_status": None,
+        }
+        for item in context.sources
+    ]
+
+
+def _prepare_semantic_deep_plan(
+    ai_root: Path,
+    vault_root: Path,
+    *,
+    semantic_index_sha256: str,
+    semantic_selection_policy: str,
+    state: PlannerState,
+    observed_now: datetime,
+) -> dict[str, object]:
+    selection = build_semantic_selection(
+        ai_root,
+        vault_root,
+        semantic_index_sha256=semantic_index_sha256,
+        policy=semantic_selection_policy,
+    )
+    selection_sha, _ = store_semantic_selection(ai_root, selection)
+    if selection.novelty.decision == "skipped":
+        reason = selection.novelty.skip_reason
+        if reason is None:
+            raise AIInputPlannerError(
+                "skipped semantic selection has no novelty reason"
+            )
+        record_novelty_skip(
+            ai_root,
+            skipped_at=utc_z(observed_now),
+            reason=f"{semantic_selection_policy}:{reason}",
+        )
+        return {
+            "status": "skipped_novelty",
+            "selection_sha256": selection_sha,
+            "selection_policy": semantic_selection_policy,
+            "objective_policy": SEMANTIC_OBJECTIVE_POLICY,
+            "semantic_index_sha256": semantic_index_sha256,
+            "skip_reason": reason,
+            "selected_count": len(selection.selected),
+        }
+
+    context = build_objective_context(
+        ai_root,
+        vault_root,
+        selection_sha256=selection_sha,
+        objective_policy=SEMANTIC_OBJECTIVE_POLICY,
+        created_at=utc_z(observed_now),
+    )
+    context_sha, _ = store_objective_context(ai_root, context)
+    next_state = PlannerState(
+        catalog_sha256=state.catalog_sha256,
+        coverage_epoch=state.coverage_epoch,
+        coverage_cursor=state.coverage_cursor,
+        cycle=state.cycle + 1,
+    )
+    return {
+        "status": "ready",
+        "selection_sha256": selection_sha,
+        "selection_policy": selection.selection_policy,
+        "objective_policy": context.objective_policy,
+        "semantic_index_sha256": semantic_index_sha256,
+        "context_sha256": context_sha,
+        "context": context,
+        "selected": _semantic_selected_payload(context),
+        "next_state": next_state,
+    }
+
+
 def plan_once(
     ai_root: Path,
     vault_root: Path,
