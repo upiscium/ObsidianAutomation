@@ -546,6 +546,43 @@ def _apply_ai_acls(runner: Runner) -> None:
         runner,
         user="obsidian-ai-reader",
         flag="-r",
+        path="/var/lib/obsidian-ai/state/02-Orchestration/semantic-selections",
+        expected=True,
+        label="reader reads Semantic Selection Store",
+    )
+    _require_access(
+        runner,
+        user="obsidian-ai-reader",
+        flag="-w",
+        path="/var/lib/obsidian-ai/state/02-Orchestration/semantic-selections",
+        expected=True,
+        label="reader writes Semantic Selection Store",
+    )
+    for user in (
+        "obsidian-ai-generator",
+        "obsidian-ai-validator",
+        "obsidian-ai-evaluator",
+    ):
+        _require_access(
+            runner,
+            user=user,
+            flag="-r",
+            path="/var/lib/obsidian-ai/state/02-Orchestration/semantic-selections",
+            expected=False,
+            label=f"{user} cannot read Semantic Selection Store",
+        )
+        _require_access(
+            runner,
+            user=user,
+            flag="-w",
+            path="/var/lib/obsidian-ai/state/02-Orchestration/semantic-selections",
+            expected=False,
+            label=f"{user} cannot write Semantic Selection Store",
+        )
+    _require_access(
+        runner,
+        user="obsidian-ai-reader",
+        flag="-r",
         path="/var/lib/obsidian-ai/vault/00-DailyNote",
         expected=True,
         label="reader reads Daily semantic corpus",
