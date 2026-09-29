@@ -66,15 +66,11 @@ from .ollama_generator import (
     ADAPTER_VERSION as OLLAMA_GENERATOR_ADAPTER_VERSION,
     PROVIDER_NAME as OLLAMA_PROVIDER_NAME,
 )
-from .semantic_objective import (
+from .semantic_objective_identity import (
     DEEP_KNOWLEDGE,
-    PROMPT_VERSION as SEMANTIC_OBJECTIVE_PROMPT_VERSION,
-    load_objective_context,
-    prompt_template_sha256 as semantic_objective_prompt_sha256,
-)
-from .semantic_objective_generation import (
     OBJECTIVE_OLLAMA_ADAPTER_VERSION,
     OBJECTIVE_OPENAI_ADAPTER_VERSION,
+    PROMPT_VERSION as SEMANTIC_OBJECTIVE_PROMPT_VERSION,
 )
 
 
@@ -90,6 +86,10 @@ HISTORICAL_RUNTIME_SUPERSESSION_REASON = "operator_historical_runtime_retire"
 
 
 def _supported_generator_prompt_hashes() -> dict[str, str]:
+    from .semantic_objective import (
+        prompt_template_sha256 as semantic_objective_prompt_sha256,
+    )
+
     hashes = dict(supported_prompt_template_hashes())
     hashes[SEMANTIC_OBJECTIVE_PROMPT_VERSION[DEEP_KNOWLEDGE]] = (
         semantic_objective_prompt_sha256(DEEP_KNOWLEDGE)
@@ -707,6 +707,8 @@ def submit_job(
         recipe.generator.prompt_template_version
         == SEMANTIC_OBJECTIVE_PROMPT_VERSION[DEEP_KNOWLEDGE]
     ):
+        from .semantic_objective import load_objective_context
+
         context = load_objective_context(ai_root, context_digest)
         if context.objective_policy != DEEP_KNOWLEDGE:
             raise PreReviewJobError(
