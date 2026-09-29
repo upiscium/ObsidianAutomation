@@ -1765,11 +1765,28 @@ def _optional_model_revision(value: str | None) -> str | None:
     return value
 
 
+def _optional_semantic_index(value: str | None) -> str | None:
+    if value in {None, "", "disabled", "off", "none"}:
+        return None
+    return value
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="obsidian-ai-input-planner")
     parser.add_argument("--ai-root", type=Path, required=True)
     parser.add_argument("--vault-root", type=Path, required=True)
     parser.add_argument("--deployed-revision", required=True)
+    parser.add_argument(
+        "--input-mode",
+        choices=sorted(INPUT_MODES),
+        default=INPUT_MODE_LEGACY,
+    )
+    parser.add_argument("--semantic-index-sha")
+    parser.add_argument(
+        "--semantic-selection-policy",
+        choices=sorted(SEMANTIC_SELECTION_POLICIES),
+        default=DEFAULT_SEMANTIC_SELECTION_POLICY,
+    )
     parser.add_argument("--generator-provider", default=OPENAI_PROVIDER_NAME)
     parser.add_argument("--generator-model", required=True)
     parser.add_argument("--generator-model-revision")
@@ -1787,6 +1804,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.ai_root,
             args.vault_root,
             deployed_revision=args.deployed_revision,
+            input_mode=args.input_mode,
+            semantic_index_sha256=_optional_semantic_index(
+                args.semantic_index_sha
+            ),
+            semantic_selection_policy=args.semantic_selection_policy,
             generator_provider=args.generator_provider,
             generator_model=args.generator_model,
             generator_model_revision=_optional_model_revision(args.generator_model_revision),
