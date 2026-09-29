@@ -1,0 +1,197 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "semantic-selection-v1.schema.json",
+  "title": "Semantic Planner Selection Record v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "record_version",
+    "selection_policy",
+    "semantic_index_sha256",
+    "corpus_manifest_sha256",
+    "metadata_filters",
+    "retrieval",
+    "anchors",
+    "selected",
+    "novelty",
+    "policy_observations"
+  ],
+  "properties": {
+    "record_version": {"const": 1},
+    "selection_policy": {
+      "enum": [
+        "semantic-focus-v0",
+        "semantic-project-distill-v0",
+        "semantic-timeline-v0",
+        "semantic-bridge-v0",
+        "semantic-gap-v0",
+        "semantic-idea-development-v0"
+      ]
+    },
+    "semantic_index_sha256": {"$ref": "#/$defs/sha256"},
+    "corpus_manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "metadata_filters": {
+      "type": "object"
+    },
+    "retrieval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "lexical_weight",
+        "vector_weight",
+        "source_kind_weights"
+      ],
+      "properties": {
+        "mode": {"const": "hybrid"},
+        "lexical_weight": {"type": "number", "minimum": 0, "maximum": 1},
+        "vector_weight": {"type": "number", "minimum": 0, "maximum": 1},
+        "source_kind_weights": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "daily",
+            "idea",
+            "project",
+            "project-note",
+            "knowledge"
+          ],
+          "properties": {
+            "daily": {"type": "number", "minimum": 0, "maximum": 10},
+            "idea": {"type": "number", "minimum": 0, "maximum": 10},
+            "project": {"type": "number", "minimum": 0, "maximum": 10},
+            "project-note": {"type": "number", "minimum": 0, "maximum": 10},
+            "knowledge": {"type": "number", "minimum": 0, "maximum": 10}
+          }
+        }
+      }
+    },
+    "anchors": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 2,
+      "items": {"$ref": "#/$defs/anchor"}
+    },
+    "selected": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {"$ref": "#/$defs/selected"}
+    },
+    "novelty": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision",
+        "skip_reason",
+        "cluster_coherence",
+        "recent_context_max_similarity",
+        "knowledge_max_similarity",
+        "recent_contexts",
+        "recent_context_unmatched_count",
+        "thresholds"
+      ],
+      "properties": {
+        "decision": {"enum": ["selected", "skipped"]},
+        "skip_reason": {"type": ["string", "null"]},
+        "cluster_coherence": {"type": "number", "minimum": -1, "maximum": 1},
+        "recent_context_max_similarity": {
+          "type": ["number", "null"],
+          "minimum": -1,
+          "maximum": 1
+        },
+        "knowledge_max_similarity": {
+          "type": ["number", "null"],
+          "minimum": -1,
+          "maximum": 1
+        },
+        "recent_contexts": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["context_sha256", "similarity"],
+            "properties": {
+              "context_sha256": {"$ref": "#/$defs/sha256"},
+              "similarity": {"type": "number", "minimum": -1, "maximum": 1}
+            }
+          }
+        },
+        "recent_context_unmatched_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "thresholds": {
+          "type": "object"
+        }
+      }
+    },
+    "policy_observations": {
+      "type": "object"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "sourceKind": {
+      "enum": ["daily", "idea", "project", "project-note", "knowledge"]
+    },
+    "anchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "chunk_id",
+        "source_path",
+        "source_kind",
+        "source_sha256",
+        "content_sha256"
+      ],
+      "properties": {
+        "role": {"enum": ["primary", "bridge-secondary"]},
+        "chunk_id": {"$ref": "#/$defs/sha256"},
+        "source_path": {"type": "string", "minLength": 1},
+        "source_kind": {"$ref": "#/$defs/sourceKind"},
+        "source_sha256": {"$ref": "#/$defs/sha256"},
+        "content_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "selected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rank",
+        "role",
+        "chunk_id",
+        "source_path",
+        "source_kind",
+        "source_sha256",
+        "content_sha256",
+        "score",
+        "lexical_score",
+        "lexical_normalized",
+        "cosine_score",
+        "semantic_normalized",
+        "source_kind_weight"
+      ],
+      "properties": {
+        "rank": {"type": "integer", "minimum": 1, "maximum": 8},
+        "role": {"enum": ["anchor", "support"]},
+        "chunk_id": {"$ref": "#/$defs/sha256"},
+        "source_path": {"type": "string", "minLength": 1},
+        "source_kind": {"$ref": "#/$defs/sourceKind"},
+        "source_sha256": {"$ref": "#/$defs/sha256"},
+        "content_sha256": {"$ref": "#/$defs/sha256"},
+        "score": {"type": "number"},
+        "lexical_score": {"type": "number", "minimum": 0},
+        "lexical_normalized": {"type": "number", "minimum": 0, "maximum": 1},
+        "cosine_score": {"type": "number", "minimum": -1, "maximum": 1},
+        "semantic_normalized": {"type": "number", "minimum": 0, "maximum": 1},
+        "source_kind_weight": {"type": "number", "minimum": 0, "maximum": 10}
+      }
+    }
+  }
+}
