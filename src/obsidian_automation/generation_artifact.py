@@ -376,6 +376,49 @@ def _verify_generation_context(
     )
 
 
+def _verify_semantic_generation_metadata(
+    ai_root: Path,
+    record: GenerationRecord,
+) -> None:
+    if record.semantic_objective is None:
+        if record.context_kind != "context-bundle" or record.record_version != 1:
+            raise ArtifactLifecycleError(
+                "legacy Generation Record semantic provenance is inconsistent"
+            )
+        return
+
+    from .semantic_objective import load_objective_generation
+
+    objective = load_objective_generation(
+        ai_root,
+        record.semantic_objective.objective_generation_sha256,
+    )
+    if (
+        objective.objective_context_sha256 != record.context_sha256
+        or objective.candidate_sha256
+        != record.semantic_objective.objective_candidate_sha256
+        or objective.objective_policy
+        != record.semantic_objective.objective_policy
+        or objective.selection_sha256
+        != record.semantic_objective.selection_sha256
+        or objective.semantic_index_sha256
+        != record.semantic_objective.semantic_index_sha256
+        or objective.generator.implementation_revision
+        != record.generator.implementation_revision
+        or objective.generator.prompt_template_version
+        != record.generator.prompt_template_version
+        or objective.generator.prompt_template_sha256
+        != record.generator.prompt_template_sha256
+        or objective.model.provider != record.model.provider
+        or objective.model.identifier != record.model.identifier
+        or objective.model.revision != record.model.revision
+        or dict(objective.model_config) != dict(record.model_config)
+    ):
+        raise ArtifactLifecycleError(
+            "semantic Objective Generation metadata does not match Generation Record v2"
+        )
+
+
 def build_generation_record(
     ai_root: Path,
     *,
@@ -423,6 +466,7 @@ def build_generation_record(
         semantic_objective=semantic,
         record_version=2 if semantic is not None else 1,
     )
+    _verify_semantic_generation_metadata(ai_root, record)
     return parse_generation_record(record.to_json_bytes())
 
 
@@ -491,6 +535,7 @@ def store_generation_record(ai_root: Path, record: GenerationRecord) -> tuple[st
         context_kind=parsed.context_kind,
         semantic_objective_generation_sha256=semantic_generation_sha,
     )
+    _verify_semantic_generation_metadata(ai_root, parsed)
     _verify_proposal_binding(ai_root, parsed.proposal_sha256)
 
     digest = sha256_bytes(data)
@@ -504,4 +549,7 @@ def load_generation_record(ai_root: Path, generation_sha256: str) -> GenerationR
     data = _read_exact_file(path)
     if sha256_bytes(data) != digest:
         raise ArtifactLifecycleError("generation record artifact hash mismatch")
-    return parse_generation_record(data)
+    record = parse_generation_record(data)
+    if record.record_version == 2:
+        _verify_semantic_generation_metadata(ai_root, record)
+    return record
