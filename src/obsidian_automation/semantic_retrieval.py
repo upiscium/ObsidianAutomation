@@ -311,6 +311,13 @@ def _round(value: float) -> float:
     return round(value, 8)
 
 
+def _require_retrieval_vector(raw: object) -> tuple[float, ...]:
+    try:
+        return _require_vector(raw)
+    except SemanticIndexError as exc:
+        raise SemanticRetrievalError(str(exc)) from exc
+
+
 def _require_query(value: object) -> str:
     if (
         not isinstance(value, str)
@@ -754,7 +761,7 @@ def parse_query_embedding_result(data: bytes) -> QueryEmbeddingResult:
         raise SemanticRetrievalError(
             "query embedding result vector encoding is unsupported"
         )
-    vector = _require_vector(value["vector"])
+    vector = _require_retrieval_vector(value["vector"])
     return QueryEmbeddingResult(
         request_sha256=request_sha,
         provider=PROVIDER_NAME,
@@ -863,7 +870,7 @@ def _embed_queries(
         raise SemanticRetrievalError(
             "Ollama query embedding vector count mismatch"
         )
-    return tuple(_require_vector(item) for item in raw_vectors)
+    return tuple(_require_retrieval_vector(item) for item in raw_vectors)
 
 
 def embed_query_with_ollama(
@@ -1179,7 +1186,7 @@ def rank_semantic_chunks(
     lexical_weight_value = float(lexical_weight)
     vector_weight = 1.0 - lexical_weight_value
     weights = parse_source_kind_weights(source_kind_weights)
-    query_vec = _require_vector(list(query_vector))
+    query_vec = _require_retrieval_vector(list(query_vector))
 
     lexical = _bm25_scores(candidates, text)
     top_lexical = max(lexical.values(), default=0.0)
