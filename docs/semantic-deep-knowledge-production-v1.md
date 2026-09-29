@@ -145,6 +145,15 @@ Vault or Index authority.
 
 Validator, Evaluator, Reviewer and Executor permissions are unchanged.
 
+## Production acceptance gate
+
+Before enabling semantic mode, run the machine-checkable acceptance flow in
+[Semantic Planner production acceptance v1](semantic-production-acceptance-v1.md).
+
+It proves the exact deployed revision, legacy default, Reader-only Selection
+Store, exact current Semantic Index, Phase C benchmark result and one Selection
+observation before emitting an inert canary environment plan.
+
 ## Rollback
 
 Set:

@@ -151,6 +151,11 @@ chain. Idea discovery and Project adoption remain operator-driven.
 See
 [Semantic Deep Knowledge Production v1](semantic-deep-knowledge-production-v1.md).
 
+Before editing the production input environment, complete
+[Semantic Planner production acceptance v1](semantic-production-acceptance-v1.md).
+The acceptance CLI is read-only with respect to production configuration and
+systemd; it stores only content-addressed acceptance receipts.
+
 ## Human Review Intake configuration
 
 Review Intake requires a dedicated **read-only** Nextcloud account/app password.

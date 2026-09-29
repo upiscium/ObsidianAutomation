@@ -529,7 +529,16 @@ skips create no job and do not move the submission clock.
 Idea discovery and Project adoption remain operator-driven Human-facing
 candidates.
 
-### Phase H — Core Human actions
+### Phase H — production acceptance
+
+Issue #214 adds
+[Semantic Planner production acceptance v1](semantic-production-acceptance-v1.md).
+
+The gate binds exact deploy revision, exact Semantic Index, Phase C benchmark
+evidence and Selection observation into content-addressed receipts before
+emitting a non-mutating canary environment plan.
+
+### Phase I — Core Human actions
 
 ObsidianCore#198 owns canonical client-side Idea save/adoption actions.
 
