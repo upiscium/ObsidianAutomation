@@ -504,10 +504,17 @@ observation-first: semantic selections are not yet fed into the legacy
 
 ### Phase F — generation objectives
 
-Implement #203.
+Implement #203 via
+[Semantic Generation Objectives v1](semantic-generation-objectives-v1.md).
 
-Introduce deep Knowledge first, then Idea discovery and Project adoption
-proposal.
+Selection and Objective remain separate versioned contracts. Reader materializes
+an exact Objective Context from one accepted Semantic Selection, Generator sees
+only that bounded Context, and objective-specific candidate/generation artifacts
+bind the Selection and Semantic Index identities.
+
+Initial objectives are `deep-knowledge-v1`, `idea-discovery-v0` and
+`project-adoption-proposal-v0`. Phase F remains explicit/operator-driven and
+does not route non-Knowledge candidates through the Knowledge mutation executor.
 
 ### Phase G — Core Human actions
 
