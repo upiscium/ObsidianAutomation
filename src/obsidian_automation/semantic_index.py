@@ -57,6 +57,7 @@ RESULT_SET_VERSION = 1
 INDEX_VERSION = 1
 PROVIDER_NAME = "ollama"
 ADAPTER_VERSION = "ollama-embed-v0"
+VECTOR_ENCODING = "json-number-finite-v0"
 MAX_MODEL_IDENTIFIER_CHARS = 512
 MAX_VECTOR_DIMENSION = 8192
 MAX_BATCH_SIZE = 16
@@ -188,6 +189,7 @@ class EmbeddingResultSetEntry:
 class EmbeddingResultSet:
     plan_sha256: str
     vector_dimension: int
+    vector_encoding: str
     results: tuple[EmbeddingResultSetEntry, ...]
 
     def to_json_bytes(self) -> bytes:
@@ -196,6 +198,7 @@ class EmbeddingResultSet:
                 "record_version": RESULT_SET_VERSION,
                 "plan_sha256": self.plan_sha256,
                 "vector_dimension": self.vector_dimension,
+                "vector_encoding": self.vector_encoding,
                 "results": [entry.payload() for entry in self.results],
             }
         )
@@ -236,6 +239,7 @@ class SemanticIndexManifest:
     model_identifier: str
     model_revision: str
     vector_dimension: int
+    vector_encoding: str
     source_kind_counts: Mapping[str, int]
     vectors: tuple[SemanticVector, ...]
 
@@ -252,6 +256,7 @@ class SemanticIndexManifest:
                 "model_identifier": self.model_identifier,
                 "model_revision": self.model_revision,
                 "vector_dimension": self.vector_dimension,
+                "vector_encoding": self.vector_encoding,
                 "source_kind_counts": dict(sorted(self.source_kind_counts.items())),
                 "vectors": [item.payload() for item in self.vectors],
             }
@@ -520,6 +525,10 @@ def parse_embedding_plan(data: bytes) -> EmbeddingPlan:
         value["model_revision"],
         label="model revision",
     )
+    if value["vector_encoding"] != VECTOR_ENCODING:
+        raise SemanticIndexError(
+            "semantic index vector encoding is unsupported"
+        )
     counts = _require_counts(value["source_kind_counts"])
     raw_requests = value["requests"]
     if (
@@ -677,6 +686,7 @@ def parse_embedding_result_set(data: bytes) -> EmbeddingResultSet:
         "record_version",
         "plan_sha256",
         "vector_dimension",
+        "vector_encoding",
         "results",
     }:
         raise SemanticIndexError(
@@ -697,6 +707,10 @@ def parse_embedding_result_set(data: bytes) -> EmbeddingResultSet:
     ):
         raise SemanticIndexError(
             "semantic embedding result set dimension is invalid"
+        )
+    if value["vector_encoding"] != VECTOR_ENCODING:
+        raise SemanticIndexError(
+            "semantic embedding result set vector encoding is unsupported"
         )
     raw_results = value["results"]
     if (
@@ -740,6 +754,7 @@ def parse_embedding_result_set(data: bytes) -> EmbeddingResultSet:
     return EmbeddingResultSet(
         plan_sha256=plan_sha,
         vector_dimension=dimension,
+        vector_encoding=VECTOR_ENCODING,
         results=tuple(entries),
     )
 
@@ -790,6 +805,7 @@ def parse_semantic_index_manifest(data: bytes) -> SemanticIndexManifest:
         "model_identifier",
         "model_revision",
         "vector_dimension",
+        "vector_encoding",
         "source_kind_counts",
         "vectors",
     }:
@@ -914,6 +930,7 @@ def parse_semantic_index_manifest(data: bytes) -> SemanticIndexManifest:
         model_identifier=model_identifier,
         model_revision=model_revision,
         vector_dimension=dimension,
+        vector_encoding=VECTOR_ENCODING,
         source_kind_counts=counts,
         vectors=tuple(vectors),
     )
@@ -1291,6 +1308,7 @@ def embed_semantic_plan_with_ollama(
     result_set = EmbeddingResultSet(
         plan_sha256=plan_sha,
         vector_dimension=vector_dimension,
+        vector_encoding=VECTOR_ENCODING,
         results=tuple(result_entries),
     )
     result_set_sha, result_set_path = (
@@ -1458,6 +1476,7 @@ def finalize_semantic_index(
                 model_identifier=plan.model_identifier,
                 model_revision=plan.model_revision,
                 vector_dimension=result_set.vector_dimension,
+                vector_encoding=result_set.vector_encoding,
                 source_kind_counts=dict(
                     plan.source_kind_counts
                 ),
@@ -1600,6 +1619,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "vector_dimension": (
                         result_set.vector_dimension
                     ),
+                    "vector_encoding": (
+                        result_set.vector_encoding
+                    ),
                 }
             )
         else:
@@ -1634,6 +1656,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ),
                     "vector_dimension": (
                         manifest.vector_dimension
+                    ),
+                    "vector_encoding": (
+                        manifest.vector_encoding
                     ),
                     "vector_count": len(
                         manifest.vectors
