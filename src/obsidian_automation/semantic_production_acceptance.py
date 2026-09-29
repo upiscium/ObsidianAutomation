@@ -45,7 +45,7 @@ from .planner_cadence import load_cadence_state
 
 RECEIPT_VERSION = 1
 RECEIPT_SUFFIX = "semantic-production-acceptance"
-DEFAULT_APP_ROOT = Path("/opt/obsidian-ai/ObsidianAutomation")
+DEFAULT_APP_ROOT = Path("/opt/obsidian-automation/app")
 DEFAULT_AI_ROOT = Path("/var/lib/obsidian-ai/state")
 DEFAULT_VAULT_ROOT = Path("/var/lib/obsidian-ai/vault")
 DEFAULT_RECEIPT_DIR = Path(
