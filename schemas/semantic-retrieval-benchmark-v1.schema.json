@@ -1,0 +1,227 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://upiscium.github.io/ObsidianAutomation/schemas/semantic-retrieval-benchmark-v1.schema.json",
+  "title": "Semantic Retrieval Benchmark v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "benchmark_version",
+    "name",
+    "cases"
+  ],
+  "properties": {
+    "benchmark_version": {
+      "const": 1
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 256,
+      "items": {
+        "$ref": "#/$defs/case"
+      },
+      "allOf": [
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "category": {
+                "const": "exact-technical"
+              }
+            },
+            "required": [
+              "category"
+            ]
+          },
+          "minContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "category": {
+                "const": "semantic-paraphrase"
+              }
+            },
+            "required": [
+              "category"
+            ]
+          },
+          "minContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "category": {
+                "const": "project-local"
+              }
+            },
+            "required": [
+              "category"
+            ]
+          },
+          "minContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "category": {
+                "const": "daily-knowledge"
+              }
+            },
+            "required": [
+              "category"
+            ]
+          },
+          "minContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "category": {
+                "const": "idea-project"
+              }
+            },
+            "required": [
+              "category"
+            ]
+          },
+          "minContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "category": {
+                "const": "cross-domain-bridge"
+              }
+            },
+            "required": [
+              "category"
+            ]
+          },
+          "minContains": 1
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "stringArray": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      }
+    },
+    "filters": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source_kinds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "daily",
+              "idea",
+              "project",
+              "project-note",
+              "knowledge"
+            ]
+          }
+        },
+        "workspaces": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "projects": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "idea_statuses": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "active",
+              "adopted"
+            ]
+          }
+        },
+        "project_statuses": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "created_from": {
+          "type": "string",
+          "format": "date"
+        },
+        "created_to": {
+          "type": "string",
+          "format": "date"
+        },
+        "knowledge_categories": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "knowledge_maturities": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "knowledge_source_types": {
+          "$ref": "#/$defs/stringArray"
+        }
+      }
+    },
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "category",
+        "query",
+        "relevant_paths"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "category": {
+          "enum": [
+            "exact-technical",
+            "semantic-paraphrase",
+            "project-local",
+            "daily-knowledge",
+            "idea-project",
+            "cross-domain-bridge"
+          ]
+        },
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8192
+        },
+        "relevant_paths": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^(00-DailyNote|05-Idea|10-Project|11-Knowledge)/.+\\.md$"
+          }
+        },
+        "filters": {
+          "$ref": "#/$defs/filters"
+        }
+      }
+    }
+  }
+}
