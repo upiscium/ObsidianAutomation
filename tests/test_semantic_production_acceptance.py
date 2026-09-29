@@ -474,3 +474,12 @@ def test_receipt_store_is_content_addressed_and_immutable(
         digest,
         expected_stage="verify-index",
     ) == receipt
+
+def test_semantic_acceptance_uses_canonical_contract4_runtime_paths() -> None:
+    assert acceptance.DEFAULT_APP_ROOT == Path("/opt/obsidian-automation/app")
+    runbook = Path("docs/semantic-production-acceptance-v1.md").read_text(
+        encoding="utf-8"
+    )
+    assert "/opt/obsidian-automation/venv/bin/obsidian-semantic-production-acceptance" in runbook
+    assert "/opt/obsidian-ai/venv/bin/obsidian-semantic-production-acceptance" not in runbook
+

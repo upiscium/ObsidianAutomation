@@ -25,10 +25,10 @@ The Input Planner runs as Reader and is skipped unless
 
 ```text
 application checkout:
-  /opt/obsidian-ai/ObsidianAutomation
+  /opt/obsidian-automation/app
 
 venv:
-  /opt/obsidian-ai/venv
+  /opt/obsidian-automation/venv
 
 state:
   /var/lib/obsidian-ai/state
@@ -43,7 +43,7 @@ private deployment configuration:
   /etc/obsidian-ai/review-intake-password
 
 deployment receipts:
-  /var/lib/obsidian-ai/deployments
+  /var/lib/obsidian-automation/deployments
 ```
 
 Private Generator/Evaluator files contain only deployment-specific
@@ -77,7 +77,7 @@ reviewed merge commit without changing production HEAD:
 
 ```bash
 TARGET=<reviewed-merge-commit>
-APP=/opt/obsidian-ai/ObsidianAutomation
+APP=/opt/obsidian-automation/app
 
 git -C "$APP" fetch origin main
 git -C "$APP" rev-parse --verify "$TARGET^{commit}"
@@ -253,14 +253,14 @@ editable install and do not move production HEAD yet:
 
 ```bash
 TARGET=<reviewed-merge-commit>
-APP=/opt/obsidian-ai/ObsidianAutomation
+APP=/opt/obsidian-automation/app
 BOOT=$(mktemp -d /var/tmp/obsidian-pre-review-bootstrap.XXXXXX)
 rmdir "$BOOT"
 
 git -C "$APP" fetch origin main
 git -C "$APP" worktree add --detach "$BOOT" "$TARGET"
 
-sudo /opt/obsidian-ai/venv/bin/pip install   --no-deps   --force-reinstall   "$BOOT"
+sudo /opt/obsidian-automation/venv/bin/pip install   --no-deps   --force-reinstall   "$BOOT"
 
 git -C "$APP" worktree remove --force "$BOOT"
 ```
@@ -268,7 +268,7 @@ git -C "$APP" worktree remove --force "$BOOT"
 Then hand control to the exact-SHA transaction:
 
 ```bash
-sudo /opt/obsidian-ai/venv/bin/obsidian-pre-review-production-update   --target-sha "$TARGET"   --bootstrap-mirror-pre-disabled
+sudo /opt/obsidian-automation/venv/bin/obsidian-pre-review-production-update   --target-sha "$TARGET"   --bootstrap-mirror-pre-disabled
 ```
 
 The bootstrap flag is first-install only. It requires the mirror timer to be
@@ -280,7 +280,7 @@ enabled+active. A successful transaction restores it.
 Normal later deployments use:
 
 ```bash
-sudo /opt/obsidian-ai/venv/bin/obsidian-pre-review-production-update   --target-sha <reviewed-merge-commit>
+sudo /opt/obsidian-automation/venv/bin/obsidian-pre-review-production-update   --target-sha <reviewed-merge-commit>
 ```
 
 The updater performs:
@@ -419,7 +419,7 @@ content, endpoint, credential, or Review decision.
 Read it with:
 
 ```bash
-/opt/obsidian-ai/venv/bin/obsidian-pre-review-status   --status-file   /var/lib/obsidian-ai/state/02-Orchestration/status/pre-review-status.json   --json
+/opt/obsidian-automation/venv/bin/obsidian-pre-review-status   --status-file   /var/lib/obsidian-ai/state/02-Orchestration/status/pre-review-status.json   --json
 ```
 
 Health semantics:
@@ -442,7 +442,7 @@ TARGET=<deployed-review-sha>
 MODEL=gemma4:12b
 MODEL_REVISION=<64-hex-Ollama-model-digest>
 
-sudo /opt/obsidian-ai/venv/bin/obsidian-pre-review-production-canary \
+sudo /opt/obsidian-automation/venv/bin/obsidian-pre-review-production-canary \
   --scratch-root /var/tmp/obsidian-pre-review-canary-$TARGET \
   --generator-base-url https://ollama.example/v1 \
   --evaluator-base-url https://ollama.example/v1 \

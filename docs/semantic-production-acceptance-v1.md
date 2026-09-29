@@ -12,6 +12,14 @@ selection observation, then emits an environment **plan**. It does not edit
 
 Deploy one reviewed merge commit through the existing updater/lifecycle.
 
+Canonical production paths are:
+
+```text
+/opt/obsidian-automation/app
+/opt/obsidian-automation/venv
+/usr/local/sbin/obsidian-automation-update
+```
+
 After the update, production must still have:
 
 ```text
@@ -27,7 +35,7 @@ The systemd unit itself also defaults to legacy.
 Run as root so OS authority checks can use the real production identities:
 
 ```bash
-sudo /opt/obsidian-ai/venv/bin/obsidian-semantic-production-acceptance \
+sudo /opt/obsidian-automation/venv/bin/obsidian-semantic-production-acceptance \
   preflight \
   --expected-revision <reviewed-merge-sha>
 ```
@@ -64,7 +72,7 @@ Keep the resulting exact Semantic Index SHA.
 ## 4. Verify the exact index against the current mirror
 
 ```bash
-sudo /opt/obsidian-ai/venv/bin/obsidian-semantic-production-acceptance \
+sudo /opt/obsidian-automation/venv/bin/obsidian-semantic-production-acceptance \
   verify-index \
   --semantic-index-sha <semantic-index-sha256>
 ```
@@ -88,7 +96,7 @@ Prepare and embed the benchmark queries with the existing
 `obsidian-semantic-retrieval` commands, then run:
 
 ```bash
-sudo /opt/obsidian-ai/venv/bin/obsidian-semantic-production-acceptance \
+sudo /opt/obsidian-automation/venv/bin/obsidian-semantic-production-acceptance \
   benchmark \
   --semantic-index-sha <semantic-index-sha256> \
   --benchmark <reviewed-production-benchmark.json> \
@@ -115,7 +123,7 @@ ground-truth relevance labels.
 For the initial rollout:
 
 ```bash
-sudo /opt/obsidian-ai/venv/bin/obsidian-semantic-production-acceptance \
+sudo /opt/obsidian-automation/venv/bin/obsidian-semantic-production-acceptance \
   observe-selection \
   --semantic-index-sha <semantic-index-sha256> \
   --policy semantic-project-distill-v0
@@ -131,7 +139,7 @@ It creates no pre-review job and must not change the Planner submission clock.
 Use the four exact receipt SHAs:
 
 ```bash
-sudo /opt/obsidian-ai/venv/bin/obsidian-semantic-production-acceptance \
+sudo /opt/obsidian-automation/venv/bin/obsidian-semantic-production-acceptance \
   plan-canary \
   --preflight-receipt-sha <sha> \
   --index-receipt-sha <sha> \
