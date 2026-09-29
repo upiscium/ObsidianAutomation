@@ -1401,6 +1401,48 @@ def load_objective_generation(
     return generation
 
 
+def store_deep_knowledge_proposal(
+    ai_root: Path,
+    *,
+    objective_generation_sha256: str,
+) -> tuple[str, Path]:
+    generation = load_objective_generation(
+        ai_root,
+        objective_generation_sha256,
+    )
+    if generation.objective_policy != DEEP_KNOWLEDGE:
+        raise SemanticObjectiveError(
+            "only deep-knowledge-v1 can materialize a Knowledge proposal"
+        )
+    candidate = load_objective_candidate(
+        ai_root,
+        generation.candidate_sha256,
+    )
+    if not isinstance(candidate.output, KnowledgeGeneratorOutput):
+        raise SemanticObjectiveError(
+            "deep Knowledge candidate is not a Knowledge output"
+        )
+    if (
+        candidate.objective_context_sha256
+        != generation.objective_context_sha256
+        or candidate.selection_sha256 != generation.selection_sha256
+        or candidate.semantic_index_sha256
+        != generation.semantic_index_sha256
+    ):
+        raise SemanticObjectiveError(
+            "deep Knowledge candidate/generation provenance mismatch"
+        )
+
+    from .artifact_lifecycle import store_untrusted_proposal
+    from .generator_contract import assemble_knowledge_note_proposal
+
+    proposal = assemble_knowledge_note_proposal(
+        context_sha256=generation.objective_context_sha256,
+        output=candidate.output,
+    )
+    return store_untrusted_proposal(ai_root, proposal)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="obsidian-semantic-objective-context")
     parser.add_argument("--ai-root", type=Path, required=True)
