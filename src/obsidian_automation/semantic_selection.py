@@ -462,9 +462,7 @@ def _choose_bridge_anchors(
 
 
 def _anchor_query(anchors: Sequence[SemanticCandidate]) -> str:
-    text = "
-
-".join(item.text.strip() for item in anchors if item.text.strip())
+    text = "\\n\\n".join(item.text.strip() for item in anchors if item.text.strip())
     text = text[:ANCHOR_QUERY_CHARS].strip()
     if not text:
         raise SemanticSelectionError("semantic anchor text is empty")
