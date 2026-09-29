@@ -19,6 +19,7 @@ from obsidian_automation.semantic_index import (
     EmbeddingResultSetEntry,
     finalize_semantic_index,
     load_embedding_request,
+    load_semantic_index_manifest,
     prepare_semantic_embedding_plan,
     store_embedding_result,
     store_embedding_result_set,
@@ -261,15 +262,10 @@ def _selection(
     record = SemanticSelectionRecord(
         selection_policy=policy,
         semantic_index_sha256=index_sha,
-        corpus_manifest_sha256=next(
-            item.corpus_manifest_sha256
-            for item in [
-                __import__(
-                    "obsidian_automation.semantic_index",
-                    fromlist=["load_semantic_index_manifest"],
-                ).load_semantic_index_manifest(state, index_sha)
-            ]
-        ),
+        corpus_manifest_sha256=load_semantic_index_manifest(
+            state,
+            index_sha,
+        ).corpus_manifest_sha256,
         metadata_filters=RetrievalFilter().payload(),
         retrieval_mode="hybrid",
         lexical_weight=0.6,
