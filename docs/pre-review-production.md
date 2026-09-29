@@ -322,6 +322,24 @@ It does not contact the LLM provider or Nextcloud.
 
 ## Limited operational status
 
+Operational status v1 uses record version 2 and adds bounded Planner cadence
+metadata: current interval/reason, next eligible automatic generation time,
+last submission time, last selection/objective policy identities, and future
+novelty-skip reason. It still excludes job IDs and semantic artifact hashes.
+
+Schema:
+
+```text
+schemas/pre-review-operational-status-v1.schema.json
+```
+
+Historical v0 status files remain parseable during rollout.
+
+
+The timer remains intentionally short (`OnUnitInactiveSec=2min`). Generation
+cadence is enforced inside Input Planner and must not be implemented by slowing
+this timer.
+
 The timer targets `obsidian-pre-review-status.service`. Its dependency graph
 runs both the pre-review path and the post-review control plane:
 
