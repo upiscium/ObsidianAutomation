@@ -17,6 +17,7 @@ Nextcloud Live Vault
 AI Writer host/LXC
 ├── obsidian-ai-sync
 ├── obsidian-ai-reader
+├── obsidian-ai-embedder
 ├── obsidian-ai-generator
 ├── obsidian-ai-validator
 ├── obsidian-ai-evaluator
@@ -47,6 +48,7 @@ That credential cannot create, update, or delete canonical Vault content.
 The following identities have no Nextcloud writer credential:
 
 - `obsidian-ai-reader`;
+- `obsidian-ai-embedder`;
 - `obsidian-ai-generator`;
 - `obsidian-ai-validator`;
 - `obsidian-ai-evaluator`;
@@ -65,8 +67,10 @@ Recommended layout:
 ```text
 /var/lib/obsidian-ai/
 ├── vault/                   # Nextcloud -> local pull-only mirror
-│   ├── 11-Knowledge/
-│   └── 10-Project/          # Project Notes for Generation input only
+│   ├── 00-DailyNote/        # Reader-only Semantic Corpus input
+│   ├── 05-Idea/             # Reader-only Semantic Corpus input
+│   ├── 10-Project/
+│   └── 11-Knowledge/
 └── state/                   # local-only; never rclone-sync this tree
     ├── 00-Untrusted/
     ├── 02-Orchestration/
@@ -74,6 +78,12 @@ Recommended layout:
     │   ├── pre-review-jobs.sqlite3
     │   └── status/pre-review-status.json
     ├── 04-Index/
+    │   ├── semantic-corpus/
+    │   ├── semantic-embedding-requests/
+    │   ├── semantic-embedding-plans/
+    │   ├── semantic-embedding-results/
+    │   ├── semantic-embedding-result-sets/
+    │   └── semantic-index/
     ├── 05-Context/
     ├── 10-Validation/
     ├── 12-Evaluation-Request/
@@ -92,7 +102,19 @@ This separation is required. A Nextcloud pull must never be able to delete local
 
 ## Derived retrieval state
 
-`04-Index` is Reader-private, non-authoritative derived state. Reader/Indexer is the only identity that may read or write it.
+`04-Index` remains non-authoritative derived state, but Semantic Embedding Index
+v1 narrows provider access with a dedicated `obsidian-ai-embedder` identity.
+
+Reader/Indexer owns Semantic Corpus manifests, embedding requests/plans, and the
+final semantic index. Embedder may read only the bounded request/plan subtrees
+and may write only embedding result/result-set subtrees. Embedder cannot read the
+Vault mirror, Semantic Corpus manifest, final semantic index, or Generator
+Context. Generator still cannot read any `04-Index` content.
+
+This split prevents Reader from needing embedding-provider credentials/network
+authority while preventing the provider-facing identity from acquiring Vault
+authority. See
+[Semantic Embedding Index v1](semantic-embedding-index-v1.md).
 
 `05-Context` is the non-authoritative Reader -> Generator boundary. Reader is the only writer. Generator and Evaluator may read exact Context Bundles but cannot rewrite them. Context never grants validation, evaluation, approval, execution, transport, or receipt authority.
 
@@ -123,14 +145,25 @@ scheduler metadata; Reader still cannot write either authority stage.
 
 ```text
 Reader / Input Planner / Indexer
-  read canonical 11-Knowledge + active Project Notes
-  create mixed immutable Generation Context
-  submit bounded pre-review jobs
+  current production generation:
+    read canonical 11-Knowledge + active Project Notes
+    create mixed immutable Generation Context
+    submit bounded pre-review jobs
+  offline Semantic Planner Phase B:
+    read Daily + Idea + Project + Project Note + Knowledge
+    create exact Semantic Corpus / embedding requests
+        ↓ bounded request-only boundary
+Embedder
+  resolve pinned embedding model identity
+  write bound embedding results/result-set
+        ↓ result-only boundary
+Reader / Indexer
+  revalidate exact corpus + result bindings
+  create content-addressed semantic index
+  keep automatic selection unchanged
         ↓
 Reader / Indexer
-  read canonical 11-Knowledge
-  create immutable 04-Index/<sha>.index.json
-  deterministic production retrieval
+  create existing BM25 04-Index/<sha>.index.json as needed
   create immutable 05-Context/<sha>.context.json
         ↓ read-only boundary
 Generator
