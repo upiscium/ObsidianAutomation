@@ -90,6 +90,7 @@ DIRECTORIES: tuple[tuple[str, str, str, int], ...] = (
     ("/var/lib/obsidian-ai/state/00-Untrusted", "root", "root", 0o700),
     ("/var/lib/obsidian-ai/state/02-Orchestration", "root", "root", 0o700),
     ("/var/lib/obsidian-ai/state/02-Orchestration/recipes", "root", "root", 0o700),
+    ("/var/lib/obsidian-ai/state/02-Orchestration/semantic-selections", "root", "root", 0o700),
     ("/var/lib/obsidian-ai/state/02-Orchestration/status", "root", "root", 0o700),
     ("/var/lib/obsidian-ai/state/04-Index", "root", "root", 0o700),
     ("/var/lib/obsidian-ai/state/04-Index/semantic-corpus", "root", "root", 0o700),
@@ -184,6 +185,9 @@ AI_ACLS: dict[str, tuple[str, ...]] = {
         "u:obsidian-ai-generator:r-x",
         "u:obsidian-ai-validator:r-x",
         "u:obsidian-ai-evaluator:r-x",
+    ),
+    "/var/lib/obsidian-ai/state/02-Orchestration/semantic-selections": (
+        "u:obsidian-ai-reader:rwx",
     ),
     "/var/lib/obsidian-ai/state/02-Orchestration/status": (
         "u:obsidian-ai-status:rwx",
