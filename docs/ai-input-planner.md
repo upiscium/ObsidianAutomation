@@ -57,8 +57,9 @@ v0 alternates deterministically between:
   discovery. When both source kinds exist and the batch permits it, at least one
   Knowledge Note and one Project Note are selected.
 
-The default cadence is four coverage selections followed by one random
-selection, equivalent to an 80/20 split.
+The default selection-policy mix is four coverage selections followed by one
+random selection, equivalent to an 80/20 split. This is independent from the
+generation submission cadence described below.
 
 The seed is SHA-256-derived from the exact catalog digest plus epoch/cycle.
 Selection is reproducible from durable metadata and does not depend on process
@@ -71,11 +72,25 @@ The planner creates at most one new job per invocation.
 Defaults:
 
 ```text
-target_inflight = 3
+target_inflight = 2
 hard Human Review backpressure = 8
 batch_size = 6
 maximum batch_size = 8
 ```
+
+Automatic generation submission is additionally gated by
+[Planner Generation Cadence v1](planner-generation-cadence-v1.md):
+
+```text
+hard minimum interval        15 min
+normal target interval       60 min
+awaiting Human Review = 1    90 min
+awaiting Human Review >= 2   180 min
+```
+
+Only new Planner submission is rate-limited. The short pre-review lifecycle
+timer remains unchanged so Review Intake, reconciliation, cleanup and status
+projection stay responsive.
 
 `queued`, active pre-review processing states,
 `awaiting_human_review`, and `approved_pending_execution` count toward the
@@ -117,8 +132,13 @@ Mutable scheduler state:
 
 ```text
 02-Orchestration/input-planner-state.json
+02-Orchestration/input-planner-cadence.json
 02-Orchestration/input-planner-pending.json
 ```
+
+The cadence file is independently durable and records the last automatic
+submission timestamp plus bounded selection/objective policy and future novelty
+skip observability. Service restart does not reset cooldown.
 
 `input-planner-pending.json` is a fsynced transaction journal spanning Context
 creation, durable job submission, Human projection emission and scheduler-state
