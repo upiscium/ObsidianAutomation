@@ -218,6 +218,13 @@ def _round(value: float) -> float:
     return round(float(value), 8)
 
 
+def _require_selection_sha256(value: object, *, label: str) -> str:
+    try:
+        return _require_sha256(value, label=label)
+    except ArtifactLifecycleError as exc:
+        raise SemanticSelectionError(str(exc)) from exc
+
+
 def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
     if len(left) != len(right) or not left:
         raise SemanticSelectionError("selection vector dimensions do not match")
@@ -798,8 +805,8 @@ def parse_semantic_selection(data: bytes) -> SemanticSelectionRecord:
     policy = value["selection_policy"]
     if policy not in POLICIES:
         raise SemanticSelectionError("semantic selection policy is unsupported")
-    index_sha = _require_sha256(value["semantic_index_sha256"], label="semantic index SHA")
-    corpus_sha = _require_sha256(value["corpus_manifest_sha256"], label="corpus manifest SHA")
+    index_sha = _require_selection_sha256(value["semantic_index_sha256"], label="semantic index SHA")
+    corpus_sha = _require_selection_sha256(value["corpus_manifest_sha256"], label="corpus manifest SHA")
     filters = value["metadata_filters"]
     if not isinstance(filters, dict):
         raise SemanticSelectionError("semantic selection metadata filters are invalid")
@@ -854,11 +861,11 @@ def parse_semantic_selection(data: bytes) -> SemanticSelectionRecord:
         anchors.append(
             AnchorBinding(
                 role=role,
-                chunk_id=_require_sha256(raw["chunk_id"], label="anchor chunk id"),
+                chunk_id=_require_selection_sha256(raw["chunk_id"], label="anchor chunk id"),
                 source_path=source_path,
                 source_kind=source_kind,
-                source_sha256=_require_sha256(raw["source_sha256"], label="anchor source SHA"),
-                content_sha256=_require_sha256(raw["content_sha256"], label="anchor content SHA"),
+                source_sha256=_require_selection_sha256(raw["source_sha256"], label="anchor source SHA"),
+                content_sha256=_require_selection_sha256(raw["content_sha256"], label="anchor content SHA"),
             )
         )
     if not 1 <= len(anchors) <= 2:
@@ -880,7 +887,7 @@ def parse_semantic_selection(data: bytes) -> SemanticSelectionRecord:
             raise SemanticSelectionError("semantic selection selected chunk is invalid")
         if raw["rank"] != expected_rank:
             raise SemanticSelectionError("semantic selection ranks are not contiguous")
-        chunk_id = _require_sha256(raw["chunk_id"], label="selected chunk id")
+        chunk_id = _require_selection_sha256(raw["chunk_id"], label="selected chunk id")
         source_path = raw["source_path"]
         if not isinstance(source_path, str) or not source_path:
             raise SemanticSelectionError("semantic selection source path is invalid")
@@ -901,8 +908,8 @@ def parse_semantic_selection(data: bytes) -> SemanticSelectionRecord:
                 chunk_id=chunk_id,
                 source_path=source_path,
                 source_kind=source_kind,
-                source_sha256=_require_sha256(raw["source_sha256"], label="selected source SHA"),
-                content_sha256=_require_sha256(raw["content_sha256"], label="selected content SHA"),
+                source_sha256=_require_selection_sha256(raw["source_sha256"], label="selected source SHA"),
+                content_sha256=_require_selection_sha256(raw["content_sha256"], label="selected content SHA"),
                 score=_require_score(raw["score"], label="selected score"),
                 lexical_score=_require_score(raw["lexical_score"], label="selected lexical score"),
                 lexical_normalized=_require_score(raw["lexical_normalized"], label="selected lexical normalized"),
@@ -933,7 +940,7 @@ def parse_semantic_selection(data: bytes) -> SemanticSelectionRecord:
             raise SemanticSelectionError("recent Context observation is invalid")
         recent_contexts.append(
             RecentContextObservation(
-                context_sha256=_require_sha256(raw["context_sha256"], label="recent Context SHA"),
+                context_sha256=_require_selection_sha256(raw["context_sha256"], label="recent Context SHA"),
                 similarity=_require_score(raw["similarity"], label="recent Context similarity"),
             )
         )
@@ -988,7 +995,7 @@ def load_semantic_selection(
     ai_root: Path,
     selection_sha256: str,
 ) -> SemanticSelectionRecord:
-    digest = _require_sha256(selection_sha256, label="semantic selection SHA")
+    digest = _require_selection_sha256(selection_sha256, label="semantic selection SHA")
     path = _selection_dir(ai_root) / f"{digest}.semantic-selection.json"
     data = _read_exact_file(path)
     if sha256_bytes(data) != digest:
@@ -1080,7 +1087,7 @@ def build_semantic_selection(
         raise SemanticSelectionError(
             f"max_selected must be 2..{MAX_SELECTED_CHUNKS}"
         )
-    index_sha = _require_sha256(
+    index_sha = _require_selection_sha256(
         semantic_index_sha256,
         label="semantic index SHA",
     )
