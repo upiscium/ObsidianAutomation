@@ -843,6 +843,10 @@ def parse_semantic_index_manifest(data: bytes) -> SemanticIndexManifest:
         or not 1 <= dimension <= MAX_VECTOR_DIMENSION
     ):
         raise SemanticIndexError("semantic index vector dimension is invalid")
+    if value["vector_encoding"] != VECTOR_ENCODING:
+        raise SemanticIndexError(
+            "semantic index vector encoding is unsupported"
+        )
     counts = _require_counts(value["source_kind_counts"])
     raw_vectors = value["vectors"]
     if (
