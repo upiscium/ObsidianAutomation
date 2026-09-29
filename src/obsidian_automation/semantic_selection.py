@@ -643,7 +643,7 @@ def _recent_context_observations(
         observations.append(
             RecentContextObservation(
                 context_sha256=context_sha,
-                similarity=_cosine(selection_vector, centroid),
+                similarity=_round(_cosine(selection_vector, centroid)),
             )
         )
         if len(observations) >= limit:
@@ -668,12 +668,12 @@ def _selected_chunks(
             source_kind=item.source_kind,
             source_sha256=item.source_sha256,
             content_sha256=item.content_sha256,
-            score=item.score,
-            lexical_score=item.lexical_score,
-            lexical_normalized=item.lexical_normalized,
-            cosine_score=item.cosine_score,
-            semantic_normalized=item.semantic_normalized,
-            source_kind_weight=item.source_kind_weight,
+            score=_round(item.score),
+            lexical_score=_round(item.lexical_score),
+            lexical_normalized=_round(item.lexical_normalized),
+            cosine_score=_round(item.cosine_score),
+            semantic_normalized=_round(item.semantic_normalized),
+            source_kind_weight=_round(item.source_kind_weight),
         )
         for index, item in enumerate(ranked, 1)
     )
@@ -1023,7 +1023,9 @@ def _make_record(
         limit=recent_context_limit,
     )
     recent_max = recent[0].similarity if recent else None
-    knowledge_max = _knowledge_similarity(anchor_vector, candidates)
+    knowledge_raw = _knowledge_similarity(anchor_vector, candidates)
+    knowledge_max = None if knowledge_raw is None else _round(knowledge_raw)
+    coherence = _round(coherence)
     decision, skip_reason = _decision(
         policy=policy,
         selected=ranked,
