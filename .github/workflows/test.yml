@@ -62,6 +62,7 @@ jobs:
           for user in \
             obsidian-ai-sync \
             obsidian-ai-reader \
+            obsidian-ai-embedder \
             obsidian-ai-generator \
             obsidian-ai-validator \
             obsidian-ai-evaluator \
