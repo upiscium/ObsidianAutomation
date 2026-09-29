@@ -22,12 +22,20 @@ AI runtime data remains separated into a pull-only Vault mirror and local-only l
 ```text
 /var/lib/obsidian-ai/
 ├── vault/
+│   ├── 00-DailyNote/
+│   ├── 05-Idea/
 │   ├── 10-Project/
 │   └── 11-Knowledge/
 └── state/
     ├── 00-Untrusted/
     ├── 02-Orchestration/
     ├── 04-Index/
+    │   ├── semantic-corpus/
+    │   ├── semantic-embedding-requests/
+    │   ├── semantic-embedding-plans/
+    │   ├── semantic-embedding-results/
+    │   ├── semantic-embedding-result-sets/
+    │   └── semantic-index/
     ├── 05-Context/
     ├── 10-Validation/
     ├── 12-Evaluation-Request/
@@ -134,6 +142,26 @@ OPENAI_API_KEY=...
 `OPENAI_API_KEY` is optional when the endpoint requires no bearer authentication.
 
 Do not store these files in this repository. Model names and exact model revisions are bound by the immutable job recipe rather than these environment files.
+
+### Semantic embedding provider
+
+Semantic Embedding Index v1 uses a separate `obsidian-ai-embedder` Unix identity
+instead of granting provider access to Reader.
+
+The initial rollout is operator-driven and uses Ollama's native embedding API.
+No recurring semantic-index service or timer is installed by this stage.
+
+Reader pins an exact installed model identifier and digest into the immutable
+embedding plan. Embedder re-resolves that identity before inference and refuses a
+digest mismatch.
+
+For a local Ollama endpoint, no provider credential file is required. Run the
+prepare/embed/finalize flow described in
+[Semantic Embedding Index v1](semantic-embedding-index-v1.md).
+
+The Embedder has no Vault access. Do not work around an ACL failure by granting
+it read access to `/var/lib/obsidian-ai/vault`; the bounded embedding request is
+the intended data boundary.
 
 ## Vault mirror configuration
 

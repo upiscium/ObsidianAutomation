@@ -458,10 +458,14 @@ No generation behavior change.
 
 ### Phase B — semantic index
 
-Implement #200.
+Implement #200 via
+[Semantic Embedding Index v1](semantic-embedding-index-v1.md).
 
-Build vectors and manifests in read-only/offline production mode. Do not connect
-to automatic Planner selection.
+Reader materializes exact bounded chunk requests, the dedicated
+`obsidian-ai-embedder` performs pinned-model inference, and Reader validates the
+bound results before publishing a content-addressed semantic index. Build vectors
+and manifests in read-only/offline production mode. Do not connect to automatic
+Planner selection.
 
 ### Phase C — benchmark/hybrid retrieval
 

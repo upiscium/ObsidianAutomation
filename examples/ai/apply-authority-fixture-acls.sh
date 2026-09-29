@@ -12,6 +12,7 @@ AI_ROOT=${AI_ROOT:-"$VAULT_ROOT/20-AI"}
 
 SYNC_USER=${SYNC_USER:-obsidian-ai-sync}
 READER_USER=${READER_USER:-obsidian-ai-reader}
+EMBEDDER_USER=${EMBEDDER_USER:-obsidian-ai-embedder}
 GENERATOR_USER=${GENERATOR_USER:-obsidian-ai-generator}
 VALIDATOR_USER=${VALIDATOR_USER:-obsidian-ai-validator}
 EVALUATOR_USER=${EVALUATOR_USER:-obsidian-ai-evaluator}
@@ -29,6 +30,12 @@ UNTRUSTED="$AI_ROOT/00-Untrusted"
 ORCHESTRATION="$AI_ROOT/02-Orchestration"
 ORCHESTRATION_RECIPES="$ORCHESTRATION/recipes"
 INDEX="$AI_ROOT/04-Index"
+SEMANTIC_CORPUS="$INDEX/semantic-corpus"
+EMBEDDING_REQUESTS="$INDEX/semantic-embedding-requests"
+EMBEDDING_PLANS="$INDEX/semantic-embedding-plans"
+EMBEDDING_RESULTS="$INDEX/semantic-embedding-results"
+EMBEDDING_RESULT_SETS="$INDEX/semantic-embedding-result-sets"
+SEMANTIC_INDEX="$INDEX/semantic-index"
 CONTEXT="$AI_ROOT/05-Context"
 EVALUATION_REQUEST="$AI_ROOT/12-Evaluation-Request"
 EVALUATION_CONTEXT="$AI_ROOT/14-Evaluation-Context"
@@ -62,6 +69,7 @@ done
 for user in \
   "$SYNC_USER" \
   "$READER_USER" \
+  "$EMBEDDER_USER" \
   "$GENERATOR_USER" \
   "$VALIDATOR_USER" \
   "$EVALUATOR_USER" \
@@ -137,6 +145,7 @@ setfacl -k "$AI_ROOT" || true
 for entry in \
   "u:$SYNC_USER:r-x" \
   "u:$READER_USER:--x" \
+  "u:$EMBEDDER_USER:--x" \
   "u:$GENERATOR_USER:--x" \
   "u:$VALIDATOR_USER:--x" \
   "u:$EVALUATOR_USER:--x" \
@@ -179,6 +188,36 @@ apply_directory_acl "$ORCHESTRATION_RECIPES" \
   "u:$EVALUATOR_USER:r-x"
 
 apply_directory_acl "$INDEX" \
+  "u:$READER_USER:rwx" \
+  "u:$EMBEDDER_USER:--x"
+
+for directory in \
+  "$SEMANTIC_CORPUS" \
+  "$EMBEDDING_REQUESTS" \
+  "$EMBEDDING_PLANS" \
+  "$EMBEDDING_RESULTS" \
+  "$EMBEDDING_RESULT_SETS" \
+  "$SEMANTIC_INDEX"; do
+  install -d -o root -g root -m 0700 "$directory"
+  setfacl -b "$directory"
+  setfacl -k "$directory" || true
+done
+
+apply_directory_acl "$SEMANTIC_CORPUS" \
+  "u:$READER_USER:rwx"
+apply_directory_acl "$EMBEDDING_REQUESTS" \
+  "u:$READER_USER:rwx" \
+  "u:$EMBEDDER_USER:r-x"
+apply_directory_acl "$EMBEDDING_PLANS" \
+  "u:$READER_USER:rwx" \
+  "u:$EMBEDDER_USER:r-x"
+apply_directory_acl "$EMBEDDING_RESULTS" \
+  "u:$READER_USER:r-x" \
+  "u:$EMBEDDER_USER:rwx"
+apply_directory_acl "$EMBEDDING_RESULT_SETS" \
+  "u:$READER_USER:r-x" \
+  "u:$EMBEDDER_USER:rwx"
+apply_directory_acl "$SEMANTIC_INDEX" \
   "u:$READER_USER:rwx"
 
 apply_directory_acl "$CONTEXT" \

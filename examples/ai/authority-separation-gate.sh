@@ -12,6 +12,7 @@ AI_ROOT=${AI_ROOT:-"$VAULT_ROOT/20-AI"}
 
 SYNC_USER=${SYNC_USER:-obsidian-ai-sync}
 READER_USER=${READER_USER:-obsidian-ai-reader}
+EMBEDDER_USER=${EMBEDDER_USER:-obsidian-ai-embedder}
 GENERATOR_USER=${GENERATOR_USER:-obsidian-ai-generator}
 VALIDATOR_USER=${VALIDATOR_USER:-obsidian-ai-validator}
 EVALUATOR_USER=${EVALUATOR_USER:-obsidian-ai-evaluator}
@@ -29,6 +30,12 @@ UNTRUSTED="$AI_ROOT/00-Untrusted"
 ORCHESTRATION="$AI_ROOT/02-Orchestration"
 STATUS_DIR="$ORCHESTRATION/status"
 INDEX="$AI_ROOT/04-Index"
+SEMANTIC_CORPUS="$INDEX/semantic-corpus"
+EMBEDDING_REQUESTS="$INDEX/semantic-embedding-requests"
+EMBEDDING_PLANS="$INDEX/semantic-embedding-plans"
+EMBEDDING_RESULTS="$INDEX/semantic-embedding-results"
+EMBEDDING_RESULT_SETS="$INDEX/semantic-embedding-result-sets"
+SEMANTIC_INDEX="$INDEX/semantic-index"
 CONTEXT="$AI_ROOT/05-Context"
 VALIDATION="$AI_ROOT/10-Validation"
 EVALUATION_REQUEST="$AI_ROOT/12-Evaluation-Request"
@@ -62,6 +69,7 @@ done
 for user in \
   "$SYNC_USER" \
   "$READER_USER" \
+  "$EMBEDDER_USER" \
   "$GENERATOR_USER" \
   "$VALIDATOR_USER" \
   "$EVALUATOR_USER" \
@@ -75,7 +83,9 @@ for user in \
 done
 
 for directory in \
-  "$DAILY" "$IDEAS" "$KNOWLEDGE" "$UNTRUSTED" "$ORCHESTRATION" "$STATUS_DIR" "$INDEX" "$CONTEXT" "$VALIDATION" \
+  "$DAILY" "$IDEAS" "$KNOWLEDGE" "$UNTRUSTED" "$ORCHESTRATION" "$STATUS_DIR" "$INDEX" \
+  "$SEMANTIC_CORPUS" "$EMBEDDING_REQUESTS" "$EMBEDDING_PLANS" "$EMBEDDING_RESULTS" "$EMBEDDING_RESULT_SETS" "$SEMANTIC_INDEX" \
+  "$CONTEXT" "$VALIDATION" \
   "$EVALUATION_REQUEST" "$EVALUATION_CONTEXT" "$EVALUATION" "$PROJECTION" "$PROJECTION_RESULT" \
   "$PROJECTION/reader" "$PROJECTION/generator" "$PROJECTION/validator" "$PROJECTION/evaluator" \
   "$PROJECTION/reviewer" "$PROJECTION/executor" "$PROJECTION/sync" \
@@ -131,6 +141,12 @@ idea_seed="$IDEAS/.authority-gate-idea"
 knowledge_seed="$KNOWLEDGE/.authority-gate-knowledge"
 untrusted_seed="$UNTRUSTED/.authority-gate-untrusted"
 index_seed="$INDEX/.authority-gate-index"
+semantic_corpus_seed="$SEMANTIC_CORPUS/.authority-gate-semantic-corpus"
+embedding_request_seed="$EMBEDDING_REQUESTS/.authority-gate-embedding-request"
+embedding_plan_seed="$EMBEDDING_PLANS/.authority-gate-embedding-plan"
+embedding_result_seed="$EMBEDDING_RESULTS/.authority-gate-embedding-result"
+embedding_result_set_seed="$EMBEDDING_RESULT_SETS/.authority-gate-embedding-result-set"
+semantic_index_seed="$SEMANTIC_INDEX/.authority-gate-semantic-index"
 context_seed="$CONTEXT/.authority-gate-context"
 validation_seed="$VALIDATION/.authority-gate-validation"
 evaluation_request_seed="$EVALUATION_REQUEST/.authority-gate-evaluation-request"
@@ -151,6 +167,12 @@ create_seed "$SYNC_USER" "$idea_seed"
 create_seed "$SYNC_USER" "$knowledge_seed"
 create_seed "$GENERATOR_USER" "$untrusted_seed"
 create_seed "$READER_USER" "$index_seed"
+create_seed "$READER_USER" "$semantic_corpus_seed"
+create_seed "$READER_USER" "$embedding_request_seed"
+create_seed "$READER_USER" "$embedding_plan_seed"
+create_seed "$EMBEDDER_USER" "$embedding_result_seed"
+create_seed "$EMBEDDER_USER" "$embedding_result_set_seed"
+create_seed "$READER_USER" "$semantic_index_seed"
 create_seed "$READER_USER" "$context_seed"
 create_seed "$VALIDATOR_USER" "$validation_seed"
 create_seed "$VALIDATOR_USER" "$evaluation_request_seed"
@@ -171,6 +193,14 @@ probe_read "$READER_USER" "$daily_seed" allow "Reader reads Daily semantic corpu
 probe_read "$READER_USER" "$idea_seed" allow "Reader reads Idea semantic corpus"
 probe_read "$READER_USER" "$knowledge_seed" allow "Reader reads canonical Knowledge"
 probe_read "$READER_USER" "$index_seed" allow "Reader reads Index"
+probe_read "$READER_USER" "$semantic_corpus_seed" allow "Reader reads Semantic Corpus manifest"
+probe_read "$READER_USER" "$embedding_request_seed" allow "Reader reads embedding request"
+probe_read "$READER_USER" "$embedding_plan_seed" allow "Reader reads embedding plan"
+probe_read "$READER_USER" "$embedding_result_seed" allow "Reader reads embedding result"
+probe_read "$READER_USER" "$embedding_result_set_seed" allow "Reader reads embedding result set"
+probe_read "$READER_USER" "$semantic_index_seed" allow "Reader reads semantic index"
+probe_read "$EMBEDDER_USER" "$embedding_request_seed" allow "Embedder reads bounded embedding request"
+probe_read "$EMBEDDER_USER" "$embedding_plan_seed" allow "Embedder reads embedding plan"
 probe_read "$READER_USER" "$evaluation_request_seed" allow "Reader reads Evaluation Request"
 probe_read "$GENERATOR_USER" "$untrusted_seed" allow "Generator reads Untrusted"
 probe_read "$GENERATOR_USER" "$context_seed" allow "Generator reads Context"
@@ -208,6 +238,13 @@ for user in "$GENERATOR_USER" "$VALIDATOR_USER" "$EVALUATOR_USER" "$REVIEWER_USE
   probe_read "$user" "$daily_seed" deny "$user cannot read Daily semantic corpus directly"
   probe_read "$user" "$idea_seed" deny "$user cannot read Idea semantic corpus directly"
 done
+probe_read "$EMBEDDER_USER" "$daily_seed" deny "Embedder cannot read Daily semantic corpus directly"
+probe_read "$EMBEDDER_USER" "$idea_seed" deny "Embedder cannot read Idea semantic corpus directly"
+probe_read "$EMBEDDER_USER" "$knowledge_seed" deny "Embedder cannot read canonical Knowledge directly"
+probe_read "$EMBEDDER_USER" "$index_seed" deny "Embedder cannot list/read generic Index"
+probe_read "$EMBEDDER_USER" "$semantic_corpus_seed" deny "Embedder cannot read Semantic Corpus manifest"
+probe_read "$EMBEDDER_USER" "$semantic_index_seed" deny "Embedder cannot read finalized semantic index"
+probe_read "$EMBEDDER_USER" "$context_seed" deny "Embedder cannot read Generator Context"
 probe_read "$GENERATOR_USER" "$knowledge_seed" deny "Generator cannot read canonical Knowledge directly"
 probe_read "$GENERATOR_USER" "$index_seed" deny "Generator cannot read Index"
 probe_read "$GENERATOR_USER" "$validation_seed" deny "Generator cannot read Validation"
@@ -235,6 +272,18 @@ probe_write "$SYNC_USER" "$DAILY" allow "Sync writes Daily mirror corpus"
 probe_write "$SYNC_USER" "$IDEAS" allow "Sync writes Idea mirror corpus"
 probe_write "$SYNC_USER" "$KNOWLEDGE" allow "Sync writes local Vault mirror"
 probe_write "$READER_USER" "$INDEX" allow "Reader writes Index"
+probe_write "$READER_USER" "$SEMANTIC_CORPUS" allow "Reader writes Semantic Corpus manifest"
+probe_write "$READER_USER" "$EMBEDDING_REQUESTS" allow "Reader writes embedding requests"
+probe_write "$READER_USER" "$EMBEDDING_PLANS" allow "Reader writes embedding plans"
+probe_write "$READER_USER" "$EMBEDDING_RESULTS" deny "Reader cannot write embedding results"
+probe_write "$READER_USER" "$EMBEDDING_RESULT_SETS" deny "Reader cannot write embedding result sets"
+probe_write "$READER_USER" "$SEMANTIC_INDEX" allow "Reader writes finalized semantic index"
+probe_write "$EMBEDDER_USER" "$EMBEDDING_RESULTS" allow "Embedder writes embedding results"
+probe_write "$EMBEDDER_USER" "$EMBEDDING_RESULT_SETS" allow "Embedder writes embedding result sets"
+probe_write "$EMBEDDER_USER" "$EMBEDDING_REQUESTS" deny "Embedder cannot rewrite embedding requests"
+probe_write "$EMBEDDER_USER" "$EMBEDDING_PLANS" deny "Embedder cannot rewrite embedding plans"
+probe_write "$EMBEDDER_USER" "$SEMANTIC_CORPUS" deny "Embedder cannot write Semantic Corpus manifest"
+probe_write "$EMBEDDER_USER" "$SEMANTIC_INDEX" deny "Embedder cannot write finalized semantic index"
 probe_write "$READER_USER" "$CONTEXT" allow "Reader writes Context"
 probe_write "$READER_USER" "$EVALUATION_CONTEXT" allow "Reader writes Evaluation Context"
 probe_write "$GENERATOR_USER" "$UNTRUSTED" allow "Generator writes Untrusted"
@@ -279,6 +328,11 @@ done
 # Reader writes only derived retrieval state and cannot write semantic authority stages.
 for directory in "$DAILY" "$IDEAS" "$KNOWLEDGE" "$UNTRUSTED" "$VALIDATION" "$EVALUATION_REQUEST" "$EVALUATION" "$REVIEW" "$LOCKS" "$EXECUTION" "$TRANSPORT" "$RECEIPTS"; do
   probe_write "$READER_USER" "$directory" deny "Reader denied write: ${directory}"
+done
+
+# Embedder writes only bounded embedding result artifacts.
+for directory in "$DAILY" "$IDEAS" "$KNOWLEDGE" "$UNTRUSTED" "$ORCHESTRATION" "$CONTEXT" "$VALIDATION" "$EVALUATION_REQUEST" "$EVALUATION_CONTEXT" "$EVALUATION" "$REVIEW" "$LOCKS" "$EXECUTION" "$TRANSPORT" "$RECEIPTS"; do
+  probe_write "$EMBEDDER_USER" "$directory" deny "Embedder denied write: ${directory}"
 done
 
 # Generator writes only Untrusted.

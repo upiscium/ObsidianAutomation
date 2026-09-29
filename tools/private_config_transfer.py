@@ -230,6 +230,7 @@ ROLE_USERS: dict[str, tuple[str, ...]] = {
     "ai": (
         "obsidian-ai-sync",
         "obsidian-ai-reader",
+        "obsidian-ai-embedder",
         "obsidian-ai-generator",
         "obsidian-ai-validator",
         "obsidian-ai-evaluator",

@@ -25,6 +25,7 @@ def test_consolidated_authority_contains_expected_identities() -> None:
         "obsidian-core-promoter",
         "obsidian-ai-sync",
         "obsidian-ai-reader",
+        "obsidian-ai-embedder",
         "obsidian-ai-generator",
         "obsidian-ai-validator",
         "obsidian-ai-evaluator",
@@ -97,6 +98,25 @@ def test_ai_acl_matrix_keeps_semantic_authorities_distinct() -> None:
     assert "u:obsidian-ai-reader:rwx" in acls[
         "/var/lib/obsidian-ai/state/04-Index"
     ]
+    assert "u:obsidian-ai-reader:r-x" in acls[
+        "/var/lib/obsidian-ai/vault/00-DailyNote"
+    ]
+    assert "u:obsidian-ai-reader:r-x" in acls[
+        "/var/lib/obsidian-ai/vault/05-Idea"
+    ]
+    assert "u:obsidian-ai-embedder:--x" in acls[
+        "/var/lib/obsidian-ai/state/04-Index"
+    ]
+    assert "u:obsidian-ai-embedder:r-x" in acls[
+        "/var/lib/obsidian-ai/state/04-Index/semantic-embedding-requests"
+    ]
+    assert "u:obsidian-ai-embedder:rwx" in acls[
+        "/var/lib/obsidian-ai/state/04-Index/semantic-embedding-results"
+    ]
+    assert not any(
+        entry.startswith("u:obsidian-ai-embedder:")
+        for entry in acls["/var/lib/obsidian-ai/state/04-Index/semantic-corpus"]
+    )
     assert "u:obsidian-ai-reader:r-x" in acls[
         "/var/lib/obsidian-ai/vault/10-Project"
     ]
