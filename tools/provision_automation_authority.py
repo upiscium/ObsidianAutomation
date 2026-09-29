@@ -50,6 +50,7 @@ PRIMARY_USERS: tuple[tuple[str, str, str], ...] = (
     ("obsidian-core-promoter", "obsidian-core-promoter", "/var/lib/obsidian-core-promotion"),
     ("obsidian-ai-sync", "obsidian-ai-sync", "/nonexistent"),
     ("obsidian-ai-reader", "obsidian-ai-reader", "/nonexistent"),
+    ("obsidian-ai-embedder", "obsidian-ai-embedder", "/nonexistent"),
     ("obsidian-ai-generator", "obsidian-ai-generator", "/nonexistent"),
     ("obsidian-ai-validator", "obsidian-ai-validator", "/nonexistent"),
     ("obsidian-ai-evaluator", "obsidian-ai-evaluator", "/nonexistent"),
@@ -81,6 +82,8 @@ DIRECTORIES: tuple[tuple[str, str, str, int], ...] = (
     ("/etc/obsidian-ai", "root", "obsidian-ai-sync", 0o750),
     ("/var/lib/obsidian-ai", "root", "root", 0o755),
     ("/var/lib/obsidian-ai/vault", "obsidian-ai-sync", "obsidian-ai-sync", 0o700),
+    ("/var/lib/obsidian-ai/vault/00-DailyNote", "obsidian-ai-sync", "obsidian-ai-sync", 0o700),
+    ("/var/lib/obsidian-ai/vault/05-Idea", "obsidian-ai-sync", "obsidian-ai-sync", 0o700),
     ("/var/lib/obsidian-ai/vault/11-Knowledge", "obsidian-ai-sync", "obsidian-ai-sync", 0o700),
     ("/var/lib/obsidian-ai/vault/10-Project", "obsidian-ai-sync", "obsidian-ai-sync", 0o700),
     ("/var/lib/obsidian-ai/state", "root", "root", 0o700),
@@ -89,6 +92,12 @@ DIRECTORIES: tuple[tuple[str, str, str, int], ...] = (
     ("/var/lib/obsidian-ai/state/02-Orchestration/recipes", "root", "root", 0o700),
     ("/var/lib/obsidian-ai/state/02-Orchestration/status", "root", "root", 0o700),
     ("/var/lib/obsidian-ai/state/04-Index", "root", "root", 0o700),
+    ("/var/lib/obsidian-ai/state/04-Index/semantic-corpus", "root", "root", 0o700),
+    ("/var/lib/obsidian-ai/state/04-Index/semantic-embedding-requests", "root", "root", 0o700),
+    ("/var/lib/obsidian-ai/state/04-Index/semantic-embedding-plans", "root", "root", 0o700),
+    ("/var/lib/obsidian-ai/state/04-Index/semantic-embedding-results", "root", "root", 0o700),
+    ("/var/lib/obsidian-ai/state/04-Index/semantic-embedding-result-sets", "root", "root", 0o700),
+    ("/var/lib/obsidian-ai/state/04-Index/semantic-index", "root", "root", 0o700),
     ("/var/lib/obsidian-ai/state/05-Context", "root", "root", 0o700),
     ("/var/lib/obsidian-ai/state/10-Validation", "root", "root", 0o700),
     ("/var/lib/obsidian-ai/state/12-Evaluation-Request", "root", "root", 0o700),
@@ -132,6 +141,12 @@ AI_ACLS: dict[str, tuple[str, ...]] = {
         "u:obsidian-ai-validator:r-x",
         "u:obsidian-ai-executor:r-x",
     ),
+    "/var/lib/obsidian-ai/vault/00-DailyNote": (
+        "u:obsidian-ai-reader:r-x",
+    ),
+    "/var/lib/obsidian-ai/vault/05-Idea": (
+        "u:obsidian-ai-reader:r-x",
+    ),
     "/var/lib/obsidian-ai/vault/11-Knowledge": (
         "u:obsidian-ai-reader:r-x",
         "u:obsidian-ai-validator:r-x",
@@ -143,6 +158,7 @@ AI_ACLS: dict[str, tuple[str, ...]] = {
     "/var/lib/obsidian-ai/state": (
         "u:obsidian-ai-sync:r-x",
         "u:obsidian-ai-reader:--x",
+        "u:obsidian-ai-embedder:--x",
         "u:obsidian-ai-generator:--x",
         "u:obsidian-ai-validator:--x",
         "u:obsidian-ai-evaluator:--x",
@@ -174,6 +190,29 @@ AI_ACLS: dict[str, tuple[str, ...]] = {
         "u:obsidian-ai-reviewer:r-x",
     ),
     "/var/lib/obsidian-ai/state/04-Index": (
+        "u:obsidian-ai-reader:rwx",
+        "u:obsidian-ai-embedder:--x",
+    ),
+    "/var/lib/obsidian-ai/state/04-Index/semantic-corpus": (
+        "u:obsidian-ai-reader:rwx",
+    ),
+    "/var/lib/obsidian-ai/state/04-Index/semantic-embedding-requests": (
+        "u:obsidian-ai-reader:rwx",
+        "u:obsidian-ai-embedder:r-x",
+    ),
+    "/var/lib/obsidian-ai/state/04-Index/semantic-embedding-plans": (
+        "u:obsidian-ai-reader:rwx",
+        "u:obsidian-ai-embedder:r-x",
+    ),
+    "/var/lib/obsidian-ai/state/04-Index/semantic-embedding-results": (
+        "u:obsidian-ai-reader:r-x",
+        "u:obsidian-ai-embedder:rwx",
+    ),
+    "/var/lib/obsidian-ai/state/04-Index/semantic-embedding-result-sets": (
+        "u:obsidian-ai-reader:r-x",
+        "u:obsidian-ai-embedder:rwx",
+    ),
+    "/var/lib/obsidian-ai/state/04-Index/semantic-index": (
         "u:obsidian-ai-reader:rwx",
     ),
     "/var/lib/obsidian-ai/state/05-Context": (
@@ -498,6 +537,54 @@ def _apply_ai_acls(runner: Runner) -> None:
         path="/var/lib/obsidian-ai/state/04-Index",
         expected=True,
         label="reader writes Index",
+    )
+    _require_access(
+        runner,
+        user="obsidian-ai-reader",
+        flag="-r",
+        path="/var/lib/obsidian-ai/vault/00-DailyNote",
+        expected=True,
+        label="reader reads Daily semantic corpus",
+    )
+    _require_access(
+        runner,
+        user="obsidian-ai-reader",
+        flag="-r",
+        path="/var/lib/obsidian-ai/vault/05-Idea",
+        expected=True,
+        label="reader reads Idea semantic corpus",
+    )
+    _require_access(
+        runner,
+        user="obsidian-ai-embedder",
+        flag="-r",
+        path="/var/lib/obsidian-ai/state/04-Index/semantic-embedding-requests",
+        expected=True,
+        label="embedder reads bounded embedding requests",
+    )
+    _require_access(
+        runner,
+        user="obsidian-ai-embedder",
+        flag="-w",
+        path="/var/lib/obsidian-ai/state/04-Index/semantic-embedding-results",
+        expected=True,
+        label="embedder writes embedding results",
+    )
+    _require_access(
+        runner,
+        user="obsidian-ai-embedder",
+        flag="-r",
+        path="/var/lib/obsidian-ai/state/04-Index/semantic-corpus",
+        expected=False,
+        label="embedder cannot read semantic corpus manifest",
+    )
+    _require_access(
+        runner,
+        user="obsidian-ai-embedder",
+        flag="-r",
+        path="/var/lib/obsidian-ai/vault/11-Knowledge",
+        expected=False,
+        label="embedder cannot read Vault",
     )
     _require_access(
         runner,
