@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,7 @@ import pytest
 import obsidian_automation.ai_input_planner as planner
 from obsidian_automation.ai_input_planner import (
     COVERAGE_POLICY,
+    DEFAULT_TARGET_INFLIGHT,
     RANDOM_POLICY,
     PlannerState,
     build_catalog,
@@ -156,6 +158,28 @@ def test_coverage_and_random_policies_are_deterministic_and_mixed(tmp_path: Path
     }
 
 
+def _set_latest_generation_state(state: Path, value: str) -> None:
+    db = state / "02-Orchestration" / "pre-review-jobs.sqlite3"
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            """
+            UPDATE generations
+            SET state = ?, updated_at = ?
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM generations newer
+                WHERE newer.job_id = generations.job_id
+                  AND newer.generation_index > generations.generation_index
+            )
+            """,
+            (value, "2026-09-29T00:00:00Z"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _jobs(state: Path):
     db = state / "02-Orchestration" / "pre-review-jobs.sqlite3"
     conn = sqlite3.connect(db)
@@ -205,6 +229,7 @@ def test_plan_once_recovers_submitted_job_after_projection_failure(
     assert before[0]["state"] == "queued"
     assert (state / "02-Orchestration" / "input-planner-pending.json").is_file()
     assert not (state / "02-Orchestration" / "input-planner-state.json").exists()
+    assert (state / "02-Orchestration" / "input-planner-cadence.json").is_file()
 
     monkeypatch.setattr(planner, "emit_input_projection", original_emit)
     recovered = planner.plan_once(
@@ -303,6 +328,7 @@ def test_historical_runtime_retire_clears_planner_unhealthy_gate(
     vault = _vault(tmp_path)
     state = _state(tmp_path)
     _enable_human_projection(state)
+    submitted_at = datetime(2026, 9, 29, 0, 0, tzinfo=timezone.utc)
 
     first = plan_once(
         state,
@@ -314,6 +340,7 @@ def test_historical_runtime_retire_clears_planner_unhealthy_gate(
         target_inflight=1,
         coverage_cycles=1,
         random_cycles=0,
+        now=submitted_at,
     )
     generation = str(
         job_status(state, str(first["job_id"]))["current_generation"]["generation_id"]
@@ -355,6 +382,7 @@ def test_historical_runtime_retire_clears_planner_unhealthy_gate(
         target_inflight=1,
         coverage_cycles=1,
         random_cycles=0,
+        now=submitted_at + timedelta(minutes=10),
     )
     assert paused["status"] == "paused_pipeline_unhealthy"
     assert paused["states"]["retry_exhausted"] == 1
@@ -376,6 +404,7 @@ def test_historical_runtime_retire_clears_planner_unhealthy_gate(
         target_inflight=1,
         coverage_cycles=1,
         random_cycles=0,
+        now=submitted_at + timedelta(minutes=61),
     )
     assert resumed["status"] == "submitted"
     resumed_generation = str(
@@ -454,3 +483,159 @@ def test_plan_once_creates_mixed_context_and_one_durable_job(tmp_path: Path) -> 
     )
     assert second["status"] == "target_queue_satisfied"
     assert second["inflight"] == 1
+
+def test_default_target_inflight_is_two() -> None:
+    assert DEFAULT_TARGET_INFLIGHT == 2
+
+
+def test_plan_once_enforces_durable_cooldown_before_refilling_queue(
+    tmp_path: Path,
+) -> None:
+    vault = _vault(tmp_path)
+    state = _state(tmp_path)
+    _enable_human_projection(state)
+    submitted_at = datetime(2026, 9, 29, 0, 0, tzinfo=timezone.utc)
+
+    first = plan_once(
+        state,
+        vault,
+        deployed_revision=REVISION,
+        generator_model="gemma4:12b",
+        evaluator_model="gemma4:12b",
+        batch_size=2,
+        target_inflight=2,
+        coverage_cycles=1,
+        random_cycles=0,
+        now=submitted_at,
+    )
+    assert first["status"] == "submitted"
+    assert first["cadence"]["eligible"] is False
+    assert first["cadence"]["interval_seconds"] == 60 * 60
+    assert first["cadence"]["next_eligible_at"] == "2026-09-29T01:00:00Z"
+
+    # Terminal work no longer occupies the target queue, but cadence remains
+    # durable and independently prevents a fast refill after process restart.
+    _set_latest_generation_state(state, "completed")
+    too_soon = plan_once(
+        state,
+        vault,
+        deployed_revision=REVISION,
+        generator_model="gemma4:12b",
+        evaluator_model="gemma4:12b",
+        batch_size=2,
+        target_inflight=2,
+        coverage_cycles=1,
+        random_cycles=0,
+        now=submitted_at + timedelta(minutes=10),
+    )
+    assert too_soon["status"] == "paused_cooldown"
+    assert too_soon["cadence"]["reason"] == "normal_interval"
+    assert too_soon["cadence"]["next_eligible_at"] == "2026-09-29T01:00:00Z"
+    assert len(_jobs(state)) == 1
+
+    resumed = plan_once(
+        state,
+        vault,
+        deployed_revision=REVISION,
+        generator_model="gemma4:12b",
+        evaluator_model="gemma4:12b",
+        batch_size=2,
+        target_inflight=2,
+        coverage_cycles=1,
+        random_cycles=0,
+        now=submitted_at + timedelta(minutes=61),
+    )
+    assert resumed["status"] == "submitted"
+    assert len(_jobs(state)) == 2
+
+
+def test_review_backlog_extends_cooldown_without_slashing_polling(
+    tmp_path: Path,
+) -> None:
+    vault = _vault(tmp_path)
+    state = _state(tmp_path)
+    _enable_human_projection(state)
+    submitted_at = datetime(2026, 9, 29, 0, 0, tzinfo=timezone.utc)
+
+    plan_once(
+        state,
+        vault,
+        deployed_revision=REVISION,
+        generator_model="gemma4:12b",
+        evaluator_model="gemma4:12b",
+        batch_size=2,
+        target_inflight=2,
+        coverage_cycles=1,
+        random_cycles=0,
+        now=submitted_at,
+    )
+    _set_latest_generation_state(state, "awaiting_human_review")
+
+    paused = plan_once(
+        state,
+        vault,
+        deployed_revision=REVISION,
+        generator_model="gemma4:12b",
+        evaluator_model="gemma4:12b",
+        batch_size=2,
+        target_inflight=2,
+        coverage_cycles=1,
+        random_cycles=0,
+        now=submitted_at + timedelta(minutes=70),
+    )
+    assert paused["status"] == "paused_cooldown"
+    assert paused["cadence"]["reason"] == "human_review_backlog_1"
+    assert paused["cadence"]["interval_seconds"] == 90 * 60
+    assert paused["cadence"]["next_eligible_at"] == "2026-09-29T01:30:00Z"
+
+    ready = plan_once(
+        state,
+        vault,
+        deployed_revision=REVISION,
+        generator_model="gemma4:12b",
+        evaluator_model="gemma4:12b",
+        batch_size=2,
+        target_inflight=2,
+        coverage_cycles=1,
+        random_cycles=0,
+        now=submitted_at + timedelta(minutes=91),
+    )
+    assert ready["status"] == "submitted"
+
+
+def test_backpressure_and_target_queue_take_priority_over_cooldown(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    vault = _vault(tmp_path)
+    state = _state(tmp_path)
+
+    monkeypatch.setattr(
+        planner,
+        "_current_states",
+        lambda _root: {"awaiting_human_review": planner.HARD_BACKPRESSURE},
+    )
+    backpressure = plan_once(
+        state,
+        vault,
+        deployed_revision=REVISION,
+        generator_model="gemma4:12b",
+        evaluator_model="gemma4:12b",
+    )
+    assert backpressure["status"] == "paused_backpressure"
+
+    monkeypatch.setattr(
+        planner,
+        "_current_states",
+        lambda _root: {"queued": DEFAULT_TARGET_INFLIGHT},
+    )
+    target = plan_once(
+        state,
+        vault,
+        deployed_revision=REVISION,
+        generator_model="gemma4:12b",
+        evaluator_model="gemma4:12b",
+    )
+    assert target["status"] == "target_queue_satisfied"
+    assert target["target_inflight"] == 2
+

@@ -130,9 +130,12 @@ selected hashes, not semantic artifact bodies. Validation, Evaluation, Human
 Review, Execution, Transport, and Receipt artifacts remain authoritative in
 their existing stages.
 
-`obsidian-ai-status` may read only the orchestration metadata database and
-write `02-Orchestration/status/pre-review-status.json`. The projection contains
-aggregate counts/health/reminder/backpressure only. It does not contain job IDs,
+`obsidian-ai-status` may read only bounded orchestration metadata: the job
+database plus Reader-owned Planner cadence state. It writes
+`02-Orchestration/status/pre-review-status.json`. The projection contains
+aggregate counts/health/reminder/backpressure and bounded cadence metadata
+(interval/reason/eligibility plus selection/objective policy names and future
+novelty-skip reason). It does not contain job IDs, selection artifact SHA,
 Context/Proposal/mutation/recipe hashes, content, endpoints, credentials, or
 Review decisions.
 

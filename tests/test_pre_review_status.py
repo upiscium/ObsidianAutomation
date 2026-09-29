@@ -20,6 +20,7 @@ from obsidian_automation.openai_evaluator import (
     EVALUATION_STRATEGY,
 )
 from obsidian_automation.openai_generator import ADAPTER_VERSION as GENERATOR_ADAPTER_VERSION
+from obsidian_automation.planner_cadence import record_submission
 from obsidian_automation.pre_review_job import (
     complete_attempt,
     parse_recipe,
@@ -141,8 +142,11 @@ def test_status_projection_contains_aggregate_metadata_only(tmp_path: Path) -> N
     data = status.to_json_bytes()
     value = json.loads(data)
 
+    assert value["record_version"] == 2
     assert value["pipeline_health"] == "OK"
     assert value["current_jobs"] == 1
+    assert value["planner_cadence"]["eligible"] is True
+    assert value["planner_cadence"]["reason"] == "first_submission_ready"
     assert value["states"]["queued"] == 1
     assert value["authority"] == "orchestration_status_projection_only"
 
@@ -262,14 +266,16 @@ def test_status_store_rejects_symlink_destination(tmp_path: Path) -> None:
 
 
 def test_operational_status_schema_excludes_job_and_artifact_identity() -> None:
-    schema_path = Path("schemas/pre-review-operational-status-v0.schema.json")
+    schema_path = Path("schemas/pre-review-operational-status-v1.schema.json")
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
 
     assert schema["additionalProperties"] is False
+    assert schema["properties"]["record_version"]["const"] == 2
     assert (
         schema["properties"]["authority"]["const"]
         == "orchestration_status_projection_only"
     )
+    assert "planner_cadence" in schema["required"]
     text = schema_path.read_text(encoding="utf-8")
     for forbidden in (
         "job_id",
@@ -278,5 +284,66 @@ def test_operational_status_schema_excludes_job_and_artifact_identity() -> None:
         "mutation_sha256",
         "recipe_sha256",
         "evaluation_sha256",
+        "selection_sha256",
     ):
         assert forbidden not in text
+
+def test_status_exposes_backlog_derived_planner_cadence(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    submitted = _submit(root, "review", "2026-09-29T01:00:00Z")
+    _advance_to_review(root, str(submitted["generation_id"]))
+
+    # Keep Review age valid for the synthetic status clock.
+    import sqlite3
+
+    db = root / "02-Orchestration" / "pre-review-jobs.sqlite3"
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            "UPDATE generations SET updated_at = ? WHERE generation_id = ?",
+            ("2026-09-29T02:00:00Z", str(submitted["generation_id"])),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    record_submission(
+        root,
+        submitted_at="2026-09-29T02:00:00Z",
+        selection_policy="coverage-shuffle-v0",
+        objective_policy="synthesize-v0",
+    )
+    status = build_status(
+        root,
+        now=datetime(2026, 9, 29, 3, 10, tzinfo=timezone.utc),
+    )
+
+    cadence = status.planner_cadence
+    assert cadence.awaiting_human_review == 1
+    assert cadence.interval_seconds == 90 * 60
+    assert cadence.reason == "human_review_backlog_1"
+    assert cadence.eligible is False
+    assert cadence.next_eligible_at == "2026-09-29T03:30:00Z"
+    assert cadence.last_selection_policy == "coverage-shuffle-v0"
+    assert cadence.last_objective_policy == "synthesize-v0"
+
+
+def test_parse_legacy_status_v0_synthesizes_safe_cadence(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    _submit(root, "one", "2026-09-19T00:00:00Z")
+    current = json.loads(
+        build_status(
+            root,
+            now=datetime(2026, 9, 19, 1, 0, tzinfo=timezone.utc),
+        ).to_json_bytes()
+    )
+    current["record_version"] = 1
+    current.pop("planner_cadence")
+
+    legacy = parse_status(
+        (json.dumps(current, separators=(",", ":")) + "\n").encode()
+    )
+    assert legacy.planner_cadence.reason == "legacy_status_no_cadence"
+    assert legacy.planner_cadence.eligible is True
+    assert legacy.planner_cadence.next_eligible_at == legacy.generated_at
+

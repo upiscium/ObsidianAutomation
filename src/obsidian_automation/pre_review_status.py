@@ -12,10 +12,16 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 from .artifact_lifecycle import ArtifactLifecycleError, _decode_json_object, _utc_now
+from .planner_cadence import (
+    NORMAL_INTERVAL_SECONDS,
+    PlannerCadenceSnapshot,
+    cadence_snapshot,
+)
 from .pre_review_job import _connect_ro
 
 
-STATUS_RECORD_VERSION = 1
+STATUS_RECORD_VERSION = 2
+LEGACY_STATUS_RECORD_VERSION = 1
 STATUS_AUTHORITY = "orchestration_status_projection_only"
 DEFAULT_REVIEW_REMINDER_SECONDS = 24 * 60 * 60
 DEFAULT_BACKPRESSURE_THRESHOLD = 8
@@ -54,6 +60,7 @@ class PreReviewStatus:
     review_reminder_seconds: int
     backpressure_active: bool
     backpressure_threshold: int
+    planner_cadence: PlannerCadenceSnapshot
 
     def to_json_bytes(self) -> bytes:
         return (
@@ -76,6 +83,7 @@ class PreReviewStatus:
                         "threshold": self.backpressure_threshold,
                         "active": self.backpressure_active,
                     },
+                    "planner_cadence": self.planner_cadence.payload(),
                 },
                 ensure_ascii=False,
                 sort_keys=True,
@@ -180,6 +188,11 @@ def build_status(
         review_reminder_seconds=review_reminder_seconds,
         backpressure_active=awaiting >= backpressure_threshold,
         backpressure_threshold=backpressure_threshold,
+        planner_cadence=cadence_snapshot(
+            ai_root,
+            awaiting_human_review=awaiting,
+            now=observed_now,
+        ),
     )
 
 
@@ -187,7 +200,8 @@ def parse_status(data: bytes) -> PreReviewStatus:
     if len(data) > 64 * 1024:
         raise PreReviewStatusError("status projection exceeds maximum size")
     value = _decode_json_object(data, label="pre-review status projection")
-    required = {
+    record_version = value.get("record_version")
+    legacy_required = {
         "record_version",
         "authority",
         "generated_at",
@@ -198,9 +212,18 @@ def parse_status(data: bytes) -> PreReviewStatus:
         "review_wait",
         "backpressure",
     }
-    if set(value) != required:
-        raise PreReviewStatusError("status projection properties do not match contract")
-    if value["record_version"] != STATUS_RECORD_VERSION:
+    current_required = legacy_required | {"planner_cadence"}
+    if record_version == LEGACY_STATUS_RECORD_VERSION:
+        if set(value) != legacy_required:
+            raise PreReviewStatusError(
+                "legacy status projection properties do not match contract"
+            )
+    elif record_version == STATUS_RECORD_VERSION:
+        if set(value) != current_required:
+            raise PreReviewStatusError(
+                "status projection properties do not match contract"
+            )
+    else:
         raise PreReviewStatusError("unsupported status record_version")
     if value["authority"] != STATUS_AUTHORITY:
         raise PreReviewStatusError("status projection authority marker is invalid")
@@ -262,6 +285,101 @@ def parse_status(data: bytes) -> PreReviewStatus:
     if type(backpressure["active"]) is not bool:
         raise PreReviewStatusError("backpressure active is invalid")
 
+    if record_version == LEGACY_STATUS_RECORD_VERSION:
+        cadence = PlannerCadenceSnapshot(
+            observed_at=generated,
+            eligible=True,
+            interval_seconds=NORMAL_INTERVAL_SECONDS,
+            reason="legacy_status_no_cadence",
+            awaiting_human_review=normalized_states["awaiting_human_review"],
+            last_submission_at=None,
+            next_eligible_at=generated,
+            last_selection_policy=None,
+            last_objective_policy=None,
+            last_novelty_skip_at=None,
+            last_novelty_skip_reason=None,
+        )
+    else:
+        raw_cadence = value["planner_cadence"]
+        if not isinstance(raw_cadence, dict) or set(raw_cadence) != {
+            "eligible",
+            "interval_seconds",
+            "reason",
+            "awaiting_human_review",
+            "last_submission_at",
+            "next_eligible_at",
+            "last_selection_policy",
+            "last_objective_policy",
+            "last_novelty_skip_at",
+            "last_novelty_skip_reason",
+        }:
+            raise PreReviewStatusError(
+                "planner_cadence does not match contract"
+            )
+        if type(raw_cadence["eligible"]) is not bool:
+            raise PreReviewStatusError("planner cadence eligible is invalid")
+        interval = raw_cadence["interval_seconds"]
+        if type(interval) is not int or interval <= 0:
+            raise PreReviewStatusError("planner cadence interval is invalid")
+        cadence_awaiting = raw_cadence["awaiting_human_review"]
+        if (
+            type(cadence_awaiting) is not int
+            or cadence_awaiting < 0
+            or cadence_awaiting != normalized_states["awaiting_human_review"]
+        ):
+            raise PreReviewStatusError(
+                "planner cadence Human Review count is inconsistent"
+            )
+        cadence_reason = raw_cadence["reason"]
+        if not isinstance(cadence_reason, str) or not cadence_reason:
+            raise PreReviewStatusError("planner cadence reason is invalid")
+        next_eligible = raw_cadence["next_eligible_at"]
+        _parse_timestamp(next_eligible, label="planner_cadence.next_eligible_at")
+        last_submission = raw_cadence["last_submission_at"]
+        if last_submission is not None:
+            _parse_timestamp(
+                last_submission,
+                label="planner_cadence.last_submission_at",
+            )
+        last_skip_at = raw_cadence["last_novelty_skip_at"]
+        if last_skip_at is not None:
+            _parse_timestamp(
+                last_skip_at,
+                label="planner_cadence.last_novelty_skip_at",
+            )
+        for name in (
+            "last_selection_policy",
+            "last_objective_policy",
+            "last_novelty_skip_reason",
+        ):
+            item = raw_cadence[name]
+            if item is not None and (
+                not isinstance(item, str) or not item or len(item) > 512
+            ):
+                raise PreReviewStatusError(
+                    f"planner cadence {name} is invalid"
+                )
+        if (
+            (last_skip_at is None)
+            != (raw_cadence["last_novelty_skip_reason"] is None)
+        ):
+            raise PreReviewStatusError(
+                "planner cadence novelty skip fields are inconsistent"
+            )
+        cadence = PlannerCadenceSnapshot(
+            observed_at=generated,
+            eligible=raw_cadence["eligible"],
+            interval_seconds=interval,
+            reason=cadence_reason,
+            awaiting_human_review=cadence_awaiting,
+            last_submission_at=last_submission,
+            next_eligible_at=next_eligible,
+            last_selection_policy=raw_cadence["last_selection_policy"],
+            last_objective_policy=raw_cadence["last_objective_policy"],
+            last_novelty_skip_at=last_skip_at,
+            last_novelty_skip_reason=raw_cadence["last_novelty_skip_reason"],
+        )
+
     return PreReviewStatus(
         generated_at=generated,
         pipeline_health=health,
@@ -273,6 +391,7 @@ def parse_status(data: bytes) -> PreReviewStatus:
         review_reminder_seconds=reminder_after,
         backpressure_active=backpressure["active"],
         backpressure_threshold=threshold,
+        planner_cadence=cadence,
     )
 
 
@@ -418,6 +537,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(
             "Backpressure: "
             + ("active" if status.backpressure_active else "inactive")
+        )
+        print(
+            "Planner cadence: "
+            f"{status.planner_cadence.reason}, "
+            f"interval={status.planner_cadence.interval_seconds}s, "
+            f"eligible={'yes' if status.planner_cadence.eligible else 'no'}"
+        )
+        print(
+            "Next automatic generation: "
+            + status.planner_cadence.next_eligible_at
         )
     return {"OK": 0, "WARNING": 1, "CRITICAL": 2}[status.pipeline_health]
 

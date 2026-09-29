@@ -9,6 +9,7 @@ import stat
 import sys
 import tempfile
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Sequence
 
@@ -53,6 +54,14 @@ from .ollama_generator import (
     ADAPTER_VERSION as OLLAMA_GENERATOR_ADAPTER_VERSION,
     PROVIDER_NAME as OLLAMA_PROVIDER_NAME,
 )
+from .planner_cadence import (
+    PlannerCadenceError,
+    cadence_snapshot,
+    normalize_now,
+    parse_utc_z,
+    record_submission,
+    utc_z,
+)
 from .pre_review_job import (
     PreReviewJobError,
     _connect_ro,
@@ -75,7 +84,7 @@ COVERAGE_POLICY = "coverage-shuffle-v0"
 RANDOM_POLICY = "random-set-v0"
 DEFAULT_BATCH_SIZE = 6
 MAX_BATCH_SIZE = 8
-DEFAULT_TARGET_INFLIGHT = 3
+DEFAULT_TARGET_INFLIGHT = 2
 HARD_BACKPRESSURE = 8
 DEFAULT_COVERAGE_CYCLES = 4
 DEFAULT_RANDOM_CYCLES = 1
@@ -579,7 +588,7 @@ def _pending_bytes(value: dict[str, object]) -> bytes:
 
 def _parse_pending(data: bytes) -> dict[str, object]:
     value = _decode_json_object(data, label="input planner pending submission")
-    required = {
+    base_required = {
         "record_version",
         "phase",
         "selection_sha256",
@@ -596,7 +605,12 @@ def _parse_pending(data: bytes) -> dict[str, object]:
         "job_id",
         "generation_id",
     }
-    if set(value) != required or value["record_version"] != RECORD_VERSION:
+    allowed = base_required | {"cadence_anchor_at"}
+    if (
+        not base_required.issubset(value)
+        or set(value) - allowed
+        or value["record_version"] != RECORD_VERSION
+    ):
         raise AIInputPlannerError("pending planner properties do not match contract")
     if value["phase"] not in {"prepared", "submitted"}:
         raise AIInputPlannerError("pending planner phase is invalid")
@@ -621,6 +635,11 @@ def _parse_pending(data: bytes) -> dict[str, object]:
     created_at = value["context_created_at"]
     if not isinstance(created_at, str) or not created_at.endswith("Z"):
         raise AIInputPlannerError("pending planner context_created_at is invalid")
+    cadence_anchor = value.get("cadence_anchor_at", created_at)
+    try:
+        parse_utc_z(cadence_anchor, label="cadence_anchor_at")
+    except PlannerCadenceError as exc:
+        raise AIInputPlannerError("pending planner cadence_anchor_at is invalid") from exc
     before = _state_from_payload(value["planner_state_before"], label="planner_state_before")
     after = _state_from_payload(value["planner_state_after"], label="planner_state_after")
     job_id = value["job_id"]
@@ -647,6 +666,7 @@ def _parse_pending(data: bytes) -> dict[str, object]:
         "selected": selected,
         "context_sha256": value["context_sha256"],
         "context_created_at": created_at,
+        "cadence_anchor_at": cadence_anchor,
         "planner_state_before": _state_payload(before),
         "planner_state_after": _state_payload(after),
         "recipe_sha256": value["recipe_sha256"],
@@ -1043,6 +1063,12 @@ def _recover_pending_submission(
     )
     current = _load_state(ai_root)
     if current == after:
+        record_submission(
+            ai_root,
+            submitted_at=str(pending["cadence_anchor_at"]),
+            selection_policy=str(pending["selection_policy"]),
+            objective_policy=str(pending["objective_policy"]),
+        )
         _clear_pending(ai_root)
         return {
             "event": "ai-input-planner",
@@ -1105,6 +1131,13 @@ def _recover_pending_submission(
 
     if submitted["recipe_sha256"] != recipe_sha:
         raise AIInputPlannerError("submitted recipe digest does not match current recipe")
+
+    record_submission(
+        ai_root,
+        submitted_at=str(pending["cadence_anchor_at"]),
+        selection_policy=str(pending["selection_policy"]),
+        objective_policy=str(pending["objective_policy"]),
+    )
 
     updated = dict(pending)
     updated.update(
@@ -1169,6 +1202,7 @@ def plan_once(
     target_inflight: int = DEFAULT_TARGET_INFLIGHT,
     coverage_cycles: int = DEFAULT_COVERAGE_CYCLES,
     random_cycles: int = DEFAULT_RANDOM_CYCLES,
+    now: datetime | None = None,
 ) -> dict[str, object]:
     if type(target_inflight) is not int or not 1 <= target_inflight <= HARD_BACKPRESSURE:
         raise AIInputPlannerError(
@@ -1211,6 +1245,21 @@ def plan_once(
             "target_inflight": target_inflight,
         }
 
+    cadence = cadence_snapshot(
+        ai_root,
+        awaiting_human_review=awaiting,
+        now=now,
+    )
+    if not cadence.eligible:
+        return {
+            "event": "ai-input-planner",
+            "status": "paused_cooldown",
+            "inflight": inflight,
+            "target_inflight": target_inflight,
+            "cadence": cadence.payload(),
+        }
+
+    observed_now = normalize_now(now)
     state = _load_state(ai_root)
     try:
         with mirror_read_lock(ai_root):
@@ -1269,6 +1318,7 @@ def plan_once(
         "selected": _selected_payload(selection.entries),
         "context_sha256": context_sha,
         "context_created_at": context.created_at,
+        "cadence_anchor_at": utc_z(observed_now),
         "planner_state_before": _state_payload(state),
         "planner_state_after": _state_payload(next_state),
         "recipe_sha256": recipe_sha,
@@ -1283,6 +1333,12 @@ def plan_once(
     )
     if submitted["recipe_sha256"] != recipe_sha:
         raise AIInputPlannerError("submitted recipe digest does not match prepared recipe")
+    record_submission(
+        ai_root,
+        submitted_at=str(pending["cadence_anchor_at"]),
+        selection_policy=selection.policy,
+        objective_policy=selection.objective_policy,
+    )
     pending.update(
         {
             "phase": "submitted",
@@ -1330,6 +1386,11 @@ def plan_once(
         "warnings": len(catalog.warnings),
         "coverage_epoch": next_state.coverage_epoch,
         "coverage_cursor": next_state.coverage_cursor,
+        "cadence": cadence_snapshot(
+            ai_root,
+            awaiting_human_review=awaiting,
+            now=observed_now,
+        ).payload(),
     }
 
 
@@ -1372,7 +1433,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             coverage_cycles=args.coverage_cycles,
             random_cycles=args.random_cycles,
         )
-    except (AIInputPlannerError, ArtifactLifecycleError, PreReviewJobError, OSError) as exc:
+    except (
+        AIInputPlannerError,
+        PlannerCadenceError,
+        ArtifactLifecycleError,
+        PreReviewJobError,
+        OSError,
+    ) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))

@@ -480,8 +480,16 @@ without regressing exact technical top-1 lookup.
 
 ### Phase D — cadence
 
-#204 may ship after contract review because it does not require semantic
-retrieval. It must not slow Human Review lifecycle polling.
+#204 is implemented by
+[Planner Generation Cadence v1](planner-generation-cadence-v1.md).
+
+Only automatic new-generation submission is throttled. The lifecycle polling
+timer remains short. Cooldown is durable across restart and uses 60 / 90 / 180
+minute backlog-derived intervals with a 15 minute hard floor and
+`target_inflight=2`.
+
+The cadence state already reserves bounded novelty-skip observability; #202 owns
+the actual semantic novelty decision.
 
 ### Phase E — semantic selection
 
