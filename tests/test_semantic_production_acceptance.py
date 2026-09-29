@@ -71,9 +71,9 @@ def _preflight_fixture(tmp_path: Path):
 
 def _preflight_runner(argv):
     command = tuple(argv)
-    if command[-3:] == ("rev-parse", "HEAD"):
+    if command[-2:] == ("rev-parse", "HEAD"):
         return _result(REVISION + "\n")
-    if command[-3:] == ("branch", "--show-current"):
+    if command[-2:] == ("branch", "--show-current"):
         return _result("main\n")
     if command[-2:] == ("status", "--porcelain"):
         return _result("")
