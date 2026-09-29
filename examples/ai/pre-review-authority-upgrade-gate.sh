@@ -24,6 +24,7 @@ PROJECTION_DIR="$AI_ROOT/16-Human-Projection/evaluator"
 RESULT_DIR="$AI_ROOT/17-Human-Projection-Result"
 REVIEW_DIR="$AI_ROOT/20-Review"
 RECEIPT_DIR="$AI_ROOT/30-Receipts"
+SEMANTIC_SELECTIONS="$AI_ROOT/02-Orchestration/semantic-selections"
 
 fail() {
   echo "ERROR: $*" >&2
@@ -101,6 +102,12 @@ assert_readable "$READER_USER" "$fresh_review"
 assert_readable "$READER_USER" "$fresh_receipt"
 
 env AI_ROOT="$AI_ROOT" sh "$BOOTSTRAP"
+
+selection_probe="$SEMANTIC_SELECTIONS/upgrade-gate.semantic-selection.json"
+runuser -u "$READER_USER" -- sh -c 'printf "{}\n" > "$1"' sh "$selection_probe"
+assert_readable "$READER_USER" "$selection_probe"
+assert_not_readable "$UNRELATED_USER" "$selection_probe"
+assert_not_writable "$UNRELATED_USER" "$SEMANTIC_SELECTIONS"
 
 assert_readable "$REVIEWER_USER" "$projection"
 assert_readable "$REVIEWER_USER" "$result"
