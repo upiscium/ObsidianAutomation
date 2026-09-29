@@ -314,3 +314,71 @@ def test_manifest_rejects_unsafe_source_path(tmp_path: Path) -> None:
             ).encode("utf-8")
         )
 
+def test_long_managed_status_frontmatter_over_128_lines_is_valid(
+    tmp_path: Path,
+) -> None:
+    vault = _vault(tmp_path)
+    status = vault / "10-Project" / "Running" / "Status.md"
+    lines = [
+        "---",
+        "type: project-note",
+        'project: "[[10-Project/Running/Running|Running]]"',
+        'workspace: "[[03-Workspace/Lab/Lab|Lab]]"',
+        "category: list",
+        "lifecycle: active",
+        "aliases: []",
+        "tags: []",
+        "github_repo: upiscium/Running",
+        "github_status_managed: true",
+        "github_issues:",
+    ]
+    for number in range(1, 51):
+        lines.extend(
+            [
+                f"  - number: {number}",
+                f'    title: "Issue {number}"',
+                f'    url: "https://github.com/upiscium/Running/issues/{number}"',
+            ]
+        )
+    lines.extend(
+        [
+            "github_pull_requests: []",
+            "---",
+            "",
+            "## Notes",
+            "",
+            "Human status note that should remain a semantic Project Note.",
+            "",
+        ]
+    )
+    assert lines.index("---", 1) > 128
+    status.write_text("\n".join(lines), encoding="utf-8")
+
+    manifest = build_semantic_corpus(vault)
+    source = next(item for item in manifest.sources if item.path == "10-Project/Running/Status.md")
+    assert source.source_kind == "project-note"
+    assert source.metadata["project_status"] == "running"
+    assert source.metadata["category"] == "list"
+    assert len(source.chunks) == 1
+    assert source.chunks[0].content_sha256 == sha256_bytes(
+        b"## Notes\n\nHuman status note that should remain a semantic Project Note.\n"
+    )
+
+
+def test_truly_unterminated_frontmatter_still_fails_closed(
+    tmp_path: Path,
+) -> None:
+    vault = _vault(tmp_path)
+    path = vault / "10-Project" / "Running" / "Broken.md"
+    path.write_text(
+        "---\n"
+        "type: project-note\n"
+        "project: '[[10-Project/Running/Running|Running]]'\n"
+        "lifecycle: active\n"
+        "# Missing closing delimiter\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SemanticCorpusError, match="unterminated frontmatter"):
+        build_semantic_corpus(vault)
+
