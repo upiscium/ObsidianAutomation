@@ -604,3 +604,71 @@ def test_benchmark_result_binding_is_fail_closed(tmp_path: Path) -> None:
             plan_sha256=plan_sha,
             result_set_sha256=result_set_sha,
         )
+
+def test_project_filter_matches_project_entry_identity(tmp_path: Path) -> None:
+    vault, state, index_sha, _ = _semantic_index(tmp_path)
+    request_sha, result_sha = _query_result(
+        state,
+        index_sha,
+        "local inference scheduler",
+        QUERY_VECTORS["semantic affinity worker slots"],
+    )
+    ranked = retrieve_semantic(
+        state,
+        vault,
+        semantic_index_sha256=index_sha,
+        query_request_sha256=request_sha,
+        query_result_sha256=result_sha,
+        mode="vector",
+        filters=RetrievalFilter(
+            source_kinds=("project",),
+            projects=("10-Project/LLM/LLM",),
+        ),
+        top_k=8,
+    )
+    assert [item.source_path for item in ranked] == [
+        "10-Project/LLM/LLM.md"
+    ]
+
+
+def test_benchmark_reuses_content_addressed_request_for_duplicate_query(
+    tmp_path: Path,
+) -> None:
+    _vault_root, state, index_sha, _ = _semantic_index(tmp_path)
+    value = json.loads(_benchmark_bytes())
+    value["cases"][1]["query"] = value["cases"][0]["query"]
+    benchmark = parse_benchmark_set(
+        json.dumps(value, ensure_ascii=False).encode("utf-8")
+    )
+    _plan_sha, _, plan = prepare_benchmark_plan(
+        state,
+        semantic_index_sha256=index_sha,
+        benchmark=benchmark,
+    )
+    assert plan.requests[0].request_sha256 == plan.requests[1].request_sha256
+
+
+def test_query_result_rejects_non_finite_vector(tmp_path: Path) -> None:
+    _vault_root, state, index_sha, _ = _semantic_index(tmp_path)
+    request_sha, _, request = prepare_query_embedding(
+        state,
+        semantic_index_sha256=index_sha,
+        query="finite query",
+    )
+    with pytest.raises(
+        SemanticRetrievalError,
+        match="non-finite",
+    ):
+        store_query_embedding_result(
+            state,
+            QueryEmbeddingResult(
+                request_sha256=request_sha,
+                provider=request.provider,
+                adapter_version=request.adapter_version,
+                model_identifier=request.model_identifier,
+                model_revision=request.model_revision,
+                vector_encoding=request.vector_encoding,
+                vector=(float("nan"),) + (0.0,) * (DIMENSION - 1),
+            ),
+        )
+
