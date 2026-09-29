@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import grp
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -24,6 +26,8 @@ from typing import Callable, Iterable, Sequence
 DEFAULT_SOURCE_ROOT = Path("/opt/obsidian-automation/app")
 DEFAULT_SYSTEMD_DIR = Path("/etc/systemd/system")
 DEFAULT_REVISION_ENV = Path("/etc/obsidian-ai/pre-review-revision.env")
+DEFAULT_AI_FILTER = Path("/etc/obsidian-ai/vault-pull.filters")
+AI_FILTER_SOURCE = Path("examples/ai/vault-pull.filters")
 CONSOLIDATED_APP_ROOT = "/opt/obsidian-automation/app"
 CONSOLIDATED_VENV_BIN = "/opt/obsidian-automation/venv/bin"
 _SHA_RE = re.compile(r"^[0-9a-f]{40,64}$")
@@ -358,6 +362,28 @@ def _install_units(
     return tuple(installed)
 
 
+def _install_ai_filter(
+    source_root: Path,
+    destination: Path,
+    *,
+    chown_root: bool,
+) -> str:
+    source = source_root / AI_FILTER_SOURCE
+    _require_regular(source, "ai_vault_pull_filter_source")
+    _require_dir(destination.parent, "ai_vault_pull_filter_parent")
+    data = source.read_bytes()
+    _atomic_install(data, destination, 0o640)
+    if chown_root:
+        try:
+            gid = grp.getgrnam("obsidian-ai-sync").gr_gid
+        except KeyError as exc:
+            raise UnitStagingError(
+                "obsidian_ai_sync_group_missing"
+            ) from exc
+        os.chown(destination, 0, gid)
+    return hashlib.sha256(data).hexdigest()
+
+
 def _write_revision_env(
     path: Path,
     target_sha: str,
@@ -405,6 +431,7 @@ def stage_units(
     source_root: Path = DEFAULT_SOURCE_ROOT,
     systemd_dir: Path = DEFAULT_SYSTEMD_DIR,
     revision_env: Path = DEFAULT_REVISION_ENV,
+    ai_filter: Path = DEFAULT_AI_FILTER,
     runner: Runner = _default_runner,
     require_root: bool = True,
 ) -> dict[str, object]:
@@ -414,6 +441,11 @@ def stage_units(
     _verify_source(source_root, target_sha, runner)
     _preflight_inert(runner)
     installed = _install_units(source_root, systemd_dir)
+    ai_filter_sha256 = _install_ai_filter(
+        source_root,
+        ai_filter,
+        chown_root=require_root,
+    )
     _write_revision_env(
         revision_env,
         target_sha,
@@ -434,6 +466,8 @@ def stage_units(
         "installed_unit_count": len(installed),
         "installed_units": list(installed),
         "revision_env": str(revision_env),
+        "ai_vault_pull_filter": str(ai_filter),
+        "ai_vault_pull_filter_sha256": ai_filter_sha256,
         "timers_enabled": False,
         "timers_active": False,
         "services_active": False,
@@ -454,6 +488,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-root", type=Path, default=DEFAULT_SOURCE_ROOT)
     parser.add_argument("--systemd-dir", type=Path, default=DEFAULT_SYSTEMD_DIR)
     parser.add_argument("--revision-env", type=Path, default=DEFAULT_REVISION_ENV)
+    parser.add_argument("--ai-filter", type=Path, default=DEFAULT_AI_FILTER)
     return parser
 
 
@@ -465,6 +500,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             source_root=args.source_root,
             systemd_dir=args.systemd_dir,
             revision_env=args.revision_env,
+            ai_filter=args.ai_filter,
         )
     except UnitStagingError as exc:
         print(
