@@ -580,7 +580,13 @@ def _validate_pending_selected(value: object) -> list[dict[str, object]]:
         ):
             raise AIInputPlannerError("pending planner source path is invalid")
         seen.add(path.casefold())
-        if source_kind not in {"knowledge", "project-note"}:
+        if source_kind not in {
+            "daily",
+            "idea",
+            "project",
+            "project-note",
+            "knowledge",
+        }:
             raise AIInputPlannerError("pending planner source kind is invalid")
         if (
             not isinstance(digest, str)
@@ -628,7 +634,11 @@ def _parse_pending(data: bytes) -> dict[str, object]:
         "job_id",
         "generation_id",
     }
-    allowed = base_required | {"cadence_anchor_at"}
+    allowed = base_required | {
+        "cadence_anchor_at",
+        "input_mode",
+        "semantic_index_sha256",
+    }
     if (
         not base_required.issubset(value)
         or set(value) - allowed
@@ -637,6 +647,32 @@ def _parse_pending(data: bytes) -> dict[str, object]:
         raise AIInputPlannerError("pending planner properties do not match contract")
     if value["phase"] not in {"prepared", "submitted"}:
         raise AIInputPlannerError("pending planner phase is invalid")
+    input_mode = value.get("input_mode", INPUT_MODE_LEGACY)
+    if input_mode not in INPUT_MODES:
+        raise AIInputPlannerError("pending planner input_mode is invalid")
+    semantic_index = value.get("semantic_index_sha256")
+    if input_mode == INPUT_MODE_SEMANTIC_DEEP:
+        if (
+            not isinstance(semantic_index, str)
+            or len(semantic_index) != 64
+            or any(ch not in "0123456789abcdef" for ch in semantic_index)
+        ):
+            raise AIInputPlannerError(
+                "semantic pending planner record requires semantic_index_sha256"
+            )
+        if value["objective_policy"] != SEMANTIC_OBJECTIVE_POLICY:
+            raise AIInputPlannerError(
+                "semantic pending planner objective_policy is invalid"
+            )
+        if value["selection_policy"] not in SEMANTIC_SELECTION_POLICIES:
+            raise AIInputPlannerError(
+                "semantic pending planner selection_policy is invalid"
+            )
+    else:
+        if semantic_index is not None:
+            raise AIInputPlannerError(
+                "legacy pending planner record must not bind semantic index"
+            )
     for name in ("selection_sha256", "context_sha256", "recipe_sha256"):
         digest = value[name]
         if (
@@ -655,6 +691,13 @@ def _parse_pending(data: bytes) -> dict[str, object]:
     if value["epoch"] < 1:
         raise AIInputPlannerError("pending planner epoch must be >= 1")
     selected = _validate_pending_selected(value["selected"])
+    if input_mode == INPUT_MODE_LEGACY and any(
+        item["source_kind"] not in {"knowledge", "project-note"}
+        for item in selected
+    ):
+        raise AIInputPlannerError(
+            "legacy pending planner contains semantic-only source kind"
+        )
     created_at = value["context_created_at"]
     if not isinstance(created_at, str) or not created_at.endswith("Z"):
         raise AIInputPlannerError("pending planner context_created_at is invalid")
@@ -681,6 +724,8 @@ def _parse_pending(data: bytes) -> dict[str, object]:
     return {
         "record_version": RECORD_VERSION,
         "phase": value["phase"],
+        "input_mode": input_mode,
+        "semantic_index_sha256": semantic_index,
         "selection_sha256": value["selection_sha256"],
         "selection_policy": value["selection_policy"],
         "objective_policy": value["objective_policy"],
