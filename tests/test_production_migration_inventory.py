@@ -46,6 +46,11 @@ def test_ai_inventory_reports_metadata_without_reading_values(tmp_path: Path) ->
     assert by_id["ai_pull_rclone"]["exists"] is True
     assert by_id["ai_pull_rclone"]["mode"] == "0600"
     assert by_id["ai_pull_rclone"]["file_type"] == "regular"
+    assert by_id["ai_pull_filters"]["category"] == "managed_policy"
+    assert by_id["ai_pull_filters"]["migration_action"] == (
+        "recreate_from_reviewed_target"
+    )
+    assert by_id["ai_pull_filters"]["required"] is False
     assert by_id["ai_durable_state"]["file_type"] == "directory"
     assert by_id["ai_generator_env"]["expected_fields"] == [
         "OPENAI_BASE_URL",

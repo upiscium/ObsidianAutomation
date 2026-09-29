@@ -201,6 +201,10 @@ Daily and Idea are mirrored for Reader-owned semantic indexing only. The current
 
 See `examples/ai/vault-pull.filters`.
 
+The exact-SHA staging transaction installs that reviewed filter at
+`/etc/obsidian-ai/vault-pull.filters` as `root:obsidian-ai-sync 0640`.
+It is deployment-managed policy rather than private configuration.
+
 The mirror must never upload lifecycle state back to Nextcloud.
 
 ## Fresh installation
@@ -238,7 +242,6 @@ At minimum, an AI deployment normally needs:
 
 ```text
 /etc/obsidian-ai/rclone.conf
-/etc/obsidian-ai/vault-pull.filters
 /etc/obsidian-ai/pre-review-generator.env
 /etc/obsidian-ai/pre-review-evaluator.env
 /etc/obsidian-ai/human-projection.env

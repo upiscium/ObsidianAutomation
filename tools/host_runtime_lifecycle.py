@@ -51,7 +51,6 @@ ROLE_CONFIGS = {
         "/etc/obsidian-ai/review-intake-password",
         "/etc/obsidian-ai/projection-cleanup.env",
         "/etc/obsidian-ai/projection-cleanup-password",
-        "/etc/obsidian-ai/vault-pull.filters",
     ),
     "github-sync": ("/etc/obsidian-github-sync/config.toml", "/etc/obsidian-github-mirror/rclone.conf",
                     "/etc/obsidian-github-writer/config.env", "/etc/obsidian-github-writer/webdav-password"),

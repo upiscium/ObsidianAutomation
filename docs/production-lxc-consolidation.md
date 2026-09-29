@@ -115,7 +115,9 @@ The initial manifest includes:
 ```
 
 The revision environment is derived and should be recreated by the deployment
-lifecycle. `human-projection.env` contains only the non-secret Nextcloud base
+lifecycle. The AI `vault-pull.filters` file is also recreated from the exact
+reviewed target and is not a private migration input. `human-projection.env`
+contains only the non-secret Nextcloud base
 URL / username binding and may be recreated on the consolidated host; the
 corresponding app password remains the existing Sync-owned
 `/etc/obsidian-ai/webdav-password`. Rejected-projection cleanup uses a separate
@@ -197,7 +199,6 @@ publisher
 
 ai
   rclone.conf
-  vault-pull.filters
   webdav-password when deployed
   projection-cleanup.env when deployed
   projection-cleanup-password when deployed
@@ -282,13 +283,17 @@ Runtime paths are rewritten only from the legacy per-LXC prefixes to:
 /opt/obsidian-automation/app
 ```
 
-The tool also recreates the derived AI revision binding:
+The tool also recreates the derived AI revision binding and reviewed mirror
+policy:
 
 ```text
 /etc/obsidian-ai/pre-review-revision.env
+/etc/obsidian-ai/vault-pull.filters
 ```
 
-with the exact reviewed deployment SHA.
+The filter bytes come from the exact target's
+`examples/ai/vault-pull.filters` and are installed as
+`root:obsidian-ai-sync 0640`.
 
 This command is deliberately **staging-only**. It refuses to operate if any
 managed production timer is enabled/active or any managed service is active.

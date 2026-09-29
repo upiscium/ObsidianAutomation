@@ -25,9 +25,10 @@ The target implementation:
 5. Updates the production checkout to the exact SHA, installs the non-editable
    package using the local build wheelhouse, reapplies authority and installs
    the target-owned launcher.
-6. Atomically installs each of the seventeen canonical systemd units, rewrites
-   their legacy runtime paths to the shared runtime, binds the AI revision env
-   to the target SHA and reloads systemd. The unit set is not a multi-file atomic
+6. Atomically installs each canonical systemd unit, rewrites its legacy runtime
+   paths to the shared runtime, binds the AI revision env to the target SHA,
+   stages the reviewed AI Vault pull filter from that same exact target, and
+   reloads systemd. The unit/config set is not a multi-file atomic
    filesystem transaction; it is changed only while recurrence is quiesced.
 7. Runs import checks, pre-review safe smoke, GitHub safe smoke, orchestration
    file ACL bootstrap and private-config readability gates for configured roles.

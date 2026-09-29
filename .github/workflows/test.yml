@@ -91,7 +91,6 @@ jobs:
             /etc/obsidian-core-promotion/public-export.toml \
             /etc/obsidian-core-promotion/nextcloud.password \
             /etc/obsidian-ai/rclone.conf \
-            /etc/obsidian-ai/vault-pull.filters \
             /etc/obsidian-ai/webdav-password \
             /etc/obsidian-ai/projection-cleanup.env \
             /etc/obsidian-ai/projection-cleanup-password \

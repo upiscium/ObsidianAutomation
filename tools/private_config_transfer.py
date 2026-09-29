@@ -82,13 +82,6 @@ ROLE_FILES: dict[str, tuple[PrivateFile, ...]] = {
             0o600,
         ),
         PrivateFile(
-            "ai_pull_filters",
-            "/etc/obsidian-ai/vault-pull.filters",
-            "root",
-            "obsidian-ai-sync",
-            0o640,
-        ),
-        PrivateFile(
             "ai_writer_webdav_password",
             "/etc/obsidian-ai/webdav-password",
             "obsidian-ai-sync",
@@ -199,7 +192,6 @@ READERS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "ai": {
         "ai_pull_rclone": ("obsidian-ai-sync",),
-        "ai_pull_filters": ("obsidian-ai-sync",),
         "ai_writer_webdav_password": ("obsidian-ai-sync",),
         "ai_projection_cleanup_env": ("obsidian-ai-sync",),
         "ai_projection_cleanup_password": ("obsidian-ai-sync",),
