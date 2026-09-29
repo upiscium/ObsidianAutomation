@@ -1399,6 +1399,9 @@ def plan_once(
     evaluator_provider: str = OPENAI_PROVIDER_NAME,
     evaluator_model: str,
     evaluator_model_revision: str | None = None,
+    input_mode: str = INPUT_MODE_LEGACY,
+    semantic_index_sha256: str | None = None,
+    semantic_selection_policy: str = DEFAULT_SEMANTIC_SELECTION_POLICY,
     batch_size: int = DEFAULT_BATCH_SIZE,
     target_inflight: int = DEFAULT_TARGET_INFLIGHT,
     coverage_cycles: int = DEFAULT_COVERAGE_CYCLES,
@@ -1410,9 +1413,34 @@ def plan_once(
             f"target_inflight must be 1..{HARD_BACKPRESSURE}"
         )
 
+    if input_mode not in INPUT_MODES:
+        raise AIInputPlannerError(
+            f"input_mode must be one of {sorted(INPUT_MODES)}"
+        )
+    if input_mode == INPUT_MODE_SEMANTIC_DEEP:
+        if (
+            not isinstance(semantic_index_sha256, str)
+            or len(semantic_index_sha256) != 64
+            or any(ch not in "0123456789abcdef" for ch in semantic_index_sha256)
+        ):
+            raise AIInputPlannerError(
+                "semantic-deep-knowledge mode requires exact semantic_index_sha256"
+            )
+        if semantic_selection_policy not in SEMANTIC_SELECTION_POLICIES:
+            raise AIInputPlannerError(
+                "semantic selection policy is not supported"
+            )
+    elif semantic_index_sha256 is not None:
+        raise AIInputPlannerError(
+            "legacy input mode must not bind semantic_index_sha256"
+        )
+
     recovered = _recover_pending_submission(
         ai_root,
         deployed_revision=deployed_revision,
+        input_mode=input_mode,
+        semantic_index_sha256=semantic_index_sha256,
+        semantic_selection_policy=semantic_selection_policy,
         generator_provider=generator_provider,
         generator_model=generator_model,
         generator_model_revision=generator_model_revision,
@@ -1462,6 +1490,139 @@ def plan_once(
 
     observed_now = normalize_now(now)
     state = _load_state(ai_root)
+
+    if input_mode == INPUT_MODE_SEMANTIC_DEEP:
+        assert semantic_index_sha256 is not None
+        prepared = _prepare_semantic_deep_plan(
+            ai_root,
+            vault_root,
+            semantic_index_sha256=semantic_index_sha256,
+            semantic_selection_policy=semantic_selection_policy,
+            state=state,
+            observed_now=observed_now,
+        )
+        if prepared["status"] == "skipped_novelty":
+            return {
+                "event": "ai-input-planner",
+                "input_mode": input_mode,
+                **prepared,
+                "cadence": cadence_snapshot(
+                    ai_root,
+                    awaiting_human_review=awaiting,
+                    now=observed_now,
+                ).payload(),
+            }
+
+        context = prepared["context"]
+        next_state = prepared["next_state"]
+        selected = prepared["selected"]
+        if not isinstance(selected, list) or not isinstance(next_state, PlannerState):
+            raise AIInputPlannerError(
+                "semantic plan internal contract is invalid"
+            )
+        selection_sha = str(prepared["selection_sha256"])
+        context_sha = str(prepared["context_sha256"])
+        recipe = _build_recipe(
+            deployed_revision=deployed_revision,
+            semantic_deep=True,
+            generator_provider=generator_provider,
+            generator_model=generator_model,
+            generator_model_revision=generator_model_revision,
+            evaluator_provider=evaluator_provider,
+            evaluator_model=evaluator_model,
+            evaluator_model_revision=evaluator_model_revision,
+        )
+        recipe_sha = sha256_bytes(recipe.to_json_bytes())
+        pending = {
+            "record_version": RECORD_VERSION,
+            "phase": "prepared",
+            "input_mode": input_mode,
+            "semantic_index_sha256": semantic_index_sha256,
+            "selection_sha256": selection_sha,
+            "selection_policy": semantic_selection_policy,
+            "objective_policy": SEMANTIC_OBJECTIVE_POLICY,
+            "epoch": state.coverage_epoch,
+            "cycle": state.cycle,
+            "selected": selected,
+            "context_sha256": context_sha,
+            "context_created_at": context.created_at,
+            "cadence_anchor_at": utc_z(observed_now),
+            "planner_state_before": _state_payload(state),
+            "planner_state_after": _state_payload(next_state),
+            "recipe_sha256": recipe_sha,
+            "job_id": None,
+            "generation_id": None,
+        }
+        _store_pending(ai_root, pending)
+        submitted = submit_job(
+            ai_root,
+            context_sha256=context_sha,
+            recipe=recipe,
+        )
+        if submitted["recipe_sha256"] != recipe_sha:
+            raise AIInputPlannerError(
+                "submitted semantic recipe digest does not match prepared recipe"
+            )
+        record_submission(
+            ai_root,
+            submitted_at=str(pending["cadence_anchor_at"]),
+            selection_policy=semantic_selection_policy,
+            objective_policy=SEMANTIC_OBJECTIVE_POLICY,
+        )
+        pending.update(
+            {
+                "phase": "submitted",
+                "job_id": submitted["job_id"],
+                "generation_id": submitted["generation_id"],
+            }
+        )
+        _store_pending(ai_root, pending)
+        case_id = str(submitted["generation_id"])
+        emit_input_projection(
+            ai_root,
+            case_id=case_id,
+            selection_sha256=selection_sha,
+            selection_policy=semantic_selection_policy,
+            objective_policy=SEMANTIC_OBJECTIVE_POLICY,
+            epoch=state.coverage_epoch,
+            cycle=state.cycle,
+            selected=selected,
+            created_at=context.created_at,
+        )
+        emit_semantic_objective_context_projection(
+            ai_root,
+            case_id=case_id,
+            context_sha256=context_sha,
+            context=context,
+        )
+        _store_state(ai_root, next_state)
+        _clear_pending(ai_root)
+        source_kinds = {
+            kind: sum(item["source_kind"] == kind for item in selected)
+            for kind in ("daily", "idea", "project", "project-note", "knowledge")
+        }
+        return {
+            "event": "ai-input-planner",
+            "status": "submitted" if submitted["created"] else "existing_job",
+            "input_mode": input_mode,
+            "selection_sha256": selection_sha,
+            "selection_policy": semantic_selection_policy,
+            "objective_policy": SEMANTIC_OBJECTIVE_POLICY,
+            "semantic_index_sha256": semantic_index_sha256,
+            "context_sha256": context_sha,
+            "source_count": len(selected),
+            "source_kinds": source_kinds,
+            "job_id": submitted["job_id"],
+            "created": submitted["created"],
+            "coverage_epoch": next_state.coverage_epoch,
+            "coverage_cursor": next_state.coverage_cursor,
+            "cadence": cadence_snapshot(
+                ai_root,
+                awaiting_human_review=awaiting,
+                now=observed_now,
+            ).payload(),
+        }
+
     try:
         with mirror_read_lock(ai_root):
             catalog = build_catalog(vault_root)
@@ -1511,6 +1672,8 @@ def plan_once(
     pending = {
         "record_version": RECORD_VERSION,
         "phase": "prepared",
+        "input_mode": INPUT_MODE_LEGACY,
+        "semantic_index_sha256": None,
         "selection_sha256": selection_sha,
         "selection_policy": selection.policy,
         "objective_policy": selection.objective_policy,
@@ -1571,6 +1734,7 @@ def plan_once(
     return {
         "event": "ai-input-planner",
         "status": "submitted" if submitted["created"] else "existing_job",
+        "input_mode": INPUT_MODE_LEGACY,
         "selection_sha256": selection_sha,
         "selection_policy": selection.policy,
         "objective_policy": selection.objective_policy,
