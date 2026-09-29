@@ -70,7 +70,11 @@ from .pre_review_job import (
     submit_job,
     supersede_unstarted_generation,
 )
-from .human_projection import emit_context_projection, emit_input_projection
+from .human_projection import (
+    emit_context_projection,
+    emit_input_projection,
+    emit_semantic_objective_context_projection,
+)
 from .production_io import ProductionIOError, mirror_read_lock
 from .semantic_objective import (
     DEEP_KNOWLEDGE,
@@ -1125,6 +1129,9 @@ def _recover_pending_submission(
     ai_root: Path,
     *,
     deployed_revision: str,
+    input_mode: str,
+    semantic_index_sha256: str | None,
+    semantic_selection_policy: str,
     generator_provider: str,
     generator_model: str,
     generator_model_revision: str | None,
@@ -1135,6 +1142,21 @@ def _recover_pending_submission(
     pending = _load_pending(ai_root)
     if pending is None:
         return None
+
+    pending_mode = str(pending["input_mode"])
+    if pending_mode != input_mode:
+        raise AIInputPlannerError(
+            "pending planner input_mode does not match current production configuration"
+        )
+    if pending_mode == INPUT_MODE_SEMANTIC_DEEP:
+        if pending["semantic_index_sha256"] != semantic_index_sha256:
+            raise AIInputPlannerError(
+                "pending semantic index does not match current production configuration"
+            )
+        if pending["selection_policy"] != semantic_selection_policy:
+            raise AIInputPlannerError(
+                "pending semantic selection policy does not match current configuration"
+            )
 
     before = _state_from_payload(
         pending["planner_state_before"],
@@ -1164,7 +1186,16 @@ def _recover_pending_submission(
             "pending planner submission does not match current scheduler state"
         )
 
-    context = load_context_bundle(ai_root, str(pending["context_sha256"]))
+    if pending_mode == INPUT_MODE_SEMANTIC_DEEP:
+        context = load_objective_context(
+            ai_root,
+            str(pending["context_sha256"]),
+        )
+    else:
+        context = load_context_bundle(
+            ai_root,
+            str(pending["context_sha256"]),
+        )
     if context.created_at != pending["context_created_at"]:
         raise AIInputPlannerError("pending Context timestamp binding mismatch")
     selected = _validate_pending_selected(pending["selected"])
@@ -1172,6 +1203,7 @@ def _recover_pending_submission(
 
     recipe = _build_recipe(
         deployed_revision=deployed_revision,
+        semantic_deep=(pending_mode == INPUT_MODE_SEMANTIC_DEEP),
         generator_provider=generator_provider,
         generator_model=generator_model,
         generator_model_revision=generator_model_revision,
@@ -1245,12 +1277,20 @@ def _recover_pending_submission(
         selected=selected,
         created_at=context.created_at,
     )
-    emit_context_projection(
-        ai_root,
-        case_id=case_id,
-        context_sha256=str(updated["context_sha256"]),
-        context=context,
-    )
+    if pending_mode == INPUT_MODE_SEMANTIC_DEEP:
+        emit_semantic_objective_context_projection(
+            ai_root,
+            case_id=case_id,
+            context_sha256=str(updated["context_sha256"]),
+            context=context,
+        )
+    else:
+        emit_context_projection(
+            ai_root,
+            case_id=case_id,
+            context_sha256=str(updated["context_sha256"]),
+            context=context,
+        )
     _store_state(ai_root, after)
     _clear_pending(ai_root)
 
@@ -1261,6 +1301,7 @@ def _recover_pending_submission(
             if superseded
             else "recovered_pending_submission"
         ),
+        "input_mode": pending_mode,
         "selection_sha256": updated["selection_sha256"],
         "context_sha256": updated["context_sha256"],
         "job_id": submitted["job_id"],
