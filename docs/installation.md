@@ -169,6 +169,13 @@ boundary. See [Semantic Hybrid Retrieval v1](semantic-hybrid-retrieval-v1.md).
 Phase C remains operator-driven and does not install or activate a recurring
 semantic retrieval service.
 
+Semantic Planner Phase E is also observation-first. After a verified Semantic
+Index exists, Reader may run `obsidian-semantic-selection` manually to inspect
+versioned policy output and novelty decisions. No production generation service
+is switched to semantic selection by installation alone.
+
+See [Semantic Selection and Novelty v1](semantic-selection-novelty-v1.md).
+
 ## Vault mirror configuration
 
 The AI input mirror is pull-only. The reviewed default filter includes the current Generation roots plus Reader-owned Semantic Corpus roots:

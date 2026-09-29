@@ -191,8 +191,10 @@ Before returning ranked chunks for downstream use, Reader:
 A stale source therefore fails before a ranked chunk may be persisted into a
 future Context Bundle.
 
-Phase C does not yet create Generation Context from these results. Issue #202
-owns selection-policy integration.
+Phase C does not yet create Generation Context from these results. The next
+stage is [Semantic Selection and Novelty v1](semantic-selection-novelty-v1.md),
+which uses the same exact-index retrieval signals to produce versioned,
+content-addressed Selection Records.
 
 ## Benchmark contract
 

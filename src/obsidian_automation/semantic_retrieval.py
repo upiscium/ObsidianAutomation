@@ -298,7 +298,7 @@ class BenchmarkResultSet:
 
 
 @dataclass(frozen=True)
-class _Candidate:
+class SemanticCandidate:
     vector: SemanticVector
     source: SemanticSource
     chunk: SemanticChunk
@@ -1041,13 +1041,13 @@ def _build_candidates(
     index: SemanticIndexManifest,
     corpus: SemanticCorpusManifest,
     filters: RetrievalFilter,
-) -> tuple[_Candidate, ...]:
+) -> tuple[SemanticCandidate, ...]:
     chunk_by_id: dict[str, tuple[SemanticSource, SemanticChunk]] = {}
     for source in corpus.sources:
         for chunk in source.chunks:
             chunk_by_id[chunk.chunk_id] = (source, chunk)
 
-    candidates: list[_Candidate] = []
+    candidates: list[SemanticCandidate] = []
     for item in index.vectors:
         pair = chunk_by_id.get(item.chunk_id)
         if pair is None:
@@ -1084,7 +1084,7 @@ def _build_candidates(
             )
         tokens = tokenize(request.input_text)
         candidates.append(
-            _Candidate(
+            SemanticCandidate(
                 vector=item,
                 source=source,
                 chunk=chunk,
@@ -1096,8 +1096,38 @@ def _build_candidates(
     return tuple(candidates)
 
 
+def load_verified_semantic_candidates(
+    ai_root: Path,
+    vault_root: Path,
+    *,
+    semantic_index_sha256: str,
+    filters: RetrievalFilter | None = None,
+) -> tuple[SemanticIndexManifest, SemanticCorpusManifest, tuple[SemanticCandidate, ...]]:
+    index_sha = _require_sha256(
+        semantic_index_sha256,
+        label="semantic index SHA",
+    )
+    index = load_semantic_index_manifest(ai_root, index_sha)
+    try:
+        with mirror_read_lock(ai_root):
+            corpus = load_semantic_corpus_manifest(
+                ai_root,
+                index.corpus_manifest_sha256,
+            )
+            verify_semantic_corpus_current(vault_root, corpus)
+            candidates = _build_candidates(
+                ai_root,
+                index,
+                corpus,
+                filters or RetrievalFilter(),
+            )
+    except (ProductionIOError, SemanticCorpusError) as exc:
+        raise SemanticRetrievalError(str(exc)) from exc
+    return index, corpus, candidates
+
+
 def _bm25_scores(
-    candidates: Sequence[_Candidate],
+    candidates: Sequence[SemanticCandidate],
     query: str,
 ) -> dict[str, float]:
     query_tokens = tuple(dict.fromkeys(tokenize(query)))
@@ -1160,7 +1190,7 @@ def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
 
 
 def rank_semantic_chunks(
-    candidates: Sequence[_Candidate],
+    candidates: Sequence[SemanticCandidate],
     *,
     query: str,
     query_vector: Sequence[float],

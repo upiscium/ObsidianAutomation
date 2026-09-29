@@ -185,7 +185,10 @@ when semantic selection determines that no candidate is novel/coherent enough.
 A novelty skip does not impersonate a submission and therefore does not rewrite
 `last_submission_at`.
 
-The exact novelty policy and skip decision remain out of scope for #204.
+The exact novelty policy and skip decision are implemented by
+[Semantic Selection and Novelty v1](semantic-selection-novelty-v1.md). Phase E
+observation remains non-mutating by default; only an explicit recorded skip
+updates these bounded cadence fields.
 
 ## Non-goals
 
