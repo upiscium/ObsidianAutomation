@@ -328,6 +328,7 @@ def test_historical_runtime_retire_clears_planner_unhealthy_gate(
     vault = _vault(tmp_path)
     state = _state(tmp_path)
     _enable_human_projection(state)
+    submitted_at = datetime(2026, 9, 29, 0, 0, tzinfo=timezone.utc)
 
     first = plan_once(
         state,
@@ -339,6 +340,7 @@ def test_historical_runtime_retire_clears_planner_unhealthy_gate(
         target_inflight=1,
         coverage_cycles=1,
         random_cycles=0,
+        now=submitted_at,
     )
     generation = str(
         job_status(state, str(first["job_id"]))["current_generation"]["generation_id"]
@@ -380,6 +382,7 @@ def test_historical_runtime_retire_clears_planner_unhealthy_gate(
         target_inflight=1,
         coverage_cycles=1,
         random_cycles=0,
+        now=submitted_at + timedelta(minutes=10),
     )
     assert paused["status"] == "paused_pipeline_unhealthy"
     assert paused["states"]["retry_exhausted"] == 1
@@ -401,6 +404,7 @@ def test_historical_runtime_retire_clears_planner_unhealthy_gate(
         target_inflight=1,
         coverage_cycles=1,
         random_cycles=0,
+        now=submitted_at + timedelta(minutes=61),
     )
     assert resumed["status"] == "submitted"
     resumed_generation = str(
