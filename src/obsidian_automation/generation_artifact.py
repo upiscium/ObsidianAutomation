@@ -16,7 +16,7 @@ from .artifact_lifecycle import (
     _utc_now,
     sha256_bytes,
 )
-from .context_bundle import load_context_bundle
+from .context_bundle import ContextBundle, ContextSource, load_context_bundle
 
 
 UNTRUSTED_STAGE = "00-Untrusted"
@@ -43,6 +43,15 @@ class ModelMetadata:
 
 
 @dataclass(frozen=True)
+class SemanticGenerationProvenance:
+    objective_generation_sha256: str
+    objective_candidate_sha256: str
+    objective_policy: str
+    selection_sha256: str
+    semantic_index_sha256: str
+
+
+@dataclass(frozen=True)
 class GenerationRecord:
     context_sha256: str
     proposal_sha256: str
@@ -50,27 +59,48 @@ class GenerationRecord:
     model: ModelMetadata
     model_config: Mapping[str, object]
     generated_at: str
+    context_kind: str = "context-bundle"
+    semantic_objective: SemanticGenerationProvenance | None = None
+    record_version: int = 1
 
     def to_json_bytes(self) -> bytes:
-        return _canonical_json_bytes(
-            {
-                "record_version": 1,
-                "context_sha256": self.context_sha256,
-                "proposal_sha256": self.proposal_sha256,
-                "generator": {
-                    "implementation_revision": self.generator.implementation_revision,
-                    "prompt_template_version": self.generator.prompt_template_version,
-                    "prompt_template_sha256": self.generator.prompt_template_sha256,
-                },
-                "model": {
-                    "provider": self.model.provider,
-                    "identifier": self.model.identifier,
-                    "revision": self.model.revision,
-                },
-                "model_config": dict(self.model_config),
-                "generated_at": self.generated_at,
+        base: dict[str, object] = {
+            "record_version": self.record_version,
+            "context_sha256": self.context_sha256,
+            "proposal_sha256": self.proposal_sha256,
+            "generator": {
+                "implementation_revision": self.generator.implementation_revision,
+                "prompt_template_version": self.generator.prompt_template_version,
+                "prompt_template_sha256": self.generator.prompt_template_sha256,
+            },
+            "model": {
+                "provider": self.model.provider,
+                "identifier": self.model.identifier,
+                "revision": self.model.revision,
+            },
+            "model_config": dict(self.model_config),
+            "generated_at": self.generated_at,
+        }
+        if self.record_version == 2:
+            base["context_kind"] = self.context_kind
+            if self.semantic_objective is None:
+                raise ArtifactLifecycleError(
+                    "generation record v2 requires semantic_objective provenance"
+                )
+            base["semantic_objective"] = {
+                "objective_generation_sha256": (
+                    self.semantic_objective.objective_generation_sha256
+                ),
+                "objective_candidate_sha256": (
+                    self.semantic_objective.objective_candidate_sha256
+                ),
+                "objective_policy": self.semantic_objective.objective_policy,
+                "selection_sha256": self.semantic_objective.selection_sha256,
+                "semantic_index_sha256": (
+                    self.semantic_objective.semantic_index_sha256
+                ),
             }
-        )
+        return _canonical_json_bytes(base)
 
 
 def _untrusted_directory(ai_root: Path) -> Path:
@@ -159,7 +189,8 @@ def parse_generation_record(data: bytes) -> GenerationRecord:
             f"generation record exceeds {MAX_GENERATION_RECORD_BYTES} bytes"
         )
     value = _decode_json_object(data, label="generation record")
-    required = {
+    version = value.get("record_version")
+    legacy_required = {
         "record_version",
         "context_sha256",
         "proposal_sha256",
@@ -168,10 +199,19 @@ def parse_generation_record(data: bytes) -> GenerationRecord:
         "model_config",
         "generated_at",
     }
-    if set(value) != required:
-        raise ArtifactLifecycleError("generation record properties do not match contract")
-    if type(value["record_version"]) is not int or value["record_version"] != 1:
-        raise ArtifactLifecycleError("generation record_version must be integer 1")
+    current_required = legacy_required | {"context_kind", "semantic_objective"}
+    if version == 1:
+        if set(value) != legacy_required:
+            raise ArtifactLifecycleError(
+                "generation record properties do not match v1 contract"
+            )
+    elif version == 2:
+        if set(value) != current_required:
+            raise ArtifactLifecycleError(
+                "generation record properties do not match v2 contract"
+            )
+    else:
+        raise ArtifactLifecycleError("unsupported generation record_version")
 
     context_sha256 = _require_sha256(value["context_sha256"], label="context_sha256")
     proposal_sha256 = _require_sha256(value["proposal_sha256"], label="proposal_sha256")
@@ -216,6 +256,54 @@ def parse_generation_record(data: bytes) -> GenerationRecord:
     if not isinstance(generated_at, str) or not generated_at.endswith("Z"):
         raise ArtifactLifecycleError("generated_at must be a UTC timestamp ending in Z")
 
+    if version == 1:
+        context_kind = "context-bundle"
+        semantic = None
+    else:
+        context_kind = value["context_kind"]
+        if context_kind != "semantic-objective":
+            raise ArtifactLifecycleError(
+                "generation record v2 context_kind must be semantic-objective"
+            )
+        raw_semantic = value["semantic_objective"]
+        if not isinstance(raw_semantic, dict) or set(raw_semantic) != {
+            "objective_generation_sha256",
+            "objective_candidate_sha256",
+            "objective_policy",
+            "selection_sha256",
+            "semantic_index_sha256",
+        }:
+            raise ArtifactLifecycleError(
+                "generation semantic_objective properties do not match contract"
+            )
+        objective_policy = _metadata_string(
+            raw_semantic["objective_policy"],
+            label="semantic_objective.objective_policy",
+        )
+        if objective_policy != "deep-knowledge-v1":
+            raise ArtifactLifecycleError(
+                "generation record v2 supports only deep-knowledge-v1"
+            )
+        semantic = SemanticGenerationProvenance(
+            objective_generation_sha256=_require_sha256(
+                raw_semantic["objective_generation_sha256"],
+                label="semantic_objective.objective_generation_sha256",
+            ),
+            objective_candidate_sha256=_require_sha256(
+                raw_semantic["objective_candidate_sha256"],
+                label="semantic_objective.objective_candidate_sha256",
+            ),
+            objective_policy=objective_policy,
+            selection_sha256=_require_sha256(
+                raw_semantic["selection_sha256"],
+                label="semantic_objective.selection_sha256",
+            ),
+            semantic_index_sha256=_require_sha256(
+                raw_semantic["semantic_index_sha256"],
+                label="semantic_objective.semantic_index_sha256",
+            ),
+        )
+
     return GenerationRecord(
         context_sha256=context_sha256,
         proposal_sha256=proposal_sha256,
@@ -223,8 +311,10 @@ def parse_generation_record(data: bytes) -> GenerationRecord:
         model=model,
         model_config=model_config,
         generated_at=generated_at,
+        context_kind=context_kind,
+        semantic_objective=semantic,
+        record_version=version,
     )
-
 
 def _verify_proposal_binding(ai_root: Path, proposal_sha256: str) -> None:
     digest = _require_sha256(proposal_sha256, label="proposal_sha256")
@@ -232,6 +322,101 @@ def _verify_proposal_binding(ai_root: Path, proposal_sha256: str) -> None:
     data = _read_exact_file(path)
     if sha256_bytes(data) != digest:
         raise ArtifactLifecycleError("untrusted proposal artifact hash mismatch")
+
+
+def _verify_generation_context(
+    ai_root: Path,
+    *,
+    context_sha256: str,
+    context_kind: str,
+    semantic_objective_generation_sha256: str | None,
+) -> SemanticGenerationProvenance | None:
+    if context_kind == "context-bundle":
+        if semantic_objective_generation_sha256 is not None:
+            raise ArtifactLifecycleError(
+                "legacy generation context cannot bind semantic objective provenance"
+            )
+        load_context_bundle(ai_root, context_sha256)
+        return None
+    if context_kind != "semantic-objective":
+        raise ArtifactLifecycleError("unsupported generation context_kind")
+    if semantic_objective_generation_sha256 is None:
+        raise ArtifactLifecycleError(
+            "semantic generation requires objective generation provenance"
+        )
+
+    from .semantic_objective import (
+        DEEP_KNOWLEDGE,
+        load_objective_generation,
+        load_objective_context,
+    )
+
+    objective_generation = load_objective_generation(
+        ai_root,
+        semantic_objective_generation_sha256,
+    )
+    context = load_objective_context(ai_root, context_sha256)
+    if (
+        objective_generation.objective_context_sha256 != context_sha256
+        or objective_generation.objective_policy != DEEP_KNOWLEDGE
+        or context.objective_policy != DEEP_KNOWLEDGE
+        or objective_generation.selection_sha256 != context.selection_sha256
+        or objective_generation.semantic_index_sha256
+        != context.semantic_index_sha256
+    ):
+        raise ArtifactLifecycleError(
+            "semantic objective generation/context provenance mismatch"
+        )
+    return SemanticGenerationProvenance(
+        objective_generation_sha256=semantic_objective_generation_sha256,
+        objective_candidate_sha256=objective_generation.candidate_sha256,
+        objective_policy=objective_generation.objective_policy,
+        selection_sha256=objective_generation.selection_sha256,
+        semantic_index_sha256=objective_generation.semantic_index_sha256,
+    )
+
+
+def _verify_semantic_generation_metadata(
+    ai_root: Path,
+    record: GenerationRecord,
+) -> None:
+    if record.semantic_objective is None:
+        if record.context_kind != "context-bundle" or record.record_version != 1:
+            raise ArtifactLifecycleError(
+                "legacy Generation Record semantic provenance is inconsistent"
+            )
+        return
+
+    from .semantic_objective import load_objective_generation
+
+    objective = load_objective_generation(
+        ai_root,
+        record.semantic_objective.objective_generation_sha256,
+    )
+    if (
+        objective.objective_context_sha256 != record.context_sha256
+        or objective.candidate_sha256
+        != record.semantic_objective.objective_candidate_sha256
+        or objective.objective_policy
+        != record.semantic_objective.objective_policy
+        or objective.selection_sha256
+        != record.semantic_objective.selection_sha256
+        or objective.semantic_index_sha256
+        != record.semantic_objective.semantic_index_sha256
+        or objective.generator.implementation_revision
+        != record.generator.implementation_revision
+        or objective.generator.prompt_template_version
+        != record.generator.prompt_template_version
+        or objective.generator.prompt_template_sha256
+        != record.generator.prompt_template_sha256
+        or objective.model.provider != record.model.provider
+        or objective.model.identifier != record.model.identifier
+        or objective.model.revision != record.model.revision
+        or dict(objective.model_config) != dict(record.model_config)
+    ):
+        raise ArtifactLifecycleError(
+            "semantic Objective Generation metadata does not match Generation Record v2"
+        )
 
 
 def build_generation_record(
@@ -247,11 +432,19 @@ def build_generation_record(
     model_revision: str,
     model_config: Mapping[str, object],
     generated_at: str | None = None,
+    context_kind: str = "context-bundle",
+    semantic_objective_generation_sha256: str | None = None,
 ) -> GenerationRecord:
     context_digest = _require_sha256(context_sha256, label="context_sha256")
     proposal_digest = _require_sha256(proposal_sha256, label="proposal_sha256")
-
-    load_context_bundle(ai_root, context_digest)
+    semantic = _verify_generation_context(
+        ai_root,
+        context_sha256=context_digest,
+        context_kind=context_kind,
+        semantic_objective_generation_sha256=(
+            semantic_objective_generation_sha256
+        ),
+    )
     _verify_proposal_binding(ai_root, proposal_digest)
 
     record = GenerationRecord(
@@ -269,9 +462,50 @@ def build_generation_record(
         ),
         model_config=_validated_model_config(dict(model_config)),
         generated_at=generated_at or _utc_now(),
+        context_kind=context_kind,
+        semantic_objective=semantic,
+        record_version=2 if semantic is not None else 1,
     )
+    _verify_semantic_generation_metadata(ai_root, record)
     return parse_generation_record(record.to_json_bytes())
 
+
+def generation_input_context(
+    ai_root: Path,
+    record: GenerationRecord,
+) -> ContextBundle:
+    if record.context_kind == "context-bundle":
+        return load_context_bundle(ai_root, record.context_sha256)
+    if record.context_kind != "semantic-objective" or record.semantic_objective is None:
+        raise ArtifactLifecycleError("generation record context provenance is invalid")
+
+    from .semantic_objective import load_objective_context
+
+    context = load_objective_context(ai_root, record.context_sha256)
+    if (
+        context.objective_policy != record.semantic_objective.objective_policy
+        or context.selection_sha256 != record.semantic_objective.selection_sha256
+        or context.semantic_index_sha256
+        != record.semantic_objective.semantic_index_sha256
+    ):
+        raise ArtifactLifecycleError(
+            "semantic generation record does not match Objective Context"
+        )
+    return ContextBundle(
+        query=(
+            "Generation Objective: "
+            f"{context.objective_policy}; Selection: {context.selection_policy}"
+        ),
+        created_at=context.created_at,
+        sources=tuple(
+            ContextSource(
+                path=item.path,
+                content_sha256=item.content_sha256,
+                content=item.content,
+            )
+            for item in context.sources
+        ),
+    )
 
 def store_generation_record(ai_root: Path, record: GenerationRecord) -> tuple[str, Path]:
     normalized = GenerationRecord(
@@ -281,13 +515,27 @@ def store_generation_record(ai_root: Path, record: GenerationRecord) -> tuple[st
         model=record.model,
         model_config=_validated_model_config(dict(record.model_config)),
         generated_at=record.generated_at,
+        context_kind=record.context_kind,
+        semantic_objective=record.semantic_objective,
+        record_version=record.record_version,
     )
     data = normalized.to_json_bytes()
     parsed = parse_generation_record(data)
     if parsed != normalized:
         raise ArtifactLifecycleError("generation record canonical round-trip mismatch")
 
-    load_context_bundle(ai_root, parsed.context_sha256)
+    semantic_generation_sha = (
+        None
+        if parsed.semantic_objective is None
+        else parsed.semantic_objective.objective_generation_sha256
+    )
+    _verify_generation_context(
+        ai_root,
+        context_sha256=parsed.context_sha256,
+        context_kind=parsed.context_kind,
+        semantic_objective_generation_sha256=semantic_generation_sha,
+    )
+    _verify_semantic_generation_metadata(ai_root, parsed)
     _verify_proposal_binding(ai_root, parsed.proposal_sha256)
 
     digest = sha256_bytes(data)
@@ -301,4 +549,7 @@ def load_generation_record(ai_root: Path, generation_sha256: str) -> GenerationR
     data = _read_exact_file(path)
     if sha256_bytes(data) != digest:
         raise ArtifactLifecycleError("generation record artifact hash mismatch")
-    return parse_generation_record(data)
+    record = parse_generation_record(data)
+    if record.record_version == 2:
+        _verify_semantic_generation_metadata(ai_root, record)
+    return record

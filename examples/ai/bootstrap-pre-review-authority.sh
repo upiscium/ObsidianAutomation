@@ -13,6 +13,7 @@ STATUS_GROUP=${STATUS_GROUP:-obsidian-ai-status}
 
 ORCHESTRATION="$AI_ROOT/02-Orchestration"
 RECIPES="$ORCHESTRATION/recipes"
+SEMANTIC_SELECTIONS="$ORCHESTRATION/semantic-selections"
 STATUS_DIR="$ORCHESTRATION/status"
 DB="$ORCHESTRATION/pre-review-jobs.sqlite3"
 LOCKS="$AI_ROOT/24-Locks"
@@ -61,6 +62,7 @@ fi
 
 install -d -o root -g root -m 0700 "$ORCHESTRATION"
 install -d -o root -g root -m 0700 "$RECIPES"
+install -d -o root -g root -m 0700 "$SEMANTIC_SELECTIONS"
 install -d -o root -g root -m 0700 "$STATUS_DIR"
 install -d -o root -g root -m 0700 "$READ_VIEW"
 
@@ -94,6 +96,8 @@ reset_acl_dir() {
 reset_acl_dir "$ORCHESTRATION"   "u:$READER_USER:rwx"   "u:$GENERATOR_USER:rwx"   "u:$VALIDATOR_USER:rwx"   "u:$EVALUATOR_USER:rwx"   "u:$STATUS_USER:r-x"   "u:$REVIEWER_USER:--x"
 
 reset_acl_dir "$RECIPES"   "u:$READER_USER:rwx"   "u:$GENERATOR_USER:r-x"   "u:$VALIDATOR_USER:r-x"   "u:$EVALUATOR_USER:r-x"
+
+reset_acl_dir "$SEMANTIC_SELECTIONS"   "u:$READER_USER:rwx"
 
 reset_acl_dir "$STATUS_DIR"   "u:$STATUS_USER:rwx"   "u:$REVIEWER_USER:r-x"
 
@@ -247,6 +251,14 @@ if ! runuser -u "$STATUS_USER" -- test -w "$STATUS_DIR"; then
 fi
 if runuser -u "$REVIEWER_USER" -- test -w "$STATUS_DIR"; then
   echo "reviewer unexpectedly has status projection write authority" >&2
+  exit 1
+fi
+if runuser -u "$GENERATOR_USER" -- test -r "$SEMANTIC_SELECTIONS" 2>/dev/null; then
+  echo "generator unexpectedly reads Semantic Selection Store" >&2
+  exit 1
+fi
+if runuser -u "$GENERATOR_USER" -- test -w "$SEMANTIC_SELECTIONS" 2>/dev/null; then
+  echo "generator unexpectedly writes Semantic Selection Store" >&2
   exit 1
 fi
 if runuser -u "$STATUS_USER" -- test -r "$AI_ROOT/05-Context" 2>/dev/null; then

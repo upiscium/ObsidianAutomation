@@ -159,7 +159,7 @@ def _state(tmp_path: Path) -> Path:
     state = tmp_path / "state"
     for path in (
         "00-Untrusted",
-        "02-Orchestration",
+        "02-Orchestration/semantic-selections",
         "04-Index",
         "05-Context",
         "16-Human-Projection/generator",

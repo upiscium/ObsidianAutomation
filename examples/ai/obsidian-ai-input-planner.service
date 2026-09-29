@@ -7,6 +7,9 @@ ConditionPathExists=/etc/obsidian-ai/pre-review-revision.env
 Type=oneshot
 User=obsidian-ai-reader
 Group=obsidian-ai-reader
+Environment=AI_INPUT_MODE=legacy
+Environment=AI_INPUT_SEMANTIC_INDEX_SHA=disabled
+Environment=AI_INPUT_SEMANTIC_SELECTION_POLICY=semantic-project-distill-v0
 Environment=AI_INPUT_GENERATOR_PROVIDER=openai-compatible
 Environment=AI_INPUT_GENERATOR_MODEL_REVISION=auto
 Environment=AI_INPUT_EVALUATOR_PROVIDER=openai-compatible
@@ -17,6 +20,9 @@ ExecStart=/opt/obsidian-ai/venv/bin/obsidian-ai-input-planner \
   --ai-root /var/lib/obsidian-ai/state \
   --vault-root /var/lib/obsidian-ai/vault \
   --deployed-revision ${OBSIDIAN_AUTOMATION_REVISION} \
+  --input-mode ${AI_INPUT_MODE} \
+  --semantic-index-sha ${AI_INPUT_SEMANTIC_INDEX_SHA} \
+  --semantic-selection-policy ${AI_INPUT_SEMANTIC_SELECTION_POLICY} \
   --generator-provider ${AI_INPUT_GENERATOR_PROVIDER} \
   --generator-model ${AI_INPUT_GENERATOR_MODEL} \
   --generator-model-revision ${AI_INPUT_GENERATOR_MODEL_REVISION} \

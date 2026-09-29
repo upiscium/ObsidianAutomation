@@ -239,8 +239,25 @@ Automatic planning is enabled by creating:
 /etc/obsidian-ai/pre-review-input.env
 ```
 
-with non-secret provider/model bindings. For the current Ollama production
-deployment:
+The service itself defaults to `AI_INPUT_MODE=legacy`. Deploying a release does
+not enable semantic production automatically.
+
+For controlled semantic deep-Knowledge rollout, add:
+
+```text
+AI_INPUT_MODE=semantic-deep-knowledge
+AI_INPUT_SEMANTIC_INDEX_SHA=<exact-reviewed-semantic-index-sha256>
+AI_INPUT_SEMANTIC_SELECTION_POLICY=semantic-project-distill-v0
+```
+
+The Semantic Index identity is exact and immutable for the cycle. There is no
+`latest` pointer and the Planner does not rebuild the index automatically. A
+missing/stale index fails before job submission.
+
+Set `AI_INPUT_MODE=legacy` (and leave the index value disabled) to retain or
+restore the original catalog/coverage Planner.
+
+Provider/model bindings remain non-secret. For Ollama production:
 
 ```text
 AI_INPUT_GENERATOR_PROVIDER=ollama
@@ -286,16 +303,23 @@ model digest, thinking policy, and options are all part of the immutable recipe/
 identity. The generic OpenAI-compatible adapter remains available for non-Ollama
 providers.
 
+## Semantic production integration
+
+The controlled `deep-knowledge-v1` integration is documented in
+[Semantic Deep Knowledge Production v1](semantic-deep-knowledge-production-v1.md).
+
+Semantic mode selects across Daily, Idea, Project, Project Note and Knowledge,
+then Reader materializes only the exact selected chunk bytes into an Objective
+Context. Generator still has no Vault/Index/Selection-store access.
+
+Idea-discovery and Project-adoption objectives remain outside automatic durable
+jobs until the Human/Core canonical actions are ready.
+
 ## Future extensions
 
-The source / selection / objective concepts are intentionally separate. The
-reviewed next architecture is documented in
-[Semantic Planner v1](semantic-planner-v1.md), tracked by #198.
-
-Semantic Planner v1 extends the bounded corpus to Daily, Idea, Project,
-Project Note and Knowledge sources; introduces Reader-owned semantic retrieval;
-and keeps selection policy independent from generation objective. Generator
-authority remains unchanged: it still receives only exact Context Bundle bytes.
+Selection policy and objective remain independently versioned. Automatic
+Semantic Index rebuild, non-Knowledge durable jobs and other objectives require
+separate reviewed rollout contracts.
 
 Human-facing `04-AI` remains excluded from the input corpus even though its
 Review controls feed separate fail-closed Human actions.

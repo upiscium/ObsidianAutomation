@@ -516,7 +516,20 @@ Initial objectives are `deep-knowledge-v1`, `idea-discovery-v0` and
 `project-adoption-proposal-v0`. Phase F remains explicit/operator-driven and
 does not route non-Knowledge candidates through the Knowledge mutation executor.
 
-### Phase G — Core Human actions
+### Phase G — controlled deep Knowledge production
+
+Issue #212 is implemented by
+[Semantic Deep Knowledge Production v1](semantic-deep-knowledge-production-v1.md).
+
+The production unit remains `legacy` by default. An explicit opt-in pins one
+exact Semantic Index SHA and one versioned Selection Policy. Only
+`deep-knowledge-v1` enters the durable Knowledge pre-review chain. Novelty
+skips create no job and do not move the submission clock.
+
+Idea discovery and Project adoption remain operator-driven Human-facing
+candidates.
+
+### Phase H — Core Human actions
 
 ObsidianCore#198 owns canonical client-side Idea save/adoption actions.
 
@@ -541,4 +554,5 @@ Semantic Planner v1 does not authorize:
 - #202 selection policies/novelty gate
 - #203 generation objectives
 - #204 Planner cadence
+- #212 controlled semantic deep Knowledge production integration
 - upiscium/ObsidianCore#198 Human-side Idea/Project actions

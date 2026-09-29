@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Mapping
 
 from .artifact_lifecycle import ArtifactLifecycleError, _require_sha256
-from .context_bundle import load_context_bundle
 from .evaluation_artifact import (
     _load_accepted_mutation,
     build_evaluation_record,
@@ -34,7 +33,7 @@ from .evaluator_contract import (
     to_evaluation_assessment,
 )
 from .evaluator_conflict import ConsistencyConflict
-from .generation_artifact import load_generation_record, validate_model_config
+from .generation_artifact import generation_input_context, load_generation_record, validate_model_config
 from .openai_compatible import (
     DEFAULT_TIMEOUT_SECONDS,
     IDENTITY_BINDING,
@@ -213,7 +212,7 @@ def evaluate_knowledge_note_with_openai_compatible(
         raise ArtifactLifecycleError(
             "evaluator generation record is bound to another proposal"
         )
-    generation_context = load_context_bundle(ai_root, generation.context_sha256)
+    generation_context = generation_input_context(ai_root, generation)
     evaluation_context = load_evaluation_context(ai_root, evaluation_context_digest)
     if (
         evaluation_context.proposal_sha256 != proposal_digest

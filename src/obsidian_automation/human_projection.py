@@ -854,6 +854,64 @@ def emit_context_projection(
     )
 
 
+def emit_semantic_objective_context_projection(
+    ai_root: Path,
+    *,
+    case_id: str,
+    context_sha256: str,
+    context,
+) -> tuple[str, Path] | None:
+    if not projection_enabled(ai_root):
+        return None
+    source = _require_sha256(
+        context_sha256,
+        label="objective_context_sha256",
+    )
+    lines = [
+        f"Objective: {_inline_code(context.objective_policy)}",
+        f"Selection policy: {_inline_code(context.selection_policy)}",
+        f"Selection: {_inline_code(context.selection_sha256)}",
+        f"Semantic index: {_inline_code(context.semantic_index_sha256)}",
+        "",
+        "## Exact Selected Chunks",
+    ]
+    for item in context.sources:
+        lines.append(
+            "- "
+            f"{_inline_code(item.path)} — {item.source_kind} — "
+            f"chunk {_inline_code(item.chunk_id)} — "
+            f"content {_inline_code(item.content_sha256)}"
+        )
+    markdown = _projection_markdown(
+        case_id=case_id,
+        stage="context",
+        source_kind="semantic_objective_context",
+        source_sha256=source,
+        created_at=context.created_at,
+        title="Semantic Generation Context",
+        body="\n".join(lines),
+        extra_frontmatter={
+            "objective_policy": context.objective_policy,
+            "selection_policy": context.selection_policy,
+            "selection_sha256": context.selection_sha256,
+            "semantic_index_sha256": context.semantic_index_sha256,
+            "objective_context_sha256": source,
+        },
+    )
+    return store_request(
+        ai_root,
+        role="reader",
+        request=build_request(
+            case_id=case_id,
+            stage="context",
+            source_kind="semantic_objective_context",
+            source_sha256=source,
+            content=markdown,
+            created_at=context.created_at,
+        ),
+    )
+
+
 def emit_generation_projection(
     ai_root: Path,
     *,
@@ -869,13 +927,36 @@ def emit_generation_projection(
     if record.proposal_sha256 != proposal_digest:
         raise HumanProjectionError("generation projection proposal binding mismatch")
     target, candidate = _proposal_fields(ai_root, proposal_digest)
+    semantic_frontmatter: dict[str, str | None] = {
+        "proposal_sha256": proposal_digest,
+        "target_path": target,
+    }
+    title = "Generated Knowledge Candidate"
+    if record.semantic_objective is not None:
+        semantic_frontmatter.update(
+            {
+                "objective_policy": record.semantic_objective.objective_policy,
+                "selection_sha256": record.semantic_objective.selection_sha256,
+                "semantic_index_sha256": (
+                    record.semantic_objective.semantic_index_sha256
+                ),
+                "objective_generation_sha256": (
+                    record.semantic_objective.objective_generation_sha256
+                ),
+                "objective_candidate_sha256": (
+                    record.semantic_objective.objective_candidate_sha256
+                ),
+            }
+        )
+        title = "Generated Deep Knowledge Candidate"
+
     markdown = _projection_markdown(
         case_id=case_id,
         stage="generation",
         source_kind="generation_record",
         source_sha256=generation_digest,
         created_at=record.generated_at,
-        title="Generated Knowledge Candidate",
+        title=title,
         body="\n".join(
             [
                 f"Target: {_inline_code(target)}",
@@ -885,10 +966,7 @@ def emit_generation_projection(
                 _code_fence(candidate),
             ]
         ),
-        extra_frontmatter={
-            "proposal_sha256": proposal_digest,
-            "target_path": target,
-        },
+        extra_frontmatter=semantic_frontmatter,
     )
     return store_request(
         ai_root,

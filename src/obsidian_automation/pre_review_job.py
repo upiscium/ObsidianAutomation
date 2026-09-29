@@ -66,6 +66,12 @@ from .ollama_generator import (
     ADAPTER_VERSION as OLLAMA_GENERATOR_ADAPTER_VERSION,
     PROVIDER_NAME as OLLAMA_PROVIDER_NAME,
 )
+from .semantic_objective_identity import (
+    DEEP_KNOWLEDGE,
+    OBJECTIVE_OLLAMA_ADAPTER_VERSION,
+    OBJECTIVE_OPENAI_ADAPTER_VERSION,
+    PROMPT_VERSION as SEMANTIC_OBJECTIVE_PROMPT_VERSION,
+)
 
 
 ORCHESTRATION_STAGE = "02-Orchestration"
@@ -77,6 +83,18 @@ MAX_RECIPE_BYTES = 64 * 1024
 MAX_METADATA_CHARS = 512
 _IMPLEMENTATION_REVISION_RE = re.compile(r"^[0-9a-f]{40,64}$")
 HISTORICAL_RUNTIME_SUPERSESSION_REASON = "operator_historical_runtime_retire"
+
+
+def _supported_generator_prompt_hashes() -> dict[str, str]:
+    from .semantic_objective import (
+        prompt_template_sha256 as semantic_objective_prompt_sha256,
+    )
+
+    hashes = dict(supported_prompt_template_hashes())
+    hashes[SEMANTIC_OBJECTIVE_PROMPT_VERSION[DEEP_KNOWLEDGE]] = (
+        semantic_objective_prompt_sha256(DEEP_KNOWLEDGE)
+    )
+    return hashes
 
 
 @dataclass(frozen=True)
@@ -273,9 +291,16 @@ def _parse_component(
             raise PreReviewJobError(
                 f"{label}.model_revision must explicitly use identifier-only binding"
             )
+        semantic_deep = (
+            not evaluator
+            and stored_prompt_version
+            == SEMANTIC_OBJECTIVE_PROMPT_VERSION[DEEP_KNOWLEDGE]
+        )
         expected_config = {"adapter_version", "identity_binding", "options"}
         if evaluator:
             expected_config.add("strategy")
+        elif semantic_deep:
+            expected_config.add("objective_adapter_version")
         if not isinstance(model_config, dict) or set(model_config) != expected_config:
             raise PreReviewJobError(
                 f"{label}.model_config properties do not match OpenAI-compatible v0 contract"
@@ -293,6 +318,14 @@ def _parse_component(
             raise PreReviewJobError(
                 f"{label}.model_config.identity_binding must be {IDENTITY_BINDING}"
             )
+        if semantic_deep and (
+            model_config["objective_adapter_version"]
+            != OBJECTIVE_OPENAI_ADAPTER_VERSION
+        ):
+            raise PreReviewJobError(
+                f"{label}.model_config.objective_adapter_version must be "
+                f"{OBJECTIVE_OPENAI_ADAPTER_VERSION}"
+            )
     else:
         try:
             model_revision = _require_sha256(
@@ -301,9 +334,16 @@ def _parse_component(
             )
         except ArtifactLifecycleError as exc:
             raise PreReviewJobError(str(exc)) from exc
+        semantic_deep = (
+            not evaluator
+            and stored_prompt_version
+            == SEMANTIC_OBJECTIVE_PROMPT_VERSION[DEEP_KNOWLEDGE]
+        )
         expected_config = {"adapter_version", "think", "options"}
         if evaluator:
             expected_config.add("strategy")
+        elif semantic_deep:
+            expected_config.add("objective_adapter_version")
         if not isinstance(model_config, dict) or set(model_config) != expected_config:
             raise PreReviewJobError(
                 f"{label}.model_config properties do not match Ollama native v0 contract"
@@ -329,6 +369,14 @@ def _parse_component(
         if not supported_think:
             raise PreReviewJobError(
                 f"{label}.model_config.think must be {expected_think}"
+            )
+        if semantic_deep and (
+            model_config["objective_adapter_version"]
+            != OBJECTIVE_OLLAMA_ADAPTER_VERSION
+        ):
+            raise PreReviewJobError(
+                f"{label}.model_config.objective_adapter_version must be "
+                f"{OBJECTIVE_OLLAMA_ADAPTER_VERSION}"
             )
 
     if not isinstance(model_config["options"], dict):
@@ -418,7 +466,7 @@ def parse_recipe(data: bytes) -> PreReviewRecipe:
             label="generator",
             prompt_version=None,
             evaluator=False,
-            prompt_hashes=supported_prompt_template_hashes(),
+            prompt_hashes=_supported_generator_prompt_hashes(),
         ),
         validator_policy=validator_policy,
         evaluation_context_policy=selection_policy,
@@ -448,7 +496,7 @@ def parse_recipe_roundtrip_guard(data: bytes) -> PreReviewRecipe:
             label="generator",
             prompt_version=None,
             evaluator=False,
-            prompt_hashes=supported_prompt_template_hashes(),
+            prompt_hashes=_supported_generator_prompt_hashes(),
         ),
         validator_policy=_metadata(validator["policy"], label="validator.policy"),
         evaluation_context_policy=_metadata(
@@ -655,7 +703,19 @@ def submit_job(
     recipe: PreReviewRecipe,
 ) -> dict[str, object]:
     context_digest = _require_sha256(context_sha256, label="context_sha256")
-    load_context_bundle(ai_root, context_digest)
+    if (
+        recipe.generator.prompt_template_version
+        == SEMANTIC_OBJECTIVE_PROMPT_VERSION[DEEP_KNOWLEDGE]
+    ):
+        from .semantic_objective import load_objective_context
+
+        context = load_objective_context(ai_root, context_digest)
+        if context.objective_policy != DEEP_KNOWLEDGE:
+            raise PreReviewJobError(
+                "semantic deep Knowledge recipe requires deep-knowledge-v1 Context"
+            )
+    else:
+        load_context_bundle(ai_root, context_digest)
     recipe_digest, recipe_path = store_recipe(ai_root, recipe)
     job_id = _job_id(context_digest, recipe_digest)
     now = _utc_now()

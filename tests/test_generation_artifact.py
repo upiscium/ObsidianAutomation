@@ -18,9 +18,22 @@ from obsidian_automation.context_bundle import (
 from obsidian_automation.generation_artifact import (
     UNTRUSTED_STAGE,
     build_generation_record,
+    generation_input_context,
     load_generation_record,
     parse_generation_record,
     store_generation_record,
+)
+from obsidian_automation.generator_contract import KnowledgeGeneratorOutput
+from obsidian_automation.semantic_objective import (
+    DEEP_KNOWLEDGE,
+    ObjectiveContextSource,
+    SemanticObjectiveContext,
+    build_objective_generation,
+    prompt_template_sha256 as objective_prompt_sha256,
+    store_deep_knowledge_proposal,
+    store_objective_candidate,
+    store_objective_context,
+    store_objective_generation,
 )
 
 
@@ -176,3 +189,146 @@ def test_generation_record_load_detects_artifact_hash_mismatch(tmp_path: Path) -
 
     with pytest.raises(ArtifactLifecycleError, match="artifact hash mismatch"):
         load_generation_record(state, digest)
+
+def _semantic_generation_inputs(tmp_path: Path):
+    state = tmp_path / "semantic-state"
+    state.mkdir()
+    (state / "00-Untrusted").mkdir()
+    (state / "05-Context").mkdir()
+
+    content = "Daily observation about stable asset identity.\n"
+    content_sha = sha256_bytes(content.encode("utf-8"))
+    context = SemanticObjectiveContext(
+        objective_policy=DEEP_KNOWLEDGE,
+        candidate_kind="knowledge_candidate",
+        selection_sha256="1" * 64,
+        selection_policy="semantic-focus-v0",
+        semantic_index_sha256="2" * 64,
+        corpus_manifest_sha256="3" * 64,
+        created_at="2026-09-29T04:00:00Z",
+        sources=(
+            ObjectiveContextSource(
+                rank=1,
+                role="anchor",
+                path="00-DailyNote/2026/09/2026-09-29.md",
+                source_kind="daily",
+                source_sha256="4" * 64,
+                chunk_id="5" * 64,
+                content_sha256=content_sha,
+                content=content,
+            ),
+        ),
+    )
+    context_sha, _ = store_objective_context(state, context)
+    output = KnowledgeGeneratorOutput(
+        title="安定した資産識別子",
+        category="summary",
+        source_type="self",
+        body="# 概要\n\n安定した識別子は状態変化をまたいだ追跡に使える。\n",
+    )
+    candidate_sha, _, _ = store_objective_candidate(
+        state,
+        context_sha256=context_sha,
+        output=output,
+    )
+    prompt_sha = objective_prompt_sha256(DEEP_KNOWLEDGE)
+    objective = build_objective_generation(
+        state,
+        objective_context_sha256=context_sha,
+        candidate_sha256=candidate_sha,
+        implementation_revision="a" * 40,
+        prompt_template_version="deep-knowledge-generator-v1",
+        prompt_template_sha256_value=prompt_sha,
+        model_provider="openai-compatible",
+        model_identifier="model",
+        model_revision="identifier:model",
+        model_config={
+            "adapter_version": "openai-chat-completions-json-schema-v1",
+            "identity_binding": "identifier-only",
+            "objective_adapter_version": "openai-semantic-objective-json-schema-v0",
+            "options": {"temperature": 0, "reasoning_effort": "none"},
+        },
+        generated_at="2026-09-29T04:01:00Z",
+    )
+    objective_sha, _ = store_objective_generation(state, objective)
+    proposal_sha, _ = store_deep_knowledge_proposal(
+        state,
+        objective_generation_sha256=objective_sha,
+    )
+    return state, context_sha, objective_sha, proposal_sha, prompt_sha
+
+
+def test_generation_record_v2_binds_exact_semantic_objective_chain(
+    tmp_path: Path,
+) -> None:
+    state, context_sha, objective_sha, proposal_sha, prompt_sha = (
+        _semantic_generation_inputs(tmp_path)
+    )
+    record = build_generation_record(
+        state,
+        context_sha256=context_sha,
+        proposal_sha256=proposal_sha,
+        implementation_revision="a" * 40,
+        prompt_template_version="deep-knowledge-generator-v1",
+        prompt_template_sha256=prompt_sha,
+        model_provider="openai-compatible",
+        model_identifier="model",
+        model_revision="identifier:model",
+        model_config={
+            "adapter_version": "openai-chat-completions-json-schema-v1",
+            "identity_binding": "identifier-only",
+            "objective_adapter_version": "openai-semantic-objective-json-schema-v0",
+            "options": {"temperature": 0, "reasoning_effort": "none"},
+        },
+        context_kind="semantic-objective",
+        semantic_objective_generation_sha256=objective_sha,
+        generated_at="2026-09-29T04:02:00Z",
+    )
+    assert record.record_version == 2
+    assert record.context_kind == "semantic-objective"
+    assert record.semantic_objective is not None
+    assert record.semantic_objective.objective_generation_sha256 == objective_sha
+    assert record.semantic_objective.selection_sha256 == "1" * 64
+    assert record.semantic_objective.semantic_index_sha256 == "2" * 64
+
+    digest, _ = store_generation_record(state, record)
+    loaded = load_generation_record(state, digest)
+    assert loaded == record
+
+    grounding = generation_input_context(state, loaded)
+    assert grounding.sources[0].path == "00-DailyNote/2026/09/2026-09-29.md"
+    assert grounding.sources[0].content == (
+        "Daily observation about stable asset identity.\n"
+    )
+
+
+def test_generation_record_v2_rejects_objective_model_provenance_mismatch(
+    tmp_path: Path,
+) -> None:
+    state, context_sha, objective_sha, proposal_sha, prompt_sha = (
+        _semantic_generation_inputs(tmp_path)
+    )
+    with pytest.raises(
+        ArtifactLifecycleError,
+        match="Objective Generation metadata",
+    ):
+        build_generation_record(
+            state,
+            context_sha256=context_sha,
+            proposal_sha256=proposal_sha,
+            implementation_revision="a" * 40,
+            prompt_template_version="deep-knowledge-generator-v1",
+            prompt_template_sha256=prompt_sha,
+            model_provider="openai-compatible",
+            model_identifier="different-model",
+            model_revision="identifier:different-model",
+            model_config={
+                "adapter_version": "openai-chat-completions-json-schema-v1",
+                "identity_binding": "identifier-only",
+                "objective_adapter_version": "openai-semantic-objective-json-schema-v0",
+                "options": {"temperature": 0, "reasoning_effort": "none"},
+            },
+            context_kind="semantic-objective",
+            semantic_objective_generation_sha256=objective_sha,
+        )
+

@@ -20,7 +20,11 @@ from .evaluator_contract import (
     EVALUATOR_PROMPT_TEMPLATE_VERSION,
     prompt_template_sha256 as evaluator_prompt_sha256,
 )
-from .generation_artifact import load_generation_record
+from .generation_artifact import (
+    build_generation_record,
+    load_generation_record,
+    store_generation_record,
+)
 from .human_projection import (
     emit_evaluation_and_review_projections,
     emit_generation_projection,
@@ -53,6 +57,16 @@ from .pre_review_job import (
     stage_output,
 )
 from .production_io import ProductionIOError, mirror_read_lock
+from .semantic_objective import (
+    DEEP_KNOWLEDGE,
+    PROMPT_VERSION as SEMANTIC_OBJECTIVE_PROMPT_VERSION,
+    prompt_template_sha256 as semantic_objective_prompt_sha256,
+    store_deep_knowledge_proposal,
+)
+from .semantic_objective_generation import (
+    generate_semantic_objective_with_ollama,
+    generate_semantic_objective_with_openai_compatible,
+)
 
 
 DEFAULT_MAX_ATTEMPTS = 3
@@ -179,47 +193,122 @@ def run_generator_worker(
     except (ArtifactLifecycleError, OSError):
         return _block(ai_root, work, reason_code="generator_recipe_unreadable")
     component = recipe.generator
+    semantic_deep = (
+        component.prompt_template_version
+        == SEMANTIC_OBJECTIVE_PROMPT_VERSION[DEEP_KNOWLEDGE]
+    )
+    expected_prompt_version = (
+        SEMANTIC_OBJECTIVE_PROMPT_VERSION[DEEP_KNOWLEDGE]
+        if semantic_deep
+        else PROMPT_TEMPLATE_VERSION
+    )
+    expected_prompt_sha = (
+        semantic_objective_prompt_sha256(DEEP_KNOWLEDGE)
+        if semantic_deep
+        else generator_prompt_sha256()
+    )
     try:
         _component_preflight(
             component,
             deployed_revision=deployed_revision,
-            expected_prompt_version=PROMPT_TEMPLATE_VERSION,
-            expected_prompt_sha256=generator_prompt_sha256(),
+            expected_prompt_version=expected_prompt_version,
+            expected_prompt_sha256=expected_prompt_sha,
             role="generator",
         )
     except PreReviewJobError:
         return _block(ai_root, work, reason_code="generator_recipe_runtime_mismatch")
 
+    objective_generation_sha: str | None = None
     try:
-        if component.provider == "ollama":
-            generated = generate_knowledge_note_with_ollama(
+        if semantic_deep:
+            if component.provider == "ollama":
+                objective = generate_semantic_objective_with_ollama(
+                    ai_root,
+                    objective_context_sha256=work.context_sha256,
+                    base_url=_ollama_root_from_provider_url(base_url),
+                    model=component.model_identifier,
+                    implementation_revision=deployed_revision,
+                    options=_options(component),
+                    timeout=timeout,
+                    transport=transport,
+                )
+            elif component.provider == "openai-compatible":
+                objective = generate_semantic_objective_with_openai_compatible(
+                    ai_root,
+                    objective_context_sha256=work.context_sha256,
+                    base_url=base_url,
+                    model=component.model_identifier,
+                    implementation_revision=deployed_revision,
+                    options=_options(component),
+                    timeout=timeout,
+                    api_key=api_key,
+                    transport=transport,
+                )
+            else:
+                return _block(
+                    ai_root,
+                    work,
+                    reason_code="generator_recipe_runtime_mismatch",
+                )
+            objective_generation_sha = objective.generation_sha256
+            proposal_sha, _proposal_path = store_deep_knowledge_proposal(
+                ai_root,
+                objective_generation_sha256=objective.generation_sha256,
+            )
+            record = build_generation_record(
                 ai_root,
                 context_sha256=work.context_sha256,
-                base_url=_ollama_root_from_provider_url(base_url),
-                model=component.model_identifier,
+                proposal_sha256=proposal_sha,
                 implementation_revision=deployed_revision,
-                options=_options(component),
-                timeout=timeout,
-                transport=transport,
+                prompt_template_version=component.prompt_template_version,
+                prompt_template_sha256=component.prompt_template_sha256,
+                model_provider=component.provider,
+                model_identifier=component.model_identifier,
+                model_revision=component.model_revision,
+                model_config=component.model_config,
+                context_kind="semantic-objective",
+                semantic_objective_generation_sha256=(
+                    objective.generation_sha256
+                ),
             )
-        elif component.provider == "openai-compatible":
-            generated = generate_knowledge_note_with_openai_compatible(
+            generation_sha, _generation_path = store_generation_record(
                 ai_root,
-                context_sha256=work.context_sha256,
-                base_url=base_url,
-                model=component.model_identifier,
-                implementation_revision=deployed_revision,
-                options=_options(component),
-                timeout=timeout,
-                api_key=api_key,
-                transport=transport,
+                record,
             )
+            generated_proposal_sha = proposal_sha
+            generated_generation_sha = generation_sha
         else:
-            return _block(
-                ai_root,
-                work,
-                reason_code="generator_recipe_runtime_mismatch",
-            )
+            if component.provider == "ollama":
+                generated = generate_knowledge_note_with_ollama(
+                    ai_root,
+                    context_sha256=work.context_sha256,
+                    base_url=_ollama_root_from_provider_url(base_url),
+                    model=component.model_identifier,
+                    implementation_revision=deployed_revision,
+                    options=_options(component),
+                    timeout=timeout,
+                    transport=transport,
+                )
+            elif component.provider == "openai-compatible":
+                generated = generate_knowledge_note_with_openai_compatible(
+                    ai_root,
+                    context_sha256=work.context_sha256,
+                    base_url=base_url,
+                    model=component.model_identifier,
+                    implementation_revision=deployed_revision,
+                    options=_options(component),
+                    timeout=timeout,
+                    api_key=api_key,
+                    transport=transport,
+                )
+            else:
+                return _block(
+                    ai_root,
+                    work,
+                    reason_code="generator_recipe_runtime_mismatch",
+                )
+            generated_proposal_sha = generated.proposal_sha256
+            generated_generation_sha = generated.generation_sha256
     except (
         OpenAICompatibleProviderError,
         OllamaProviderError,
@@ -230,10 +319,10 @@ def run_generator_worker(
         return _retry(ai_root, work, reason_code="generator_provider_or_output_error")
 
     try:
-        record = load_generation_record(ai_root, generated.generation_sha256)
+        record = load_generation_record(ai_root, generated_generation_sha)
         if (
             record.context_sha256 != work.context_sha256
-            or record.proposal_sha256 != generated.proposal_sha256
+            or record.proposal_sha256 != generated_proposal_sha
             or record.generator.implementation_revision != deployed_revision
             or record.generator.prompt_template_version
             != component.prompt_template_version
@@ -243,6 +332,24 @@ def run_generator_worker(
             or record.model.identifier != component.model_identifier
             or record.model.revision != component.model_revision
             or dict(record.model_config) != dict(component.model_config)
+            or (
+                semantic_deep
+                and (
+                    record.context_kind != "semantic-objective"
+                    or record.semantic_objective is None
+                    or record.semantic_objective.objective_generation_sha256
+                    != objective_generation_sha
+                    or record.semantic_objective.objective_policy
+                    != DEEP_KNOWLEDGE
+                )
+            )
+            or (
+                not semantic_deep
+                and (
+                    record.context_kind != "context-bundle"
+                    or record.semantic_objective is not None
+                )
+            )
         ):
             raise PreReviewJobError("generated provenance does not match recipe")
     except (ArtifactLifecycleError, PreReviewJobError, OSError):
@@ -251,12 +358,12 @@ def run_generator_worker(
     emit_generation_projection(
         ai_root,
         case_id=work.generation_id,
-        generation_sha256=generated.generation_sha256,
-        proposal_sha256=generated.proposal_sha256,
+        generation_sha256=generated_generation_sha,
+        proposal_sha256=generated_proposal_sha,
     )
     output = {
-        "proposal_sha256": generated.proposal_sha256,
-        "generation_sha256": generated.generation_sha256,
+        "proposal_sha256": generated_proposal_sha,
+        "generation_sha256": generated_generation_sha,
     }
     completed = complete_attempt(
         ai_root,

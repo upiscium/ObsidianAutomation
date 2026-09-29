@@ -75,6 +75,7 @@ Recommended layout:
     ├── 00-Untrusted/
     ├── 02-Orchestration/
     │   ├── recipes/
+    │   ├── semantic-selections/   # Reader-only semantic planning records
     │   ├── pre-review-jobs.sqlite3
     │   └── status/pre-review-status.json
     ├── 04-Index/
@@ -188,11 +189,19 @@ write only objective candidate/generation artifacts under `00-Untrusted`.
 Those artifacts bind the Selection and Semantic Index identities but do not give
 Generator read access to either store.
 
-`idea-discovery-v0` and `project-adoption-proposal-v0` are Human-facing
-candidate paths only. They never enter Validator/Executor as Knowledge
-create-note mutations. `deep-knowledge-v1` is also kept as an Objective
-Candidate during Phase F until the production integration explicitly binds the
-new selection/objective lifecycle.
+`idea-discovery-v0` and `project-adoption-proposal-v0` remain Human-facing
+candidate paths only and never enter Validator/Executor as Knowledge
+create-note mutations.
+
+The controlled production integration admits only `deep-knowledge-v1`.
+Reader pins an exact Semantic Index/Selection and writes one Objective Context.
+Generator creates an Objective Candidate/Generation, deterministic code derives
+the ordinary Knowledge proposal, and Generation Record v2 binds that complete
+provenance before the existing Validator chain begins.
+
+`02-Orchestration/semantic-selections` is a Reader-only subdirectory even
+though the orchestration DB directory is shared by pre-review workers. Generator,
+Validator and Evaluator cannot directly inspect or rewrite Selection Records.
 
 ## Validator / Evaluator / Human sequence
 

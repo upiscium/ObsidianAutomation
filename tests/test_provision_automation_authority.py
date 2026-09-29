@@ -120,6 +120,9 @@ def test_ai_acl_matrix_keeps_semantic_authorities_distinct() -> None:
     assert "u:obsidian-ai-reader:r-x" in acls[
         "/var/lib/obsidian-ai/vault/10-Project"
     ]
+    assert acls[
+        "/var/lib/obsidian-ai/state/02-Orchestration/semantic-selections"
+    ] == ("u:obsidian-ai-reader:rwx",)
     assert not any(
         entry.startswith("u:obsidian-ai-validator:")
         or entry.startswith("u:obsidian-ai-executor:")
