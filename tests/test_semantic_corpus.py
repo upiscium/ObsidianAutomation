@@ -11,6 +11,7 @@ from obsidian_automation.semantic_corpus import (
     SemanticCorpusError,
     build_semantic_corpus,
     load_semantic_corpus_manifest,
+    materialize_semantic_chunk_bytes,
     parse_semantic_corpus_manifest,
     store_semantic_corpus_manifest,
     verify_semantic_corpus_current,
@@ -275,3 +276,41 @@ def test_manifest_rejects_tampered_chunk_identity(tmp_path: Path) -> None:
                 separators=(",", ":"),
             ).encode("utf-8")
         )
+
+def test_materialize_chunk_reverifies_exact_source_and_content(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    manifest = build_semantic_corpus(vault)
+    daily = next(source for source in manifest.sources if source.source_kind == "daily")
+    chunk = daily.chunks[0]
+
+    assert materialize_semantic_chunk_bytes(vault, daily, chunk) == (
+        b"Daily semantic insight.\n"
+    )
+
+    path = vault / daily.path
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "Daily semantic insight.",
+            "Changed semantic insight.",
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(SemanticCorpusError, match="source changed"):
+        materialize_semantic_chunk_bytes(vault, daily, chunk)
+
+
+def test_manifest_rejects_unsafe_source_path(tmp_path: Path) -> None:
+    manifest = build_semantic_corpus(_vault(tmp_path))
+    value = json.loads(manifest.to_json_bytes())
+    value["sources"][0]["path"] = "00-DailyNote/../11-Knowledge/Escape.md"
+
+    with pytest.raises(SemanticCorpusError, match="path is unsafe"):
+        parse_semantic_corpus_manifest(
+            json.dumps(
+                value,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+
