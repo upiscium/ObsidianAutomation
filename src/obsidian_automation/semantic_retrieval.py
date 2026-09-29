@@ -36,6 +36,7 @@ from .semantic_corpus import (
 )
 from .semantic_index import (
     ADAPTER_VERSION,
+    MAX_VECTOR_DIMENSION,
     PLAN_DIR,
     PROVIDER_NAME,
     REQUEST_DIR,
@@ -649,7 +650,10 @@ def parse_query_embedding_request(data: bytes) -> QueryEmbeddingRequest:
         label="model revision",
     )
     dimension = value["vector_dimension"]
-    if type(dimension) is not int or dimension < 1:
+    if (
+        type(dimension) is not int
+        or not 1 <= dimension <= MAX_VECTOR_DIMENSION
+    ):
         raise SemanticRetrievalError(
             "query embedding request vector dimension is invalid"
         )
@@ -1031,7 +1035,6 @@ def _build_candidates(
     corpus: SemanticCorpusManifest,
     filters: RetrievalFilter,
 ) -> tuple[_Candidate, ...]:
-    source_by_path = {source.path: source for source in corpus.sources}
     chunk_by_id: dict[str, tuple[SemanticSource, SemanticChunk]] = {}
     for source in corpus.sources:
         for chunk in source.chunks:
@@ -1176,7 +1179,7 @@ def rank_semantic_chunks(
     lexical_weight_value = float(lexical_weight)
     vector_weight = 1.0 - lexical_weight_value
     weights = parse_source_kind_weights(source_kind_weights)
-    query_vec = tuple(float(value) for value in query_vector)
+    query_vec = _require_vector(list(query_vector))
 
     lexical = _bm25_scores(candidates, text)
     top_lexical = max(lexical.values(), default=0.0)
@@ -1352,7 +1355,10 @@ def parse_benchmark_plan(data: bytes) -> BenchmarkPlan:
         label="model revision",
     )
     dimension = value["vector_dimension"]
-    if type(dimension) is not int or dimension < 1:
+    if (
+        type(dimension) is not int
+        or not 1 <= dimension <= MAX_VECTOR_DIMENSION
+    ):
         raise SemanticRetrievalError("benchmark vector dimension is invalid")
     raw_requests = value["requests"]
     if (
