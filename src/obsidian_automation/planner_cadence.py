@@ -334,6 +334,13 @@ def record_novelty_skip(
     normalized_reason = _optional_reason(reason)
     assert normalized_reason is not None
     previous = load_cadence_state(ai_root)
+    if previous.last_novelty_skip_at is not None:
+        existing_skip = parse_utc_z(
+            previous.last_novelty_skip_at,
+            label="last_novelty_skip_at",
+        )
+        if skipped < existing_skip:
+            return previous
     state = PlannerCadenceState(
         last_submission_at=previous.last_submission_at,
         last_selection_policy=previous.last_selection_policy,
