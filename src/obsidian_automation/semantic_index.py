@@ -198,7 +198,7 @@ class EmbeddingResultSet:
     vector_dimension: int
     vector_encoding: str
     results: tuple[EmbeddingResultSetEntry, ...]
-    record_version: int = RESULT_SET_VERSION
+    record_version: int = LEGACY_RESULT_SET_VERSION
 
     def to_json_bytes(self) -> bytes:
         return _canonical_json_bytes(
