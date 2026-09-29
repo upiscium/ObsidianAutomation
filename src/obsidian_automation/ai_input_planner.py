@@ -1430,7 +1430,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             coverage_cycles=args.coverage_cycles,
             random_cycles=args.random_cycles,
         )
-    except (AIInputPlannerError, ArtifactLifecycleError, PreReviewJobError, OSError) as exc:
+    except (
+        AIInputPlannerError,
+        PlannerCadenceError,
+        ArtifactLifecycleError,
+        PreReviewJobError,
+        OSError,
+    ) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
