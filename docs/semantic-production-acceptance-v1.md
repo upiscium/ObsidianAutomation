@@ -69,6 +69,12 @@ follows a mutable `latest` alias.
 
 Keep the resulting exact Semantic Index SHA.
 
+If the pull-only mirror changes before acceptance completes, the exact index
+correctly becomes stale. Rebuild against the new Corpus or use the incremental
+refresh flow in [Semantic Embedding Index v1](semantic-embedding-index-v1.md).
+Do not bypass staleness verification and do not introduce a mutable `latest`
+index pointer.
+
 ## 4. Verify the exact index against the current mirror
 
 ```bash
