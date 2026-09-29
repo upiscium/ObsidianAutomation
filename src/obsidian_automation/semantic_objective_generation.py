@@ -39,6 +39,10 @@ from .ollama_generator import (
     _validated_timeout as validated_ollama_timeout,
     resolve_ollama_model,
 )
+from .semantic_objective_identity import (
+    OBJECTIVE_OLLAMA_ADAPTER_VERSION,
+    OBJECTIVE_OPENAI_ADAPTER_VERSION,
+)
 from .semantic_objective import (
     MAX_CANDIDATE_BYTES,
     ObjectiveOutput,
@@ -50,10 +54,6 @@ from .semantic_objective import (
     store_objective_candidate,
     store_objective_generation,
 )
-
-
-OBJECTIVE_OPENAI_ADAPTER_VERSION = "openai-semantic-objective-json-schema-v0"
-OBJECTIVE_OLLAMA_ADAPTER_VERSION = "ollama-semantic-objective-json-schema-v0"
 
 
 @dataclass(frozen=True)
