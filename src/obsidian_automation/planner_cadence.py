@@ -88,7 +88,7 @@ def _orchestration_root(ai_root: Path) -> Path:
     return orchestration
 
 
-def _parse_timestamp(value: object, *, label: str) -> datetime:
+def parse_utc_z(value: object, *, label: str) -> datetime:
     if not isinstance(value, str) or not value.endswith("Z"):
         raise PlannerCadenceError(f"{label} must be a UTC Z timestamp")
     try:
@@ -157,10 +157,10 @@ def parse_cadence_state(data: bytes) -> PlannerCadenceState:
 
     last_submission = value["last_submission_at"]
     if last_submission is not None:
-        _parse_timestamp(last_submission, label="last_submission_at")
+        parse_utc_z(last_submission, label="last_submission_at")
     last_skip_at = value["last_novelty_skip_at"]
     if last_skip_at is not None:
-        _parse_timestamp(last_skip_at, label="last_novelty_skip_at")
+        parse_utc_z(last_skip_at, label="last_novelty_skip_at")
     reason = _optional_reason(value["last_novelty_skip_reason"])
     if (last_skip_at is None) != (reason is None):
         raise PlannerCadenceError(
@@ -267,7 +267,7 @@ def cadence_snapshot(
         next_eligible = observed
         reason = "first_submission_ready"
     else:
-        submitted = _parse_timestamp(
+        submitted = parse_utc_z(
             state.last_submission_at,
             label="last_submission_at",
         )
@@ -298,7 +298,7 @@ def record_submission(
     selection_policy: str,
     objective_policy: str,
 ) -> PlannerCadenceState:
-    submitted = _parse_timestamp(submitted_at, label="submitted_at")
+    submitted = parse_utc_z(submitted_at, label="submitted_at")
     selection = _optional_identity(selection_policy, label="selection_policy")
     objective = _optional_identity(objective_policy, label="objective_policy")
     assert selection is not None
@@ -306,7 +306,7 @@ def record_submission(
 
     previous = load_cadence_state(ai_root)
     if previous.last_submission_at is not None:
-        existing = _parse_timestamp(
+        existing = parse_utc_z(
             previous.last_submission_at,
             label="last_submission_at",
         )
@@ -330,7 +330,7 @@ def record_novelty_skip(
     skipped_at: str,
     reason: str,
 ) -> PlannerCadenceState:
-    skipped = _parse_timestamp(skipped_at, label="skipped_at")
+    skipped = parse_utc_z(skipped_at, label="skipped_at")
     normalized_reason = _optional_reason(reason)
     assert normalized_reason is not None
     previous = load_cadence_state(ai_root)
