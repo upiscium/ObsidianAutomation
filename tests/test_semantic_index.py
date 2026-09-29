@@ -477,6 +477,92 @@ def test_provider_failure_never_publishes_result_set_or_index(
     )
 
 
+def test_failed_rebuild_preserves_existing_usable_index(
+    tmp_path: Path,
+) -> None:
+    (
+        vault,
+        state,
+        corpus_sha,
+        old_plan_sha,
+        _old_plan,
+        old_result_set_sha,
+        _old_result_set,
+        _calls,
+    ) = _prepare_and_embed(tmp_path)
+    old_index_sha, _, old_index = finalize_semantic_index(
+        state,
+        vault,
+        plan_sha256=old_plan_sha,
+        result_set_sha256=old_result_set_sha,
+    )
+
+    new_plan_sha, _, _ = prepare_semantic_embedding_plan(
+        state,
+        vault,
+        corpus_manifest_sha256=corpus_sha,
+        model_identifier=MODEL,
+        model_revision=OTHER_DIGEST,
+    )
+    embed_calls = 0
+
+    def transport(
+        base_url: str,
+        *,
+        method: str,
+        path: str,
+        payload,
+        timeout: float,
+    ):
+        nonlocal embed_calls
+        if path == "/api/tags":
+            return {
+                "models": [
+                    {
+                        "name": MODEL,
+                        "model": MODEL,
+                        "digest": OTHER_DIGEST,
+                    }
+                ]
+            }
+        assert path == "/api/embed"
+        embed_calls += 1
+        if embed_calls == 1:
+            return {
+                "model": MODEL,
+                "embeddings": [
+                    [1.0, float(index + 1), 0.25]
+                    for index, _ in enumerate(payload["input"])
+                ],
+            }
+        raise OllamaProviderError("fixture partial rebuild failure")
+
+    with pytest.raises(
+        OllamaProviderError,
+        match="partial rebuild failure",
+    ):
+        embed_semantic_plan_with_ollama(
+            state,
+            plan_sha256=new_plan_sha,
+            base_url="http://127.0.0.1:11434",
+            transport=transport,
+            batch_size=2,
+        )
+    assert embed_calls >= 2
+    assert load_semantic_index_manifest(
+        state,
+        old_index_sha,
+    ) == old_index
+    index_files = list(
+        (state / "04-Index" / "semantic-index").glob(
+            "*.semantic-index.json"
+        )
+    )
+    assert [path.name for path in index_files] == [
+        f"{old_index_sha}.semantic-index.json"
+    ]
+
+
 def test_result_parser_rejects_non_finite_vector() -> None:
     payload = {
         "record_version": 1,
