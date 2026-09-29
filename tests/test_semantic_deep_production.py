@@ -13,6 +13,7 @@ from obsidian_automation.ai_input_planner import (
     INPUT_MODE_SEMANTIC_DEEP,
     plan_once,
 )
+from obsidian_automation.artifact_lifecycle import ArtifactLifecycleError
 from obsidian_automation.evaluation_artifact import (
     build_evaluation_record,
     load_evaluation_context,
@@ -39,6 +40,7 @@ from obsidian_automation.semantic_corpus import (
     build_semantic_corpus,
     store_semantic_corpus_manifest,
 )
+from obsidian_automation.semantic_retrieval import RetrievalFilter
 from obsidian_automation.semantic_index import (
     EmbeddingResult,
     EmbeddingResultSet,
@@ -447,7 +449,7 @@ def test_semantic_mode_missing_or_stale_exact_index_never_submits(
     tmp_path: Path,
 ) -> None:
     vault, state, index_sha = _semantic_index(tmp_path)
-    with pytest.raises(Exception):
+    with pytest.raises(ArtifactLifecycleError):
         plan_once(
             state,
             vault,
@@ -465,7 +467,7 @@ def test_semantic_mode_missing_or_stale_exact_index_never_submits(
         source.read_text(encoding="utf-8") + "\nChanged after indexing.\n",
         encoding="utf-8",
     )
-    with pytest.raises(Exception):
+    with pytest.raises(ArtifactLifecycleError):
         plan_once(
             state,
             vault,
