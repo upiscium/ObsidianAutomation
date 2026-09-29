@@ -3,9 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import os
 import sys
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -31,9 +29,11 @@ from .semantic_retrieval import (
     MAX_TOP_K,
     RankedSemanticChunk,
     RetrievalFilter,
+    SOURCE_KINDS,
     SemanticCandidate,
     SemanticRetrievalError,
     load_verified_semantic_candidates,
+    parse_retrieval_filter,
     rank_semantic_chunks,
 )
 
@@ -291,16 +291,6 @@ def _density(
     return sum(positive) / len(positive) if positive else 0.0
 
 
-def _latest_daily_key(candidate: SemanticCandidate) -> tuple[str, float, tuple[str, str, str]]:
-    raw = candidate.source.metadata.get("date")
-    date_value = raw if isinstance(raw, str) else ""
-    return (
-        date_value,
-        _density(candidate, (candidate,)),
-        tuple(reversed(_stable_candidate_key(candidate))),
-    )
-
-
 def _choose_focus_anchor(
     candidates: Sequence[SemanticCandidate],
 ) -> SemanticCandidate | None:
@@ -348,14 +338,15 @@ def _choose_timeline_anchor(
     ]
     if not pool:
         return None
-    return min(
+    ordered = sorted(
         pool,
         key=lambda item: (
-            -int(str(item.source.metadata.get("date", "0000-00-00")).replace("-", "") or "0"),
-            -_density(item, candidates),
-            *_stable_candidate_key(item),
+            str(item.source.metadata.get("date", "")),
+            _density(item, candidates),
         ),
+        reverse=True,
     )
+    return ordered[0]
 
 
 def _choose_idea_anchor(
@@ -369,14 +360,15 @@ def _choose_idea_anchor(
     ]
     if not pool:
         return None
-    return min(
+    ordered = sorted(
         pool,
         key=lambda item: (
-            -int(str(item.source.metadata.get("created", "0000-00-00")).replace("-", "") or "0"),
-            -_density(item, candidates),
-            *_stable_candidate_key(item),
+            str(item.source.metadata.get("created", "")),
+            _density(item, candidates),
         ),
+        reverse=True,
     )
+    return ordered[0]
 
 
 def _knowledge_similarity(
@@ -813,6 +805,10 @@ def parse_semantic_selection(data: bytes) -> SemanticSelectionRecord:
     filters = value["metadata_filters"]
     if not isinstance(filters, dict):
         raise SemanticSelectionError("semantic selection metadata filters are invalid")
+    try:
+        normalized_filters = parse_retrieval_filter(filters).payload()
+    except SemanticRetrievalError as exc:
+        raise SemanticSelectionError(str(exc)) from exc
 
     retrieval = value["retrieval"]
     if not isinstance(retrieval, dict) or set(retrieval) != {
@@ -837,6 +833,10 @@ def parse_semantic_selection(data: bytes) -> SemanticSelectionRecord:
         key: _require_score(raw, label=f"source_kind_weights.{key}")
         for key, raw in raw_weights.items()
     }
+    if any(value < 0.0 or value > 10.0 for value in weights.values()):
+        raise SemanticSelectionError(
+            "semantic selection source-kind weights must be in 0..10"
+        )
 
     anchors: list[AnchorBinding] = []
     for raw in value["anchors"]:
@@ -844,12 +844,21 @@ def parse_semantic_selection(data: bytes) -> SemanticSelectionRecord:
             "role", "chunk_id", "source_path", "source_kind", "source_sha256", "content_sha256"
         }:
             raise SemanticSelectionError("semantic selection anchor is invalid")
+        role = raw["role"]
+        source_path = raw["source_path"]
+        source_kind = raw["source_kind"]
+        if role not in {"primary", "bridge-secondary"}:
+            raise SemanticSelectionError("semantic selection anchor role is invalid")
+        if not isinstance(source_path, str) or not source_path:
+            raise SemanticSelectionError("semantic selection anchor source path is invalid")
+        if source_kind not in SOURCE_KINDS:
+            raise SemanticSelectionError("semantic selection anchor source kind is invalid")
         anchors.append(
             AnchorBinding(
-                role=str(raw["role"]),
+                role=role,
                 chunk_id=_require_sha256(raw["chunk_id"], label="anchor chunk id"),
-                source_path=str(raw["source_path"]),
-                source_kind=str(raw["source_kind"]),
+                source_path=source_path,
+                source_kind=source_kind,
                 source_sha256=_require_sha256(raw["source_sha256"], label="anchor source SHA"),
                 content_sha256=_require_sha256(raw["content_sha256"], label="anchor content SHA"),
             )
@@ -881,13 +890,19 @@ def parse_semantic_selection(data: bytes) -> SemanticSelectionRecord:
             raise SemanticSelectionError("semantic selection contains duplicate source/chunk")
         seen_chunks.add(chunk_id)
         seen_paths.add(source_path.casefold())
+        role = raw["role"]
+        source_kind = raw["source_kind"]
+        if role not in {"anchor", "support"}:
+            raise SemanticSelectionError("semantic selection selected role is invalid")
+        if source_kind not in SOURCE_KINDS:
+            raise SemanticSelectionError("semantic selection selected source kind is invalid")
         selected.append(
             SelectedChunk(
                 rank=expected_rank,
-                role=str(raw["role"]),
+                role=role,
                 chunk_id=chunk_id,
                 source_path=source_path,
-                source_kind=str(raw["source_kind"]),
+                source_kind=source_kind,
                 source_sha256=_require_sha256(raw["source_sha256"], label="selected source SHA"),
                 content_sha256=_require_sha256(raw["content_sha256"], label="selected content SHA"),
                 score=_require_score(raw["score"], label="selected score"),
@@ -960,7 +975,7 @@ def parse_semantic_selection(data: bytes) -> SemanticSelectionRecord:
         selection_policy=policy,
         semantic_index_sha256=index_sha,
         corpus_manifest_sha256=corpus_sha,
-        metadata_filters=filters,
+        metadata_filters=normalized_filters,
         retrieval_mode="hybrid",
         lexical_weight=lexical_weight,
         source_kind_weights=weights,
