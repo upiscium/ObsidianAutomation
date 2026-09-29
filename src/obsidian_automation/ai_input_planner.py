@@ -59,6 +59,7 @@ from .planner_cadence import (
     cadence_snapshot,
     normalize_now,
     parse_utc_z,
+    record_novelty_skip,
     record_submission,
     utc_z,
 )
@@ -71,6 +72,23 @@ from .pre_review_job import (
 )
 from .human_projection import emit_context_projection, emit_input_projection
 from .production_io import ProductionIOError, mirror_read_lock
+from .semantic_objective import (
+    DEEP_KNOWLEDGE,
+    PROMPT_VERSION as SEMANTIC_OBJECTIVE_PROMPT_VERSION,
+    build_objective_context,
+    load_objective_context,
+    prompt_template_sha256 as semantic_objective_prompt_sha256,
+    store_objective_context,
+)
+from .semantic_objective_generation import (
+    OBJECTIVE_OLLAMA_ADAPTER_VERSION,
+    OBJECTIVE_OPENAI_ADAPTER_VERSION,
+)
+from .semantic_selection import (
+    POLICIES as SEMANTIC_SELECTION_POLICIES,
+    build_semantic_selection,
+    store_semantic_selection,
+)
 
 
 RECORD_VERSION = 1
@@ -80,6 +98,11 @@ SELECTION_DIR = "input-selections"
 STATE_FILE = "input-planner-state.json"
 PENDING_FILE = "input-planner-pending.json"
 OBJECTIVE_POLICY = "synthesize-v0"
+SEMANTIC_OBJECTIVE_POLICY = DEEP_KNOWLEDGE
+INPUT_MODE_LEGACY = "legacy"
+INPUT_MODE_SEMANTIC_DEEP = "semantic-deep-knowledge"
+INPUT_MODES = {INPUT_MODE_LEGACY, INPUT_MODE_SEMANTIC_DEEP}
+DEFAULT_SEMANTIC_SELECTION_POLICY = "semantic-project-distill-v0"
 COVERAGE_POLICY = "coverage-shuffle-v0"
 RANDOM_POLICY = "random-set-v0"
 DEFAULT_BATCH_SIZE = 6
@@ -928,6 +951,7 @@ def _current_states(ai_root: Path) -> dict[str, int]:
 def _build_recipe(
     *,
     deployed_revision: str,
+    semantic_deep: bool = False,
     generator_provider: str,
     generator_model: str,
     generator_model_revision: str | None,
@@ -994,17 +1018,31 @@ def _build_recipe(
 
         if evaluator:
             config["strategy"] = EVALUATION_STRATEGY
+        elif semantic_deep:
+            config["objective_adapter_version"] = (
+                OBJECTIVE_OPENAI_ADAPTER_VERSION
+                if provider == OPENAI_PROVIDER_NAME
+                else OBJECTIVE_OLLAMA_ADAPTER_VERSION
+            )
         return {
             "implementation_revision": deployed_revision,
             "prompt_template_version": (
                 EVALUATOR_PROMPT_TEMPLATE_VERSION
                 if evaluator
-                else PROMPT_TEMPLATE_VERSION
+                else (
+                    SEMANTIC_OBJECTIVE_PROMPT_VERSION[DEEP_KNOWLEDGE]
+                    if semantic_deep
+                    else PROMPT_TEMPLATE_VERSION
+                )
             ),
             "prompt_template_sha256": (
                 evaluator_prompt_sha256()
                 if evaluator
-                else generator_prompt_sha256()
+                else (
+                    semantic_objective_prompt_sha256(DEEP_KNOWLEDGE)
+                    if semantic_deep
+                    else generator_prompt_sha256()
+                )
             ),
             "provider": provider,
             "model_identifier": model,
