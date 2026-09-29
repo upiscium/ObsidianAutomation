@@ -100,9 +100,8 @@ ROLE_MANIFESTS: dict[str, tuple[ManifestEntry, ...]] = {
         ManifestEntry(
             "ai_pull_filters",
             "/etc/obsidian-ai/vault-pull.filters",
-            "deployment_config",
-            "copy_or_recreate",
-            required=True,
+            "managed_policy",
+            "recreate_from_reviewed_target",
         ),
         ManifestEntry(
             "ai_writer_webdav_password",
