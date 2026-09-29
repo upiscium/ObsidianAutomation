@@ -1052,15 +1052,34 @@ def build_objective_candidate(
         objective_context_sha256,
         label="objective Context SHA",
     )
+    if isinstance(output, KnowledgeGeneratorOutput):
+        candidate_payload = json.loads(output.to_json_bytes())
+    else:
+        candidate_payload = output.payload()
+    normalized_output = parse_objective_output(
+        _canonical_json_bytes(
+            {
+                "objective_policy": context.objective_policy,
+                "candidate_kind": context.candidate_kind,
+                "candidate": candidate_payload,
+            }
+        ),
+        context=context,
+    )
     candidate = SemanticObjectiveCandidate(
         objective_policy=context.objective_policy,
         candidate_kind=context.candidate_kind,
         objective_context_sha256=context_sha,
         selection_sha256=context.selection_sha256,
         semantic_index_sha256=context.semantic_index_sha256,
-        output=output,
+        output=normalized_output,
     )
-    return parse_objective_candidate(candidate.to_json_bytes())
+    parsed = parse_objective_candidate(candidate.to_json_bytes())
+    if parsed != candidate:
+        raise SemanticObjectiveError(
+            "semantic objective candidate canonical round-trip mismatch"
+        )
+    return candidate
 
 
 def parse_objective_candidate(data: bytes) -> SemanticObjectiveCandidate:
@@ -1298,7 +1317,7 @@ def parse_objective_generation(data: bytes) -> SemanticObjectiveGeneration:
         raise SemanticObjectiveError("objective generation timestamp is invalid")
     try:
         model_config = validate_model_config(value["model_config"])
-    except ArtifactLifecycleError as exc:
+    except (ArtifactLifecycleError, TypeError, ValueError) as exc:
         raise SemanticObjectiveError(str(exc)) from exc
     return SemanticObjectiveGeneration(
         objective_policy=objective,
