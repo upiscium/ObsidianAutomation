@@ -254,6 +254,53 @@ sudo -u obsidian-ai-reader \
   --result-set-sha <embedding-result-set-sha256>
 ```
 
+## Incremental refresh
+
+A later mirror snapshot may produce a different Semantic Corpus while retaining
+most exact chunks. Re-embedding every unchanged chunk is unnecessary.
+
+Prepare the new Corpus and embedding plan normally with the same pinned
+embedding model/revision, then run:
+
+```bash
+sudo -u obsidian-ai-embedder \
+  obsidian-semantic-index embed-refresh \
+  --ai-root /var/lib/obsidian-ai/state \
+  --plan-sha <new-embedding-plan-sha256> \
+  --previous-index-sha <previous-semantic-index-sha256> \
+  --base-url http://127.0.0.1:11434
+```
+
+Refresh compares the previous finalized index with the new plan by exact chunk
+identity. A vector is reusable only when the previous embedding request matches
+the new request on chunk policy, provider/adapter, model identifier/revision,
+chunk/source/content identity, byte size, and exact UTF-8 input. The Corpus
+manifest SHA itself may differ.
+
+Reused vectors are not silently presented as fresh provider inference.
+Incremental result-set v2 records
+`reused_from_result_sha256` for every reused entry. Finalization reloads that
+prior result and its request and verifies the full reuse binding before accepting
+the new index.
+
+Historical result-set v1 artifacts remain readable. Ordinary full `embed`
+continues to emit v1; only `embed-refresh` emits v2 provenance.
+
+The refresh output reports:
+
+- `reused_count`;
+- `embedded_count`;
+- `removed_count`.
+
+If every current chunk is reusable, Embedder performs no Ollama request at all.
+New or changed chunks alone are sent to the provider. Removed chunks simply do
+not appear in the new plan/index.
+
+A failed incremental embedding may leave immutable partial result artifacts, but
+it cannot replace or invalidate the previous content-addressed index. The new
+index is published only after Reader finalization succeeds against the current
+mirror snapshot.
+
 The first rollout is intentionally operator-driven/offline. No systemd timer,
 Input Planner selection, Generator Context creation, or automatic generation
 behavior is changed by this stage.
@@ -286,7 +333,8 @@ The flow fails closed when:
 - any content-addressed artifact bytes do not match their filename SHA.
 
 Provider failure cannot mutate canonical Vault state and cannot publish a final
-semantic index.
+semantic index. Incremental refresh additionally preserves the previous usable
+index because it never mutates an existing content-addressed manifest.
 
 ## Rollout boundary
 
