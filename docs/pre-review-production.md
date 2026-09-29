@@ -95,6 +95,7 @@ This creates/configures only:
 
 - `02-Orchestration`;
 - `02-Orchestration/recipes`;
+- `02-Orchestration/semantic-selections` (Reader-only);
 - `02-Orchestration/status`;
 - `24-Locks/read-view`;
 - the credential-free `obsidian-ai-status` identity;
@@ -127,6 +128,28 @@ line or persisted in recipe/status/receipt artifacts.
 Do not put tokens, Nextcloud credentials, arbitrary commands, model names, or
 the reviewed revision into the job recipe through these files. Provider model
 identity remains pinned by the submitted immutable recipe.
+
+### Controlled Semantic Planner rollout
+
+The installed Input Planner unit remains `legacy` by default. To enable the
+first Semantic Planner production wave, configure
+`/etc/obsidian-ai/pre-review-input.env` with an exact reviewed index:
+
+```text
+AI_INPUT_MODE=semantic-deep-knowledge
+AI_INPUT_SEMANTIC_INDEX_SHA=<exact-reviewed-semantic-index-sha256>
+AI_INPUT_SEMANTIC_SELECTION_POLICY=semantic-project-distill-v0
+```
+
+Do not use a mutable alias for the index. This rollout does not rebuild or
+advance the index automatically. Verify the exact index offline before enabling
+the mode.
+
+Only `deep-knowledge-v1` is admitted into the existing Knowledge pre-review
+chain. Idea discovery and Project adoption remain operator-driven.
+
+See
+[Semantic Deep Knowledge Production v1](semantic-deep-knowledge-production-v1.md).
 
 ## Human Review Intake configuration
 
