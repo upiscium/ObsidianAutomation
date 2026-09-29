@@ -102,6 +102,15 @@ recommendation when they are available. Candidate Markdown is rendered inside an
 inert dynamically-sized code fence so untrusted generated Markdown is not
 executed as an Obsidian embed, Dataview block, or Meta Bind control.
 
+Semantic Generation Objective candidates also use `20-Generation`, but are
+explicitly distinct from canonical Knowledge proposals. Their projection
+frontmatter binds `objective_policy`, `candidate_kind`,
+`selection_sha256`, `semantic_index_sha256`,
+`objective_context_sha256` and `objective_candidate_sha256`. Candidate bytes
+are rendered as inert JSON. Idea discovery states that a Human/Core save is
+required; Project adoption states that a Human/Core adoption action is required.
+The projection itself never creates those canonical effects.
+
 ## Review projection
 
 `04-AI/50-Review/<case>.md` contains:
