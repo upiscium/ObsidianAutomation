@@ -50,7 +50,7 @@ def test_ai_bundle_round_trip_uses_only_declared_logical_ids(tmp_path: Path) -> 
     assert status == {
         "record_version": 1,
         "role": "ai",
-        "file_count": 7,
+        "file_count": 6,
         "values_printed": False,
     }
 
@@ -58,7 +58,6 @@ def test_ai_bundle_round_trip_uses_only_declared_logical_ids(tmp_path: Path) -> 
     values = transfer.read_bundle(stream, expected_role="ai")
     assert {entry.logical_id for entry, _data in values} == {
         "ai_pull_rclone",
-        "ai_pull_filters",
         "ai_writer_webdav_password",
         "ai_projection_cleanup_env",
         "ai_projection_cleanup_password",
@@ -223,6 +222,7 @@ def test_target_manifest_preserves_observed_owner_group_modes() -> None:
 
 def test_revision_env_and_rebuildable_state_are_not_private_bundle_members() -> None:
     rendered = repr(transfer.ROLE_FILES)
+    assert "vault-pull.filters" not in repr(transfer.ROLE_FILES["ai"])
     assert "pre-review-revision.env" not in rendered
     assert "/var/lib/obsidian-ai/state" not in rendered
     assert "/var/lib/obsidian-ai/vault" not in rendered
