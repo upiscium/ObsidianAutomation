@@ -5,7 +5,7 @@ import json
 import math
 import sys
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Mapping, Sequence
 
 from .artifact_lifecycle import (
@@ -475,10 +475,29 @@ def parse_objective_context(data: bytes) -> SemanticObjectiveContext:
             raise SemanticObjectiveError("semantic objective Context source role is invalid")
         path = raw["path"]
         source_kind = raw["source_kind"]
-        if not isinstance(path, str) or not path or path.startswith("/"):
+        if not isinstance(path, str) or not path or path.startswith("/") or "\\" in path:
             raise SemanticObjectiveError("semantic objective Context source path is invalid")
+        path_parts = PurePosixPath(path).parts
+        if (
+            not path_parts
+            or any(part in {"", ".", ".."} or part.startswith(".") for part in path_parts)
+            or PurePosixPath(path).as_posix() != path
+            or not path.endswith(".md")
+        ):
+            raise SemanticObjectiveError("semantic objective Context source path is unsafe")
         if source_kind not in {"daily", "idea", "project", "project-note", "knowledge"}:
             raise SemanticObjectiveError("semantic objective Context source kind is invalid")
+        expected_root = {
+            "daily": "00-DailyNote",
+            "idea": "05-Idea",
+            "project": "10-Project",
+            "project-note": "10-Project",
+            "knowledge": "11-Knowledge",
+        }[source_kind]
+        if not path.startswith(expected_root + "/"):
+            raise SemanticObjectiveError(
+                "semantic objective Context source path/source kind mismatch"
+            )
         chunk_id = _require_sha(raw["chunk_id"], label="Context chunk id")
         source_sha = _require_sha(raw["source_sha256"], label="Context source SHA")
         content_sha = _require_sha(raw["content_sha256"], label="Context content SHA")
@@ -565,10 +584,7 @@ def build_objective_context(
         )
     except SemanticRetrievalError as exc:
         raise SemanticObjectiveError(str(exc)) from exc
-    if (
-        index.corpus_manifest_sha256 != selection.corpus_manifest_sha256
-        or index.corpus_manifest_sha256 != corpus.to_json_bytes() and False
-    ):
+    if index.corpus_manifest_sha256 != selection.corpus_manifest_sha256:
         raise SemanticObjectiveError("Semantic Selection corpus binding mismatch")
 
     by_chunk = {item.chunk.chunk_id: item for item in candidates}
@@ -911,32 +927,18 @@ def _parse_idea_candidate(value: object) -> IdeaCandidate:
     )
 
 
-def _parse_project_candidate(
-    value: object,
-    *,
-    context: SemanticObjectiveContext,
-) -> ProjectAdoptionCandidate:
+def _parse_project_candidate_unbound(value: object) -> ProjectAdoptionCandidate:
     if not isinstance(value, dict) or set(value) != {"idea_path", "proposals"}:
         raise SemanticObjectiveError(
             "Project adoption candidate properties do not match contract"
         )
-    allowed_ideas = {
-        item.path
-        for item in context.sources
-        if item.role == "anchor" and item.source_kind == "idea"
-    }
-    allowed_projects = {
-        item.path for item in context.sources if item.source_kind == "project"
-    }
     idea_path = value["idea_path"]
-    if not isinstance(idea_path, str) or idea_path not in allowed_ideas:
-        raise SemanticObjectiveError(
-            "Project adoption candidate Idea path is not the selected Idea anchor"
-        )
+    if not isinstance(idea_path, str) or not idea_path:
+        raise SemanticObjectiveError("Project adoption candidate Idea path is invalid")
     raw_proposals = value["proposals"]
     if (
         not isinstance(raw_proposals, list)
-        or not 1 <= len(raw_proposals) <= min(MAX_PROJECT_PROPOSALS, len(allowed_projects))
+        or not 1 <= len(raw_proposals) <= MAX_PROJECT_PROPOSALS
     ):
         raise SemanticObjectiveError("Project adoption proposals have invalid count")
     proposals: list[ProjectAdoptionProposal] = []
@@ -953,13 +955,9 @@ def _parse_project_candidate(
                 "Project adoption proposal properties do not match contract"
             )
         project_path = raw["project_path"]
-        if (
-            not isinstance(project_path, str)
-            or project_path not in allowed_projects
-            or project_path in seen
-        ):
+        if not isinstance(project_path, str) or not project_path or project_path in seen:
             raise SemanticObjectiveError(
-                "Project adoption proposal references an unselected or duplicate Project"
+                "Project adoption proposal Project path is invalid or duplicate"
             )
         seen.add(project_path)
         proposals.append(
@@ -987,6 +985,34 @@ def _parse_project_candidate(
         idea_path=idea_path,
         proposals=tuple(proposals),
     )
+
+
+def _parse_project_candidate(
+    value: object,
+    *,
+    context: SemanticObjectiveContext,
+) -> ProjectAdoptionCandidate:
+    parsed = _parse_project_candidate_unbound(value)
+    allowed_ideas = {
+        item.path
+        for item in context.sources
+        if item.role == "anchor" and item.source_kind == "idea"
+    }
+    allowed_projects = {
+        item.path for item in context.sources if item.source_kind == "project"
+    }
+    idea_path = parsed.idea_path
+    if idea_path not in allowed_ideas:
+        raise SemanticObjectiveError(
+            "Project adoption candidate Idea path is not the selected Idea anchor"
+        )
+    if len(parsed.proposals) > len(allowed_projects):
+        raise SemanticObjectiveError("Project adoption proposals exceed selected Project count")
+    if any(item.project_path not in allowed_projects for item in parsed.proposals):
+        raise SemanticObjectiveError(
+            "Project adoption proposal references an unselected Project"
+        )
+    return parsed
 
 
 def parse_objective_output(
@@ -1057,25 +1083,11 @@ def parse_objective_candidate(data: bytes) -> SemanticObjectiveCandidate:
         raise SemanticObjectiveError("unsupported semantic objective candidate version")
     objective = _require_objective(value["objective_policy"])
     candidate_kind = _require_candidate_kind(objective, value["candidate_kind"])
-    context_stub = SemanticObjectiveContext(
-        objective_policy=objective,
-        candidate_kind=candidate_kind,
-        selection_sha256=_require_sha(value["selection_sha256"], label="selection SHA"),
-        selection_policy=(
-            "semantic-idea-development-v0"
-            if objective == PROJECT_ADOPTION
-            else next(iter(COMPATIBLE_SELECTIONS[objective]))
-        ),
-        semantic_index_sha256=_require_sha(
-            value["semantic_index_sha256"],
-            label="semantic index SHA",
-        ),
-        corpus_manifest_sha256="0" * 64,
-        created_at="1970-01-01T00:00:00Z",
-        sources=(),
+    selection_sha = _require_sha(value["selection_sha256"], label="selection SHA")
+    semantic_index_sha = _require_sha(
+        value["semantic_index_sha256"],
+        label="semantic index SHA",
     )
-    # Candidate-only parsing cannot validate dynamic Project path allowlists.
-    # That check is performed against the exact Objective Context when storing/loading.
     raw_candidate = value["candidate"]
     if objective == DEEP_KNOWLEDGE:
         try:
@@ -1087,9 +1099,7 @@ def parse_objective_candidate(data: bytes) -> SemanticObjectiveCandidate:
     elif objective == IDEA_DISCOVERY:
         output = _parse_idea_candidate(raw_candidate)
     else:
-        if not isinstance(raw_candidate, dict):
-            raise SemanticObjectiveError("Project adoption candidate must be an object")
-        output = raw_candidate  # type: ignore[assignment]
+        output = _parse_project_candidate_unbound(raw_candidate)
     return SemanticObjectiveCandidate(
         objective_policy=objective,
         candidate_kind=candidate_kind,
@@ -1097,8 +1107,8 @@ def parse_objective_candidate(data: bytes) -> SemanticObjectiveCandidate:
             value["objective_context_sha256"],
             label="objective Context SHA",
         ),
-        selection_sha256=context_stub.selection_sha256,
-        semantic_index_sha256=context_stub.semantic_index_sha256,
+        selection_sha256=selection_sha,
+        semantic_index_sha256=semantic_index_sha,
         output=output,
     )
 
