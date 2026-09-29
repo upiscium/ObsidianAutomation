@@ -387,16 +387,17 @@ def parse_retrieval_filter(value: object) -> RetrievalFilter:
         "knowledge_maturities",
         "knowledge_source_types",
     }
-    if set(value) != expected:
+    unknown = set(value) - expected
+    if unknown:
         raise SemanticRetrievalError(
-            "retrieval filter properties do not match contract"
+            f"retrieval filter contains unsupported properties: {sorted(unknown)}"
         )
     created_from = _require_optional_date(
-        value["created_from"],
+        value.get("created_from"),
         label="created_from",
     )
     created_to = _require_optional_date(
-        value["created_to"],
+        value.get("created_to"),
         label="created_to",
     )
     if (
@@ -407,39 +408,39 @@ def parse_retrieval_filter(value: object) -> RetrievalFilter:
         raise SemanticRetrievalError("created_from must not be after created_to")
     return RetrievalFilter(
         source_kinds=_require_string_list(
-            value["source_kinds"],
+            value.get("source_kinds", []),
             label="source_kinds",
             allowed=set(SOURCE_KINDS),
         ),
         workspaces=_require_string_list(
-            value["workspaces"],
+            value.get("workspaces", []),
             label="workspaces",
         ),
         projects=_require_string_list(
-            value["projects"],
+            value.get("projects", []),
             label="projects",
         ),
         idea_statuses=_require_string_list(
-            value["idea_statuses"],
+            value.get("idea_statuses", []),
             label="idea_statuses",
             allowed={"active", "adopted"},
         ),
         project_statuses=_require_string_list(
-            value["project_statuses"],
+            value.get("project_statuses", []),
             label="project_statuses",
         ),
         created_from=created_from,
         created_to=created_to,
         knowledge_categories=_require_string_list(
-            value["knowledge_categories"],
+            value.get("knowledge_categories", []),
             label="knowledge_categories",
         ),
         knowledge_maturities=_require_string_list(
-            value["knowledge_maturities"],
+            value.get("knowledge_maturities", []),
             label="knowledge_maturities",
         ),
         knowledge_source_types=_require_string_list(
-            value["knowledge_source_types"],
+            value.get("knowledge_source_types", []),
             label="knowledge_source_types",
         ),
     )
@@ -520,7 +521,12 @@ def parse_benchmark_set(data: bytes) -> BenchmarkSet:
     seen_ids: set[str] = set()
     seen_categories: set[str] = set()
     for raw in raw_cases:
-        if not isinstance(raw, dict) or set(raw) != {
+        if not isinstance(raw, dict) or not {
+            "id",
+            "category",
+            "query",
+            "relevant_paths",
+        }.issubset(raw) or set(raw) - {
             "id",
             "category",
             "query",
@@ -574,7 +580,7 @@ def parse_benchmark_set(data: bytes) -> BenchmarkSet:
                 category=category,
                 query=query,
                 relevant_paths=tuple(paths),
-                filters=parse_retrieval_filter(raw["filters"]),
+                filters=parse_retrieval_filter(raw.get("filters")),
             )
         )
 
@@ -1826,7 +1832,7 @@ def evaluate_semantic_benchmark(
                 mode=mode,
                 source_kind_weights=source_kind_weights,
                 lexical_weight=lexical_weight,
-                top_k=max(top_k, 8),
+                top_k=MAX_TOP_K,
             )
             rankings_by_mode[mode][case.case_id] = ranked
             case_modes[mode] = [
