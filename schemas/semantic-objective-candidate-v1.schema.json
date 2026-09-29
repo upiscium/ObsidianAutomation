@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "semantic-objective-candidate-v1.schema.json",
+  "title": "Semantic Generation Objective Candidate v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "record_version",
+    "objective_policy",
+    "candidate_kind",
+    "objective_context_sha256",
+    "selection_sha256",
+    "semantic_index_sha256",
+    "candidate"
+  ],
+  "properties": {
+    "record_version": {"const": 1},
+    "objective_policy": {
+      "enum": [
+        "deep-knowledge-v1",
+        "idea-discovery-v0",
+        "project-adoption-proposal-v0"
+      ]
+    },
+    "candidate_kind": {
+      "enum": [
+        "knowledge_candidate",
+        "idea_candidate",
+        "project_adoption_proposal"
+      ]
+    },
+    "objective_context_sha256": {"$ref": "#/$defs/sha256"},
+    "selection_sha256": {"$ref": "#/$defs/sha256"},
+    "semantic_index_sha256": {"$ref": "#/$defs/sha256"},
+    "candidate": {"type": "object"}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "objective_policy": {"const": "deep-knowledge-v1"}
+        },
+        "required": ["objective_policy"]
+      },
+      "then": {
+        "properties": {
+          "candidate_kind": {"const": "knowledge_candidate"},
+          "candidate": {"$ref": "#/$defs/knowledgeCandidate"}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "objective_policy": {"const": "idea-discovery-v0"}
+        },
+        "required": ["objective_policy"]
+      },
+      "then": {
+        "properties": {
+          "candidate_kind": {"const": "idea_candidate"},
+          "candidate": {"$ref": "#/$defs/ideaCandidate"}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "objective_policy": {"const": "project-adoption-proposal-v0"}
+        },
+        "required": ["objective_policy"]
+      },
+      "then": {
+        "properties": {
+          "candidate_kind": {"const": "project_adoption_proposal"},
+          "candidate": {"$ref": "#/$defs/projectAdoptionCandidate"}
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "stringList": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4096
+      }
+    },
+    "knowledgeCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "category", "source_type", "body"],
+      "properties": {
+        "title": {"type": "string", "minLength": 1, "maxLength": 200},
+        "category": {"type": "string"},
+        "source_type": {"type": "string"},
+        "body": {"type": "string", "minLength": 1}
+      }
+    },
+    "ideaCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "summary",
+        "rationale",
+        "supporting_evidence",
+        "uncertainties"
+      ],
+      "properties": {
+        "title": {"type": "string", "minLength": 1, "maxLength": 200},
+        "summary": {"type": "string", "minLength": 1, "maxLength": 16384},
+        "rationale": {"type": "string", "minLength": 1, "maxLength": 16384},
+        "supporting_evidence": {"$ref": "#/$defs/stringList"},
+        "uncertainties": {"$ref": "#/$defs/stringList"}
+      }
+    },
+    "projectProposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "project_path",
+        "fit_rationale",
+        "supporting_evidence",
+        "risks_conflicts",
+        "missing_information"
+      ],
+      "properties": {
+        "project_path": {"type": "string", "minLength": 1},
+        "fit_rationale": {"type": "string", "minLength": 1, "maxLength": 16384},
+        "supporting_evidence": {"$ref": "#/$defs/stringList"},
+        "risks_conflicts": {"$ref": "#/$defs/stringList"},
+        "missing_information": {"$ref": "#/$defs/stringList"}
+      }
+    },
+    "projectAdoptionCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["idea_path", "proposals"],
+      "properties": {
+        "idea_path": {"type": "string", "minLength": 1},
+        "proposals": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "items": {"$ref": "#/$defs/projectProposal"}
+        }
+      }
+    }
+  }
+}
