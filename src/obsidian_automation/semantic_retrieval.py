@@ -24,6 +24,7 @@ from .ollama_generator import (
     OllamaProviderError,
     resolve_ollama_model,
 )
+from .production_io import ProductionIOError, mirror_read_lock
 from .semantic_corpus import (
     SemanticChunk,
     SemanticCorpusError,
@@ -355,7 +356,7 @@ def _require_string_list(
             raise SemanticRetrievalError(f"{label} contains duplicate value: {raw}")
         seen.add(raw)
         result.append(raw)
-    return tuple(result)
+    return tuple(sorted(result, key=lambda item: (item.casefold(), item)))
 
 
 def _require_optional_date(value: object, *, label: str) -> str | None:
@@ -579,7 +580,9 @@ def parse_benchmark_set(data: bytes) -> BenchmarkSet:
                 case_id=case_id,
                 category=category,
                 query=query,
-                relevant_paths=tuple(paths),
+                relevant_paths=tuple(
+                sorted(paths, key=lambda item: (item.casefold(), item))
+            ),
                 filters=parse_retrieval_filter(raw.get("filters")),
             )
         )
@@ -953,8 +956,29 @@ def _metadata_matches(
         return False
     if filters.workspaces and metadata.get("workspace") not in filters.workspaces:
         return False
-    if filters.projects and metadata.get("project") not in filters.projects:
-        return False
+    if filters.projects:
+        def normalize_project(value: object) -> str | None:
+            if not isinstance(value, str) or not value:
+                return None
+            raw = value.strip()
+            if raw.startswith("[[") and raw.endswith("]]"):
+                raw = raw[2:-2].split("|", 1)[0].split("#", 1)[0].strip()
+            if raw.endswith(".md"):
+                raw = raw[:-3]
+            return raw or None
+
+        project_value = (
+            source.path[:-3]
+            if source.source_kind == "project"
+            else normalize_project(metadata.get("project"))
+        )
+        requested = {
+            normalized
+            for item in filters.projects
+            if (normalized := normalize_project(item)) is not None
+        }
+        if project_value not in requested:
+            return False
     if source.source_kind == "idea" and filters.idea_statuses:
         if metadata.get("status") not in filters.idea_statuses:
             return False
@@ -1039,6 +1063,11 @@ def _build_candidates(
             or request.source_kind != item.source_kind
             or request.source_sha256 != item.source_sha256
             or request.content_sha256 != item.content_sha256
+            or request.corpus_manifest_sha256 != index.corpus_manifest_sha256
+            or request.provider != index.provider
+            or request.adapter_version != index.adapter_version
+            or request.model_identifier != index.model_identifier
+            or request.model_revision != index.model_revision
         ):
             raise SemanticRetrievalError(
                 "semantic index request binding mismatch"
@@ -1236,45 +1265,46 @@ def retrieve_semantic(
         request,
         result,
     )
-    corpus = load_semantic_corpus_manifest(
-        ai_root,
-        index.corpus_manifest_sha256,
-    )
     try:
-        verify_semantic_corpus_current(vault_root, corpus)
-    except SemanticCorpusError as exc:
-        raise SemanticRetrievalError(str(exc)) from exc
-    filter_value = filters or RetrievalFilter()
-    candidates = _build_candidates(
-        ai_root,
-        index,
-        corpus,
-        filter_value,
-    )
-    ranked = rank_semantic_chunks(
-        candidates,
-        query=request.query,
-        query_vector=result.vector,
-        mode=mode,
-        source_kind_weights=source_kind_weights,
-        lexical_weight=lexical_weight,
-        top_k=top_k,
-    )
+        with mirror_read_lock(ai_root):
+            corpus = load_semantic_corpus_manifest(
+                ai_root,
+                index.corpus_manifest_sha256,
+            )
+            verify_semantic_corpus_current(vault_root, corpus)
+            filter_value = filters or RetrievalFilter()
+            candidates = _build_candidates(
+                ai_root,
+                index,
+                corpus,
+                filter_value,
+            )
+            ranked = rank_semantic_chunks(
+                candidates,
+                query=request.query,
+                query_vector=result.vector,
+                mode=mode,
+                source_kind_weights=source_kind_weights,
+                lexical_weight=lexical_weight,
+                top_k=top_k,
+            )
 
-    by_path = {source.path: source for source in corpus.sources}
-    chunks = {
-        chunk.chunk_id: chunk
-        for source in corpus.sources
-        for chunk in source.chunks
-    }
-    for item in ranked:
-        source = by_path[item.source_path]
-        chunk = chunks[item.chunk_id]
-        materialize_semantic_chunk_bytes(
-            vault_root,
-            source,
-            chunk,
-        )
+            by_path = {source.path: source for source in corpus.sources}
+            chunks = {
+                chunk.chunk_id: chunk
+                for source in corpus.sources
+                for chunk in source.chunks
+            }
+            for item in ranked:
+                source = by_path[item.source_path]
+                chunk = chunks[item.chunk_id]
+                materialize_semantic_chunk_bytes(
+                    vault_root,
+                    source,
+                    chunk,
+                )
+    except (ProductionIOError, SemanticCorpusError) as exc:
+        raise SemanticRetrievalError(str(exc)) from exc
     return ranked
 
 
@@ -1332,7 +1362,6 @@ def parse_benchmark_plan(data: bytes) -> BenchmarkPlan:
         raise SemanticRetrievalError("benchmark plan requests are invalid")
     entries: list[BenchmarkPlanEntry] = []
     seen_cases: set[str] = set()
-    seen_requests: set[str] = set()
     for raw in raw_requests:
         if (
             not isinstance(raw, dict)
@@ -1346,12 +1375,11 @@ def parse_benchmark_plan(data: bytes) -> BenchmarkPlan:
             raw["request_sha256"],
             label="query embedding request SHA",
         )
-        if case_id in seen_cases or request_sha in seen_requests:
+        if case_id in seen_cases:
             raise SemanticRetrievalError(
-                "benchmark plan contains duplicate bindings"
+                "benchmark plan contains duplicate case ids"
             )
         seen_cases.add(case_id)
-        seen_requests.add(request_sha)
         entries.append(
             BenchmarkPlanEntry(
                 case_id=case_id,
@@ -1470,8 +1498,6 @@ def parse_benchmark_result_set(data: bytes) -> BenchmarkResultSet:
         )
     entries: list[BenchmarkResultEntry] = []
     seen_cases: set[str] = set()
-    seen_requests: set[str] = set()
-    seen_results: set[str] = set()
     for raw in raw_results:
         if (
             not isinstance(raw, dict)
@@ -1497,17 +1523,11 @@ def parse_benchmark_result_set(data: bytes) -> BenchmarkResultSet:
             raw["result_sha256"],
             label="query embedding result SHA",
         )
-        if (
-            case_id in seen_cases
-            or request_sha in seen_requests
-            or result_sha in seen_results
-        ):
+        if case_id in seen_cases:
             raise SemanticRetrievalError(
-                "benchmark result-set contains duplicate bindings"
+                "benchmark result-set contains duplicate case ids"
             )
         seen_cases.add(case_id)
-        seen_requests.add(request_sha)
-        seen_results.add(result_sha)
         entries.append(
             BenchmarkResultEntry(
                 case_id=case_id,
@@ -1762,13 +1782,14 @@ def evaluate_semantic_benchmark(
         )
 
     index = load_semantic_index_manifest(ai_root, index_sha)
-    corpus = load_semantic_corpus_manifest(
-        ai_root,
-        index.corpus_manifest_sha256,
-    )
     try:
-        verify_semantic_corpus_current(vault_root, corpus)
-    except SemanticCorpusError as exc:
+        with mirror_read_lock(ai_root):
+            corpus = load_semantic_corpus_manifest(
+                ai_root,
+                index.corpus_manifest_sha256,
+            )
+            verify_semantic_corpus_current(vault_root, corpus)
+    except (ProductionIOError, SemanticCorpusError) as exc:
         raise SemanticRetrievalError(str(exc)) from exc
 
     result_by_case = {
