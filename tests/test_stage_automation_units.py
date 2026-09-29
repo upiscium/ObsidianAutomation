@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 from pathlib import Path
 import sys
@@ -87,6 +88,18 @@ def _fixture_source(tmp_path: Path) -> Path:
             encoding="utf-8",
         )
 
+    filter_path = root / stage.AI_FILTER_SOURCE
+    filter_path.parent.mkdir(parents=True, exist_ok=True)
+    filter_path.write_text(
+        "# reviewed AI mirror policy\n"
+        "+ /00-DailyNote/**\n"
+        "+ /05-Idea/**\n"
+        "+ /11-Knowledge/**\n"
+        "+ /10-Project/**\n"
+        "- /**\n",
+        encoding="utf-8",
+    )
+
     return root
 
 
@@ -154,6 +167,15 @@ def test_stage_installs_units_and_leaves_host_inert(tmp_path: Path) -> None:
         f"OBSIDIAN_AUTOMATION_REVISION={TARGET}\n"
     )
     assert revision_env.stat().st_mode & 0o777 == 0o644
+
+    managed_filter = config_dir / "vault-pull.filters"
+    expected_filter = (source_root / stage.AI_FILTER_SOURCE).read_bytes()
+    assert managed_filter.read_bytes() == expected_filter
+    assert managed_filter.stat().st_mode & 0o777 == 0o640
+    assert result["ai_vault_pull_filter"] == str(managed_filter)
+    assert result["ai_vault_pull_filter_sha256"] == hashlib.sha256(
+        expected_filter
+    ).hexdigest()
 
     for unit in stage.SOURCE_LAYOUT:
         installed = (systemd_dir / unit).read_text()
