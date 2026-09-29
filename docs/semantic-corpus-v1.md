@@ -135,6 +135,10 @@ The command reports the manifest SHA, source/chunk counts, source-kind counts, a
 
 ## Next stage
 
-Semantic Corpus v1 is the input contract for the later Reader-owned embedding index.
+Semantic Corpus v1 is the input contract for
+[Semantic Embedding Index v1](semantic-embedding-index-v1.md).
 
-Embedding model identity, vector values, ANN backend, hybrid BM25/vector ranking, novelty policy, and generation objectives are intentionally outside this contract.
+The embedding stage keeps provider access in a dedicated `obsidian-ai-embedder`
+identity and binds vectors to this exact corpus/chunk identity. Hybrid
+BM25/vector ranking, novelty policy, and generation objectives remain outside
+the Semantic Corpus contract.
