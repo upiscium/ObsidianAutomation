@@ -487,3 +487,121 @@ def test_legacy_mode_remains_default_contract() -> None:
     assert "Environment=AI_INPUT_SEMANTIC_INDEX_SHA=disabled" in unit
     assert "--input-mode ${AI_INPUT_MODE}" in unit
     assert "--semantic-index-sha ${AI_INPUT_SEMANTIC_INDEX_SHA}" in unit
+
+def test_semantic_pending_recovery_is_idempotent_after_projection_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    vault, state, index_sha = _semantic_index(tmp_path)
+    import obsidian_automation.ai_input_planner as planner
+    import sqlite3
+
+    calls = 0
+    original = planner.emit_semantic_objective_context_projection
+
+    def fail_once(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("fixture projection failure")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        planner,
+        "emit_semantic_objective_context_projection",
+        fail_once,
+    )
+    now = datetime(2026, 9, 29, 4, 0, tzinfo=timezone.utc)
+
+    with pytest.raises(OSError, match="fixture projection failure"):
+        plan_once(
+            state,
+            vault,
+            deployed_revision=REVISION,
+            input_mode=INPUT_MODE_SEMANTIC_DEEP,
+            semantic_index_sha256=index_sha,
+            semantic_selection_policy="semantic-project-distill-v0",
+            generator_model=GEN_MODEL,
+            evaluator_model=EVAL_MODEL,
+            now=now,
+        )
+
+    pending_path = state / "02-Orchestration" / "input-planner-pending.json"
+    pending = json.loads(pending_path.read_text(encoding="utf-8"))
+    assert pending["phase"] == "submitted"
+    assert pending["input_mode"] == INPUT_MODE_SEMANTIC_DEEP
+    assert pending["semantic_index_sha256"] == index_sha
+    first_job = pending["job_id"]
+
+    conn = sqlite3.connect(
+        state / "02-Orchestration" / "pre-review-jobs.sqlite3"
+    )
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+    recovered = plan_once(
+        state,
+        vault,
+        deployed_revision=REVISION,
+        input_mode=INPUT_MODE_SEMANTIC_DEEP,
+        semantic_index_sha256=index_sha,
+        semantic_selection_policy="semantic-project-distill-v0",
+        generator_model=GEN_MODEL,
+        evaluator_model=EVAL_MODEL,
+        now=now,
+    )
+    assert recovered["status"] == "recovered_pending_submission"
+    assert recovered["job_id"] == first_job
+    assert not pending_path.exists()
+
+    conn = sqlite3.connect(
+        state / "02-Orchestration" / "pre-review-jobs.sqlite3"
+    )
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_semantic_pending_recovery_rejects_index_configuration_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    vault, state, index_sha = _semantic_index(tmp_path)
+    import obsidian_automation.ai_input_planner as planner
+
+    monkeypatch.setattr(
+        planner,
+        "emit_semantic_objective_context_projection",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            OSError("fixture projection failure")
+        ),
+    )
+    with pytest.raises(OSError):
+        plan_once(
+            state,
+            vault,
+            deployed_revision=REVISION,
+            input_mode=INPUT_MODE_SEMANTIC_DEEP,
+            semantic_index_sha256=index_sha,
+            semantic_selection_policy="semantic-project-distill-v0",
+            generator_model=GEN_MODEL,
+            evaluator_model=EVAL_MODEL,
+            now=datetime(2026, 9, 29, 4, 0, tzinfo=timezone.utc),
+        )
+
+    with pytest.raises(ArtifactLifecycleError, match="semantic index"):
+        plan_once(
+            state,
+            vault,
+            deployed_revision=REVISION,
+            input_mode=INPUT_MODE_SEMANTIC_DEEP,
+            semantic_index_sha256="e" * 64,
+            semantic_selection_policy="semantic-project-distill-v0",
+            generator_model=GEN_MODEL,
+            evaluator_model=EVAL_MODEL,
+            now=datetime(2026, 9, 29, 4, 1, tzinfo=timezone.utc),
+        )
+
