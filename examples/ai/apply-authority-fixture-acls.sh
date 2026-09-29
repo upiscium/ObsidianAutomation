@@ -29,6 +29,7 @@ PROJECTS="$VAULT_ROOT/10-Project"
 UNTRUSTED="$AI_ROOT/00-Untrusted"
 ORCHESTRATION="$AI_ROOT/02-Orchestration"
 ORCHESTRATION_RECIPES="$ORCHESTRATION/recipes"
+SEMANTIC_SELECTIONS="$ORCHESTRATION/semantic-selections"
 INDEX="$AI_ROOT/04-Index"
 SEMANTIC_CORPUS="$INDEX/semantic-corpus"
 EMBEDDING_REQUESTS="$INDEX/semantic-embedding-requests"
@@ -176,6 +177,9 @@ apply_directory_acl "$UNTRUSTED" \
 install -d -o root -g root -m 0700 "$ORCHESTRATION_RECIPES"
 setfacl -b "$ORCHESTRATION_RECIPES"
 setfacl -k "$ORCHESTRATION_RECIPES" || true
+install -d -o root -g root -m 0700 "$SEMANTIC_SELECTIONS"
+setfacl -b "$SEMANTIC_SELECTIONS"
+setfacl -k "$SEMANTIC_SELECTIONS" || true
 apply_directory_acl "$ORCHESTRATION" \
   "u:$READER_USER:rwx" \
   "u:$GENERATOR_USER:rwx" \
@@ -186,6 +190,9 @@ apply_directory_acl "$ORCHESTRATION_RECIPES" \
   "u:$GENERATOR_USER:r-x" \
   "u:$VALIDATOR_USER:r-x" \
   "u:$EVALUATOR_USER:r-x"
+
+apply_directory_acl "$SEMANTIC_SELECTIONS" \
+  "u:$READER_USER:rwx"
 
 apply_directory_acl "$INDEX" \
   "u:$READER_USER:rwx" \
