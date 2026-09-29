@@ -469,9 +469,14 @@ Planner selection.
 
 ### Phase C — benchmark/hybrid retrieval
 
-Implement #201.
+Implement #201 via
+[Semantic Hybrid Retrieval v1](semantic-hybrid-retrieval-v1.md).
 
-Compare BM25, vector and hybrid retrieval against representative queries.
+Compute lexical BM25 and vector cosine over the same Semantic Corpus chunk
+population, apply versioned metadata filters/source-kind weights, and compare
+BM25-only / vector-only / hybrid against one fixed six-category benchmark.
+Hybrid remains offline until the benchmark shows improved semantic recall
+without regressing exact technical top-1 lookup.
 
 ### Phase D — cadence
 
