@@ -368,6 +368,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
+    from .human_projection import emit_semantic_objective_generation_projection
+
+    projection = emit_semantic_objective_generation_projection(
+        args.ai_root,
+        case_id=result.generation_sha256,
+        objective_generation_sha256=result.generation_sha256,
+        candidate_sha256=result.candidate_sha256,
+    )
     print(
         json.dumps(
             {
@@ -384,6 +392,12 @@ def main(argv: list[str] | None = None) -> int:
                 "model_revision": result.model_revision,
                 "prompt_template_version": result.prompt_template_version,
                 "prompt_template_sha256": result.prompt_template_sha256,
+                "projection_request_sha256": (
+                    None if projection is None else projection[0]
+                ),
+                "projection_request_path": (
+                    None if projection is None else str(projection[1])
+                ),
             },
             ensure_ascii=False,
             sort_keys=True,
