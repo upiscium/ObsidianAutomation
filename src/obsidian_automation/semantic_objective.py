@@ -29,6 +29,14 @@ from .semantic_retrieval import (
     SemanticRetrievalError,
     load_verified_semantic_candidates,
 )
+from .semantic_objective_identity import (
+    CANDIDATE_KIND,
+    DEEP_KNOWLEDGE,
+    IDEA_DISCOVERY,
+    OBJECTIVES,
+    PROJECT_ADOPTION,
+    PROMPT_VERSION,
+)
 from .semantic_selection import (
     SemanticSelectionError,
     load_semantic_selection,
@@ -42,21 +50,6 @@ OBJECTIVE_CONTEXT_SUFFIX = "objective-context"
 OBJECTIVE_CANDIDATE_SUFFIX = "objective-candidate"
 OBJECTIVE_GENERATION_SUFFIX = "objective-generation"
 
-DEEP_KNOWLEDGE = "deep-knowledge-v1"
-IDEA_DISCOVERY = "idea-discovery-v0"
-PROJECT_ADOPTION = "project-adoption-proposal-v0"
-OBJECTIVES = (DEEP_KNOWLEDGE, IDEA_DISCOVERY, PROJECT_ADOPTION)
-
-CANDIDATE_KIND = {
-    DEEP_KNOWLEDGE: "knowledge_candidate",
-    IDEA_DISCOVERY: "idea_candidate",
-    PROJECT_ADOPTION: "project_adoption_proposal",
-}
-PROMPT_VERSION = {
-    DEEP_KNOWLEDGE: "deep-knowledge-generator-v1",
-    IDEA_DISCOVERY: "idea-discovery-generator-v0",
-    PROJECT_ADOPTION: "project-adoption-generator-v0",
-}
 COMPATIBLE_SELECTIONS = {
     DEEP_KNOWLEDGE: frozenset(
         {
