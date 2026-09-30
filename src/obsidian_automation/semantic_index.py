@@ -52,6 +52,7 @@ RESULT_SET_DIR = "semantic-embedding-result-sets"
 SEMANTIC_INDEX_DIR = "semantic-index"
 REQUEST_VERSION = 1
 PLAN_VERSION = 1
+REFRESH_PLAN_VERSION = 1
 RESULT_VERSION = 1
 LEGACY_RESULT_SET_VERSION = 1
 RESULT_SET_VERSION = 2
@@ -152,6 +153,41 @@ class EmbeddingPlan:
 
 
 @dataclass(frozen=True)
+class EmbeddingRefreshPlanEntry:
+    chunk_id: str
+    request_sha256: str
+    reused_from_result_sha256: str | None
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "chunk_id": self.chunk_id,
+            "request_sha256": self.request_sha256,
+            "reused_from_result_sha256": self.reused_from_result_sha256,
+        }
+
+
+@dataclass(frozen=True)
+class EmbeddingRefreshPlan:
+    plan_sha256: str
+    previous_index_sha256: str
+    vector_dimension: int
+    removed_count: int
+    entries: tuple[EmbeddingRefreshPlanEntry, ...]
+
+    def to_json_bytes(self) -> bytes:
+        return _canonical_json_bytes(
+            {
+                "record_version": REFRESH_PLAN_VERSION,
+                "plan_sha256": self.plan_sha256,
+                "previous_index_sha256": self.previous_index_sha256,
+                "vector_dimension": self.vector_dimension,
+                "removed_count": self.removed_count,
+                "entries": [entry.payload() for entry in self.entries],
+            }
+        )
+
+
+@dataclass(frozen=True)
 class EmbeddingResult:
     request_sha256: str
     provider: str
@@ -199,20 +235,22 @@ class EmbeddingResultSet:
     vector_encoding: str
     results: tuple[EmbeddingResultSetEntry, ...]
     record_version: int = LEGACY_RESULT_SET_VERSION
+    refresh_plan_sha256: str | None = None
 
     def to_json_bytes(self) -> bytes:
-        return _canonical_json_bytes(
-            {
-                "record_version": self.record_version,
-                "plan_sha256": self.plan_sha256,
-                "vector_dimension": self.vector_dimension,
-                "vector_encoding": self.vector_encoding,
-                "results": [
-                    entry.payload(record_version=self.record_version)
-                    for entry in self.results
-                ],
-            }
-        )
+        value: dict[str, object] = {
+            "record_version": self.record_version,
+            "plan_sha256": self.plan_sha256,
+            "vector_dimension": self.vector_dimension,
+            "vector_encoding": self.vector_encoding,
+            "results": [
+                entry.payload(record_version=self.record_version)
+                for entry in self.results
+            ],
+        }
+        if self.record_version >= RESULT_SET_VERSION:
+            value["refresh_plan_sha256"] = self.refresh_plan_sha256
+        return _canonical_json_bytes(value)
 
 
 @dataclass(frozen=True)
