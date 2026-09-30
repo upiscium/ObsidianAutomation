@@ -331,6 +331,36 @@ def test_all_initial_policies_are_deterministic_and_auditable(
     assert "cluster_coherence_min" in first.novelty.thresholds
 
 
+def test_project_distill_versions_pin_retrieval_semantics(
+    tmp_path: Path,
+) -> None:
+    vault, state, index_sha, _ = _semantic_index(tmp_path)
+
+    v0 = build_semantic_selection(
+        state,
+        vault,
+        semantic_index_sha256=index_sha,
+        policy="semantic-project-distill-v0",
+        recent_context_limit=0,
+    )
+    v1 = build_semantic_selection(
+        state,
+        vault,
+        semantic_index_sha256=index_sha,
+        policy="semantic-project-distill-v1",
+        recent_context_limit=0,
+    )
+
+    assert v0.lexical_weight == pytest.approx(0.60)
+    assert "retrieval_profile" not in v0.policy_observations
+
+    assert v1.lexical_weight == pytest.approx(0.15)
+    assert v1.policy_observations["retrieval_profile"] == (
+        "semantic-retrieval-v1"
+    )
+    assert v0.source_kind_weights == v1.source_kind_weights
+
+
 def test_policy_specific_anchor_contracts(tmp_path: Path) -> None:
     vault, state, index_sha, _ = _semantic_index(tmp_path)
 
