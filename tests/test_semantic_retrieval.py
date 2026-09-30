@@ -565,6 +565,7 @@ def test_benchmark_compares_same_queries_and_meets_acceptance(tmp_path: Path) ->
         top_k=3,
     )
     assert report["acceptance"]["passed"] is True
+    assert report["acceptance"]["bm25_exact_technical_top1_present"] is True
     assert report["retrieval_profile"] == "semantic-retrieval-v0"
     assert report["lexical_weight"] == pytest.approx(0.60)
     assert (
