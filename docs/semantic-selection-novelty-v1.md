@@ -76,6 +76,10 @@ identity tie-breaking.
 
 ### `semantic-project-distill-v0`
 
+Historical Project-distill behavior. Uses `semantic-retrieval-v0`
+(lexical 0.60 / vector 0.40).
+
+
 Requires a Project or Project Note anchor and favors related:
 
 - Project Notes;
@@ -85,6 +89,14 @@ Requires a Project or Project Note anchor and favors related:
 
 This identifies material suitable for extracting durable lessons from active
 work. It does not mutate Project state.
+
+### `semantic-project-distill-v1`
+
+Same Project/Project Note anchor contract, source-kind weights, and novelty
+thresholds as v0, but ranking uses `semantic-retrieval-v1`
+(lexical 0.15 / vector 0.85). The Selection Record keeps the concrete
+lexical/vector weights and records
+`policy_observations.retrieval_profile = semantic-retrieval-v1`.
 
 ### `semantic-timeline-v0`
 
@@ -198,6 +210,7 @@ Knowledge coverage thresholds:
 ```text
 semantic-focus-v0           0.96
 semantic-project-distill-v0 0.98
+semantic-project-distill-v1 0.98
 semantic-timeline-v0        0.97
 semantic-bridge-v0          0.98
 semantic-gap-v0             0.78 (gap must remain below this)
