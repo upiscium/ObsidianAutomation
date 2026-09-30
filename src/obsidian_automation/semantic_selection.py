@@ -27,7 +27,6 @@ from .semantic_index import SemanticIndexManifest
 from .semantic_retrieval import (
     DEFAULT_RETRIEVAL_PROFILE,
     MAX_TOP_K,
-    RETRIEVAL_PROFILES,
     RankedSemanticChunk,
     RetrievalFilter,
     SOURCE_KINDS,
