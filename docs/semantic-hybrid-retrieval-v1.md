@@ -116,15 +116,27 @@ hybrid =
     )
 ```
 
-Initial offline comparison weights:
+Retrieval weights are versioned profiles:
 
 ```text
-lexical_weight = 0.60
-vector_weight  = 0.40
+semantic-retrieval-v0
+  lexical_weight = 0.60
+  vector_weight  = 0.40
+
+semantic-retrieval-v1
+  lexical_weight = 0.15
+  vector_weight  = 0.85
 ```
 
-These weights are benchmark parameters, not production authority. Issue #202
-owns later selection-policy decisions.
+`semantic-retrieval-v0` preserves the original Phase C behavior.
+`semantic-retrieval-v1` was selected from the production benchmark by the
+pre-declared rule "use the highest lexical weight that improves semantic
+recall@3 without regressing exact-technical top-1". The observed boundary was
+0.20 FAIL / 0.15 PASS.
+
+Ad-hoc `--lexical-weight` remains diagnostic-only. Production acceptance binds
+a named retrieval profile so a previously-reviewed policy cannot silently
+change weight.
 
 Tie-breaking is deterministic:
 
@@ -269,7 +281,8 @@ sudo -u obsidian-ai-reader \
   --benchmark benchmark.json \
   --plan-sha <benchmark-plan-sha256> \
   --result-set-sha <benchmark-result-set-sha256> \
-  --top-k 3
+  --top-k 3 \
+  --retrieval-profile semantic-retrieval-v1
 ```
 
 ## Metrics
