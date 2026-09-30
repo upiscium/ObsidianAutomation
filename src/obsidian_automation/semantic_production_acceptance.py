@@ -513,6 +513,7 @@ def benchmark_acceptance(
     payload = {
         "semantic_index_sha256": index_sha,
         "benchmark_name": report["name"],
+        "benchmark_sha256": report["benchmark_sha256"],
         "benchmark_plan_sha256": report["benchmark_plan_sha256"],
         "benchmark_result_set_sha256": report[
             "benchmark_result_set_sha256"
@@ -568,6 +569,15 @@ def observe_selection_acceptance(
             "selection observation mutated Planner cadence state"
         )
 
+    if (
+        selection.selection_policy == "semantic-project-distill-v1"
+        and selection.policy_observations.get("retrieval_profile")
+        != "semantic-retrieval-v1"
+    ):
+        raise SemanticProductionAcceptanceError(
+            "Selection Record retrieval profile is invalid"
+        )
+
     source_kinds: dict[str, int] = {}
     for item in selection.selected:
         source_kinds[item.source_kind] = (
@@ -580,7 +590,7 @@ def observe_selection_acceptance(
             "semantic_index_sha256": index_sha,
             "selection_policy": selection.selection_policy,
             "retrieval_profile": (
-                "semantic-retrieval-v1"
+                selection.policy_observations.get("retrieval_profile")
                 if selection.selection_policy == "semantic-project-distill-v1"
                 else DEFAULT_RETRIEVAL_PROFILE
             ),
