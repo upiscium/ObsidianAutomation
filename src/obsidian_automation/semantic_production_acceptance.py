@@ -35,7 +35,6 @@ from .semantic_retrieval import (
     SemanticRetrievalError,
     evaluate_semantic_benchmark,
     load_benchmark_set,
-    retrieval_profile_lexical_weight,
 )
 from .semantic_selection import (
     POLICIES,
