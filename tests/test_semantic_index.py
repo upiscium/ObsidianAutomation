@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import obsidian_automation.semantic_index as semantic_index
 from obsidian_automation.ollama_generator import OllamaProviderError
 from obsidian_automation.semantic_corpus import (
     build_semantic_corpus,
@@ -20,6 +21,7 @@ from obsidian_automation.semantic_index import (
     load_embedding_request,
     load_semantic_index_manifest,
     parse_embedding_result,
+    prepare_incremental_embedding_refresh_plan,
     prepare_semantic_embedding_plan,
 )
 
@@ -615,6 +617,19 @@ def _finalized_index(tmp_path: Path):
     )
 
 
+def _refresh_plan(
+    state: Path,
+    *,
+    plan_sha: str,
+    previous_index_sha: str,
+):
+    return prepare_incremental_embedding_refresh_plan(
+        state,
+        plan_sha256=plan_sha,
+        previous_index_sha256=previous_index_sha,
+    )
+
+
 def test_incremental_noop_reuses_all_vectors_without_provider_call(
     tmp_path: Path,
 ) -> None:
@@ -645,17 +660,23 @@ def test_incremental_noop_reuses_all_vectors_without_provider_call(
         provider_calls.append("called")
         raise AssertionError("provider must not be called for no-op refresh")
 
+    refresh_sha, _, refresh_plan = _refresh_plan(
+        state,
+        plan_sha=plan_sha,
+        previous_index_sha=old_index_sha,
+    )
     result_set_sha, _, result_set, stats = (
         embed_semantic_plan_incremental_with_ollama(
             state,
-            plan_sha256=plan_sha,
-            previous_index_sha256=old_index_sha,
+            refresh_plan_sha256=refresh_sha,
             base_url="http://127.0.0.1:11434",
             transport=no_provider,
         )
     )
 
     assert provider_calls == []
+    assert refresh_plan.previous_index_sha256 == old_index_sha
+    assert result_set.refresh_plan_sha256 == refresh_sha
     assert stats.reused_count == len(plan.requests)
     assert stats.embedded_count == 0
     assert stats.removed_count == 0
@@ -712,11 +733,15 @@ def test_incremental_refresh_embeds_only_changed_chunk(
     )
 
     calls: list[tuple[str, str, object]] = []
+    refresh_sha, _, refresh_plan = _refresh_plan(
+        state,
+        plan_sha=plan_sha,
+        previous_index_sha=old_index_sha,
+    )
     result_set_sha, _, result_set, stats = (
         embed_semantic_plan_incremental_with_ollama(
             state,
-            plan_sha256=plan_sha,
-            previous_index_sha256=old_index_sha,
+            refresh_plan_sha256=refresh_sha,
             base_url="http://127.0.0.1:11434",
             transport=_successful_transport(calls),
             batch_size=8,
@@ -778,11 +803,15 @@ def test_incremental_refresh_removes_chunk_without_provider_call(
         provider_calls.append("called")
         raise AssertionError("provider must not be called for removal-only refresh")
 
+    refresh_sha, _, _refresh_plan_value = _refresh_plan(
+        state,
+        plan_sha=plan_sha,
+        previous_index_sha=old_index_sha,
+    )
     result_set_sha, _, _result_set, stats = (
         embed_semantic_plan_incremental_with_ollama(
             state,
-            plan_sha256=plan_sha,
-            previous_index_sha256=old_index_sha,
+            refresh_plan_sha256=refresh_sha,
             base_url="http://127.0.0.1:11434",
             transport=no_provider,
         )
@@ -833,6 +862,12 @@ def test_incremental_provider_failure_preserves_previous_index(
         model_revision=MODEL_DIGEST,
     )
 
+    refresh_sha, _, _ = _refresh_plan(
+        state,
+        plan_sha=plan_sha,
+        previous_index_sha=old_index_sha,
+    )
+
     def failing_transport(
         base_url: str,
         *,
@@ -859,8 +894,7 @@ def test_incremental_provider_failure_preserves_previous_index(
     ):
         embed_semantic_plan_incremental_with_ollama(
             state,
-            plan_sha256=plan_sha,
-            previous_index_sha256=old_index_sha,
+            refresh_plan_sha256=refresh_sha,
             base_url="http://127.0.0.1:11434",
             transport=failing_transport,
         )
@@ -878,4 +912,75 @@ def test_incremental_provider_failure_preserves_previous_index(
         path.name.split(".", 1)[0]
         for path in index_files
     }
+
+def test_embed_refresh_does_not_read_finalized_semantic_index(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    (
+        vault,
+        state,
+        _corpus_sha,
+        _plan_sha,
+        _old_plan,
+        _result_set_sha,
+        _result_set,
+        old_index_sha,
+        _old_index,
+        _calls,
+    ) = _finalized_index(tmp_path)
+
+    corpus_sha = _corpus(state, vault)
+    plan_sha, _, _ = prepare_semantic_embedding_plan(
+        state,
+        vault,
+        corpus_manifest_sha256=corpus_sha,
+        model_identifier=MODEL,
+        model_revision=MODEL_DIGEST,
+    )
+    refresh_sha, _, _ = _refresh_plan(
+        state,
+        plan_sha=plan_sha,
+        previous_index_sha=old_index_sha,
+    )
+
+    def forbidden_index_read(*args, **kwargs):
+        raise AssertionError(
+            "Embedder refresh path must not read finalized Semantic Index"
+        )
+
+    monkeypatch.setattr(
+        semantic_index,
+        "load_semantic_index_manifest",
+        forbidden_index_read,
+    )
+
+    provider_calls: list[str] = []
+
+    def no_provider(*args, **kwargs):
+        provider_calls.append("called")
+        raise AssertionError("provider must not be called for no-op refresh")
+
+    result_set_sha, _, result_set, stats = (
+        embed_semantic_plan_incremental_with_ollama(
+            state,
+            refresh_plan_sha256=refresh_sha,
+            base_url="http://127.0.0.1:11434",
+            transport=no_provider,
+        )
+    )
+
+    assert provider_calls == []
+    assert result_set.refresh_plan_sha256 == refresh_sha
+    assert stats.embedded_count == 0
+
+    # Reader finalize is expected to read the previous index again, so restore
+    # the loader before finalization.
+    monkeypatch.undo()
+    finalize_semantic_index(
+        state,
+        vault,
+        plan_sha256=plan_sha,
+        result_set_sha256=result_set_sha,
+    )
 
