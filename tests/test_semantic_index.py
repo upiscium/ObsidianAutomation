@@ -984,3 +984,85 @@ def test_embed_refresh_does_not_read_finalized_semantic_index(
         result_set_sha256=result_set_sha,
     )
 
+def test_incremental_refresh_reuses_unchanged_section_after_source_sha_change(
+    tmp_path: Path,
+) -> None:
+    vault = _vault(tmp_path)
+    state = _state(tmp_path)
+    daily = vault / "00-DailyNote" / "2026" / "09" / "2026-09-29.md"
+    daily.write_text(
+        daily.read_text(encoding="utf-8").replace(
+            "# Tasks",
+            "## Stable Section\nStable reusable section.\n# Tasks",
+        ),
+        encoding="utf-8",
+    )
+
+    old_corpus_sha = _corpus(state, vault)
+    old_plan_sha, _, old_plan = prepare_semantic_embedding_plan(
+        state,
+        vault,
+        corpus_manifest_sha256=old_corpus_sha,
+        model_identifier=MODEL,
+        model_revision=MODEL_DIGEST,
+    )
+    calls: list[tuple[str, str, object]] = []
+    old_result_set_sha, _, _ = embed_semantic_plan_with_ollama(
+        state,
+        plan_sha256=old_plan_sha,
+        base_url="http://127.0.0.1:11434",
+        transport=_successful_transport(calls),
+        batch_size=8,
+    )
+    old_index_sha, _, _ = finalize_semantic_index(
+        state,
+        vault,
+        plan_sha256=old_plan_sha,
+        result_set_sha256=old_result_set_sha,
+    )
+
+    daily.write_text(
+        daily.read_text(encoding="utf-8").replace(
+            "Daily semantic signal.",
+            "Daily semantic signal changed once.",
+        ),
+        encoding="utf-8",
+    )
+    new_corpus_sha = _corpus(state, vault)
+    new_plan_sha, _, new_plan = prepare_semantic_embedding_plan(
+        state,
+        vault,
+        corpus_manifest_sha256=new_corpus_sha,
+        model_identifier=MODEL,
+        model_revision=MODEL_DIGEST,
+    )
+    refresh_sha, _, _ = _refresh_plan(
+        state,
+        plan_sha=new_plan_sha,
+        previous_index_sha=old_index_sha,
+    )
+
+    refresh_calls: list[tuple[str, str, object]] = []
+    result_set_sha, _, _, stats = (
+        embed_semantic_plan_incremental_with_ollama(
+            state,
+            refresh_plan_sha256=refresh_sha,
+            base_url="http://127.0.0.1:11434",
+            transport=_successful_transport(refresh_calls),
+            batch_size=8,
+        )
+    )
+
+    assert stats.embedded_count == 1
+    assert stats.reused_count == len(new_plan.requests) - 1
+    embed_payload = refresh_calls[-1][2]
+    assert isinstance(embed_payload, dict)
+    assert len(embed_payload["input"]) == 1
+
+    finalize_semantic_index(
+        state,
+        vault,
+        plan_sha256=new_plan_sha,
+        result_set_sha256=result_set_sha,
+    )
+
