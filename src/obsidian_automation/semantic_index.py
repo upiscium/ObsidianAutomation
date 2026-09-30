@@ -1548,16 +1548,17 @@ def _requests_match_for_vector_reuse(
     previous: EmbeddingRequest,
     current: EmbeddingRequest,
 ) -> bool:
+    # Embedding output is determined by the pinned embedding contract and exact
+    # input bytes, not by the source path/source SHA that supplied those bytes.
+    # This lets an unchanged section reuse its vector even when another section
+    # in the same source note changes and therefore changes the source SHA/chunk
+    # identity.
     return (
         previous.chunk_policy == current.chunk_policy
         and previous.provider == current.provider
         and previous.adapter_version == current.adapter_version
         and previous.model_identifier == current.model_identifier
         and previous.model_revision == current.model_revision
-        and previous.chunk_id == current.chunk_id
-        and previous.source_path == current.source_path
-        and previous.source_kind == current.source_kind
-        and previous.source_sha256 == current.source_sha256
         and previous.content_sha256 == current.content_sha256
         and previous.byte_size == current.byte_size
         and previous.input_text == current.input_text
@@ -1638,16 +1639,35 @@ def prepare_incremental_embedding_refresh_plan(
             "previous semantic index model identity does not match new plan"
         )
 
-    previous_by_chunk = {
-        item.chunk_id: item
-        for item in previous_index.vectors
-    }
     current_chunk_ids = {
         entry.chunk_id for entry in plan.requests
     }
     removed_count = len(
-        set(previous_by_chunk) - current_chunk_ids
+        {item.chunk_id for item in previous_index.vectors}
+        - current_chunk_ids
     )
+
+    reusable: list[
+        tuple[EmbeddingRequest, SemanticVector]
+    ] = []
+    for previous_vector in previous_index.vectors:
+        previous_result = load_embedding_result(
+            ai_root,
+            previous_vector.result_sha256,
+        )
+        if (
+            previous_result.request_sha256
+            != previous_vector.request_sha256
+            or previous_result.vector != previous_vector.vector
+        ):
+            raise SemanticIndexError(
+                "previous semantic index embedding result binding mismatch"
+            )
+        previous_request = load_embedding_request(
+            ai_root,
+            previous_vector.request_sha256,
+        )
+        reusable.append((previous_request, previous_vector))
 
     entries: list[EmbeddingRefreshPlanEntry] = []
     for entry in plan.requests:
@@ -1659,7 +1679,19 @@ def prepare_incremental_embedding_refresh_plan(
             raise SemanticIndexError(
                 "embedding plan chunk/request binding mismatch"
             )
-        previous_vector = previous_by_chunk.get(entry.chunk_id)
+        candidates = [
+            vector
+            for previous_request, vector in reusable
+            if _requests_match_for_vector_reuse(
+                previous_request,
+                request,
+            )
+        ]
+        previous_vector = (
+            min(candidates, key=lambda item: item.result_sha256)
+            if candidates
+            else None
+        )
         reused_from: str | None = None
         if previous_vector is not None:
             vector = _load_reusable_vector(
@@ -1988,7 +2020,7 @@ def finalize_semantic_index(
 
     refresh_plan: EmbeddingRefreshPlan | None = None
     previous_index: SemanticIndexManifest | None = None
-    previous_by_chunk: dict[str, SemanticVector] = {}
+    previous_by_result: dict[str, SemanticVector] = {}
     if result_set.record_version == RESULT_SET_VERSION:
         if result_set.refresh_plan_sha256 is None:
             raise SemanticIndexError(
@@ -2022,13 +2054,14 @@ def finalize_semantic_index(
             raise SemanticIndexError(
                 "incremental refresh previous index binding mismatch"
             )
-        previous_by_chunk = {
-            item.chunk_id: item
+        previous_by_result = {
+            item.result_sha256: item
             for item in previous_index.vectors
         }
         current_ids = {entry.chunk_id for entry in plan.requests}
         if refresh_plan.removed_count != len(
-            set(previous_by_chunk) - current_ids
+            {item.chunk_id for item in previous_index.vectors}
+            - current_ids
         ):
             raise SemanticIndexError(
                 "incremental refresh removed count mismatch"
@@ -2135,14 +2168,10 @@ def finalize_semantic_index(
                     result_entry.reused_from_result_sha256
                     is not None
                 ):
-                    previous_vector = previous_by_chunk.get(
-                        chunk.chunk_id
+                    previous_vector = previous_by_result.get(
+                        result_entry.reused_from_result_sha256
                     )
-                    if (
-                        previous_vector is None
-                        or previous_vector.result_sha256
-                        != result_entry.reused_from_result_sha256
-                    ):
+                    if previous_vector is None:
                         raise SemanticIndexError(
                             "reused embedding result is not bound to previous index"
                         )
