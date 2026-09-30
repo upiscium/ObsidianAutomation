@@ -78,6 +78,13 @@ DEFAULT_LEXICAL_WEIGHT = 0.6
 DEFAULT_VECTOR_WEIGHT = 0.4
 MAX_SOURCE_KIND_WEIGHT = 10.0
 
+RETRIEVAL_PROFILES: dict[str, float] = {
+    "semantic-retrieval-v0": 0.60,
+    "semantic-retrieval-v1": 0.15,
+}
+DEFAULT_RETRIEVAL_PROFILE = "semantic-retrieval-v0"
+DIAGNOSTIC_RETRIEVAL_PROFILE = "diagnostic-custom"
+
 SOURCE_KINDS = ("daily", "idea", "project", "project-note", "knowledge")
 MODES = ("bm25", "vector", "hybrid")
 BENCHMARK_CATEGORIES = (
@@ -457,6 +464,35 @@ def parse_retrieval_filter(value: object) -> RetrievalFilter:
 
 def _default_filter_payload() -> dict[str, object]:
     return RetrievalFilter().payload()
+
+
+def retrieval_profile_lexical_weight(profile: str) -> float:
+    try:
+        return RETRIEVAL_PROFILES[profile]
+    except KeyError as exc:
+        raise SemanticRetrievalError(
+            f"unsupported semantic retrieval profile: {profile}"
+        ) from exc
+
+
+def _resolve_benchmark_retrieval(
+    *,
+    retrieval_profile: str,
+    lexical_weight: float | None,
+) -> tuple[str, float]:
+    profile_weight = retrieval_profile_lexical_weight(retrieval_profile)
+    if lexical_weight is None:
+        return retrieval_profile, profile_weight
+    if (
+        isinstance(lexical_weight, bool)
+        or not isinstance(lexical_weight, (int, float))
+        or not math.isfinite(float(lexical_weight))
+        or not 0.0 <= float(lexical_weight) <= 1.0
+    ):
+        raise SemanticRetrievalError(
+            "lexical_weight must be finite in 0..1"
+        )
+    return DIAGNOSTIC_RETRIEVAL_PROFILE, float(lexical_weight)
 
 
 def parse_source_kind_weights(
@@ -1771,11 +1807,18 @@ def evaluate_semantic_benchmark(
     plan_sha256: str,
     result_set_sha256: str,
     top_k: int = 3,
-    lexical_weight: float = DEFAULT_LEXICAL_WEIGHT,
+    retrieval_profile: str = DEFAULT_RETRIEVAL_PROFILE,
+    lexical_weight: float | None = None,
     source_kind_weights: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     if type(top_k) is not int or not 1 <= top_k <= MAX_TOP_K:
         raise SemanticRetrievalError("benchmark top_k is invalid")
+    resolved_profile, resolved_lexical_weight = (
+        _resolve_benchmark_retrieval(
+            retrieval_profile=retrieval_profile,
+            lexical_weight=lexical_weight,
+        )
+    )
     index_sha = _require_sha256(
         semantic_index_sha256,
         label="semantic index SHA",
@@ -1895,7 +1938,7 @@ def evaluate_semantic_benchmark(
                 query_vector=result.vector,
                 mode=mode,
                 source_kind_weights=source_kind_weights,
-                lexical_weight=lexical_weight,
+                lexical_weight=resolved_lexical_weight,
                 top_k=MAX_TOP_K,
             )
             rankings_by_mode[mode][case.case_id] = ranked
@@ -1970,8 +2013,9 @@ def evaluate_semantic_benchmark(
         "benchmark_plan_sha256": plan_sha,
         "benchmark_result_set_sha256": result_set_sha,
         "top_k": top_k,
-        "lexical_weight": float(lexical_weight),
-        "vector_weight": 1.0 - float(lexical_weight),
+        "retrieval_profile": resolved_profile,
+        "lexical_weight": resolved_lexical_weight,
+        "vector_weight": 1.0 - resolved_lexical_weight,
         "source_kind_weights": parse_source_kind_weights(
             source_kind_weights
         ),
@@ -2067,9 +2111,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     benchmark_eval.add_argument("--result-set-sha", required=True)
     benchmark_eval.add_argument("--top-k", type=int, default=3)
     benchmark_eval.add_argument(
+        "--retrieval-profile",
+        choices=tuple(RETRIEVAL_PROFILES),
+        default=DEFAULT_RETRIEVAL_PROFILE,
+    )
+    benchmark_eval.add_argument(
         "--lexical-weight",
         type=float,
-        default=DEFAULT_LEXICAL_WEIGHT,
+        default=None,
+        help="diagnostic override; production acceptance uses a versioned retrieval profile",
     )
     benchmark_eval.add_argument("--source-kind-weights-json", type=Path)
 
@@ -2187,6 +2237,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 plan_sha256=args.plan_sha,
                 result_set_sha256=args.result_set_sha,
                 top_k=args.top_k,
+                retrieval_profile=args.retrieval_profile,
                 lexical_weight=args.lexical_weight,
                 source_kind_weights=weights,
             )
