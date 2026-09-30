@@ -55,6 +55,7 @@ COMPATIBLE_SELECTIONS = {
         {
             "semantic-focus-v0",
             "semantic-project-distill-v0",
+            "semantic-project-distill-v1",
             "semantic-timeline-v0",
             "semantic-bridge-v0",
             "semantic-gap-v0",
@@ -65,6 +66,7 @@ COMPATIBLE_SELECTIONS = {
         {
             "semantic-focus-v0",
             "semantic-project-distill-v0",
+            "semantic-project-distill-v1",
             "semantic-timeline-v0",
             "semantic-bridge-v0",
             "semantic-gap-v0",

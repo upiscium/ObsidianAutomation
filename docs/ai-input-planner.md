@@ -253,8 +253,13 @@ For controlled semantic deep-Knowledge rollout, add:
 ```text
 AI_INPUT_MODE=semantic-deep-knowledge
 AI_INPUT_SEMANTIC_INDEX_SHA=<exact-reviewed-semantic-index-sha256>
-AI_INPUT_SEMANTIC_SELECTION_POLICY=semantic-project-distill-v0
+AI_INPUT_SEMANTIC_SELECTION_POLICY=semantic-project-distill-v1
 ```
+
+The controlled rollout uses `semantic-project-distill-v1`, which binds
+`semantic-retrieval-v1` (lexical 0.15 / vector 0.85). Historical
+`semantic-project-distill-v0` remains available with its original 0.60 / 0.40
+ranking semantics.
 
 The Semantic Index identity is exact and immutable for the cycle. There is no
 `latest` pointer and the Planner does not rebuild the index automatically. A

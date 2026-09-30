@@ -138,8 +138,13 @@ first Semantic Planner production wave, configure
 ```text
 AI_INPUT_MODE=semantic-deep-knowledge
 AI_INPUT_SEMANTIC_INDEX_SHA=<exact-reviewed-semantic-index-sha256>
-AI_INPUT_SEMANTIC_SELECTION_POLICY=semantic-project-distill-v0
+AI_INPUT_SEMANTIC_SELECTION_POLICY=semantic-project-distill-v1
 ```
+
+The accepted rollout pair is `semantic-project-distill-v1` with
+`semantic-retrieval-v1` (lexical 0.15 / vector 0.85). Production acceptance
+cross-checks the retrieval profile recorded by the benchmark and Selection
+observation before it emits a canary plan.
 
 Do not use a mutable alias for the index. This rollout does not rebuild or
 advance the index automatically. Verify the exact index offline before enabling
