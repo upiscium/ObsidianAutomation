@@ -361,6 +361,52 @@ def test_project_distill_versions_pin_retrieval_semantics(
     assert v0.source_kind_weights == v1.source_kind_weights
 
 
+def test_project_distill_v1_parser_rejects_profile_or_weight_drift(
+    tmp_path: Path,
+) -> None:
+    vault, state, index_sha, _ = _semantic_index(tmp_path)
+    record = build_semantic_selection(
+        state,
+        vault,
+        semantic_index_sha256=index_sha,
+        policy="semantic-project-distill-v1",
+        recent_context_limit=0,
+    )
+    payload = json.loads(record.to_json_bytes())
+
+    wrong_weight = json.loads(record.to_json_bytes())
+    wrong_weight["retrieval"]["lexical_weight"] = 0.60
+    wrong_weight["retrieval"]["vector_weight"] = 0.40
+    with pytest.raises(
+        SemanticSelectionError,
+        match="weight does not match policy version",
+    ):
+        parse_semantic_selection(
+            json.dumps(
+                wrong_weight,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+
+    payload["policy_observations"]["retrieval_profile"] = (
+        "semantic-retrieval-v0"
+    )
+    with pytest.raises(
+        SemanticSelectionError,
+        match="profile does not match policy version",
+    ):
+        parse_semantic_selection(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+
+
 def test_policy_specific_anchor_contracts(tmp_path: Path) -> None:
     vault, state, index_sha, _ = _semantic_index(tmp_path)
 
