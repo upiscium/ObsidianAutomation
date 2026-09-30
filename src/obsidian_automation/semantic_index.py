@@ -52,8 +52,10 @@ RESULT_SET_DIR = "semantic-embedding-result-sets"
 SEMANTIC_INDEX_DIR = "semantic-index"
 REQUEST_VERSION = 1
 PLAN_VERSION = 1
+REFRESH_PLAN_VERSION = 1
 RESULT_VERSION = 1
-RESULT_SET_VERSION = 1
+LEGACY_RESULT_SET_VERSION = 1
+RESULT_SET_VERSION = 2
 INDEX_VERSION = 1
 PROVIDER_NAME = "ollama"
 ADAPTER_VERSION = "ollama-embed-v0"
@@ -151,6 +153,41 @@ class EmbeddingPlan:
 
 
 @dataclass(frozen=True)
+class EmbeddingRefreshPlanEntry:
+    chunk_id: str
+    request_sha256: str
+    reused_from_result_sha256: str | None
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "chunk_id": self.chunk_id,
+            "request_sha256": self.request_sha256,
+            "reused_from_result_sha256": self.reused_from_result_sha256,
+        }
+
+
+@dataclass(frozen=True)
+class EmbeddingRefreshPlan:
+    plan_sha256: str
+    previous_index_sha256: str
+    vector_dimension: int
+    removed_count: int
+    entries: tuple[EmbeddingRefreshPlanEntry, ...]
+
+    def to_json_bytes(self) -> bytes:
+        return _canonical_json_bytes(
+            {
+                "record_version": REFRESH_PLAN_VERSION,
+                "plan_sha256": self.plan_sha256,
+                "previous_index_sha256": self.previous_index_sha256,
+                "vector_dimension": self.vector_dimension,
+                "removed_count": self.removed_count,
+                "entries": [entry.payload() for entry in self.entries],
+            }
+        )
+
+
+@dataclass(frozen=True)
 class EmbeddingResult:
     request_sha256: str
     provider: str
@@ -177,12 +214,18 @@ class EmbeddingResult:
 class EmbeddingResultSetEntry:
     request_sha256: str
     result_sha256: str
+    reused_from_result_sha256: str | None = None
 
-    def payload(self) -> dict[str, str]:
-        return {
+    def payload(self, *, record_version: int) -> dict[str, object]:
+        value: dict[str, object] = {
             "request_sha256": self.request_sha256,
             "result_sha256": self.result_sha256,
         }
+        if record_version >= RESULT_SET_VERSION:
+            value["reused_from_result_sha256"] = (
+                self.reused_from_result_sha256
+            )
+        return value
 
 
 @dataclass(frozen=True)
@@ -191,17 +234,30 @@ class EmbeddingResultSet:
     vector_dimension: int
     vector_encoding: str
     results: tuple[EmbeddingResultSetEntry, ...]
+    record_version: int = LEGACY_RESULT_SET_VERSION
+    refresh_plan_sha256: str | None = None
 
     def to_json_bytes(self) -> bytes:
-        return _canonical_json_bytes(
-            {
-                "record_version": RESULT_SET_VERSION,
-                "plan_sha256": self.plan_sha256,
-                "vector_dimension": self.vector_dimension,
-                "vector_encoding": self.vector_encoding,
-                "results": [entry.payload() for entry in self.results],
-            }
-        )
+        value: dict[str, object] = {
+            "record_version": self.record_version,
+            "plan_sha256": self.plan_sha256,
+            "vector_dimension": self.vector_dimension,
+            "vector_encoding": self.vector_encoding,
+            "results": [
+                entry.payload(record_version=self.record_version)
+                for entry in self.results
+            ],
+        }
+        if self.record_version >= RESULT_SET_VERSION:
+            value["refresh_plan_sha256"] = self.refresh_plan_sha256
+        return _canonical_json_bytes(value)
+
+
+@dataclass(frozen=True)
+class IncrementalEmbeddingStats:
+    reused_count: int
+    embedded_count: int
+    removed_count: int
 
 
 @dataclass(frozen=True)
@@ -601,6 +657,134 @@ def load_embedding_plan(
     )
 
 
+def parse_embedding_refresh_plan(data: bytes) -> EmbeddingRefreshPlan:
+    value = _decode_json_object(
+        data,
+        label="semantic embedding refresh plan",
+    )
+    if set(value) != {
+        "record_version",
+        "plan_sha256",
+        "previous_index_sha256",
+        "vector_dimension",
+        "removed_count",
+        "entries",
+    }:
+        raise SemanticIndexError(
+            "semantic embedding refresh plan properties do not match contract"
+        )
+    if value["record_version"] != REFRESH_PLAN_VERSION:
+        raise SemanticIndexError(
+            "unsupported semantic embedding refresh plan version"
+        )
+    plan_sha = _require_sha256(
+        value["plan_sha256"],
+        label="embedding plan SHA",
+    )
+    previous_index_sha = _require_sha256(
+        value["previous_index_sha256"],
+        label="previous semantic index SHA",
+    )
+    dimension = value["vector_dimension"]
+    if (
+        type(dimension) is not int
+        or not 1 <= dimension <= MAX_VECTOR_DIMENSION
+    ):
+        raise SemanticIndexError(
+            "semantic embedding refresh plan dimension is invalid"
+        )
+    removed_count = value["removed_count"]
+    if (
+        type(removed_count) is not int
+        or not 0 <= removed_count <= MAX_CHUNKS
+    ):
+        raise SemanticIndexError(
+            "semantic embedding refresh plan removed count is invalid"
+        )
+    raw_entries = value["entries"]
+    if (
+        not isinstance(raw_entries, list)
+        or not 1 <= len(raw_entries) <= MAX_CHUNKS
+    ):
+        raise SemanticIndexError(
+            "semantic embedding refresh plan entries are invalid"
+        )
+    entries: list[EmbeddingRefreshPlanEntry] = []
+    seen_chunks: set[str] = set()
+    seen_requests: set[str] = set()
+    for raw in raw_entries:
+        if not isinstance(raw, dict) or set(raw) != {
+            "chunk_id",
+            "request_sha256",
+            "reused_from_result_sha256",
+        }:
+            raise SemanticIndexError(
+                "semantic embedding refresh plan entry is invalid"
+            )
+        chunk_id = _require_sha256(raw["chunk_id"], label="chunk id")
+        request_sha = _require_sha256(
+            raw["request_sha256"],
+            label="embedding request SHA",
+        )
+        reused = raw["reused_from_result_sha256"]
+        if reused is not None:
+            reused = _require_sha256(
+                reused,
+                label="reused embedding result SHA",
+            )
+        if chunk_id in seen_chunks or request_sha in seen_requests:
+            raise SemanticIndexError(
+                "semantic embedding refresh plan contains duplicate entries"
+            )
+        seen_chunks.add(chunk_id)
+        seen_requests.add(request_sha)
+        entries.append(
+            EmbeddingRefreshPlanEntry(
+                chunk_id=chunk_id,
+                request_sha256=request_sha,
+                reused_from_result_sha256=reused,
+            )
+        )
+    return EmbeddingRefreshPlan(
+        plan_sha256=plan_sha,
+        previous_index_sha256=previous_index_sha,
+        vector_dimension=dimension,
+        removed_count=removed_count,
+        entries=tuple(entries),
+    )
+
+
+def store_embedding_refresh_plan(
+    ai_root: Path,
+    refresh_plan: EmbeddingRefreshPlan,
+) -> tuple[str, Path]:
+    data = refresh_plan.to_json_bytes()
+    if parse_embedding_refresh_plan(data) != refresh_plan:
+        raise SemanticIndexError(
+            "semantic embedding refresh plan canonical round-trip mismatch"
+        )
+    return _store_content_addressed(
+        _artifact_directory(ai_root, PLAN_DIR),
+        "semantic-embedding-refresh-plan",
+        data,
+    )
+
+
+def load_embedding_refresh_plan(
+    ai_root: Path,
+    refresh_plan_sha256: str,
+) -> EmbeddingRefreshPlan:
+    return parse_embedding_refresh_plan(
+        _load_content_addressed(
+            ai_root,
+            PLAN_DIR,
+            "semantic-embedding-refresh-plan",
+            refresh_plan_sha256,
+            label="semantic embedding refresh plan SHA",
+        )
+    )
+
+
 def parse_embedding_result(data: bytes) -> EmbeddingResult:
     value = _decode_json_object(data, label="semantic embedding result")
     if set(value) != {
@@ -678,17 +862,33 @@ def load_embedding_result(
 
 def parse_embedding_result_set(data: bytes) -> EmbeddingResultSet:
     value = _decode_json_object(data, label="semantic embedding result set")
-    if set(value) != {
-        "record_version",
-        "plan_sha256",
-        "vector_dimension",
-        "vector_encoding",
-        "results",
-    }:
+    record_version = value.get("record_version")
+    expected_properties = (
+        {
+            "record_version",
+            "plan_sha256",
+            "vector_dimension",
+            "vector_encoding",
+            "results",
+        }
+        if record_version == LEGACY_RESULT_SET_VERSION
+        else {
+            "record_version",
+            "plan_sha256",
+            "vector_dimension",
+            "vector_encoding",
+            "refresh_plan_sha256",
+            "results",
+        }
+    )
+    if set(value) != expected_properties:
         raise SemanticIndexError(
             "semantic embedding result set properties do not match contract"
         )
-    if value["record_version"] != RESULT_SET_VERSION:
+    if record_version not in {
+        LEGACY_RESULT_SET_VERSION,
+        RESULT_SET_VERSION,
+    }:
         raise SemanticIndexError(
             "unsupported semantic embedding result set version"
         )
@@ -708,6 +908,12 @@ def parse_embedding_result_set(data: bytes) -> EmbeddingResultSet:
         raise SemanticIndexError(
             "semantic embedding result set vector encoding is unsupported"
         )
+    refresh_plan_sha: str | None = None
+    if record_version == RESULT_SET_VERSION:
+        refresh_plan_sha = _require_sha256(
+            value["refresh_plan_sha256"],
+            label="semantic embedding refresh plan SHA",
+        )
     raw_results = value["results"]
     if (
         not isinstance(raw_results, list)
@@ -720,10 +926,16 @@ def parse_embedding_result_set(data: bytes) -> EmbeddingResultSet:
     seen_requests: set[str] = set()
     seen_results: set[str] = set()
     for raw in raw_results:
-        if (
-            not isinstance(raw, dict)
-            or set(raw) != {"request_sha256", "result_sha256"}
-        ):
+        expected = (
+            {"request_sha256", "result_sha256"}
+            if record_version == LEGACY_RESULT_SET_VERSION
+            else {
+                "request_sha256",
+                "result_sha256",
+                "reused_from_result_sha256",
+            }
+        )
+        if not isinstance(raw, dict) or set(raw) != expected:
             raise SemanticIndexError(
                 "semantic embedding result set entry is invalid"
             )
@@ -735,6 +947,14 @@ def parse_embedding_result_set(data: bytes) -> EmbeddingResultSet:
             raw["result_sha256"],
             label="embedding result SHA",
         )
+        reused_from: str | None = None
+        if record_version == RESULT_SET_VERSION:
+            raw_reused = raw["reused_from_result_sha256"]
+            if raw_reused is not None:
+                reused_from = _require_sha256(
+                    raw_reused,
+                    label="reused embedding result SHA",
+                )
         if request_sha in seen_requests or result_sha in seen_results:
             raise SemanticIndexError(
                 "semantic embedding result set contains duplicate entries"
@@ -745,6 +965,7 @@ def parse_embedding_result_set(data: bytes) -> EmbeddingResultSet:
             EmbeddingResultSetEntry(
                 request_sha256=request_sha,
                 result_sha256=result_sha,
+                reused_from_result_sha256=reused_from,
             )
         )
     return EmbeddingResultSet(
@@ -752,6 +973,8 @@ def parse_embedding_result_set(data: bytes) -> EmbeddingResultSet:
         vector_dimension=dimension,
         vector_encoding=VECTOR_ENCODING,
         results=tuple(entries),
+        record_version=record_version,
+        refresh_plan_sha256=refresh_plan_sha,
     )
 
 
@@ -1310,6 +1533,7 @@ def embed_semantic_plan_with_ollama(
         vector_dimension=vector_dimension,
         vector_encoding=VECTOR_ENCODING,
         results=tuple(result_entries),
+        record_version=LEGACY_RESULT_SET_VERSION,
     )
     result_set_sha, result_set_path = (
         store_embedding_result_set(
@@ -1319,6 +1543,431 @@ def embed_semantic_plan_with_ollama(
     )
     return result_set_sha, result_set_path, result_set
 
+
+def _requests_match_for_vector_reuse(
+    previous: EmbeddingRequest,
+    current: EmbeddingRequest,
+) -> bool:
+    # Embedding output is determined by the pinned embedding contract and exact
+    # input bytes, not by the source path/source SHA that supplied those bytes.
+    # This lets an unchanged section reuse its vector even when another section
+    # in the same source note changes and therefore changes the source SHA/chunk
+    # identity.
+    return (
+        previous.chunk_policy == current.chunk_policy
+        and previous.provider == current.provider
+        and previous.adapter_version == current.adapter_version
+        and previous.model_identifier == current.model_identifier
+        and previous.model_revision == current.model_revision
+        and previous.content_sha256 == current.content_sha256
+        and previous.byte_size == current.byte_size
+        and previous.input_text == current.input_text
+    )
+
+
+def _load_reusable_vector(
+    ai_root: Path,
+    *,
+    current_request: EmbeddingRequest,
+    reused_from_result_sha256: str,
+    expected_vector: tuple[float, ...] | None = None,
+) -> tuple[float, ...]:
+    previous_result = load_embedding_result(
+        ai_root,
+        reused_from_result_sha256,
+    )
+    previous_request = load_embedding_request(
+        ai_root,
+        previous_result.request_sha256,
+    )
+    if not _requests_match_for_vector_reuse(
+        previous_request,
+        current_request,
+    ):
+        raise SemanticIndexError(
+            "reused embedding result request does not match current chunk"
+        )
+    if (
+        previous_result.provider != current_request.provider
+        or previous_result.adapter_version
+        != current_request.adapter_version
+        or previous_result.model_identifier
+        != current_request.model_identifier
+        or previous_result.model_revision
+        != current_request.model_revision
+    ):
+        raise SemanticIndexError(
+            "reused embedding result model binding mismatch"
+        )
+    if (
+        expected_vector is not None
+        and previous_result.vector != expected_vector
+    ):
+        raise SemanticIndexError(
+            "reused embedding result does not match previous index vector"
+        )
+    return previous_result.vector
+
+
+def prepare_incremental_embedding_refresh_plan(
+    ai_root: Path,
+    *,
+    plan_sha256: str,
+    previous_index_sha256: str,
+) -> tuple[str, Path, EmbeddingRefreshPlan]:
+    plan_sha = _require_sha256(
+        plan_sha256,
+        label="embedding plan SHA",
+    )
+    previous_index_sha = _require_sha256(
+        previous_index_sha256,
+        label="previous semantic index SHA",
+    )
+    plan = load_embedding_plan(ai_root, plan_sha)
+    previous_index = load_semantic_index_manifest(
+        ai_root,
+        previous_index_sha,
+    )
+    if (
+        previous_index.provider != plan.provider
+        or previous_index.adapter_version != plan.adapter_version
+        or previous_index.model_identifier != plan.model_identifier
+        or previous_index.model_revision != plan.model_revision
+        or previous_index.vector_encoding != VECTOR_ENCODING
+    ):
+        raise SemanticIndexError(
+            "previous semantic index model identity does not match new plan"
+        )
+
+    current_chunk_ids = {
+        entry.chunk_id for entry in plan.requests
+    }
+    removed_count = len(
+        {item.chunk_id for item in previous_index.vectors}
+        - current_chunk_ids
+    )
+
+    reusable: list[
+        tuple[EmbeddingRequest, SemanticVector]
+    ] = []
+    for previous_vector in previous_index.vectors:
+        previous_result = load_embedding_result(
+            ai_root,
+            previous_vector.result_sha256,
+        )
+        if (
+            previous_result.request_sha256
+            != previous_vector.request_sha256
+            or previous_result.vector != previous_vector.vector
+        ):
+            raise SemanticIndexError(
+                "previous semantic index embedding result binding mismatch"
+            )
+        previous_request = load_embedding_request(
+            ai_root,
+            previous_vector.request_sha256,
+        )
+        reusable.append((previous_request, previous_vector))
+
+    entries: list[EmbeddingRefreshPlanEntry] = []
+    for entry in plan.requests:
+        request = load_embedding_request(
+            ai_root,
+            entry.request_sha256,
+        )
+        if request.chunk_id != entry.chunk_id:
+            raise SemanticIndexError(
+                "embedding plan chunk/request binding mismatch"
+            )
+        candidates = [
+            vector
+            for previous_request, vector in reusable
+            if _requests_match_for_vector_reuse(
+                previous_request,
+                request,
+            )
+        ]
+        previous_vector = (
+            min(candidates, key=lambda item: item.result_sha256)
+            if candidates
+            else None
+        )
+        reused_from: str | None = None
+        if previous_vector is not None:
+            vector = _load_reusable_vector(
+                ai_root,
+                current_request=request,
+                reused_from_result_sha256=(
+                    previous_vector.result_sha256
+                ),
+                expected_vector=previous_vector.vector,
+            )
+            if len(vector) != previous_index.vector_dimension:
+                raise SemanticIndexError(
+                    "reused embedding vector dimension mismatch"
+                )
+            reused_from = previous_vector.result_sha256
+        entries.append(
+            EmbeddingRefreshPlanEntry(
+                chunk_id=entry.chunk_id,
+                request_sha256=entry.request_sha256,
+                reused_from_result_sha256=reused_from,
+            )
+        )
+
+    refresh_plan = EmbeddingRefreshPlan(
+        plan_sha256=plan_sha,
+        previous_index_sha256=previous_index_sha,
+        vector_dimension=previous_index.vector_dimension,
+        removed_count=removed_count,
+        entries=tuple(entries),
+    )
+    refresh_sha, path = store_embedding_refresh_plan(
+        ai_root,
+        refresh_plan,
+    )
+    return refresh_sha, path, refresh_plan
+
+
+def embed_semantic_plan_incremental_with_ollama(
+    ai_root: Path,
+    *,
+    refresh_plan_sha256: str,
+    base_url: str,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    transport: JSONTransport | None = None,
+) -> tuple[
+    str,
+    Path,
+    EmbeddingResultSet,
+    IncrementalEmbeddingStats,
+]:
+    refresh_plan_sha = _require_sha256(
+        refresh_plan_sha256,
+        label="semantic embedding refresh plan SHA",
+    )
+    if (
+        type(batch_size) is not int
+        or not 1 <= batch_size <= MAX_BATCH_SIZE
+    ):
+        raise SemanticIndexError(
+            f"batch_size must be between 1 and {MAX_BATCH_SIZE}"
+        )
+
+    refresh_plan = load_embedding_refresh_plan(
+        ai_root,
+        refresh_plan_sha,
+    )
+    plan = load_embedding_plan(
+        ai_root,
+        refresh_plan.plan_sha256,
+    )
+    if len(refresh_plan.entries) != len(plan.requests):
+        raise SemanticIndexError(
+            "semantic embedding refresh plan does not match embedding plan"
+        )
+
+    loaded: list[
+        tuple[
+            EmbeddingPlanEntry,
+            EmbeddingRequest,
+            EmbeddingRefreshPlanEntry,
+        ]
+    ] = []
+    for entry, refresh_entry in zip(
+        plan.requests,
+        refresh_plan.entries,
+        strict=True,
+    ):
+        if (
+            refresh_entry.chunk_id != entry.chunk_id
+            or refresh_entry.request_sha256 != entry.request_sha256
+        ):
+            raise SemanticIndexError(
+                "semantic embedding refresh plan entry order mismatch"
+            )
+        request = load_embedding_request(
+            ai_root,
+            entry.request_sha256,
+        )
+        if request.chunk_id != entry.chunk_id:
+            raise SemanticIndexError(
+                "embedding plan chunk/request binding mismatch"
+            )
+        if (
+            request.corpus_manifest_sha256
+            != plan.corpus_manifest_sha256
+            or request.chunk_policy != plan.chunk_policy
+            or request.provider != plan.provider
+            or request.adapter_version != plan.adapter_version
+            or request.model_identifier != plan.model_identifier
+            or request.model_revision != plan.model_revision
+        ):
+            raise SemanticIndexError(
+                "embedding request does not match embedding plan"
+            )
+        loaded.append((entry, request, refresh_entry))
+
+    result_by_request: dict[
+        str,
+        EmbeddingResultSetEntry,
+    ] = {}
+    pending: list[
+        tuple[EmbeddingPlanEntry, EmbeddingRequest]
+    ] = []
+    reused_count = 0
+    embedded_count = 0
+    vector_dimension = refresh_plan.vector_dimension
+
+    for entry, request, refresh_entry in loaded:
+        reused_from = refresh_entry.reused_from_result_sha256
+        if reused_from is None:
+            pending.append((entry, request))
+            continue
+        vector = _load_reusable_vector(
+            ai_root,
+            current_request=request,
+            reused_from_result_sha256=reused_from,
+        )
+        if len(vector) != vector_dimension:
+            raise SemanticIndexError(
+                "reused embedding vector dimension mismatch"
+            )
+        result = EmbeddingResult(
+            request_sha256=entry.request_sha256,
+            provider=plan.provider,
+            adapter_version=plan.adapter_version,
+            model_identifier=plan.model_identifier,
+            model_revision=plan.model_revision,
+            vector=vector,
+        )
+        result_sha, _ = store_embedding_result(
+            ai_root,
+            result,
+        )
+        result_by_request[entry.request_sha256] = (
+            EmbeddingResultSetEntry(
+                request_sha256=entry.request_sha256,
+                result_sha256=result_sha,
+                reused_from_result_sha256=reused_from,
+            )
+        )
+        reused_count += 1
+
+    if pending:
+        identity = resolve_ollama_model(
+            base_url,
+            plan.model_identifier,
+            timeout=timeout,
+            transport=transport,
+        )
+        if (
+            identity.identifier != plan.model_identifier
+            or identity.digest != plan.model_revision
+        ):
+            raise SemanticIndexError(
+                "resolved Ollama model identity does not match "
+                "pinned embedding plan"
+            )
+
+        for start in range(0, len(pending), batch_size):
+            batch = pending[start : start + batch_size]
+            payload = {
+                "model": plan.model_identifier,
+                "input": [
+                    request.input_text
+                    for _, request in batch
+                ],
+                "truncate": False,
+            }
+            if transport is None:
+                response = _embedding_request_json(
+                    base_url,
+                    payload=payload,
+                    timeout=timeout,
+                )
+            else:
+                response = transport(
+                    base_url,
+                    method="POST",
+                    path="/api/embed",
+                    payload=payload,
+                    timeout=timeout,
+                )
+            if response.get("model") != plan.model_identifier:
+                raise SemanticIndexError(
+                    "Ollama embedding response model does not match plan"
+                )
+            raw_vectors = response.get("embeddings")
+            if (
+                not isinstance(raw_vectors, list)
+                or len(raw_vectors) != len(batch)
+            ):
+                raise SemanticIndexError(
+                    "Ollama embedding response vector count mismatch"
+                )
+
+            for (entry, _request), raw_vector in zip(
+                batch,
+                raw_vectors,
+                strict=True,
+            ):
+                vector = _require_vector(raw_vector)
+                if len(vector) != vector_dimension:
+                    raise SemanticIndexError(
+                        "incremental embedding vector dimension mismatch"
+                    )
+                result = EmbeddingResult(
+                    request_sha256=entry.request_sha256,
+                    provider=plan.provider,
+                    adapter_version=plan.adapter_version,
+                    model_identifier=plan.model_identifier,
+                    model_revision=plan.model_revision,
+                    vector=vector,
+                )
+                result_sha, _ = store_embedding_result(
+                    ai_root,
+                    result,
+                )
+                result_by_request[entry.request_sha256] = (
+                    EmbeddingResultSetEntry(
+                        request_sha256=entry.request_sha256,
+                        result_sha256=result_sha,
+                        reused_from_result_sha256=None,
+                    )
+                )
+                embedded_count += 1
+
+    ordered_results = tuple(
+        result_by_request[entry.request_sha256]
+        for entry in plan.requests
+    )
+    if len(ordered_results) != len(plan.requests):
+        raise SemanticIndexError(
+            "incremental embedding result set is incomplete"
+        )
+
+    result_set = EmbeddingResultSet(
+        plan_sha256=refresh_plan.plan_sha256,
+        vector_dimension=vector_dimension,
+        vector_encoding=VECTOR_ENCODING,
+        results=ordered_results,
+        record_version=RESULT_SET_VERSION,
+        refresh_plan_sha256=refresh_plan_sha,
+    )
+    result_set_sha, result_set_path = (
+        store_embedding_result_set(
+            ai_root,
+            result_set,
+        )
+    )
+    stats = IncrementalEmbeddingStats(
+        reused_count=reused_count,
+        embedded_count=embedded_count,
+        removed_count=refresh_plan.removed_count,
+    )
+    return result_set_sha, result_set_path, result_set, stats
 
 def _corpus_chunk_bindings(
     manifest: SemanticCorpusManifest,
@@ -1369,6 +2018,55 @@ def finalize_semantic_index(
             "embedding result set order does not match embedding plan"
         )
 
+    refresh_plan: EmbeddingRefreshPlan | None = None
+    previous_index: SemanticIndexManifest | None = None
+    previous_by_result: dict[str, SemanticVector] = {}
+    if result_set.record_version == RESULT_SET_VERSION:
+        if result_set.refresh_plan_sha256 is None:
+            raise SemanticIndexError(
+                "incremental embedding result set has no refresh plan binding"
+            )
+        refresh_plan = load_embedding_refresh_plan(
+            ai_root,
+            result_set.refresh_plan_sha256,
+        )
+        if refresh_plan.plan_sha256 != plan_sha:
+            raise SemanticIndexError(
+                "incremental refresh plan does not match embedding plan"
+            )
+        if len(refresh_plan.entries) != len(plan.requests):
+            raise SemanticIndexError(
+                "incremental refresh plan entry count mismatch"
+            )
+        previous_index = load_semantic_index_manifest(
+            ai_root,
+            refresh_plan.previous_index_sha256,
+        )
+        if (
+            previous_index.provider != plan.provider
+            or previous_index.adapter_version != plan.adapter_version
+            or previous_index.model_identifier != plan.model_identifier
+            or previous_index.model_revision != plan.model_revision
+            or previous_index.vector_dimension
+            != refresh_plan.vector_dimension
+            or previous_index.vector_encoding != VECTOR_ENCODING
+        ):
+            raise SemanticIndexError(
+                "incremental refresh previous index binding mismatch"
+            )
+        previous_by_result = {
+            item.result_sha256: item
+            for item in previous_index.vectors
+        }
+        current_ids = {entry.chunk_id for entry in plan.requests}
+        if refresh_plan.removed_count != len(
+            {item.chunk_id for item in previous_index.vectors}
+            - current_ids
+        ):
+            raise SemanticIndexError(
+                "incremental refresh removed count mismatch"
+            )
+
     try:
         with mirror_read_lock(ai_root):
             corpus = load_semantic_corpus_manifest(
@@ -1403,6 +2101,21 @@ def finalize_semantic_index(
                     raise SemanticIndexError(
                         "embedding plan chunk order does not match corpus"
                     )
+                refresh_entry: EmbeddingRefreshPlanEntry | None = None
+                if refresh_plan is not None:
+                    refresh_entry = refresh_plan.entries[
+                        len(vectors)
+                    ]
+                    if (
+                        refresh_entry.chunk_id != plan_entry.chunk_id
+                        or refresh_entry.request_sha256
+                        != plan_entry.request_sha256
+                        or refresh_entry.reused_from_result_sha256
+                        != result_entry.reused_from_result_sha256
+                    ):
+                        raise SemanticIndexError(
+                            "incremental refresh provenance does not match result set"
+                        )
                 request = load_embedding_request(
                     ai_root,
                     plan_entry.request_sha256,
@@ -1451,6 +2164,29 @@ def finalize_semantic_index(
                     raise SemanticIndexError(
                         "embedding result dimension mismatch"
                     )
+                if (
+                    result_entry.reused_from_result_sha256
+                    is not None
+                ):
+                    previous_vector = previous_by_result.get(
+                        result_entry.reused_from_result_sha256
+                    )
+                    if previous_vector is None:
+                        raise SemanticIndexError(
+                            "reused embedding result is not bound to previous index"
+                        )
+                    reused_vector = _load_reusable_vector(
+                        ai_root,
+                        current_request=request,
+                        reused_from_result_sha256=(
+                            result_entry.reused_from_result_sha256
+                        ),
+                        expected_vector=previous_vector.vector,
+                    )
+                    if reused_vector != result.vector:
+                        raise SemanticIndexError(
+                            "reused embedding provenance vector mismatch"
+                        )
                 vectors.append(
                     SemanticVector(
                         chunk_id=chunk.chunk_id,
@@ -1550,6 +2286,40 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=DEFAULT_BATCH_SIZE,
     )
 
+    prepare_refresh = subparsers.add_parser("prepare-refresh")
+    prepare_refresh.add_argument(
+        "--ai-root",
+        type=Path,
+        required=True,
+    )
+    prepare_refresh.add_argument("--plan-sha", required=True)
+    prepare_refresh.add_argument(
+        "--previous-index-sha",
+        required=True,
+    )
+
+    embed_refresh = subparsers.add_parser("embed-refresh")
+    embed_refresh.add_argument(
+        "--ai-root",
+        type=Path,
+        required=True,
+    )
+    embed_refresh.add_argument(
+        "--refresh-plan-sha",
+        required=True,
+    )
+    embed_refresh.add_argument("--base-url", required=True)
+    embed_refresh.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT_SECONDS,
+    )
+    embed_refresh.add_argument(
+        "--batch-size",
+        type=int,
+        default=DEFAULT_BATCH_SIZE,
+    )
+
     finalize = subparsers.add_parser("finalize")
     finalize.add_argument(
         "--ai-root",
@@ -1622,6 +2392,63 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "vector_encoding": (
                         result_set.vector_encoding
                     ),
+                }
+            )
+        elif args.command == "prepare-refresh":
+            refresh_sha, path, refresh_plan = (
+                prepare_incremental_embedding_refresh_plan(
+                    args.ai_root,
+                    plan_sha256=args.plan_sha,
+                    previous_index_sha256=args.previous_index_sha,
+                )
+            )
+            reused_count = sum(
+                entry.reused_from_result_sha256 is not None
+                for entry in refresh_plan.entries
+            )
+            _print_json(
+                {
+                    "refresh_plan_sha256": refresh_sha,
+                    "path": str(path),
+                    "plan_sha256": refresh_plan.plan_sha256,
+                    "previous_index_sha256": (
+                        refresh_plan.previous_index_sha256
+                    ),
+                    "vector_dimension": (
+                        refresh_plan.vector_dimension
+                    ),
+                    "request_count": len(refresh_plan.entries),
+                    "reused_count": reused_count,
+                    "embedded_count": (
+                        len(refresh_plan.entries) - reused_count
+                    ),
+                    "removed_count": refresh_plan.removed_count,
+                }
+            )
+        elif args.command == "embed-refresh":
+            (
+                result_set_sha,
+                path,
+                result_set,
+                stats,
+            ) = embed_semantic_plan_incremental_with_ollama(
+                args.ai_root,
+                refresh_plan_sha256=args.refresh_plan_sha,
+                base_url=args.base_url,
+                timeout=args.timeout,
+                batch_size=args.batch_size,
+            )
+            _print_json(
+                {
+                    "result_set_sha256": result_set_sha,
+                    "path": str(path),
+                    "plan_sha256": result_set.plan_sha256,
+                    "result_count": len(result_set.results),
+                    "vector_dimension": result_set.vector_dimension,
+                    "vector_encoding": result_set.vector_encoding,
+                    "reused_count": stats.reused_count,
+                    "embedded_count": stats.embedded_count,
+                    "removed_count": stats.removed_count,
                 }
             )
         else:

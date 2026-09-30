@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import obsidian_automation.semantic_index as semantic_index
 from obsidian_automation.ollama_generator import OllamaProviderError
 from obsidian_automation.semantic_corpus import (
     build_semantic_corpus,
@@ -14,11 +15,13 @@ from obsidian_automation.semantic_index import (
     ADAPTER_VERSION,
     PROVIDER_NAME,
     SemanticIndexError,
+    embed_semantic_plan_incremental_with_ollama,
     embed_semantic_plan_with_ollama,
     finalize_semantic_index,
     load_embedding_request,
     load_semantic_index_manifest,
     parse_embedding_result,
+    prepare_incremental_embedding_refresh_plan,
     prepare_semantic_embedding_plan,
 )
 
@@ -582,3 +585,484 @@ def test_result_parser_rejects_non_finite_vector() -> None:
         match="non-finite",
     ):
         parse_embedding_result(data)
+
+def _finalized_index(tmp_path: Path):
+    (
+        vault,
+        state,
+        corpus_sha,
+        plan_sha,
+        plan,
+        result_set_sha,
+        result_set,
+        calls,
+    ) = _prepare_and_embed(tmp_path)
+    index_sha, _, index = finalize_semantic_index(
+        state,
+        vault,
+        plan_sha256=plan_sha,
+        result_set_sha256=result_set_sha,
+    )
+    return (
+        vault,
+        state,
+        corpus_sha,
+        plan_sha,
+        plan,
+        result_set_sha,
+        result_set,
+        index_sha,
+        index,
+        calls,
+    )
+
+
+def _refresh_plan(
+    state: Path,
+    *,
+    plan_sha: str,
+    previous_index_sha: str,
+):
+    return prepare_incremental_embedding_refresh_plan(
+        state,
+        plan_sha256=plan_sha,
+        previous_index_sha256=previous_index_sha,
+    )
+
+
+def test_incremental_noop_reuses_all_vectors_without_provider_call(
+    tmp_path: Path,
+) -> None:
+    (
+        vault,
+        state,
+        _corpus_sha,
+        _plan_sha,
+        old_plan,
+        _result_set_sha,
+        _result_set,
+        old_index_sha,
+        _old_index,
+        _calls,
+    ) = _finalized_index(tmp_path)
+
+    corpus_sha = _corpus(state, vault)
+    plan_sha, _, plan = prepare_semantic_embedding_plan(
+        state,
+        vault,
+        corpus_manifest_sha256=corpus_sha,
+        model_identifier=MODEL,
+        model_revision=MODEL_DIGEST,
+    )
+    provider_calls: list[str] = []
+
+    def no_provider(*args, **kwargs):
+        provider_calls.append("called")
+        raise AssertionError("provider must not be called for no-op refresh")
+
+    refresh_sha, _, refresh_plan = _refresh_plan(
+        state,
+        plan_sha=plan_sha,
+        previous_index_sha=old_index_sha,
+    )
+    result_set_sha, _, result_set, stats = (
+        embed_semantic_plan_incremental_with_ollama(
+            state,
+            refresh_plan_sha256=refresh_sha,
+            base_url="http://127.0.0.1:11434",
+            transport=no_provider,
+        )
+    )
+
+    assert provider_calls == []
+    assert refresh_plan.previous_index_sha256 == old_index_sha
+    assert result_set.refresh_plan_sha256 == refresh_sha
+    assert stats.reused_count == len(plan.requests)
+    assert stats.embedded_count == 0
+    assert stats.removed_count == 0
+    assert result_set.record_version == 2
+    assert all(
+        entry.reused_from_result_sha256 is not None
+        for entry in result_set.results
+    )
+
+    new_index_sha, _, new_index = finalize_semantic_index(
+        state,
+        vault,
+        plan_sha256=plan_sha,
+        result_set_sha256=result_set_sha,
+    )
+    assert new_index_sha != old_index_sha
+    assert [item.chunk_id for item in new_index.vectors] == [
+        item.chunk_id for item in _old_index.vectors
+    ]
+    assert len(new_index.vectors) == len(old_plan.requests)
+
+
+def test_incremental_refresh_embeds_only_changed_chunk(
+    tmp_path: Path,
+) -> None:
+    (
+        vault,
+        state,
+        _corpus_sha,
+        _plan_sha,
+        old_plan,
+        _result_set_sha,
+        _result_set,
+        old_index_sha,
+        _old_index,
+        _calls,
+    ) = _finalized_index(tmp_path)
+
+    daily = vault / "00-DailyNote" / "2026" / "09" / "2026-09-29.md"
+    daily.write_text(
+        daily.read_text(encoding="utf-8").replace(
+            "Daily semantic signal.",
+            "Daily semantic signal changed once.",
+        ),
+        encoding="utf-8",
+    )
+    corpus_sha = _corpus(state, vault)
+    plan_sha, _, plan = prepare_semantic_embedding_plan(
+        state,
+        vault,
+        corpus_manifest_sha256=corpus_sha,
+        model_identifier=MODEL,
+        model_revision=MODEL_DIGEST,
+    )
+
+    calls: list[tuple[str, str, object]] = []
+    refresh_sha, _, refresh_plan = _refresh_plan(
+        state,
+        plan_sha=plan_sha,
+        previous_index_sha=old_index_sha,
+    )
+    result_set_sha, _, result_set, stats = (
+        embed_semantic_plan_incremental_with_ollama(
+            state,
+            refresh_plan_sha256=refresh_sha,
+            base_url="http://127.0.0.1:11434",
+            transport=_successful_transport(calls),
+            batch_size=8,
+        )
+    )
+
+    assert stats.reused_count == len(old_plan.requests) - 1
+    assert stats.embedded_count == 1
+    assert stats.removed_count == 1
+    assert [path for _method, path, _payload in calls] == [
+        "/api/tags",
+        "/api/embed",
+    ]
+    embed_payload = calls[-1][2]
+    assert isinstance(embed_payload, dict)
+    assert len(embed_payload["input"]) == 1
+    assert sum(
+        entry.reused_from_result_sha256 is None
+        for entry in result_set.results
+    ) == 1
+
+    _, _, manifest = finalize_semantic_index(
+        state,
+        vault,
+        plan_sha256=plan_sha,
+        result_set_sha256=result_set_sha,
+    )
+    assert len(manifest.vectors) == len(plan.requests)
+
+
+def test_incremental_refresh_removes_chunk_without_provider_call(
+    tmp_path: Path,
+) -> None:
+    (
+        vault,
+        state,
+        _corpus_sha,
+        _plan_sha,
+        old_plan,
+        _result_set_sha,
+        _result_set,
+        old_index_sha,
+        _old_index,
+        _calls,
+    ) = _finalized_index(tmp_path)
+
+    (vault / "05-Idea" / "Idea.md").unlink()
+    corpus_sha = _corpus(state, vault)
+    plan_sha, _, plan = prepare_semantic_embedding_plan(
+        state,
+        vault,
+        corpus_manifest_sha256=corpus_sha,
+        model_identifier=MODEL,
+        model_revision=MODEL_DIGEST,
+    )
+    provider_calls: list[str] = []
+
+    def no_provider(*args, **kwargs):
+        provider_calls.append("called")
+        raise AssertionError("provider must not be called for removal-only refresh")
+
+    refresh_sha, _, _refresh_plan_value = _refresh_plan(
+        state,
+        plan_sha=plan_sha,
+        previous_index_sha=old_index_sha,
+    )
+    result_set_sha, _, _result_set, stats = (
+        embed_semantic_plan_incremental_with_ollama(
+            state,
+            refresh_plan_sha256=refresh_sha,
+            base_url="http://127.0.0.1:11434",
+            transport=no_provider,
+        )
+    )
+
+    assert provider_calls == []
+    assert stats.reused_count == len(plan.requests)
+    assert stats.embedded_count == 0
+    assert stats.removed_count == len(old_plan.requests) - len(plan.requests)
+
+    _, _, manifest = finalize_semantic_index(
+        state,
+        vault,
+        plan_sha256=plan_sha,
+        result_set_sha256=result_set_sha,
+    )
+    assert all(item.source_kind != "idea" for item in manifest.vectors)
+
+
+def test_incremental_provider_failure_preserves_previous_index(
+    tmp_path: Path,
+) -> None:
+    (
+        vault,
+        state,
+        _corpus_sha,
+        _plan_sha,
+        _old_plan,
+        _result_set_sha,
+        _result_set,
+        old_index_sha,
+        old_index,
+        _calls,
+    ) = _finalized_index(tmp_path)
+
+    knowledge = vault / "11-Knowledge" / "Knowledge.md"
+    knowledge.write_text(
+        knowledge.read_text(encoding="utf-8")
+        + "\nChanged for incremental failure.\n",
+        encoding="utf-8",
+    )
+    corpus_sha = _corpus(state, vault)
+    plan_sha, _, _ = prepare_semantic_embedding_plan(
+        state,
+        vault,
+        corpus_manifest_sha256=corpus_sha,
+        model_identifier=MODEL,
+        model_revision=MODEL_DIGEST,
+    )
+
+    refresh_sha, _, _ = _refresh_plan(
+        state,
+        plan_sha=plan_sha,
+        previous_index_sha=old_index_sha,
+    )
+
+    def failing_transport(
+        base_url: str,
+        *,
+        method: str,
+        path: str,
+        payload,
+        timeout: float,
+    ):
+        if path == "/api/tags":
+            return {
+                "models": [
+                    {
+                        "name": MODEL,
+                        "model": MODEL,
+                        "digest": MODEL_DIGEST,
+                    }
+                ]
+            }
+        raise OllamaProviderError("incremental provider failure")
+
+    with pytest.raises(
+        OllamaProviderError,
+        match="incremental provider failure",
+    ):
+        embed_semantic_plan_incremental_with_ollama(
+            state,
+            refresh_plan_sha256=refresh_sha,
+            base_url="http://127.0.0.1:11434",
+            transport=failing_transport,
+        )
+
+    assert load_semantic_index_manifest(
+        state,
+        old_index_sha,
+    ) == old_index
+    index_files = list(
+        (state / "04-Index" / "semantic-index").glob(
+            "*.semantic-index.json"
+        )
+    )
+    assert old_index_sha in {
+        path.name.split(".", 1)[0]
+        for path in index_files
+    }
+
+def test_embed_refresh_does_not_read_finalized_semantic_index(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    (
+        vault,
+        state,
+        _corpus_sha,
+        _plan_sha,
+        _old_plan,
+        _result_set_sha,
+        _result_set,
+        old_index_sha,
+        _old_index,
+        _calls,
+    ) = _finalized_index(tmp_path)
+
+    corpus_sha = _corpus(state, vault)
+    plan_sha, _, _ = prepare_semantic_embedding_plan(
+        state,
+        vault,
+        corpus_manifest_sha256=corpus_sha,
+        model_identifier=MODEL,
+        model_revision=MODEL_DIGEST,
+    )
+    refresh_sha, _, _ = _refresh_plan(
+        state,
+        plan_sha=plan_sha,
+        previous_index_sha=old_index_sha,
+    )
+
+    def forbidden_index_read(*args, **kwargs):
+        raise AssertionError(
+            "Embedder refresh path must not read finalized Semantic Index"
+        )
+
+    monkeypatch.setattr(
+        semantic_index,
+        "load_semantic_index_manifest",
+        forbidden_index_read,
+    )
+
+    provider_calls: list[str] = []
+
+    def no_provider(*args, **kwargs):
+        provider_calls.append("called")
+        raise AssertionError("provider must not be called for no-op refresh")
+
+    result_set_sha, _, result_set, stats = (
+        embed_semantic_plan_incremental_with_ollama(
+            state,
+            refresh_plan_sha256=refresh_sha,
+            base_url="http://127.0.0.1:11434",
+            transport=no_provider,
+        )
+    )
+
+    assert provider_calls == []
+    assert result_set.refresh_plan_sha256 == refresh_sha
+    assert stats.embedded_count == 0
+
+    # Reader finalize is expected to read the previous index again, so restore
+    # the loader before finalization.
+    monkeypatch.undo()
+    finalize_semantic_index(
+        state,
+        vault,
+        plan_sha256=plan_sha,
+        result_set_sha256=result_set_sha,
+    )
+
+def test_incremental_refresh_reuses_unchanged_section_after_source_sha_change(
+    tmp_path: Path,
+) -> None:
+    vault = _vault(tmp_path)
+    state = _state(tmp_path)
+    daily = vault / "00-DailyNote" / "2026" / "09" / "2026-09-29.md"
+    daily.write_text(
+        daily.read_text(encoding="utf-8").replace(
+            "# Tasks",
+            "## Stable Section\nStable reusable section.\n# Tasks",
+        ),
+        encoding="utf-8",
+    )
+
+    old_corpus_sha = _corpus(state, vault)
+    old_plan_sha, _, old_plan = prepare_semantic_embedding_plan(
+        state,
+        vault,
+        corpus_manifest_sha256=old_corpus_sha,
+        model_identifier=MODEL,
+        model_revision=MODEL_DIGEST,
+    )
+    calls: list[tuple[str, str, object]] = []
+    old_result_set_sha, _, _ = embed_semantic_plan_with_ollama(
+        state,
+        plan_sha256=old_plan_sha,
+        base_url="http://127.0.0.1:11434",
+        transport=_successful_transport(calls),
+        batch_size=8,
+    )
+    old_index_sha, _, _ = finalize_semantic_index(
+        state,
+        vault,
+        plan_sha256=old_plan_sha,
+        result_set_sha256=old_result_set_sha,
+    )
+
+    daily.write_text(
+        daily.read_text(encoding="utf-8").replace(
+            "Daily semantic signal.",
+            "Daily semantic signal changed once.",
+        ),
+        encoding="utf-8",
+    )
+    new_corpus_sha = _corpus(state, vault)
+    new_plan_sha, _, new_plan = prepare_semantic_embedding_plan(
+        state,
+        vault,
+        corpus_manifest_sha256=new_corpus_sha,
+        model_identifier=MODEL,
+        model_revision=MODEL_DIGEST,
+    )
+    refresh_sha, _, _ = _refresh_plan(
+        state,
+        plan_sha=new_plan_sha,
+        previous_index_sha=old_index_sha,
+    )
+
+    refresh_calls: list[tuple[str, str, object]] = []
+    result_set_sha, _, _, stats = (
+        embed_semantic_plan_incremental_with_ollama(
+            state,
+            refresh_plan_sha256=refresh_sha,
+            base_url="http://127.0.0.1:11434",
+            transport=_successful_transport(refresh_calls),
+            batch_size=8,
+        )
+    )
+
+    assert stats.embedded_count == 1
+    assert stats.reused_count == len(new_plan.requests) - 1
+    embed_payload = refresh_calls[-1][2]
+    assert isinstance(embed_payload, dict)
+    assert len(embed_payload["input"]) == 1
+
+    finalize_semantic_index(
+        state,
+        vault,
+        plan_sha256=new_plan_sha,
+        result_set_sha256=result_set_sha,
+    )
+
