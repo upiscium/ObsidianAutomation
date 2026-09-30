@@ -109,7 +109,8 @@ sudo /opt/obsidian-automation/venv/bin/obsidian-semantic-production-acceptance \
   --semantic-index-sha <semantic-index-sha256> \
   --benchmark <reviewed-production-benchmark.json> \
   --plan-sha <benchmark-plan-sha256> \
-  --result-set-sha <benchmark-result-set-sha256>
+  --result-set-sha <benchmark-result-set-sha256> \
+  --retrieval-profile semantic-retrieval-v1
 ```
 
 The acceptance remains:
@@ -134,7 +135,7 @@ For the initial rollout:
 sudo /opt/obsidian-automation/venv/bin/obsidian-semantic-production-acceptance \
   observe-selection \
   --semantic-index-sha <semantic-index-sha256> \
-  --policy semantic-project-distill-v0
+  --policy semantic-project-distill-v1
 ```
 
 This may produce either `selected` or a legitimate novelty `skipped`
@@ -156,7 +157,8 @@ sudo /opt/obsidian-automation/venv/bin/obsidian-semantic-production-acceptance \
 ```
 
 The command cross-checks that index, benchmark and selection receipts bind the
-same exact Semantic Index and that the benchmark passed.
+same exact Semantic Index, that the benchmark passed, and that benchmark and
+Selection observation bind the same versioned retrieval profile.
 
 Output contains an inert plan equivalent to:
 
