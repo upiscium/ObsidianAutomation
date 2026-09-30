@@ -34,6 +34,8 @@ from obsidian_automation.semantic_retrieval import (
     store_benchmark_result_set,
     store_query_embedding_result,
     QueryEmbeddingResult,
+    RETRIEVAL_PROFILES,
+    retrieval_profile_lexical_weight,
 )
 
 
@@ -500,6 +502,24 @@ def test_repository_benchmark_example_matches_parser_contract() -> None:
     }
 
 
+def test_versioned_retrieval_profiles_are_immutable_contract_values() -> None:
+    assert RETRIEVAL_PROFILES == {
+        "semantic-retrieval-v0": 0.60,
+        "semantic-retrieval-v1": 0.15,
+    }
+    assert retrieval_profile_lexical_weight(
+        "semantic-retrieval-v0"
+    ) == pytest.approx(0.60)
+    assert retrieval_profile_lexical_weight(
+        "semantic-retrieval-v1"
+    ) == pytest.approx(0.15)
+    with pytest.raises(
+        SemanticRetrievalError,
+        match="unsupported semantic retrieval profile",
+    ):
+        retrieval_profile_lexical_weight("semantic-retrieval-v2")
+
+
 def test_benchmark_requires_all_six_categories() -> None:
     value = json.loads(_benchmark_bytes())
     value["cases"] = value["cases"][:-1]
@@ -545,6 +565,8 @@ def test_benchmark_compares_same_queries_and_meets_acceptance(tmp_path: Path) ->
         top_k=3,
     )
     assert report["acceptance"]["passed"] is True
+    assert report["retrieval_profile"] == "semantic-retrieval-v0"
+    assert report["lexical_weight"] == pytest.approx(0.60)
     assert (
         report["metrics"]["hybrid"]["semantic"]["recall_at_k_macro"]
         > report["metrics"]["bm25"]["semantic"]["recall_at_k_macro"]
