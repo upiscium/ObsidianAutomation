@@ -303,12 +303,21 @@ Use for narrow, deep Knowledge generation.
 
 #### `semantic-project-distill-v0`
 
+Historical Project-distill policy. Anchor/source-kind/novelty semantics are
+retained with `semantic-retrieval-v0` (lexical 0.60 / vector 0.40).
+
+#### `semantic-project-distill-v1`
+
 Anchor on one Project/Project Note and retrieve related:
 
 - Project Notes;
 - Daily observations;
 - active/adopted Ideas;
 - supporting Knowledge.
+
+This policy keeps the v0 source-kind and novelty contract but binds
+`semantic-retrieval-v1` (lexical 0.15 / vector 0.85), selected from the
+production benchmark boundary where 0.20 failed and 0.15 passed.
 
 Use for durable lessons extracted from current work.
 
