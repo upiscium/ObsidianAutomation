@@ -70,8 +70,10 @@ follows a mutable `latest` alias.
 Keep the resulting exact Semantic Index SHA.
 
 If the pull-only mirror changes before acceptance completes, the exact index
-correctly becomes stale. Rebuild against the new Corpus or use the incremental
-refresh flow in [Semantic Embedding Index v1](semantic-embedding-index-v1.md).
+correctly becomes stale. Rebuild against the new Corpus or use the Reader-planned
+incremental refresh flow in [Semantic Embedding Index v1](semantic-embedding-index-v1.md).
+The Embedder consumes a bounded refresh plan and never gains finalized Semantic
+Index read authority.
 Do not bypass staleness verification and do not introduce a mutable `latest`
 index pointer.
 
