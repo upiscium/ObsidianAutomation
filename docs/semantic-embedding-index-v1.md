@@ -260,28 +260,40 @@ A later mirror snapshot may produce a different Semantic Corpus while retaining
 most exact chunks. Re-embedding every unchanged chunk is unnecessary.
 
 Prepare the new Corpus and embedding plan normally with the same pinned
-embedding model/revision, then run:
+embedding model/revision. Reader then builds a bounded refresh plan from the
+previous finalized index:
+
+```bash
+sudo -u obsidian-ai-reader \
+  obsidian-semantic-index prepare-refresh \
+  --ai-root /var/lib/obsidian-ai/state \
+  --plan-sha <new-embedding-plan-sha256> \
+  --previous-index-sha <previous-semantic-index-sha256>
+```
+
+Only that content-addressed refresh plan crosses the Reader -> Embedder
+boundary:
 
 ```bash
 sudo -u obsidian-ai-embedder \
   obsidian-semantic-index embed-refresh \
   --ai-root /var/lib/obsidian-ai/state \
-  --plan-sha <new-embedding-plan-sha256> \
-  --previous-index-sha <previous-semantic-index-sha256> \
+  --refresh-plan-sha <embedding-refresh-plan-sha256> \
   --base-url http://127.0.0.1:11434
 ```
 
-Refresh compares the previous finalized index with the new plan by exact chunk
-identity. A vector is reusable only when the previous embedding request matches
-the new request on chunk policy, provider/adapter, model identifier/revision,
-chunk/source/content identity, byte size, and exact UTF-8 input. The Corpus
+Embedder never reads `semantic-index/`. Reader compares the previous finalized
+index with the new plan and records only bounded reuse decisions in the refresh
+plan. A vector is reusable when the pinned embedding contract and exact UTF-8
+input bytes match. Source path/SHA/chunk identity may change without forcing a
+new provider call when the actual embedding input is unchanged. The Corpus
 manifest SHA itself may differ.
 
 Reused vectors are not silently presented as fresh provider inference.
-Incremental result-set v2 records
-`reused_from_result_sha256` for every reused entry. Finalization reloads that
-prior result and its request and verifies the full reuse binding before accepting
-the new index.
+Incremental result-set v2 binds the exact refresh-plan SHA and records
+`reused_from_result_sha256` for every reused entry. Finalization reloads the
+refresh plan, previous index, prior result and request, then independently
+verifies the full reuse binding before accepting the new index.
 
 Historical result-set v1 artifacts remain readable. Ordinary full `embed`
 continues to emit v1; only `embed-refresh` emits v2 provenance.
