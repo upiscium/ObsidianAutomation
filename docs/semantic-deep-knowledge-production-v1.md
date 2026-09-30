@@ -27,7 +27,7 @@ To opt in:
 ```text
 AI_INPUT_MODE=semantic-deep-knowledge
 AI_INPUT_SEMANTIC_INDEX_SHA=<exact-reviewed-semantic-index-sha256>
-AI_INPUT_SEMANTIC_SELECTION_POLICY=<versioned-selection-policy>
+AI_INPUT_SEMANTIC_SELECTION_POLICY=semantic-project-distill-v1
 ```
 
 The Semantic Index SHA is mandatory and exact. There is no mutable `latest`
@@ -152,7 +152,10 @@ Before enabling semantic mode, run the machine-checkable acceptance flow in
 
 It proves the exact deployed revision, legacy default, Reader-only Selection
 Store, exact current Semantic Index, Phase C benchmark result and one Selection
-observation before emitting an inert canary environment plan.
+observation before emitting an inert canary environment plan. The benchmark and
+Selection receipts must bind the same retrieval profile; the initial accepted
+rollout uses `semantic-retrieval-v1` through
+`semantic-project-distill-v1`.
 
 ## Rollback
 
