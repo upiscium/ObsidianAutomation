@@ -1608,21 +1608,12 @@ def _load_reusable_vector(
     return previous_result.vector
 
 
-def embed_semantic_plan_incremental_with_ollama(
+def prepare_incremental_embedding_refresh_plan(
     ai_root: Path,
     *,
     plan_sha256: str,
     previous_index_sha256: str,
-    base_url: str,
-    timeout: float = DEFAULT_TIMEOUT_SECONDS,
-    batch_size: int = DEFAULT_BATCH_SIZE,
-    transport: JSONTransport | None = None,
-) -> tuple[
-    str,
-    Path,
-    EmbeddingResultSet,
-    IncrementalEmbeddingStats,
-]:
+) -> tuple[str, Path, EmbeddingRefreshPlan]:
     plan_sha = _require_sha256(
         plan_sha256,
         label="embedding plan SHA",
@@ -1631,14 +1622,6 @@ def embed_semantic_plan_incremental_with_ollama(
         previous_index_sha256,
         label="previous semantic index SHA",
     )
-    if (
-        type(batch_size) is not int
-        or not 1 <= batch_size <= MAX_BATCH_SIZE
-    ):
-        raise SemanticIndexError(
-            f"batch_size must be between 1 and {MAX_BATCH_SIZE}"
-        )
-
     plan = load_embedding_plan(ai_root, plan_sha)
     previous_index = load_semantic_index_manifest(
         ai_root,
@@ -1655,10 +1638,123 @@ def embed_semantic_plan_incremental_with_ollama(
             "previous semantic index model identity does not match new plan"
         )
 
-    loaded: list[
-        tuple[EmbeddingPlanEntry, EmbeddingRequest]
-    ] = []
+    previous_by_chunk = {
+        item.chunk_id: item
+        for item in previous_index.vectors
+    }
+    current_chunk_ids = {
+        entry.chunk_id for entry in plan.requests
+    }
+    removed_count = len(
+        set(previous_by_chunk) - current_chunk_ids
+    )
+
+    entries: list[EmbeddingRefreshPlanEntry] = []
     for entry in plan.requests:
+        request = load_embedding_request(
+            ai_root,
+            entry.request_sha256,
+        )
+        if request.chunk_id != entry.chunk_id:
+            raise SemanticIndexError(
+                "embedding plan chunk/request binding mismatch"
+            )
+        previous_vector = previous_by_chunk.get(entry.chunk_id)
+        reused_from: str | None = None
+        if previous_vector is not None:
+            vector = _load_reusable_vector(
+                ai_root,
+                current_request=request,
+                reused_from_result_sha256=(
+                    previous_vector.result_sha256
+                ),
+                expected_vector=previous_vector.vector,
+            )
+            if len(vector) != previous_index.vector_dimension:
+                raise SemanticIndexError(
+                    "reused embedding vector dimension mismatch"
+                )
+            reused_from = previous_vector.result_sha256
+        entries.append(
+            EmbeddingRefreshPlanEntry(
+                chunk_id=entry.chunk_id,
+                request_sha256=entry.request_sha256,
+                reused_from_result_sha256=reused_from,
+            )
+        )
+
+    refresh_plan = EmbeddingRefreshPlan(
+        plan_sha256=plan_sha,
+        previous_index_sha256=previous_index_sha,
+        vector_dimension=previous_index.vector_dimension,
+        removed_count=removed_count,
+        entries=tuple(entries),
+    )
+    refresh_sha, path = store_embedding_refresh_plan(
+        ai_root,
+        refresh_plan,
+    )
+    return refresh_sha, path, refresh_plan
+
+
+def embed_semantic_plan_incremental_with_ollama(
+    ai_root: Path,
+    *,
+    refresh_plan_sha256: str,
+    base_url: str,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    transport: JSONTransport | None = None,
+) -> tuple[
+    str,
+    Path,
+    EmbeddingResultSet,
+    IncrementalEmbeddingStats,
+]:
+    refresh_plan_sha = _require_sha256(
+        refresh_plan_sha256,
+        label="semantic embedding refresh plan SHA",
+    )
+    if (
+        type(batch_size) is not int
+        or not 1 <= batch_size <= MAX_BATCH_SIZE
+    ):
+        raise SemanticIndexError(
+            f"batch_size must be between 1 and {MAX_BATCH_SIZE}"
+        )
+
+    refresh_plan = load_embedding_refresh_plan(
+        ai_root,
+        refresh_plan_sha,
+    )
+    plan = load_embedding_plan(
+        ai_root,
+        refresh_plan.plan_sha256,
+    )
+    if len(refresh_plan.entries) != len(plan.requests):
+        raise SemanticIndexError(
+            "semantic embedding refresh plan does not match embedding plan"
+        )
+
+    loaded: list[
+        tuple[
+            EmbeddingPlanEntry,
+            EmbeddingRequest,
+            EmbeddingRefreshPlanEntry,
+        ]
+    ] = []
+    for entry, refresh_entry in zip(
+        plan.requests,
+        refresh_plan.entries,
+        strict=True,
+    ):
+        if (
+            refresh_entry.chunk_id != entry.chunk_id
+            or refresh_entry.request_sha256 != entry.request_sha256
+        ):
+            raise SemanticIndexError(
+                "semantic embedding refresh plan entry order mismatch"
+            )
         request = load_embedding_request(
             ai_root,
             entry.request_sha256,
@@ -1679,18 +1775,7 @@ def embed_semantic_plan_incremental_with_ollama(
             raise SemanticIndexError(
                 "embedding request does not match embedding plan"
             )
-        loaded.append((entry, request))
-
-    previous_by_chunk = {
-        item.chunk_id: item
-        for item in previous_index.vectors
-    }
-    current_chunk_ids = {
-        entry.chunk_id for entry, _ in loaded
-    }
-    removed_count = len(
-        set(previous_by_chunk) - current_chunk_ids
-    )
+        loaded.append((entry, request, refresh_entry))
 
     result_by_request: dict[
         str,
@@ -1701,20 +1786,17 @@ def embed_semantic_plan_incremental_with_ollama(
     ] = []
     reused_count = 0
     embedded_count = 0
-    vector_dimension = previous_index.vector_dimension
+    vector_dimension = refresh_plan.vector_dimension
 
-    for entry, request in loaded:
-        previous_vector = previous_by_chunk.get(entry.chunk_id)
-        if previous_vector is None:
+    for entry, request, refresh_entry in loaded:
+        reused_from = refresh_entry.reused_from_result_sha256
+        if reused_from is None:
             pending.append((entry, request))
             continue
         vector = _load_reusable_vector(
             ai_root,
             current_request=request,
-            reused_from_result_sha256=(
-                previous_vector.result_sha256
-            ),
-            expected_vector=previous_vector.vector,
+            reused_from_result_sha256=reused_from,
         )
         if len(vector) != vector_dimension:
             raise SemanticIndexError(
@@ -1736,9 +1818,7 @@ def embed_semantic_plan_incremental_with_ollama(
             EmbeddingResultSetEntry(
                 request_sha256=entry.request_sha256,
                 result_sha256=result_sha,
-                reused_from_result_sha256=(
-                    previous_vector.result_sha256
-                ),
+                reused_from_result_sha256=reused_from,
             )
         )
         reused_count += 1
@@ -1837,11 +1917,12 @@ def embed_semantic_plan_incremental_with_ollama(
         )
 
     result_set = EmbeddingResultSet(
-        plan_sha256=plan_sha,
+        plan_sha256=refresh_plan.plan_sha256,
         vector_dimension=vector_dimension,
         vector_encoding=VECTOR_ENCODING,
         results=ordered_results,
         record_version=RESULT_SET_VERSION,
+        refresh_plan_sha256=refresh_plan_sha,
     )
     result_set_sha, result_set_path = (
         store_embedding_result_set(
@@ -1852,10 +1933,9 @@ def embed_semantic_plan_incremental_with_ollama(
     stats = IncrementalEmbeddingStats(
         reused_count=reused_count,
         embedded_count=embedded_count,
-        removed_count=removed_count,
+        removed_count=refresh_plan.removed_count,
     )
     return result_set_sha, result_set_path, result_set, stats
-
 
 def _corpus_chunk_bindings(
     manifest: SemanticCorpusManifest,
