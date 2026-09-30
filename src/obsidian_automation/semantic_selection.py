@@ -851,6 +851,11 @@ def parse_semantic_selection(data: bytes) -> SemanticSelectionRecord:
     vector_weight = _require_score(retrieval["vector_weight"], label="vector_weight")
     if not 0.0 <= lexical_weight <= 1.0 or abs((lexical_weight + vector_weight) - 1.0) > 1e-8:
         raise SemanticSelectionError("semantic selection retrieval weights are invalid")
+    expected_lexical_weight = _lexical_weight(policy)
+    if abs(lexical_weight - expected_lexical_weight) > 1e-8:
+        raise SemanticSelectionError(
+            "semantic selection retrieval weight does not match policy version"
+        )
     raw_weights = retrieval["source_kind_weights"]
     if not isinstance(raw_weights, dict) or set(raw_weights) != {
         "daily", "idea", "project", "project-note", "knowledge"
@@ -998,6 +1003,13 @@ def parse_semantic_selection(data: bytes) -> SemanticSelectionRecord:
     observations = value["policy_observations"]
     if not isinstance(observations, dict):
         raise SemanticSelectionError("semantic selection policy observations are invalid")
+    if (
+        policy == "semantic-project-distill-v1"
+        and observations.get("retrieval_profile") != _retrieval_profile(policy)
+    ):
+        raise SemanticSelectionError(
+            "semantic selection retrieval profile does not match policy version"
+        )
     return SemanticSelectionRecord(
         selection_policy=policy,
         semantic_index_sha256=index_sha,
