@@ -118,6 +118,8 @@ The acceptance remains:
 ```text
 hybrid semantic recall@K > BM25 semantic recall@K
 AND
+BM25 exact-technical top1 > 0
+AND
 hybrid exact-technical top1 >= BM25 exact-technical top1
 ```
 
