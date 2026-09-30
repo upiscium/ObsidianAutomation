@@ -2004,11 +2004,13 @@ def evaluate_semantic_benchmark(
     assert isinstance(bm25_exact, float)
     assert isinstance(hybrid_exact, float)
     improved = hybrid_semantic > bm25_semantic
+    exact_baseline_present = bm25_exact > 0.0
     exact_not_regressed = hybrid_exact >= bm25_exact
 
     return {
         "benchmark_version": BENCHMARK_VERSION,
         "name": benchmark.name,
+        "benchmark_sha256": plan.benchmark_sha256,
         "semantic_index_sha256": index_sha,
         "benchmark_plan_sha256": plan_sha,
         "benchmark_result_set_sha256": result_set_sha,
@@ -2022,8 +2024,13 @@ def evaluate_semantic_benchmark(
         "metrics": all_metrics,
         "acceptance": {
             "hybrid_semantic_recall_improved_over_bm25": improved,
+            "bm25_exact_technical_top1_present": exact_baseline_present,
             "hybrid_exact_technical_top1_not_regressed": exact_not_regressed,
-            "passed": improved and exact_not_regressed,
+            "passed": (
+                improved
+                and exact_baseline_present
+                and exact_not_regressed
+            ),
         },
         "cases": reports,
     }
