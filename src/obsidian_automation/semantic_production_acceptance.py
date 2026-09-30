@@ -30,9 +30,12 @@ from .semantic_index import (
     load_semantic_index_manifest,
 )
 from .semantic_retrieval import (
+    DEFAULT_RETRIEVAL_PROFILE,
+    RETRIEVAL_PROFILES,
     SemanticRetrievalError,
     evaluate_semantic_benchmark,
     load_benchmark_set,
+    retrieval_profile_lexical_weight,
 )
 from .semantic_selection import (
     POLICIES,
@@ -480,6 +483,7 @@ def benchmark_acceptance(
     benchmark_plan_sha256: str,
     benchmark_result_set_sha256: str,
     top_k: int = 3,
+    retrieval_profile: str = DEFAULT_RETRIEVAL_PROFILE,
 ) -> AcceptanceReceipt:
     index_sha = _require_sha(
         semantic_index_sha256,
@@ -496,6 +500,7 @@ def benchmark_acceptance(
             plan_sha256=benchmark_plan_sha256,
             result_set_sha256=benchmark_result_set_sha256,
             top_k=top_k,
+            retrieval_profile=retrieval_profile,
         )
     except (
         ArtifactLifecycleError,
@@ -514,6 +519,9 @@ def benchmark_acceptance(
             "benchmark_result_set_sha256"
         ],
         "top_k": report["top_k"],
+        "retrieval_profile": report["retrieval_profile"],
+        "lexical_weight": report["lexical_weight"],
+        "vector_weight": report["vector_weight"],
         "metrics": report["metrics"],
         "acceptance": acceptance,
     }
@@ -572,6 +580,11 @@ def observe_selection_acceptance(
         payload={
             "semantic_index_sha256": index_sha,
             "selection_policy": selection.selection_policy,
+            "retrieval_profile": (
+                "semantic-retrieval-v1"
+                if selection.selection_policy == "semantic-project-distill-v1"
+                else DEFAULT_RETRIEVAL_PROFILE
+            ),
             "selection_sha256": selection_sha,
             "decision": selection.novelty.decision,
             "skip_reason": selection.novelty.skip_reason,
@@ -636,6 +649,16 @@ def plan_canary_acceptance(
         raise SemanticProductionAcceptanceError(
             "selection receipt policy is invalid"
         )
+    benchmark_profile = benchmark.payload.get("retrieval_profile")
+    selection_profile = selection.payload.get("retrieval_profile")
+    if (
+        not isinstance(benchmark_profile, str)
+        or benchmark_profile not in RETRIEVAL_PROFILES
+        or benchmark_profile != selection_profile
+    ):
+        raise SemanticProductionAcceptanceError(
+            "benchmark and selection retrieval profiles do not match"
+        )
     acceptance = benchmark.payload.get("acceptance")
     if not isinstance(acceptance, dict) or acceptance.get("passed") is not True:
         raise SemanticProductionAcceptanceError(
@@ -659,6 +682,7 @@ def plan_canary_acceptance(
             "expected_revision": revision,
             "semantic_index_sha256": index_sha,
             "semantic_selection_policy": policy,
+            "retrieval_profile": benchmark_profile,
             "selection_observation_decision": selection.payload.get(
                 "decision"
             ),
@@ -739,6 +763,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     benchmark.add_argument("--plan-sha", required=True)
     benchmark.add_argument("--result-set-sha", required=True)
     benchmark.add_argument("--top-k", type=int, default=3)
+    benchmark.add_argument(
+        "--retrieval-profile",
+        choices=tuple(RETRIEVAL_PROFILES),
+        default=DEFAULT_RETRIEVAL_PROFILE,
+    )
 
     observe = subparsers.add_parser("observe-selection")
     observe.add_argument("--ai-root", type=Path, default=DEFAULT_AI_ROOT)
@@ -782,6 +811,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 benchmark_plan_sha256=args.plan_sha,
                 benchmark_result_set_sha256=args.result_set_sha,
                 top_k=args.top_k,
+                retrieval_profile=args.retrieval_profile,
             )
         elif args.command == "observe-selection":
             receipt = observe_selection_acceptance(
