@@ -220,6 +220,9 @@ def test_benchmark_acceptance_persists_failed_gate_as_failed_receipt(
             "benchmark_plan_sha256": "5" * 64,
             "benchmark_result_set_sha256": "6" * 64,
             "top_k": 3,
+            "retrieval_profile": "semantic-retrieval-v0",
+            "lexical_weight": 0.60,
+            "vector_weight": 0.40,
             "metrics": {
                 "bm25": {"semantic": {"recall_at_k_macro": 0.5}},
                 "hybrid": {"semantic": {"recall_at_k_macro": 0.5}},
@@ -242,6 +245,8 @@ def test_benchmark_acceptance_persists_failed_gate_as_failed_receipt(
     assert receipt.stage == "benchmark"
     assert receipt.result == "failed"
     assert receipt.payload["acceptance"]["passed"] is False
+    assert receipt.payload["retrieval_profile"] == "semantic-retrieval-v0"
+    assert receipt.payload["lexical_weight"] == pytest.approx(0.60)
 
 
 def test_observe_selection_does_not_move_cadence_clock(
@@ -303,6 +308,50 @@ def test_observe_selection_does_not_move_cadence_clock(
     }
 
 
+def test_observe_selection_binds_project_distill_v1_retrieval_profile(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cadence = SimpleNamespace(last_submission_at=None)
+    selection = SimpleNamespace(
+        selection_policy="semantic-project-distill-v1",
+        selected=(SimpleNamespace(source_kind="project-note"),),
+        novelty=SimpleNamespace(
+            decision="selected",
+            skip_reason=None,
+            cluster_coherence=0.5,
+            recent_context_max_similarity=None,
+            knowledge_max_similarity=0.4,
+        ),
+    )
+    monkeypatch.setattr(
+        acceptance,
+        "load_cadence_state",
+        lambda root: cadence,
+    )
+    monkeypatch.setattr(
+        acceptance,
+        "build_semantic_selection",
+        lambda *args, **kwargs: selection,
+    )
+    monkeypatch.setattr(
+        acceptance,
+        "store_semantic_selection",
+        lambda *args, **kwargs: (
+            "8" * 64,
+            tmp_path / "selection-v1.json",
+        ),
+    )
+
+    receipt = observe_selection_acceptance(
+        tmp_path / "state",
+        tmp_path / "vault",
+        semantic_index_sha256=INDEX_SHA,
+        selection_policy="semantic-project-distill-v1",
+    )
+    assert receipt.payload["retrieval_profile"] == "semantic-retrieval-v1"
+
+
 def _receipt(
     stage: str,
     payload: dict[str, object],
@@ -344,6 +393,7 @@ def _stored_receipts(
             "benchmark",
             {
                 "semantic_index_sha256": benchmark_index,
+                "retrieval_profile": "semantic-retrieval-v0",
                 "acceptance": {"passed": benchmark_result == "passed"},
             },
             result=benchmark_result,
@@ -356,6 +406,7 @@ def _stored_receipts(
             {
                 "semantic_index_sha256": INDEX_SHA,
                 "selection_policy": "semantic-project-distill-v0",
+                "retrieval_profile": "semantic-retrieval-v0",
                 "decision": "selected",
             },
         ),
@@ -391,6 +442,7 @@ def test_plan_canary_requires_exact_cross_bound_receipts(
     assert receipt.result == "passed"
     assert receipt.payload["expected_revision"] == REVISION
     assert receipt.payload["semantic_index_sha256"] == INDEX_SHA
+    assert receipt.payload["retrieval_profile"] == "semantic-retrieval-v0"
     assert receipt.payload["env_plan"] == [
         "AI_INPUT_MODE=semantic-deep-knowledge",
         f"AI_INPUT_SEMANTIC_INDEX_SHA={INDEX_SHA}",
@@ -400,6 +452,42 @@ def test_plan_canary_requires_exact_cross_bound_receipts(
         ),
     ]
     assert receipt.payload["mutation_performed"] is False
+
+
+def test_plan_canary_rejects_retrieval_profile_mismatch(
+    tmp_path: Path,
+) -> None:
+    (
+        receipt_dir,
+        pre_sha,
+        index_sha,
+        _bench_sha,
+        selection_sha,
+    ) = _stored_receipts(tmp_path)
+
+    bench_sha, _ = store_receipt(
+        receipt_dir,
+        _receipt(
+            "benchmark",
+            {
+                "semantic_index_sha256": INDEX_SHA,
+                "retrieval_profile": "semantic-retrieval-v1",
+                "acceptance": {"passed": True},
+            },
+        ),
+    )
+
+    with pytest.raises(
+        SemanticProductionAcceptanceError,
+        match="retrieval profiles do not match",
+    ):
+        plan_canary_acceptance(
+            receipt_dir,
+            preflight_receipt_sha256=pre_sha,
+            index_receipt_sha256=index_sha,
+            benchmark_receipt_sha256=bench_sha,
+            selection_receipt_sha256=selection_sha,
+        )
 
 
 def test_plan_canary_rejects_failed_benchmark(
