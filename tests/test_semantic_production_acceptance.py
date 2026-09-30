@@ -217,6 +217,7 @@ def test_benchmark_acceptance_persists_failed_gate_as_failed_receipt(
         "evaluate_semantic_benchmark",
         lambda *args, **kwargs: {
             "name": "fixture",
+            "benchmark_sha256": "4" * 64,
             "benchmark_plan_sha256": "5" * 64,
             "benchmark_result_set_sha256": "6" * 64,
             "top_k": 3,
@@ -315,6 +316,9 @@ def test_observe_selection_binds_project_distill_v1_retrieval_profile(
     cadence = SimpleNamespace(last_submission_at=None)
     selection = SimpleNamespace(
         selection_policy="semantic-project-distill-v1",
+        policy_observations={
+            "retrieval_profile": "semantic-retrieval-v1",
+        },
         selected=(SimpleNamespace(source_kind="project-note"),),
         novelty=SimpleNamespace(
             decision="selected",
