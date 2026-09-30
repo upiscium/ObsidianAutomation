@@ -306,10 +306,14 @@ The Phase C report explicitly computes:
 ```text
 hybrid semantic recall@K > BM25 semantic recall@K
 AND
+BM25 exact-technical top1 > 0
+AND
 hybrid exact-technical top1 >= BM25 exact-technical top1
 ```
 
-Both conditions must hold for `acceptance.passed=true`.
+All three conditions must hold for `acceptance.passed=true`. Requiring a
+non-zero BM25 exact baseline prevents a weak exact case from passing merely
+because both BM25 and Hybrid missed it at top-1.
 
 This report is evidence for a later production decision; it does not
 automatically switch Planner behavior.
