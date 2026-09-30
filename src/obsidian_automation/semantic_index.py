@@ -657,6 +657,134 @@ def load_embedding_plan(
     )
 
 
+def parse_embedding_refresh_plan(data: bytes) -> EmbeddingRefreshPlan:
+    value = _decode_json_object(
+        data,
+        label="semantic embedding refresh plan",
+    )
+    if set(value) != {
+        "record_version",
+        "plan_sha256",
+        "previous_index_sha256",
+        "vector_dimension",
+        "removed_count",
+        "entries",
+    }:
+        raise SemanticIndexError(
+            "semantic embedding refresh plan properties do not match contract"
+        )
+    if value["record_version"] != REFRESH_PLAN_VERSION:
+        raise SemanticIndexError(
+            "unsupported semantic embedding refresh plan version"
+        )
+    plan_sha = _require_sha256(
+        value["plan_sha256"],
+        label="embedding plan SHA",
+    )
+    previous_index_sha = _require_sha256(
+        value["previous_index_sha256"],
+        label="previous semantic index SHA",
+    )
+    dimension = value["vector_dimension"]
+    if (
+        type(dimension) is not int
+        or not 1 <= dimension <= MAX_VECTOR_DIMENSION
+    ):
+        raise SemanticIndexError(
+            "semantic embedding refresh plan dimension is invalid"
+        )
+    removed_count = value["removed_count"]
+    if (
+        type(removed_count) is not int
+        or not 0 <= removed_count <= MAX_CHUNKS
+    ):
+        raise SemanticIndexError(
+            "semantic embedding refresh plan removed count is invalid"
+        )
+    raw_entries = value["entries"]
+    if (
+        not isinstance(raw_entries, list)
+        or not 1 <= len(raw_entries) <= MAX_CHUNKS
+    ):
+        raise SemanticIndexError(
+            "semantic embedding refresh plan entries are invalid"
+        )
+    entries: list[EmbeddingRefreshPlanEntry] = []
+    seen_chunks: set[str] = set()
+    seen_requests: set[str] = set()
+    for raw in raw_entries:
+        if not isinstance(raw, dict) or set(raw) != {
+            "chunk_id",
+            "request_sha256",
+            "reused_from_result_sha256",
+        }:
+            raise SemanticIndexError(
+                "semantic embedding refresh plan entry is invalid"
+            )
+        chunk_id = _require_sha256(raw["chunk_id"], label="chunk id")
+        request_sha = _require_sha256(
+            raw["request_sha256"],
+            label="embedding request SHA",
+        )
+        reused = raw["reused_from_result_sha256"]
+        if reused is not None:
+            reused = _require_sha256(
+                reused,
+                label="reused embedding result SHA",
+            )
+        if chunk_id in seen_chunks or request_sha in seen_requests:
+            raise SemanticIndexError(
+                "semantic embedding refresh plan contains duplicate entries"
+            )
+        seen_chunks.add(chunk_id)
+        seen_requests.add(request_sha)
+        entries.append(
+            EmbeddingRefreshPlanEntry(
+                chunk_id=chunk_id,
+                request_sha256=request_sha,
+                reused_from_result_sha256=reused,
+            )
+        )
+    return EmbeddingRefreshPlan(
+        plan_sha256=plan_sha,
+        previous_index_sha256=previous_index_sha,
+        vector_dimension=dimension,
+        removed_count=removed_count,
+        entries=tuple(entries),
+    )
+
+
+def store_embedding_refresh_plan(
+    ai_root: Path,
+    refresh_plan: EmbeddingRefreshPlan,
+) -> tuple[str, Path]:
+    data = refresh_plan.to_json_bytes()
+    if parse_embedding_refresh_plan(data) != refresh_plan:
+        raise SemanticIndexError(
+            "semantic embedding refresh plan canonical round-trip mismatch"
+        )
+    return _store_content_addressed(
+        _artifact_directory(ai_root, PLAN_DIR),
+        "semantic-embedding-refresh-plan",
+        data,
+    )
+
+
+def load_embedding_refresh_plan(
+    ai_root: Path,
+    refresh_plan_sha256: str,
+) -> EmbeddingRefreshPlan:
+    return parse_embedding_refresh_plan(
+        _load_content_addressed(
+            ai_root,
+            PLAN_DIR,
+            "semantic-embedding-refresh-plan",
+            refresh_plan_sha256,
+            label="semantic embedding refresh plan SHA",
+        )
+    )
+
+
 def parse_embedding_result(data: bytes) -> EmbeddingResult:
     value = _decode_json_object(data, label="semantic embedding result")
     if set(value) != {
@@ -734,17 +862,29 @@ def load_embedding_result(
 
 def parse_embedding_result_set(data: bytes) -> EmbeddingResultSet:
     value = _decode_json_object(data, label="semantic embedding result set")
-    if set(value) != {
-        "record_version",
-        "plan_sha256",
-        "vector_dimension",
-        "vector_encoding",
-        "results",
-    }:
+    record_version = value.get("record_version")
+    expected_properties = (
+        {
+            "record_version",
+            "plan_sha256",
+            "vector_dimension",
+            "vector_encoding",
+            "results",
+        }
+        if record_version == LEGACY_RESULT_SET_VERSION
+        else {
+            "record_version",
+            "plan_sha256",
+            "vector_dimension",
+            "vector_encoding",
+            "refresh_plan_sha256",
+            "results",
+        }
+    )
+    if set(value) != expected_properties:
         raise SemanticIndexError(
             "semantic embedding result set properties do not match contract"
         )
-    record_version = value["record_version"]
     if record_version not in {
         LEGACY_RESULT_SET_VERSION,
         RESULT_SET_VERSION,
@@ -767,6 +907,12 @@ def parse_embedding_result_set(data: bytes) -> EmbeddingResultSet:
     if value["vector_encoding"] != VECTOR_ENCODING:
         raise SemanticIndexError(
             "semantic embedding result set vector encoding is unsupported"
+        )
+    refresh_plan_sha: str | None = None
+    if record_version == RESULT_SET_VERSION:
+        refresh_plan_sha = _require_sha256(
+            value["refresh_plan_sha256"],
+            label="semantic embedding refresh plan SHA",
         )
     raw_results = value["results"]
     if (
@@ -828,6 +974,7 @@ def parse_embedding_result_set(data: bytes) -> EmbeddingResultSet:
         vector_encoding=VECTOR_ENCODING,
         results=tuple(entries),
         record_version=record_version,
+        refresh_plan_sha256=refresh_plan_sha,
     )
 
 
