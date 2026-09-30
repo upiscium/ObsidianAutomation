@@ -25,8 +25,9 @@ from .pre_review_job import PreReviewJobError, _connect_ro
 from .semantic_corpus import SemanticCorpusManifest
 from .semantic_index import SemanticIndexManifest
 from .semantic_retrieval import (
-    DEFAULT_LEXICAL_WEIGHT,
+    DEFAULT_RETRIEVAL_PROFILE,
     MAX_TOP_K,
+    RETRIEVAL_PROFILES,
     RankedSemanticChunk,
     RetrievalFilter,
     SOURCE_KINDS,
@@ -35,6 +36,7 @@ from .semantic_retrieval import (
     load_verified_semantic_candidates,
     parse_retrieval_filter,
     rank_semantic_chunks,
+    retrieval_profile_lexical_weight,
 )
 
 
@@ -62,6 +64,7 @@ BRIDGE_PAIR_MAX = 0.82
 POLICIES = (
     "semantic-focus-v0",
     "semantic-project-distill-v0",
+    "semantic-project-distill-v1",
     "semantic-timeline-v0",
     "semantic-bridge-v0",
     "semantic-gap-v0",
@@ -476,6 +479,18 @@ def _anchor_query(anchors: Sequence[SemanticCandidate]) -> str:
     return text
 
 
+def _retrieval_profile(policy: str) -> str:
+    if policy == "semantic-project-distill-v1":
+        return "semantic-retrieval-v1"
+    return DEFAULT_RETRIEVAL_PROFILE
+
+
+def _lexical_weight(policy: str) -> float:
+    return retrieval_profile_lexical_weight(
+        _retrieval_profile(policy)
+    )
+
+
 def _source_kind_weights(policy: str) -> dict[str, float]:
     weights = {
         "daily": 1.0,
@@ -484,7 +499,10 @@ def _source_kind_weights(policy: str) -> dict[str, float]:
         "project-note": 1.0,
         "knowledge": 1.0,
     }
-    if policy == "semantic-project-distill-v0":
+    if policy in {
+        "semantic-project-distill-v0",
+        "semantic-project-distill-v1",
+    }:
         weights.update(
             {
                 "daily": 1.05,
@@ -531,7 +549,7 @@ def _rank_for_anchors(
         query_vector=_centroid([item.vector.vector for item in anchors]),
         mode="hybrid",
         source_kind_weights=_source_kind_weights(policy),
-        lexical_weight=DEFAULT_LEXICAL_WEIGHT,
+        lexical_weight=_lexical_weight(policy),
         top_k=MAX_TOP_K,
     )
 
@@ -691,7 +709,10 @@ def _policy_thresholds(policy: str) -> dict[str, float | None]:
     coherence = DEFAULT_CLUSTER_COHERENCE_MIN
     if policy == "semantic-focus-v0":
         knowledge_limit = FOCUS_KNOWLEDGE_SKIP_THRESHOLD
-    elif policy == "semantic-project-distill-v0":
+    elif policy in {
+        "semantic-project-distill-v0",
+        "semantic-project-distill-v1",
+    }:
         knowledge_limit = PROJECT_KNOWLEDGE_SKIP_THRESHOLD
     elif policy == "semantic-timeline-v0":
         knowledge_limit = TIMELINE_KNOWLEDGE_SKIP_THRESHOLD
@@ -1050,7 +1071,7 @@ def _make_record(
         corpus_manifest_sha256=index.corpus_manifest_sha256,
         metadata_filters=filters.payload(),
         retrieval_mode="hybrid",
-        lexical_weight=DEFAULT_LEXICAL_WEIGHT,
+        lexical_weight=_lexical_weight(policy),
         source_kind_weights=_source_kind_weights(policy),
         anchors=tuple(
             _anchor_binding(
@@ -1115,11 +1136,14 @@ def build_semantic_selection(
         if anchor is None:
             raise SemanticSelectionError("semantic-focus-v0 has no eligible anchor")
         anchors = (anchor,)
-    elif policy == "semantic-project-distill-v0":
+    elif policy in {
+        "semantic-project-distill-v0",
+        "semantic-project-distill-v1",
+    }:
         anchor = _choose_project_anchor(candidates)
         if anchor is None:
             raise SemanticSelectionError(
-                "semantic-project-distill-v0 has no Project anchor"
+                f"{policy} has no Project anchor"
             )
         anchors = (anchor,)
         preferred = ("project-note", "daily", "idea", "knowledge")
@@ -1159,6 +1183,11 @@ def build_semantic_selection(
         policy_observations["idea_status"] = anchor.source.metadata.get("status")
         policy_observations["idea_created"] = anchor.source.metadata.get("created")
         preferred = ("knowledge", "project", "project-note")
+
+    if policy == "semantic-project-distill-v1":
+        policy_observations["retrieval_profile"] = _retrieval_profile(
+            policy
+        )
 
     ranked_all = _rank_for_anchors(candidates, anchors, policy=policy)
     ranked = _unique_source_rows(
