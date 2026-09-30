@@ -1986,6 +1986,54 @@ def finalize_semantic_index(
             "embedding result set order does not match embedding plan"
         )
 
+    refresh_plan: EmbeddingRefreshPlan | None = None
+    previous_index: SemanticIndexManifest | None = None
+    previous_by_chunk: dict[str, SemanticVector] = {}
+    if result_set.record_version == RESULT_SET_VERSION:
+        if result_set.refresh_plan_sha256 is None:
+            raise SemanticIndexError(
+                "incremental embedding result set has no refresh plan binding"
+            )
+        refresh_plan = load_embedding_refresh_plan(
+            ai_root,
+            result_set.refresh_plan_sha256,
+        )
+        if refresh_plan.plan_sha256 != plan_sha:
+            raise SemanticIndexError(
+                "incremental refresh plan does not match embedding plan"
+            )
+        if len(refresh_plan.entries) != len(plan.requests):
+            raise SemanticIndexError(
+                "incremental refresh plan entry count mismatch"
+            )
+        previous_index = load_semantic_index_manifest(
+            ai_root,
+            refresh_plan.previous_index_sha256,
+        )
+        if (
+            previous_index.provider != plan.provider
+            or previous_index.adapter_version != plan.adapter_version
+            or previous_index.model_identifier != plan.model_identifier
+            or previous_index.model_revision != plan.model_revision
+            or previous_index.vector_dimension
+            != refresh_plan.vector_dimension
+            or previous_index.vector_encoding != VECTOR_ENCODING
+        ):
+            raise SemanticIndexError(
+                "incremental refresh previous index binding mismatch"
+            )
+        previous_by_chunk = {
+            item.chunk_id: item
+            for item in previous_index.vectors
+        }
+        current_ids = {entry.chunk_id for entry in plan.requests}
+        if refresh_plan.removed_count != len(
+            set(previous_by_chunk) - current_ids
+        ):
+            raise SemanticIndexError(
+                "incremental refresh removed count mismatch"
+            )
+
     try:
         with mirror_read_lock(ai_root):
             corpus = load_semantic_corpus_manifest(
@@ -2020,6 +2068,21 @@ def finalize_semantic_index(
                     raise SemanticIndexError(
                         "embedding plan chunk order does not match corpus"
                     )
+                refresh_entry: EmbeddingRefreshPlanEntry | None = None
+                if refresh_plan is not None:
+                    refresh_entry = refresh_plan.entries[
+                        len(vectors)
+                    ]
+                    if (
+                        refresh_entry.chunk_id != plan_entry.chunk_id
+                        or refresh_entry.request_sha256
+                        != plan_entry.request_sha256
+                        or refresh_entry.reused_from_result_sha256
+                        != result_entry.reused_from_result_sha256
+                    ):
+                        raise SemanticIndexError(
+                            "incremental refresh provenance does not match result set"
+                        )
                 request = load_embedding_request(
                     ai_root,
                     plan_entry.request_sha256,
@@ -2072,12 +2135,24 @@ def finalize_semantic_index(
                     result_entry.reused_from_result_sha256
                     is not None
                 ):
+                    previous_vector = previous_by_chunk.get(
+                        chunk.chunk_id
+                    )
+                    if (
+                        previous_vector is None
+                        or previous_vector.result_sha256
+                        != result_entry.reused_from_result_sha256
+                    ):
+                        raise SemanticIndexError(
+                            "reused embedding result is not bound to previous index"
+                        )
                     reused_vector = _load_reusable_vector(
                         ai_root,
                         current_request=request,
                         reused_from_result_sha256=(
                             result_entry.reused_from_result_sha256
                         ),
+                        expected_vector=previous_vector.vector,
                     )
                     if reused_vector != result.vector:
                         raise SemanticIndexError(
@@ -2182,15 +2257,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=DEFAULT_BATCH_SIZE,
     )
 
+    prepare_refresh = subparsers.add_parser("prepare-refresh")
+    prepare_refresh.add_argument(
+        "--ai-root",
+        type=Path,
+        required=True,
+    )
+    prepare_refresh.add_argument("--plan-sha", required=True)
+    prepare_refresh.add_argument(
+        "--previous-index-sha",
+        required=True,
+    )
+
     embed_refresh = subparsers.add_parser("embed-refresh")
     embed_refresh.add_argument(
         "--ai-root",
         type=Path,
         required=True,
     )
-    embed_refresh.add_argument("--plan-sha", required=True)
     embed_refresh.add_argument(
-        "--previous-index-sha",
+        "--refresh-plan-sha",
         required=True,
     )
     embed_refresh.add_argument("--base-url", required=True)
@@ -2279,6 +2365,37 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ),
                 }
             )
+        elif args.command == "prepare-refresh":
+            refresh_sha, path, refresh_plan = (
+                prepare_incremental_embedding_refresh_plan(
+                    args.ai_root,
+                    plan_sha256=args.plan_sha,
+                    previous_index_sha256=args.previous_index_sha,
+                )
+            )
+            reused_count = sum(
+                entry.reused_from_result_sha256 is not None
+                for entry in refresh_plan.entries
+            )
+            _print_json(
+                {
+                    "refresh_plan_sha256": refresh_sha,
+                    "path": str(path),
+                    "plan_sha256": refresh_plan.plan_sha256,
+                    "previous_index_sha256": (
+                        refresh_plan.previous_index_sha256
+                    ),
+                    "vector_dimension": (
+                        refresh_plan.vector_dimension
+                    ),
+                    "request_count": len(refresh_plan.entries),
+                    "reused_count": reused_count,
+                    "embedded_count": (
+                        len(refresh_plan.entries) - reused_count
+                    ),
+                    "removed_count": refresh_plan.removed_count,
+                }
+            )
         elif args.command == "embed-refresh":
             (
                 result_set_sha,
@@ -2287,8 +2404,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 stats,
             ) = embed_semantic_plan_incremental_with_ollama(
                 args.ai_root,
-                plan_sha256=args.plan_sha,
-                previous_index_sha256=args.previous_index_sha,
+                refresh_plan_sha256=args.refresh_plan_sha,
                 base_url=args.base_url,
                 timeout=args.timeout,
                 batch_size=args.batch_size,
