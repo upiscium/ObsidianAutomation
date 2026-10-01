@@ -200,7 +200,7 @@ def test_chunk_identity_is_deterministic_and_bound_to_source_sha(tmp_path: Path)
     first = build_semantic_corpus(vault)
     second = build_semantic_corpus(vault)
     assert first.to_json_bytes() == second.to_json_bytes()
-    assert CHUNK_POLICY_VERSION == "heading-section-lf-v0"
+    assert CHUNK_POLICY_VERSION == "heading-section-lf-v1"
 
     source = next(item for item in first.sources if item.source_kind == "knowledge")
     original_ids = [chunk.chunk_id for chunk in source.chunks]
@@ -313,6 +313,54 @@ def test_manifest_rejects_unsafe_source_path(tmp_path: Path) -> None:
                 separators=(",", ":"),
             ).encode("utf-8")
         )
+
+
+def test_structural_only_project_notes_are_excluded_but_heading_context_is_retained(
+    tmp_path: Path,
+) -> None:
+    vault = _vault(tmp_path)
+    running = vault / "10-Project" / "Running"
+    frontmatter = (
+        "type: project-note\n"
+        "project: '[[10-Project/Running/Running|Running]]'\n"
+        "lifecycle: active\n"
+    )
+    (running / "StatusOnly.md").write_text(
+        _note(
+            frontmatter,
+            "## Notes\n\n"
+            "~~~meta-bind-embed\n"
+            "[[project-meta]]\n"
+            "~~~\n"
+            "-\n"
+            "1.\n"
+            "- [ ]",
+        ),
+        encoding="utf-8",
+    )
+    (running / "StatusMeaningful.md").write_text(
+        _note(
+            frontmatter,
+            "## Notes\n\n"
+            "Human status note with a concrete implementation decision.",
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = build_semantic_corpus(vault)
+    paths = {item.path for item in manifest.sources}
+    assert "10-Project/Running/StatusOnly.md" not in paths
+
+    meaningful = next(
+        item
+        for item in manifest.sources
+        if item.path == "10-Project/Running/StatusMeaningful.md"
+    )
+    assert len(meaningful.chunks) == 1
+    assert meaningful.chunks[0].content_sha256 == sha256_bytes(
+        b"## Notes\n\nHuman status note with a concrete implementation decision.\n"
+    )
+
 
 def test_long_managed_status_frontmatter_over_128_lines_is_valid(
     tmp_path: Path,

@@ -29,6 +29,7 @@ from .semantic_retrieval import (
     SemanticRetrievalError,
     load_verified_semantic_candidates,
 )
+from .semantic_corpus import semantic_substantive_bytes
 from .semantic_objective_identity import (
     CANDIDATE_KIND,
     DEEP_KNOWLEDGE,
@@ -84,6 +85,9 @@ MAX_LIST_ITEMS = 12
 MAX_PROJECT_PROPOSALS = 4
 MAX_SOURCES = 8
 MAX_SOURCE_BYTES = 64 * 1024
+DEEP_KNOWLEDGE_MIN_SUBSTANTIVE_SOURCES = 2
+DEEP_KNOWLEDGE_MIN_SOURCE_SUBSTANTIVE_BYTES = 32
+DEEP_KNOWLEDGE_MIN_TOTAL_SUBSTANTIVE_BYTES = 160
 CONTEXT_STAGE = "05-Context"
 UNTRUSTED_STAGE = "00-Untrusted"
 
@@ -149,6 +153,60 @@ class SemanticObjectiveContext:
 
 
 @dataclass(frozen=True)
+class DeepKnowledgeEvidenceObservation:
+    sufficient: bool
+    substantive_source_count: int
+    substantive_bytes: int
+    reason: str | None
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "sufficient": self.sufficient,
+            "substantive_source_count": self.substantive_source_count,
+            "substantive_bytes": self.substantive_bytes,
+            "reason": self.reason,
+            "minimum_sources": DEEP_KNOWLEDGE_MIN_SUBSTANTIVE_SOURCES,
+            "minimum_source_bytes": DEEP_KNOWLEDGE_MIN_SOURCE_SUBSTANTIVE_BYTES,
+            "minimum_total_bytes": DEEP_KNOWLEDGE_MIN_TOTAL_SUBSTANTIVE_BYTES,
+        }
+
+
+def assess_deep_knowledge_evidence(
+    context: SemanticObjectiveContext,
+) -> DeepKnowledgeEvidenceObservation:
+    if context.objective_policy != DEEP_KNOWLEDGE:
+        raise SemanticObjectiveError(
+            "deep Knowledge evidence assessment requires deep-knowledge-v1"
+        )
+    source_bytes = [semantic_substantive_bytes(item.content) for item in context.sources]
+    substantive_source_count = sum(
+        size >= DEEP_KNOWLEDGE_MIN_SOURCE_SUBSTANTIVE_BYTES
+        for size in source_bytes
+    )
+    substantive_bytes = sum(source_bytes)
+    reason: str | None = None
+    if substantive_source_count < DEEP_KNOWLEDGE_MIN_SUBSTANTIVE_SOURCES:
+        reason = "insufficient_substantive_sources"
+    elif substantive_bytes < DEEP_KNOWLEDGE_MIN_TOTAL_SUBSTANTIVE_BYTES:
+        reason = "insufficient_substantive_bytes"
+    return DeepKnowledgeEvidenceObservation(
+        sufficient=reason is None,
+        substantive_source_count=substantive_source_count,
+        substantive_bytes=substantive_bytes,
+        reason=reason,
+    )
+
+
+@dataclass(frozen=True)
+class NoCandidate:
+    status: str
+    reason: str
+
+    def payload(self) -> dict[str, str]:
+        return {"status": self.status, "reason": self.reason}
+
+
+@dataclass(frozen=True)
 class IdeaCandidate:
     title: str
     summary: str
@@ -196,7 +254,9 @@ class ProjectAdoptionCandidate:
         }
 
 
-ObjectiveOutput = KnowledgeGeneratorOutput | IdeaCandidate | ProjectAdoptionCandidate
+ObjectiveOutput = (
+    KnowledgeGeneratorOutput | NoCandidate | IdeaCandidate | ProjectAdoptionCandidate
+)
 
 
 @dataclass(frozen=True)
@@ -667,7 +727,7 @@ _OBJECTIVE_SYSTEM = {
     + """
 Objective: deep-knowledge-v1.
 
-Generate one narrow, reusable Knowledge candidate. It should be self-contained enough that a reader normally does not need to reopen all source notes. When evidence supports them, cover the central idea, mechanism or why it works, assumptions, constraints, trade-offs, and concrete implications. Prefer depth on one coherent topic over a broad summary. Do not pad unsupported detail. Do not output YAML frontmatter or canonical control fields.
+Generate one narrow, reusable Knowledge candidate. It should be self-contained enough that a reader normally does not need to reopen all source notes. When evidence supports them, cover the central idea, mechanism or why it works, assumptions, constraints, trade-offs, and concrete implications. Prefer depth on one coherent topic over a broad summary. Do not pad unsupported detail. If the deterministic context gate passed but the supplied evidence still cannot support a reusable Knowledge claim, return the structured no-candidate form with status=no_candidate and reason=insufficient_evidence instead of writing a meta note about missing evidence. Do not output YAML frontmatter or canonical control fields.
 """,
     IDEA_DISCOVERY: _COMMON_SYSTEM
     + """
@@ -774,12 +834,24 @@ def _project_schema(context: SemanticObjectiveContext) -> dict[str, object]:
     }
 
 
+def _no_candidate_schema() -> dict[str, object]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["status", "reason"],
+        "properties": {
+            "status": {"const": "no_candidate"},
+            "reason": {"const": "insufficient_evidence"},
+        },
+    }
+
+
 def _candidate_schema(
     objective: str,
     context: SemanticObjectiveContext,
 ) -> Mapping[str, object]:
     if objective == DEEP_KNOWLEDGE:
-        return dict(KNOWLEDGE_OUTPUT_SCHEMA)
+        return {"anyOf": [dict(KNOWLEDGE_OUTPUT_SCHEMA), _no_candidate_schema()]}
     if objective == IDEA_DISCOVERY:
         return _idea_schema()
     return _project_schema(context)
@@ -803,7 +875,7 @@ def objective_output_schema(
 
 def _template_schema(objective: str) -> Mapping[str, object]:
     if objective == DEEP_KNOWLEDGE:
-        candidate = dict(KNOWLEDGE_OUTPUT_SCHEMA)
+        candidate = {"anyOf": [dict(KNOWLEDGE_OUTPUT_SCHEMA), _no_candidate_schema()]}
     elif objective == IDEA_DISCOVERY:
         candidate = _idea_schema()
     else:
@@ -1010,6 +1082,14 @@ def _parse_project_candidate(
     return parsed
 
 
+def _parse_no_candidate(value: object) -> NoCandidate:
+    if not isinstance(value, dict) or set(value) != {"status", "reason"}:
+        raise SemanticObjectiveError("no-candidate properties do not match contract")
+    if value["status"] != "no_candidate" or value["reason"] != "insufficient_evidence":
+        raise SemanticObjectiveError("no-candidate reason is unsupported")
+    return NoCandidate(status="no_candidate", reason="insufficient_evidence")
+
+
 def parse_objective_output(
     data: bytes,
     *,
@@ -1028,6 +1108,8 @@ def parse_objective_output(
         raise SemanticObjectiveError("semantic objective output candidate kind mismatch")
     candidate = value["candidate"]
     if context.objective_policy == DEEP_KNOWLEDGE:
+        if isinstance(candidate, dict) and candidate.get("status") == "no_candidate":
+            return _parse_no_candidate(candidate)
         try:
             return parse_generator_output(_canonical_json_bytes(candidate))
         except ArtifactLifecycleError as exc:
@@ -1104,12 +1186,15 @@ def parse_objective_candidate(data: bytes) -> SemanticObjectiveCandidate:
     )
     raw_candidate = value["candidate"]
     if objective == DEEP_KNOWLEDGE:
-        try:
-            output: ObjectiveOutput = parse_generator_output(
-                _canonical_json_bytes(raw_candidate)
-            )
-        except ArtifactLifecycleError as exc:
-            raise SemanticObjectiveError(str(exc)) from exc
+        if isinstance(raw_candidate, dict) and raw_candidate.get("status") == "no_candidate":
+            output: ObjectiveOutput = _parse_no_candidate(raw_candidate)
+        else:
+            try:
+                output = parse_generator_output(
+                    _canonical_json_bytes(raw_candidate)
+                )
+            except ArtifactLifecycleError as exc:
+                raise SemanticObjectiveError(str(exc)) from exc
     elif objective == IDEA_DISCOVERY:
         output = _parse_idea_candidate(raw_candidate)
     else:

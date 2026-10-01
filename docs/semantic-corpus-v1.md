@@ -78,7 +78,7 @@ The source path and exact source SHA remain compatible with the existing BM25 Kn
 Chunk policy:
 
 ```text
-heading-section-lf-v0
+heading-section-lf-v1
 ```
 
 Each chunk is bound to:
@@ -94,7 +94,9 @@ Each chunk is bound to:
 
 The manifest does not persist chunk text. A later Embedder must reconstruct bounded chunk bytes from the exact canonical mirror source and verify source/chunk hashes before inference.
 
-Meta Bind fenced blocks are excluded from semantic chunks.
+Meta Bind fenced blocks are excluded from semantic chunks. A section is eligible only when it contains substantive non-structural content after Meta Bind removal. Headings, blank lines, bare list/task markers, empty fenced-block delimiters and horizontal rules do not make a section semantic by themselves. When substantive body content exists, headings remain in the exact chunk bytes so embeddings retain section context.
+
+`heading-section-lf-v0` artifacts remain parseable as historical derived state, but current-corpus verification requires `heading-section-lf-v1`; an old policy is never silently reinterpreted as current.
 
 One chunk is bounded to 16 KiB. One source is bounded to 128 KiB.
 

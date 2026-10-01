@@ -53,6 +53,7 @@ from obsidian_automation.semantic_index import (
 )
 from obsidian_automation.semantic_objective import (
     DEEP_KNOWLEDGE,
+    DeepKnowledgeEvidenceObservation,
     load_objective_context,
 )
 from obsidian_automation.semantic_objective_generation import (
@@ -247,6 +248,26 @@ def _deep_provider_transport(base_url: str, **kwargs):
     }
 
 
+
+def _no_candidate_transport(base_url: str, **kwargs):
+    assert kwargs["path"] == "/chat/completions"
+    content = json.dumps(
+        {
+            "objective_policy": DEEP_KNOWLEDGE,
+            "candidate_kind": "knowledge_candidate",
+            "candidate": {
+                "status": "no_candidate",
+                "reason": "insufficient_evidence",
+            },
+        },
+        ensure_ascii=False,
+    )
+    return {
+        "model": GEN_MODEL,
+        "choices": [{"message": {"role": "assistant", "content": content}}],
+    }
+
+
 def _fake_evaluator(
     ai_root: Path,
     *,
@@ -374,6 +395,87 @@ def test_semantic_deep_mode_reaches_human_review_through_existing_chain(
     assert job_status(state, str(planned["job_id"]))["current_generation"]["state"] == (
         "awaiting_human_review"
     )
+
+
+
+def test_semantic_deep_provider_no_candidate_is_deterministic_reject(
+    tmp_path: Path,
+) -> None:
+    vault, state, index_sha = _semantic_index(tmp_path)
+    planned = plan_once(
+        state,
+        vault,
+        deployed_revision=REVISION,
+        input_mode=INPUT_MODE_SEMANTIC_DEEP,
+        semantic_index_sha256=index_sha,
+        semantic_selection_policy="semantic-project-distill-v0",
+        generator_model=GEN_MODEL,
+        evaluator_model=EVAL_MODEL,
+        now=datetime(2026, 9, 29, 4, 0, tzinfo=timezone.utc),
+    )
+    assert planned["status"] == "submitted"
+
+    generated = worker.run_generator_worker(
+        state,
+        base_url="http://127.0.0.1:8000/v1",
+        deployed_revision=REVISION,
+        transport=_no_candidate_transport,
+    )
+    assert generated["status"] == "deterministic_reject"
+    assert generated["state"] == "deterministic_reject"
+    assert generated["reason_code"] == (
+        "semantic_objective_insufficient_evidence"
+    )
+    generation_id = str(
+        job_status(state, str(planned["job_id"]))["current_generation"]["generation_id"]
+    )
+    assert stage_output(state, generation_id, "generation") is None
+    assert job_status(state, str(planned["job_id"]))[
+        "current_generation"
+    ]["state"] == "deterministic_reject"
+
+
+def test_semantic_evidence_skip_does_not_create_job_or_submission_clock(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import obsidian_automation.ai_input_planner as planner
+
+    vault, state, index_sha = _semantic_index(tmp_path)
+    monkeypatch.setattr(
+        planner,
+        "assess_deep_knowledge_evidence",
+        lambda _context: DeepKnowledgeEvidenceObservation(
+            sufficient=False,
+            substantive_source_count=1,
+            substantive_bytes=96,
+            reason="insufficient_substantive_sources",
+        ),
+    )
+
+    result = plan_once(
+        state,
+        vault,
+        deployed_revision=REVISION,
+        input_mode=INPUT_MODE_SEMANTIC_DEEP,
+        semantic_index_sha256=index_sha,
+        semantic_selection_policy="semantic-project-distill-v0",
+        generator_model=GEN_MODEL,
+        evaluator_model=EVAL_MODEL,
+        now=datetime(2026, 9, 29, 4, 0, tzinfo=timezone.utc),
+    )
+
+    assert result["status"] == "skipped_evidence"
+    assert result["skip_reason"] == "insufficient_substantive_sources"
+    assert result["evidence"]["sufficient"] is False
+    assert not (state / "02-Orchestration" / "pre-review-jobs.sqlite3").exists()
+    cadence = load_cadence_state(state)
+    assert cadence.last_submission_at is None
+    assert cadence.last_novelty_skip_reason == (
+        "semantic-project-distill-v0:deep-knowledge-v1:"
+        "insufficient_substantive_sources"
+    )
+
 
 
 def test_semantic_novelty_skip_does_not_create_job_or_submission_clock(

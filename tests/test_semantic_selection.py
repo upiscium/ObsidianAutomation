@@ -140,6 +140,18 @@ def _vault(tmp_path: Path) -> Path:
             encoding="utf-8",
         )
 
+    (vault / "10-Project" / "LLM" / "Status.md").write_text(
+        _note(
+            "type: project-note\n"
+            "project: '[[10-Project/LLM/LLM|LLM]]'\n"
+            "workspace: '[[03-Workspace/Lab/Lab|Lab]]'\n"
+            "category: list\n"
+            "lifecycle: active\n",
+            "## Notes",
+        ),
+        encoding="utf-8",
+    )
+
     knowledge = vault / "11-Knowledge"
     knowledge_notes = {
         "LLM.md": (
@@ -409,6 +421,27 @@ def test_project_distill_versions_pin_retrieval_semantics(
         "semantic-retrieval-v1"
     )
     assert v0.source_kind_weights == v1.source_kind_weights
+
+
+def test_structural_only_project_note_cannot_enter_project_distill_cluster(
+    tmp_path: Path,
+) -> None:
+    vault, state, index_sha, _ = _semantic_index(tmp_path)
+    record = build_semantic_selection(
+        state,
+        vault,
+        semantic_index_sha256=index_sha,
+        policy="semantic-project-distill-v1",
+        recent_context_limit=0,
+    )
+
+    structural = "10-Project/LLM/Status.md"
+    assert structural not in {
+        item.source_path for item in record.anchors
+    }
+    assert structural not in {
+        item.source_path for item in record.selected
+    }
 
 
 def test_project_distill_v1_parser_rejects_profile_or_weight_drift(

@@ -29,8 +29,12 @@ from obsidian_automation.semantic_objective import (
     IDEA_DISCOVERY,
     PROJECT_ADOPTION,
     IdeaCandidate,
+    NoCandidate,
+    ObjectiveContextSource,
     ProjectAdoptionCandidate,
+    SemanticObjectiveContext,
     SemanticObjectiveError,
+    assess_deep_knowledge_evidence,
     build_objective_context,
     build_objective_generation,
     load_objective_candidate,
@@ -506,7 +510,7 @@ def test_objective_prompts_and_output_contracts_are_explicit(tmp_path: Path) -> 
     prompt = render_objective_prompt(deep)
     assert prompt.objective_policy == DEEP_KNOWLEDGE
     assert prompt.candidate_kind == "knowledge_candidate"
-    assert prompt.template_version == "deep-knowledge-generator-v1"
+    assert prompt.template_version == "deep-knowledge-generator-v2"
     assert prompt.template_sha256 == prompt_template_sha256(DEEP_KNOWLEDGE)
     assert "central idea" in prompt.system
     payload = json.loads(prompt.user)
@@ -517,6 +521,72 @@ def test_objective_prompts_and_output_contracts_are_explicit(tmp_path: Path) -> 
     output = parse_objective_output(_deep_wire(), context=deep)
     assert output.title == "資産識別子と来歴管理"
     assert "仕組み" in output.body
+
+
+
+def test_deep_knowledge_evidence_gate_rejects_structural_only_context() -> None:
+    structural = "## Notes\n"
+    context = SemanticObjectiveContext(
+        objective_policy=DEEP_KNOWLEDGE,
+        candidate_kind="knowledge_candidate",
+        selection_sha256="1" * 64,
+        selection_policy="semantic-project-distill-v1",
+        semantic_index_sha256="2" * 64,
+        corpus_manifest_sha256="3" * 64,
+        created_at="2026-10-01T00:00:00Z",
+        sources=(
+            ObjectiveContextSource(
+                rank=1,
+                role="anchor",
+                path="10-Project/A/Status.md",
+                source_kind="project-note",
+                source_sha256="4" * 64,
+                chunk_id="5" * 64,
+                content_sha256="6" * 64,
+                content=structural,
+            ),
+            ObjectiveContextSource(
+                rank=2,
+                role="support",
+                path="11-Knowledge/Empty.md",
+                source_kind="knowledge",
+                source_sha256="7" * 64,
+                chunk_id="8" * 64,
+                content_sha256="9" * 64,
+                content="# Empty\n-\n",
+            ),
+        ),
+    )
+
+    evidence = assess_deep_knowledge_evidence(context)
+    assert evidence.sufficient is False
+    assert evidence.substantive_source_count == 0
+    assert evidence.substantive_bytes == 0
+    assert evidence.reason == "insufficient_substantive_sources"
+
+
+def test_deep_knowledge_supports_structured_no_candidate(tmp_path: Path) -> None:
+    _vault_root, _state, _index_sha, _selection_sha, _context_sha, deep = (
+        _deep_context(tmp_path)
+    )
+    payload = json.dumps(
+        {
+            "objective_policy": DEEP_KNOWLEDGE,
+            "candidate_kind": "knowledge_candidate",
+            "candidate": {
+                "status": "no_candidate",
+                "reason": "insufficient_evidence",
+            },
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+    output = parse_objective_output(payload, context=deep)
+    assert isinstance(output, NoCandidate)
+    assert output.reason == "insufficient_evidence"
+    schema = objective_output_schema(deep)
+    candidate_schema = schema["properties"]["candidate"]
+    assert "anyOf" in candidate_schema
 
 
 def test_idea_candidate_cannot_choose_canonical_workspace_or_project(
@@ -589,7 +659,7 @@ def test_candidate_and_generation_provenance_bind_selection_objective_and_index(
         objective_context_sha256=context_sha,
         candidate_sha256=candidate_sha,
         implementation_revision=REVISION,
-        prompt_template_version="deep-knowledge-generator-v1",
+        prompt_template_version="deep-knowledge-generator-v2",
         prompt_template_sha256_value=prompt_template_sha256(DEEP_KNOWLEDGE),
         model_provider="ollama",
         model_identifier=MODEL,
@@ -624,7 +694,7 @@ def test_human_projection_explicitly_labels_objective_and_noncanonical_action(
         objective_context_sha256=context_sha,
         candidate_sha256=candidate_sha,
         implementation_revision=REVISION,
-        prompt_template_version="deep-knowledge-generator-v1",
+        prompt_template_version="deep-knowledge-generator-v2",
         prompt_template_sha256_value=prompt_template_sha256(DEEP_KNOWLEDGE),
         model_provider="ollama",
         model_identifier=MODEL,

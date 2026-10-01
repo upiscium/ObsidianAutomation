@@ -55,8 +55,8 @@ When the gate opens in semantic mode:
 3. Reader executes the configured versioned Semantic Selection policy.
 4. Reader stores the content-addressed Selection Record.
 5. If novelty says `skipped`, Reader records the bounded skip reason and creates no job.
-6. If selected, Reader materializes `deep-knowledge-v1` Objective Context.
-7. Reader journals mode/index/selection/objective/context in the existing durable pending record.
+6. If selected, Reader materializes the bounded `deep-knowledge-v1` Objective Context in memory and applies the deterministic evidence-sufficiency gate. Structural-only evidence, fewer than two substantive sources, or fewer than 160 substantive bytes causes `skipped_evidence` with no durable job/provider call.
+7. If evidence is sufficient, Reader stores the Objective Context and journals mode/index/selection/objective/context in the existing durable pending record.
 8. Reader submits the exact Objective Context + deep recipe into the existing pre-review orchestration DB.
 9. Only successful durable submission advances `last_submission_at`.
 
@@ -90,10 +90,11 @@ The existing `knowledge-pre-review-v0` orchestration state machine is retained.
 A deep recipe is identified by exact prompt identity:
 
 ```text
-deep-knowledge-generator-v1
+deep-knowledge-generator-v2
 ```
 
-Generation performs:
+Generation performs. `deep-knowledge-generator-v2` may also return the structured `no_candidate / insufficient_evidence` form; that outcome is persisted for provenance and terminates as `deterministic_reject` before proposal materialization or Human Review.
+
 
 ```text
 Objective Context

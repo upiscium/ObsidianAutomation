@@ -32,6 +32,7 @@ from .ollama_generator import (
 from .production_io import ProductionIOError, mirror_read_lock
 from .semantic_corpus import (
     CHUNK_POLICY_VERSION,
+    SUPPORTED_CHUNK_POLICY_VERSIONS,
     MAX_CHUNKS,
     MAX_CHUNK_BYTES,
     SemanticChunk,
@@ -450,7 +451,8 @@ def parse_embedding_request(data: bytes) -> EmbeddingRequest:
         value["corpus_manifest_sha256"],
         label="corpus manifest SHA",
     )
-    if value["chunk_policy"] != CHUNK_POLICY_VERSION:
+    chunk_policy = value["chunk_policy"]
+    if chunk_policy not in SUPPORTED_CHUNK_POLICY_VERSIONS:
         raise SemanticIndexError("semantic embedding request chunk policy mismatch")
     if (
         value["provider"] != PROVIDER_NAME
@@ -498,7 +500,7 @@ def parse_embedding_request(data: bytes) -> EmbeddingRequest:
         raise SemanticIndexError("semantic embedding input binding mismatch")
     return EmbeddingRequest(
         corpus_manifest_sha256=corpus_sha,
-        chunk_policy=CHUNK_POLICY_VERSION,
+        chunk_policy=chunk_policy,
         provider=PROVIDER_NAME,
         adapter_version=ADAPTER_VERSION,
         model_identifier=model_identifier,
@@ -566,7 +568,8 @@ def parse_embedding_plan(data: bytes) -> EmbeddingPlan:
         value["corpus_manifest_sha256"],
         label="corpus manifest SHA",
     )
-    if value["chunk_policy"] != CHUNK_POLICY_VERSION:
+    chunk_policy = value["chunk_policy"]
+    if chunk_policy not in SUPPORTED_CHUNK_POLICY_VERSIONS:
         raise SemanticIndexError("semantic embedding plan chunk policy mismatch")
     if (
         value["provider"] != PROVIDER_NAME
@@ -616,7 +619,7 @@ def parse_embedding_plan(data: bytes) -> EmbeddingPlan:
         )
     return EmbeddingPlan(
         corpus_manifest_sha256=corpus_sha,
-        chunk_policy=CHUNK_POLICY_VERSION,
+        chunk_policy=chunk_policy,
         provider=PROVIDER_NAME,
         adapter_version=ADAPTER_VERSION,
         model_identifier=model_identifier,
@@ -1045,7 +1048,8 @@ def parse_semantic_index_manifest(data: bytes) -> SemanticIndexManifest:
         value["embedding_result_set_sha256"],
         label="embedding result set SHA",
     )
-    if value["chunk_policy"] != CHUNK_POLICY_VERSION:
+    chunk_policy = value["chunk_policy"]
+    if chunk_policy not in SUPPORTED_CHUNK_POLICY_VERSIONS:
         raise SemanticIndexError("semantic index chunk policy mismatch")
     if (
         value["provider"] != PROVIDER_NAME
@@ -1147,7 +1151,7 @@ def parse_semantic_index_manifest(data: bytes) -> SemanticIndexManifest:
         corpus_manifest_sha256=corpus_sha,
         embedding_plan_sha256=plan_sha,
         embedding_result_set_sha256=result_set_sha,
-        chunk_policy=CHUNK_POLICY_VERSION,
+        chunk_policy=chunk_policy,
         provider=PROVIDER_NAME,
         adapter_version=ADAPTER_VERSION,
         model_identifier=model_identifier,
