@@ -5,7 +5,7 @@ import json
 import math
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -61,10 +61,14 @@ GAP_SUPPORT_MIN = 0.35
 BRIDGE_PAIR_MIN = 0.30
 BRIDGE_PAIR_MAX = 0.82
 
+PROJECT_DISTILL_V2_MAX_ANCHOR_SOURCES = 128
+PROJECT_DISTILL_V2_EXPLORATION_STRATEGY = "first-novel-project-source-v1"
+
 POLICIES = (
     "semantic-focus-v0",
     "semantic-project-distill-v0",
     "semantic-project-distill-v1",
+    "semantic-project-distill-v2",
     "semantic-timeline-v0",
     "semantic-bridge-v0",
     "semantic-gap-v0",
@@ -320,17 +324,15 @@ def _choose_focus_anchor(
     )
 
 
-def _choose_project_anchor(
+def _ordered_project_anchors(
     candidates: Sequence[SemanticCandidate],
-) -> SemanticCandidate | None:
+) -> tuple[SemanticCandidate, ...]:
     pool = [
         item
         for item in candidates
         if item.source.source_kind in {"project", "project-note"}
     ]
-    if not pool:
-        return None
-    return min(
+    ordered = sorted(
         pool,
         key=lambda item: (
             -_density(item, candidates),
@@ -338,6 +340,22 @@ def _choose_project_anchor(
             *_stable_candidate_key(item),
         ),
     )
+    result: list[SemanticCandidate] = []
+    seen_paths: set[str] = set()
+    for item in ordered:
+        key = item.source.path.casefold()
+        if key in seen_paths:
+            continue
+        seen_paths.add(key)
+        result.append(item)
+    return tuple(result)
+
+
+def _choose_project_anchor(
+    candidates: Sequence[SemanticCandidate],
+) -> SemanticCandidate | None:
+    ordered = _ordered_project_anchors(candidates)
+    return ordered[0] if ordered else None
 
 
 def _choose_timeline_anchor(
@@ -480,7 +498,10 @@ def _anchor_query(anchors: Sequence[SemanticCandidate]) -> str:
 
 
 def _retrieval_profile(policy: str) -> str:
-    if policy == "semantic-project-distill-v1":
+    if policy in {
+        "semantic-project-distill-v1",
+        "semantic-project-distill-v2",
+    }:
         return "semantic-retrieval-v1"
     return DEFAULT_RETRIEVAL_PROFILE
 
@@ -502,6 +523,7 @@ def _source_kind_weights(policy: str) -> dict[str, float]:
     if policy in {
         "semantic-project-distill-v0",
         "semantic-project-distill-v1",
+        "semantic-project-distill-v2",
     }:
         weights.update(
             {
@@ -795,6 +817,7 @@ def _policy_thresholds(policy: str) -> dict[str, float | None]:
     elif policy in {
         "semantic-project-distill-v0",
         "semantic-project-distill-v1",
+        "semantic-project-distill-v2",
     }:
         knowledge_limit = PROJECT_KNOWLEDGE_SKIP_THRESHOLD
     elif policy == "semantic-timeline-v0":
@@ -1088,12 +1111,64 @@ def parse_semantic_selection(data: bytes) -> SemanticSelectionRecord:
     if not isinstance(observations, dict):
         raise SemanticSelectionError("semantic selection policy observations are invalid")
     if (
-        policy == "semantic-project-distill-v1"
+        policy in {
+            "semantic-project-distill-v1",
+            "semantic-project-distill-v2",
+        }
         and observations.get("retrieval_profile") != _retrieval_profile(policy)
     ):
         raise SemanticSelectionError(
             "semantic selection retrieval profile does not match policy version"
         )
+    if policy == "semantic-project-distill-v2":
+        expected = {
+            "retrieval_profile",
+            "exploration_strategy",
+            "anchor_candidate_rank",
+            "anchor_candidates_examined",
+            "anchor_candidate_pool_size",
+            "prior_skip_reasons",
+        }
+        if set(observations) != expected:
+            raise SemanticSelectionError(
+                "semantic-project-distill-v2 policy observations do not match contract"
+            )
+        if (
+            observations["exploration_strategy"]
+            != PROJECT_DISTILL_V2_EXPLORATION_STRATEGY
+        ):
+            raise SemanticSelectionError(
+                "semantic-project-distill-v2 exploration strategy is invalid"
+            )
+        rank = observations["anchor_candidate_rank"]
+        examined = observations["anchor_candidates_examined"]
+        pool_size = observations["anchor_candidate_pool_size"]
+        if (
+            type(rank) is not int
+            or type(examined) is not int
+            or type(pool_size) is not int
+            or rank < 1
+            or examined != rank
+            or pool_size < rank
+            or pool_size > PROJECT_DISTILL_V2_MAX_ANCHOR_SOURCES
+        ):
+            raise SemanticSelectionError(
+                "semantic-project-distill-v2 exploration bounds are invalid"
+            )
+        prior = observations["prior_skip_reasons"]
+        if (
+            not isinstance(prior, list)
+            or len(prior) != rank - 1
+            or any(
+                not isinstance(item, str)
+                or not item
+                or len(item) > 128
+                for item in prior
+            )
+        ):
+            raise SemanticSelectionError(
+                "semantic-project-distill-v2 prior skip reasons are invalid"
+            )
     return SemanticSelectionRecord(
         selection_policy=policy,
         semantic_index_sha256=index_sha,
@@ -1190,6 +1265,84 @@ def _make_record(
     )
 
 
+def _build_project_distill_v2(
+    ai_root: Path,
+    *,
+    semantic_index_sha256: str,
+    index: SemanticIndexManifest,
+    corpus: SemanticCorpusManifest,
+    candidates: Sequence[SemanticCandidate],
+    filters: RetrievalFilter,
+    max_selected: int,
+    recent_context_limit: int,
+) -> SemanticSelectionRecord:
+    anchor_candidates = _ordered_project_anchors(candidates)
+    if not anchor_candidates:
+        raise SemanticSelectionError(
+            "semantic-project-distill-v2 has no Project anchor"
+        )
+    if len(anchor_candidates) > PROJECT_DISTILL_V2_MAX_ANCHOR_SOURCES:
+        raise SemanticSelectionError(
+            "semantic-project-distill-v2 anchor source pool exceeds supported bound"
+        )
+
+    preferred = ("project-note", "daily", "idea", "knowledge")
+    prior_skip_reasons: list[str] = []
+    last_record: SemanticSelectionRecord | None = None
+
+    for rank, anchor in enumerate(anchor_candidates, 1):
+        anchors = (anchor,)
+        ranked_all = _rank_for_anchors(
+            candidates,
+            anchors,
+            policy="semantic-project-distill-v2",
+        )
+        ranked = _unique_source_rows(
+            ranked_all,
+            required_chunks=[anchor.chunk.chunk_id],
+            max_selected=max_selected,
+            preferred_kinds=preferred,
+        )
+        if not ranked:
+            raise SemanticSelectionError(
+                "semantic-project-distill-v2 produced no ranked sources"
+            )
+        observations: dict[str, object] = {
+            "retrieval_profile": _retrieval_profile(
+                "semantic-project-distill-v2"
+            ),
+            "exploration_strategy": (
+                PROJECT_DISTILL_V2_EXPLORATION_STRATEGY
+            ),
+            "anchor_candidate_rank": rank,
+            "anchor_candidates_examined": rank,
+            "anchor_candidate_pool_size": len(anchor_candidates),
+            "prior_skip_reasons": list(prior_skip_reasons),
+        }
+        record = _make_record(
+            ai_root,
+            semantic_index_sha256=semantic_index_sha256,
+            index=index,
+            corpus=corpus,
+            candidates=candidates,
+            policy="semantic-project-distill-v2",
+            filters=filters,
+            anchors=anchors,
+            ranked=ranked,
+            policy_observations=observations,
+            recent_context_limit=recent_context_limit,
+        )
+        last_record = record
+        if record.novelty.decision == "selected":
+            return record
+        prior_skip_reasons.append(
+            record.novelty.skip_reason or "unspecified_skip"
+        )
+
+    assert last_record is not None
+    return last_record
+
+
 def build_semantic_selection(
     ai_root: Path,
     vault_root: Path,
@@ -1242,6 +1395,17 @@ def build_semantic_selection(
             )
         anchors = (anchor,)
         preferred = ("project-note", "daily", "idea", "knowledge")
+    elif policy == "semantic-project-distill-v2":
+        return _build_project_distill_v2(
+            ai_root,
+            semantic_index_sha256=index_sha,
+            index=index,
+            corpus=corpus,
+            candidates=candidates,
+            filters=filters,
+            max_selected=max_selected,
+            recent_context_limit=recent_context_limit,
+        )
     elif policy == "semantic-timeline-v0":
         anchor = _choose_timeline_anchor(candidates)
         if anchor is None:
