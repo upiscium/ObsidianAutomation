@@ -53,6 +53,7 @@ from obsidian_automation.semantic_index import (
 )
 from obsidian_automation.semantic_objective import (
     DEEP_KNOWLEDGE,
+    DeepKnowledgeEvidenceObservation,
     load_objective_context,
 )
 from obsidian_automation.semantic_objective_generation import (
@@ -432,6 +433,48 @@ def test_semantic_deep_provider_no_candidate_is_deterministic_reject(
     assert job_status(state, str(planned["job_id"]))[
         "current_generation"
     ]["state"] == "deterministic_reject"
+
+
+def test_semantic_evidence_skip_does_not_create_job_or_submission_clock(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import obsidian_automation.ai_input_planner as planner
+
+    vault, state, index_sha = _semantic_index(tmp_path)
+    monkeypatch.setattr(
+        planner,
+        "assess_deep_knowledge_evidence",
+        lambda _context: DeepKnowledgeEvidenceObservation(
+            sufficient=False,
+            substantive_source_count=1,
+            substantive_bytes=96,
+            reason="insufficient_substantive_sources",
+        ),
+    )
+
+    result = plan_once(
+        state,
+        vault,
+        deployed_revision=REVISION,
+        input_mode=INPUT_MODE_SEMANTIC_DEEP,
+        semantic_index_sha256=index_sha,
+        semantic_selection_policy="semantic-project-distill-v0",
+        generator_model=GEN_MODEL,
+        evaluator_model=EVAL_MODEL,
+        now=datetime(2026, 9, 29, 4, 0, tzinfo=timezone.utc),
+    )
+
+    assert result["status"] == "skipped_evidence"
+    assert result["skip_reason"] == "insufficient_substantive_sources"
+    assert result["evidence"]["sufficient"] is False
+    assert not (state / "02-Orchestration" / "pre-review-jobs.sqlite3").exists()
+    cadence = load_cadence_state(state)
+    assert cadence.last_submission_at is None
+    assert cadence.last_novelty_skip_reason == (
+        "semantic-project-distill-v0:deep-knowledge-v1:"
+        "insufficient_substantive_sources"
+    )
 
 
 def test_semantic_novelty_skip_does_not_create_job_or_submission_clock(
