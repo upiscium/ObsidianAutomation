@@ -44,6 +44,7 @@ from obsidian_automation.semantic_objective import (
     parse_objective_output,
     prompt_template_sha256,
     render_objective_prompt,
+    supported_deep_knowledge_prompt_hashes,
     store_objective_candidate,
     store_objective_context,
     store_objective_generation,
@@ -510,12 +511,22 @@ def test_objective_prompts_and_output_contracts_are_explicit(tmp_path: Path) -> 
     prompt = render_objective_prompt(deep)
     assert prompt.objective_policy == DEEP_KNOWLEDGE
     assert prompt.candidate_kind == "knowledge_candidate"
-    assert prompt.template_version == "deep-knowledge-generator-v2"
+    assert prompt.template_version == "deep-knowledge-generator-v3"
     assert prompt.template_sha256 == prompt_template_sha256(DEEP_KNOWLEDGE)
     assert "central idea" in prompt.system
+    assert "two or more distinct selected sources" in prompt.system
+    assert "Redundancy and consistency are evaluated downstream" in prompt.system
     payload = json.loads(prompt.user)
     assert payload["selection_policy"] == "semantic-project-distill-v0"
     assert payload["sources"][0]["content"]
+    assert payload["input_contract"] == "deep-knowledge-evidence-observation-v1"
+    evidence = payload["evidence_observation"]
+    assert evidence["sufficient"] is True
+    assert evidence["substantive_source_count"] >= 2
+    assert evidence["substantive_bytes"] >= 160
+    assert evidence["minimum_sources"] == 2
+    assert evidence["minimum_source_bytes"] == 32
+    assert evidence["minimum_total_bytes"] == 160
     assert prompt.output_schema["properties"]["objective_policy"]["const"] == DEEP_KNOWLEDGE
 
     output = parse_objective_output(_deep_wire(), context=deep)
@@ -563,6 +574,21 @@ def test_deep_knowledge_evidence_gate_rejects_structural_only_context() -> None:
     assert evidence.substantive_source_count == 0
     assert evidence.substantive_bytes == 0
     assert evidence.reason == "insufficient_substantive_sources"
+
+
+def test_deep_knowledge_v2_prompt_hash_remains_supported() -> None:
+    hashes = supported_deep_knowledge_prompt_hashes()
+    assert set(hashes) == {
+        "deep-knowledge-generator-v2",
+        "deep-knowledge-generator-v3",
+    }
+    assert hashes["deep-knowledge-generator-v3"] == (
+        prompt_template_sha256(DEEP_KNOWLEDGE)
+    )
+    assert (
+        hashes["deep-knowledge-generator-v2"]
+        != hashes["deep-knowledge-generator-v3"]
+    )
 
 
 def test_deep_knowledge_supports_structured_no_candidate(tmp_path: Path) -> None:
@@ -659,7 +685,7 @@ def test_candidate_and_generation_provenance_bind_selection_objective_and_index(
         objective_context_sha256=context_sha,
         candidate_sha256=candidate_sha,
         implementation_revision=REVISION,
-        prompt_template_version="deep-knowledge-generator-v2",
+        prompt_template_version="deep-knowledge-generator-v3",
         prompt_template_sha256_value=prompt_template_sha256(DEEP_KNOWLEDGE),
         model_provider="ollama",
         model_identifier=MODEL,
@@ -694,7 +720,7 @@ def test_human_projection_explicitly_labels_objective_and_noncanonical_action(
         objective_context_sha256=context_sha,
         candidate_sha256=candidate_sha,
         implementation_revision=REVISION,
-        prompt_template_version="deep-knowledge-generator-v2",
+        prompt_template_version="deep-knowledge-generator-v3",
         prompt_template_sha256_value=prompt_template_sha256(DEEP_KNOWLEDGE),
         model_provider="ollama",
         model_identifier=MODEL,
