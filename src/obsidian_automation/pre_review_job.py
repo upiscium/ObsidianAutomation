@@ -68,6 +68,7 @@ from .ollama_generator import (
 )
 from .semantic_objective_identity import (
     DEEP_KNOWLEDGE,
+    DEEP_KNOWLEDGE_PROMPT_VERSIONS,
     OBJECTIVE_OLLAMA_ADAPTER_VERSION,
     OBJECTIVE_OPENAI_ADAPTER_VERSION,
     PROMPT_VERSION as SEMANTIC_OBJECTIVE_PROMPT_VERSION,
@@ -87,13 +88,11 @@ HISTORICAL_RUNTIME_SUPERSESSION_REASON = "operator_historical_runtime_retire"
 
 def _supported_generator_prompt_hashes() -> dict[str, str]:
     from .semantic_objective import (
-        prompt_template_sha256 as semantic_objective_prompt_sha256,
+        supported_deep_knowledge_prompt_hashes,
     )
 
     hashes = dict(supported_prompt_template_hashes())
-    hashes[SEMANTIC_OBJECTIVE_PROMPT_VERSION[DEEP_KNOWLEDGE]] = (
-        semantic_objective_prompt_sha256(DEEP_KNOWLEDGE)
-    )
+    hashes.update(supported_deep_knowledge_prompt_hashes())
     return hashes
 
 
@@ -293,8 +292,7 @@ def _parse_component(
             )
         semantic_deep = (
             not evaluator
-            and stored_prompt_version
-            == SEMANTIC_OBJECTIVE_PROMPT_VERSION[DEEP_KNOWLEDGE]
+            and stored_prompt_version in DEEP_KNOWLEDGE_PROMPT_VERSIONS
         )
         expected_config = {"adapter_version", "identity_binding", "options"}
         if evaluator:
@@ -336,8 +334,7 @@ def _parse_component(
             raise PreReviewJobError(str(exc)) from exc
         semantic_deep = (
             not evaluator
-            and stored_prompt_version
-            == SEMANTIC_OBJECTIVE_PROMPT_VERSION[DEEP_KNOWLEDGE]
+            and stored_prompt_version in DEEP_KNOWLEDGE_PROMPT_VERSIONS
         )
         expected_config = {"adapter_version", "think", "options"}
         if evaluator:

@@ -33,6 +33,8 @@ from .semantic_corpus import semantic_substantive_bytes
 from .semantic_objective_identity import (
     CANDIDATE_KIND,
     DEEP_KNOWLEDGE,
+    DEEP_KNOWLEDGE_PROMPT_V2_VERSION,
+    DEEP_KNOWLEDGE_PROMPT_V3_VERSION,
     IDEA_DISCOVERY,
     OBJECTIVES,
     PROJECT_ADOPTION,
@@ -723,13 +725,35 @@ Do not invent facts, source paths, Project identities, or canonical metadata. Us
 The Generation Objective controls what kind of candidate to produce. It does not grant canonical write authority. Never claim that an Idea was saved/adopted, a Project was modified, or a Knowledge Note was approved.
 """
 
-_OBJECTIVE_SYSTEM = {
-    DEEP_KNOWLEDGE: _COMMON_SYSTEM
-    + """
+_DEEP_KNOWLEDGE_SYSTEM_V2 = _COMMON_SYSTEM + """
 Objective: deep-knowledge-v1.
 
 Generate one narrow, reusable Knowledge candidate. It should be self-contained enough that a reader normally does not need to reopen all source notes. When evidence supports them, cover the central idea, mechanism or why it works, assumptions, constraints, trade-offs, and concrete implications. Prefer depth on one coherent topic over a broad summary. Do not pad unsupported detail. If the deterministic context gate passed but the supplied evidence still cannot support a reusable Knowledge claim, return the structured no-candidate form with status=no_candidate and reason=insufficient_evidence instead of writing a meta note about missing evidence. Do not output YAML frontmatter or canonical control fields.
-""",
+"""
+
+_DEEP_KNOWLEDGE_SYSTEM_V3 = _COMMON_SYSTEM + """
+Objective: deep-knowledge-v1.
+
+Generate one narrow, reusable Knowledge candidate. It should be self-contained enough that a reader normally does not need to reopen all source notes.
+
+Decision rule:
+1. First identify whether at least one narrow proposition is supported by two or more distinct selected sources.
+2. If such a proposition exists, produce a Knowledge candidate grounded in that proposition.
+3. Return the structured no-candidate form with status=no_candidate and reason=insufficient_evidence only when no narrow reusable proposition can be supported by at least two distinct selected sources without inventing facts, or when the selected evidence is too contradictory to state any such proposition responsibly.
+
+The user payload includes a deterministic evidence observation. A sufficient=true observation only proves that the Reader found enough substantive selected text to attempt generation; it does not prove that every claim is true. Use the source contents themselves as evidence.
+
+When evidence supports them, cover the central idea, mechanism or why it works, assumptions, constraints, trade-offs, and concrete implications. Missing support for one or more of those explanatory dimensions is not by itself grounds for no_candidate: omit unsupported dimensions or qualify uncertainty instead. Prefer depth on one coherent topic over a broad summary. Do not pad unsupported detail.
+
+Do not use no_candidate merely because a selected Knowledge source already covers part of the topic. Redundancy and consistency are evaluated downstream by the Evaluator. Open questions or TODO-like text in some sources also do not invalidate a claim that other selected sources clearly support.
+
+Do not output YAML frontmatter or canonical control fields.
+"""
+
+DEEP_KNOWLEDGE_INPUT_CONTRACT = "deep-knowledge-evidence-observation-v1"
+
+_OBJECTIVE_SYSTEM = {
+    DEEP_KNOWLEDGE: _DEEP_KNOWLEDGE_SYSTEM_V3,
     IDEA_DISCOVERY: _COMMON_SYSTEM
     + """
 Objective: idea-discovery-v0.
@@ -916,25 +940,56 @@ def _template_schema(objective: str) -> Mapping[str, object]:
     }
 
 
+def _prompt_template_sha256(
+    *,
+    objective: str,
+    prompt_template_version: str,
+    system: str,
+    input_contract: str | None = None,
+) -> str:
+    payload: dict[str, object] = {
+        "prompt_template_version": prompt_template_version,
+        "objective_policy": objective,
+        "system": system,
+        "output_schema_template": _template_schema(objective),
+    }
+    if input_contract is not None:
+        payload["input_contract"] = input_contract
+    return sha256_bytes(_canonical_json_bytes(payload))
+
+
 def prompt_template_sha256(objective_policy: str) -> str:
     objective = _require_objective(objective_policy)
-    return sha256_bytes(
-        _canonical_json_bytes(
-            {
-                "prompt_template_version": PROMPT_VERSION[objective],
-                "objective_policy": objective,
-                "system": _OBJECTIVE_SYSTEM[objective],
-                "output_schema_template": _template_schema(objective),
-            }
-        )
+    return _prompt_template_sha256(
+        objective=objective,
+        prompt_template_version=PROMPT_VERSION[objective],
+        system=_OBJECTIVE_SYSTEM[objective],
+        input_contract=(
+            DEEP_KNOWLEDGE_INPUT_CONTRACT
+            if objective == DEEP_KNOWLEDGE
+            else None
+        ),
     )
+
+
+def supported_deep_knowledge_prompt_hashes() -> Mapping[str, str]:
+    return {
+        DEEP_KNOWLEDGE_PROMPT_V2_VERSION: _prompt_template_sha256(
+            objective=DEEP_KNOWLEDGE,
+            prompt_template_version=DEEP_KNOWLEDGE_PROMPT_V2_VERSION,
+            system=_DEEP_KNOWLEDGE_SYSTEM_V2,
+        ),
+        DEEP_KNOWLEDGE_PROMPT_V3_VERSION: prompt_template_sha256(
+            DEEP_KNOWLEDGE
+        ),
+    }
 
 
 def render_objective_prompt(
     context: SemanticObjectiveContext,
 ) -> ObjectivePrompt:
     objective = context.objective_policy
-    payload = {
+    payload: dict[str, object] = {
         "objective_policy": objective,
         "candidate_kind": context.candidate_kind,
         "selection_sha256": context.selection_sha256,
@@ -951,6 +1006,11 @@ def render_objective_prompt(
             for item in context.sources
         ],
     }
+    if objective == DEEP_KNOWLEDGE:
+        payload["evidence_observation"] = (
+            assess_deep_knowledge_evidence(context).payload()
+        )
+        payload["input_contract"] = DEEP_KNOWLEDGE_INPUT_CONTRACT
     return ObjectivePrompt(
         objective_policy=objective,
         candidate_kind=context.candidate_kind,
