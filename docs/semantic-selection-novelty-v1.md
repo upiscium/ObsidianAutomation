@@ -23,7 +23,7 @@ Reader may:
 - verify the current pull-only Vault mirror;
 - read immutable embedding request text for lexical scoring;
 - inspect bounded recent Context identities from orchestration metadata;
-- read those immutable Context Bundles;
+- read those immutable legacy Context Bundles or Semantic Objective Contexts;
 - write content-addressed Semantic Selection Records;
 - optionally record a bounded novelty-skip reason in Planner cadence metadata.
 
@@ -187,6 +187,15 @@ For every candidate selection Reader records:
 Recent Context comparison uses exact source path + source SHA binding. A source
 changed since the old Context was generated does not get silently compared
 against a new vector.
+
+Historical scheduler rows may reference either a legacy
+`05-Context/<sha>.context.json` bundle or a Semantic Objective
+`05-Context/<sha>.objective-context.json`. Reader resolves exactly one known
+artifact format for each recent Context SHA and preserves the artifact's
+content-addressed hash verification. Missing artifacts, unsafe paths, and
+ambiguous dual-format identities fail closed. For Semantic Objective Contexts,
+novelty compares the whole-source `source_sha256` binding rather than the
+selected chunk `content_sha256`.
 
 Default recent Context history:
 
