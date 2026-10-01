@@ -570,7 +570,11 @@ def observe_selection_acceptance(
         )
 
     if (
-        selection.selection_policy == "semantic-project-distill-v1"
+        selection.selection_policy
+        in {
+            "semantic-project-distill-v1",
+            "semantic-project-distill-v2",
+        }
         and selection.policy_observations.get("retrieval_profile")
         != "semantic-retrieval-v1"
     ):
@@ -591,7 +595,11 @@ def observe_selection_acceptance(
             "selection_policy": selection.selection_policy,
             "retrieval_profile": (
                 selection.policy_observations.get("retrieval_profile")
-                if selection.selection_policy == "semantic-project-distill-v1"
+                if selection.selection_policy
+                in {
+                    "semantic-project-distill-v1",
+                    "semantic-project-distill-v2",
+                }
                 else DEFAULT_RETRIEVAL_PROFILE
             ),
             "selection_sha256": selection_sha,

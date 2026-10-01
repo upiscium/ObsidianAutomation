@@ -98,6 +98,38 @@ thresholds as v0, but ranking uses `semantic-retrieval-v1`
 lexical/vector weights and records
 `policy_observations.retrieval_profile = semantic-retrieval-v1`.
 
+v1 always selects the single highest-density Project / Project Note anchor for
+a fixed Semantic Index. It remains supported as a historical deterministic
+policy.
+
+### `semantic-project-distill-v2`
+
+v2 keeps the v1 retrieval profile, source-kind weights, and novelty thresholds,
+but makes novelty part of deterministic anchor exploration.
+
+Reader orders Project / Project Note anchor candidates by the existing density,
+source-kind preference, and stable path/chunk tie-breakers. Multiple chunks from
+one source path collapse to the best-ranked anchor candidate. Reader then builds
+the normal project-distill cluster for each candidate in order and returns the
+first cluster that passes the existing novelty, coherence, and Knowledge
+coverage gates.
+
+The exploration is deterministic and bounded. Selection Records include:
+
+```text
+retrieval_profile = semantic-retrieval-v1
+exploration_strategy = first-novel-project-source-v1
+anchor_candidate_rank = <1-based chosen candidate>
+anchor_candidates_examined = <same count>
+anchor_candidate_pool_size = <bounded unique Project source count>
+prior_skip_reasons = <reasons for earlier candidates>
+```
+
+The supported anchor-source pool is capped at 128. A larger pool fails closed
+rather than silently truncating exploration. If every candidate is skipped,
+v2 returns the final skipped Selection Record; it does not fabricate novelty or
+persist an implicit cursor.
+
 ### `semantic-timeline-v0`
 
 Chooses the lexically latest eligible Daily source as primary anchor, then
@@ -228,6 +260,7 @@ Knowledge coverage thresholds:
 semantic-focus-v0           0.96
 semantic-project-distill-v0 0.98
 semantic-project-distill-v1 0.98
+semantic-project-distill-v2 0.98
 semantic-timeline-v0        0.97
 semantic-bridge-v0          0.98
 semantic-gap-v0             0.78 (gap must remain below this)

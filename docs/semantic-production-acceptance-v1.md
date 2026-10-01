@@ -137,11 +137,12 @@ For the initial rollout:
 sudo /opt/obsidian-automation/venv/bin/obsidian-semantic-production-acceptance \
   observe-selection \
   --semantic-index-sha <semantic-index-sha256> \
-  --policy semantic-project-distill-v1
+  --policy semantic-project-distill-v2
 ```
 
-This may produce either `selected` or a legitimate novelty `skipped`
-observation.
+For the controlled deep-Knowledge rollout, v2 should explore past rejected
+Project anchors and return the first viable cluster. It may still produce a
+legitimate `skipped` observation if the bounded candidate pool is exhausted.
 
 It creates no pre-review job and must not change the Planner submission clock.
 
