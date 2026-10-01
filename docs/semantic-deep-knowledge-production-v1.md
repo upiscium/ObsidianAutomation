@@ -93,7 +93,7 @@ A deep recipe is identified by exact prompt identity:
 deep-knowledge-generator-v2
 ```
 
-Generation performs. `deep-knowledge-generator-v2` may also return the structured `no_candidate / insufficient_evidence` form; that outcome is persisted for provenance and terminates as `deterministic_reject` before proposal materialization or Human Review.
+Generation performs. `deep-knowledge-generator-v3` may also return the structured `no_candidate / insufficient_evidence` form; that outcome is persisted for provenance and terminates as `deterministic_reject` before proposal materialization or Human Review.
 
 
 ```text
