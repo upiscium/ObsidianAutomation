@@ -90,10 +90,26 @@ The existing `knowledge-pre-review-v0` orchestration state machine is retained.
 A deep recipe is identified by exact prompt identity:
 
 ```text
-deep-knowledge-generator-v2
+deep-knowledge-generator-v3
 ```
 
-Generation performs. `deep-knowledge-generator-v3` may also return the structured `no_candidate / insufficient_evidence` form; that outcome is persisted for provenance and terminates as `deterministic_reject` before proposal materialization or Human Review.
+v3 carries a bounded deterministic evidence observation in the prompt payload.
+After the Reader evidence gate passes, the Generator prefers a candidate when
+two or more distinct selected sources support one narrow reusable proposition.
+Missing support for every explanatory dimension does not force rejection;
+unsupported dimensions are omitted or qualified. Existing Knowledge presence
+does not force rejection because redundancy and consistency remain Evaluator
+responsibilities.
+
+`deep-knowledge-generator-v3` may still return the structured
+`no_candidate / insufficient_evidence` form only when no such proposition can
+be grounded without invention, or the selected evidence is too contradictory
+to state one responsibly. That outcome is persisted for provenance and
+terminates as `deterministic_reject` before proposal materialization or Human
+Review.
+
+Historical `deep-knowledge-generator-v2` prompt hashes remain supported for
+immutable recipe parsing.
 
 
 ```text
