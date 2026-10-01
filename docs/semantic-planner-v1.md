@@ -308,7 +308,7 @@ retained with `semantic-retrieval-v0` (lexical 0.60 / vector 0.40).
 
 #### `semantic-project-distill-v1`
 
-Anchor on one Project/Project Note and retrieve related:
+Anchor on the single highest-density Project/Project Note and retrieve related:
 
 - Project Notes;
 - Daily observations;
@@ -319,7 +319,23 @@ This policy keeps the v0 source-kind and novelty contract but binds
 `semantic-retrieval-v1` (lexical 0.15 / vector 0.85), selected from the
 production benchmark boundary where 0.20 failed and 0.15 passed.
 
-Use for durable lessons extracted from current work.
+v1 remains available as a historical deterministic policy.
+
+#### `semantic-project-distill-v2`
+
+Use the same retrieval profile, source-kind weights, and novelty thresholds as
+v1, but make novelty-aware anchor exploration part of the versioned policy.
+
+Project / Project Note anchors are ordered deterministically by semantic
+density, source-kind preference, and stable identity. Multiple chunks from one
+source note collapse to a single anchor candidate. Reader evaluates candidates
+in order and returns the first cluster that passes the existing novelty,
+coherence, and Knowledge-coverage gates.
+
+This prevents a fixed index from repeatedly stopping on one already-used
+Project cluster while preserving deterministic, auditable selection.
+
+Use for the controlled deep-Knowledge production rollout.
 
 #### `semantic-timeline-v0`
 
