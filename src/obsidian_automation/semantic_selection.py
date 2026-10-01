@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -603,18 +604,64 @@ def _cluster_coherence(
     return sum(values) / len(values) if values else 0.0
 
 
+def _recent_context_source_bindings(
+    ai_root: Path,
+    context_sha256: str,
+) -> tuple[tuple[str, str], ...]:
+    digest = _require_selection_sha256(
+        context_sha256,
+        label="recent Context SHA",
+    )
+    root = ai_root.absolute()
+    _require_safe_directory(root, create=False)
+    directory = root / "05-Context"
+    _require_safe_directory(directory, create=False)
+
+    legacy_path = directory / f"{digest}.context.json"
+    objective_path = directory / f"{digest}.objective-context.json"
+    legacy_exists = os.path.lexists(legacy_path)
+    objective_exists = os.path.lexists(objective_path)
+
+    if legacy_exists and objective_exists:
+        raise SemanticSelectionError(
+            "recent Context identity resolves to multiple artifact formats"
+        )
+    if legacy_exists:
+        context = load_context_bundle(ai_root, digest)
+        return tuple(
+            (source.path, source.content_sha256)
+            for source in context.sources
+        )
+    if objective_exists:
+        # Imported lazily because semantic_objective depends on
+        # semantic_selection for Selection Record parsing.
+        from .semantic_objective import load_objective_context
+
+        context = load_objective_context(ai_root, digest)
+        return tuple(
+            (source.path, source.source_sha256)
+            for source in context.sources
+        )
+    raise SemanticSelectionError(
+        f"recent Context artifact is missing: {digest}"
+    )
+
+
 def _context_centroid(
     ai_root: Path,
     context_sha256: str,
     candidates: Sequence[SemanticCandidate],
 ) -> tuple[float, ...] | None:
-    context = load_context_bundle(ai_root, context_sha256)
+    bindings = _recent_context_source_bindings(
+        ai_root,
+        context_sha256,
+    )
     vectors: list[Sequence[float]] = []
-    for source in context.sources:
+    for source_path, source_sha256 in bindings:
         for candidate in candidates:
             if (
-                candidate.source.path == source.path
-                and candidate.source.content_sha256 == source.content_sha256
+                candidate.source.path == source_path
+                and candidate.source.content_sha256 == source_sha256
             ):
                 vectors.append(candidate.vector.vector)
     return _centroid(vectors) if vectors else None
