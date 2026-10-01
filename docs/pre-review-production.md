@@ -138,11 +138,13 @@ first Semantic Planner production wave, configure
 ```text
 AI_INPUT_MODE=semantic-deep-knowledge
 AI_INPUT_SEMANTIC_INDEX_SHA=<exact-reviewed-semantic-index-sha256>
-AI_INPUT_SEMANTIC_SELECTION_POLICY=semantic-project-distill-v1
+AI_INPUT_SEMANTIC_SELECTION_POLICY=semantic-project-distill-v2
 ```
 
-The accepted rollout pair is `semantic-project-distill-v1` with
-`semantic-retrieval-v1` (lexical 0.15 / vector 0.85). Production acceptance
+The accepted rollout pair is `semantic-project-distill-v2` with
+`semantic-retrieval-v1` (lexical 0.15 / vector 0.85). v2 deterministically
+explores Project anchor sources until one passes the existing novelty,
+coherence and Knowledge-coverage gates. Production acceptance
 cross-checks the retrieval profile recorded by the benchmark and Selection
 observation before it emits a canary plan.
 
