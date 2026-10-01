@@ -309,13 +309,21 @@ def test_observe_selection_does_not_move_cadence_clock(
     }
 
 
-def test_observe_selection_binds_project_distill_v1_retrieval_profile(
+@pytest.mark.parametrize(
+    "selection_policy",
+    (
+        "semantic-project-distill-v1",
+        "semantic-project-distill-v2",
+    ),
+)
+def test_observe_selection_binds_project_distill_retrieval_profile(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    selection_policy: str,
 ) -> None:
     cadence = SimpleNamespace(last_submission_at=None)
     selection = SimpleNamespace(
-        selection_policy="semantic-project-distill-v1",
+        selection_policy=selection_policy,
         policy_observations={
             "retrieval_profile": "semantic-retrieval-v1",
         },
@@ -343,7 +351,7 @@ def test_observe_selection_binds_project_distill_v1_retrieval_profile(
         "store_semantic_selection",
         lambda *args, **kwargs: (
             "8" * 64,
-            tmp_path / "selection-v1.json",
+            tmp_path / "selection.json",
         ),
     )
 
@@ -351,7 +359,7 @@ def test_observe_selection_binds_project_distill_v1_retrieval_profile(
         tmp_path / "state",
         tmp_path / "vault",
         semantic_index_sha256=INDEX_SHA,
-        selection_policy="semantic-project-distill-v1",
+        selection_policy=selection_policy,
     )
     assert receipt.payload["retrieval_profile"] == "semantic-retrieval-v1"
 
