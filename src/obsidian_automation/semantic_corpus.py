@@ -329,11 +329,11 @@ def _semantic_line_is_substantive(line: str) -> bool:
         return False
     if _HEADING_RE.match(stripped) is not None:
         return False
-    if re.fullmatch(r"(?:[-*+]|\\d+[.)])(?:[ \\t]+\\[[ xX]\\])?", stripped):
+    if re.fullmatch(r"(?:[-*+]|\d+[.)])(?:[ \t]+\[[ xX]\])?", stripped):
         return False
     if re.fullmatch(r"(?:`{3,}|~{3,})(?:[A-Za-z0-9_.+-]+)?", stripped):
         return False
-    if re.fullmatch(r"(?:[-*_][ \\t]*){3,}", stripped):
+    if re.fullmatch(r"(?:[-*_][ \t]*){3,}", stripped):
         return False
     if stripped == ">":
         return False
@@ -348,7 +348,7 @@ def semantic_substantive_bytes(text: str) -> int:
     lines = list(enumerate(text.splitlines(), 1))
     filtered = _remove_meta_bind_blocks(lines)
     return sum(
-        len((line + "\\n").encode("utf-8"))
+        len((line + "\n").encode("utf-8"))
         for _, line in filtered
         if _semantic_line_is_substantive(line)
     )
