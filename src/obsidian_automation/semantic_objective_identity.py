@@ -12,8 +12,17 @@ CANDIDATE_KIND = {
     PROJECT_ADOPTION: "project_adoption_proposal",
 }
 
+DEEP_KNOWLEDGE_PROMPT_V2_VERSION = "deep-knowledge-generator-v2"
+DEEP_KNOWLEDGE_PROMPT_V3_VERSION = "deep-knowledge-generator-v3"
+DEEP_KNOWLEDGE_PROMPT_VERSIONS = frozenset(
+    {
+        DEEP_KNOWLEDGE_PROMPT_V2_VERSION,
+        DEEP_KNOWLEDGE_PROMPT_V3_VERSION,
+    }
+)
+
 PROMPT_VERSION = {
-    DEEP_KNOWLEDGE: "deep-knowledge-generator-v2",
+    DEEP_KNOWLEDGE: DEEP_KNOWLEDGE_PROMPT_V3_VERSION,
     IDEA_DISCOVERY: "idea-discovery-generator-v0",
     PROJECT_ADOPTION: "project-adoption-generator-v0",
 }
