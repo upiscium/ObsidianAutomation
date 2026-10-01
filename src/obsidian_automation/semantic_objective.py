@@ -851,7 +851,7 @@ def _candidate_schema(
     context: SemanticObjectiveContext,
 ) -> Mapping[str, object]:
     if objective == DEEP_KNOWLEDGE:
-        return {"oneOf": [dict(KNOWLEDGE_OUTPUT_SCHEMA), _no_candidate_schema()]}
+        return {"anyOf": [dict(KNOWLEDGE_OUTPUT_SCHEMA), _no_candidate_schema()]}
     if objective == IDEA_DISCOVERY:
         return _idea_schema()
     return _project_schema(context)
@@ -875,7 +875,7 @@ def objective_output_schema(
 
 def _template_schema(objective: str) -> Mapping[str, object]:
     if objective == DEEP_KNOWLEDGE:
-        candidate = {"oneOf": [dict(KNOWLEDGE_OUTPUT_SCHEMA), _no_candidate_schema()]}
+        candidate = {"anyOf": [dict(KNOWLEDGE_OUTPUT_SCHEMA), _no_candidate_schema()]}
     elif objective == IDEA_DISCOVERY:
         candidate = _idea_schema()
     else:

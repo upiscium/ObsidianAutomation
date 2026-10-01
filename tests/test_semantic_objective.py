@@ -586,7 +586,7 @@ def test_deep_knowledge_supports_structured_no_candidate(tmp_path: Path) -> None
     assert output.reason == "insufficient_evidence"
     schema = objective_output_schema(deep)
     candidate_schema = schema["properties"]["candidate"]
-    assert "oneOf" in candidate_schema
+    assert "anyOf" in candidate_schema
 
 
 def test_idea_candidate_cannot_choose_canonical_workspace_or_project(

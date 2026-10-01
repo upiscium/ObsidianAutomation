@@ -477,6 +477,60 @@ def test_semantic_evidence_skip_does_not_create_job_or_submission_clock(
     )
 
 
+
+def test_semantic_deep_evidence_skip_does_not_create_durable_job(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    vault, state, index_sha = _semantic_index(tmp_path)
+    import obsidian_automation.ai_input_planner as planner
+
+    class InsufficientEvidence:
+        sufficient = False
+        reason = "insufficient_substantive_sources"
+
+        @staticmethod
+        def payload():
+            return {
+                "sufficient": False,
+                "substantive_source_count": 1,
+                "substantive_bytes": 80,
+                "reason": "insufficient_substantive_sources",
+                "minimum_sources": 2,
+                "minimum_source_bytes": 32,
+                "minimum_total_bytes": 160,
+            }
+
+    monkeypatch.setattr(
+        planner,
+        "assess_deep_knowledge_evidence",
+        lambda context: InsufficientEvidence(),
+    )
+
+    result = plan_once(
+        state,
+        vault,
+        deployed_revision=REVISION,
+        input_mode=INPUT_MODE_SEMANTIC_DEEP,
+        semantic_index_sha256=index_sha,
+        semantic_selection_policy="semantic-project-distill-v0",
+        generator_model=GEN_MODEL,
+        evaluator_model=EVAL_MODEL,
+        now=datetime(2026, 9, 29, 4, 0, tzinfo=timezone.utc),
+    )
+
+    assert result["status"] == "skipped_evidence"
+    assert result["skip_reason"] == "insufficient_substantive_sources"
+    assert result["evidence"]["substantive_source_count"] == 1
+    assert not (state / "02-Orchestration" / "pre-review-jobs.sqlite3").exists()
+    cadence = load_cadence_state(state)
+    assert cadence.last_submission_at is None
+    assert cadence.last_novelty_skip_reason == (
+        "semantic-project-distill-v0:deep-knowledge-v1:"
+        "insufficient_substantive_sources"
+    )
+
+
 def test_semantic_novelty_skip_does_not_create_job_or_submission_clock(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
