@@ -439,6 +439,13 @@ def test_project_distill_versions_pin_retrieval_semantics(
         policy="semantic-project-distill-v1",
         recent_context_limit=0,
     )
+    v2 = build_semantic_selection(
+        state,
+        vault,
+        semantic_index_sha256=index_sha,
+        policy="semantic-project-distill-v2",
+        recent_context_limit=0,
+    )
 
     assert v0.lexical_weight == pytest.approx(0.60)
     assert "retrieval_profile" not in v0.policy_observations
@@ -447,7 +454,26 @@ def test_project_distill_versions_pin_retrieval_semantics(
     assert v1.policy_observations["retrieval_profile"] == (
         "semantic-retrieval-v1"
     )
+
+    assert v2.lexical_weight == pytest.approx(0.15)
+    assert v2.policy_observations["retrieval_profile"] == (
+        "semantic-retrieval-v1"
+    )
+    assert v2.policy_observations["exploration_strategy"] == (
+        "first-novel-project-source-v1"
+    )
+    assert v2.policy_observations["anchor_candidate_rank"] >= 1
+    assert (
+        v2.policy_observations["anchor_candidates_examined"]
+        == v2.policy_observations["anchor_candidate_rank"]
+    )
+    assert (
+        len(v2.policy_observations["prior_skip_reasons"])
+        == v2.policy_observations["anchor_candidate_rank"] - 1
+    )
+
     assert v0.source_kind_weights == v1.source_kind_weights
+    assert v1.source_kind_weights == v2.source_kind_weights
 
 
 def test_structural_only_project_note_cannot_enter_project_distill_cluster(
@@ -515,6 +541,158 @@ def test_project_distill_v1_parser_rejects_profile_or_weight_drift(
                 separators=(",", ":"),
             ).encode("utf-8")
         )
+
+
+def test_project_distill_v2_parser_rejects_exploration_contract_drift(
+    tmp_path: Path,
+) -> None:
+    vault, state, index_sha, _ = _semantic_index(tmp_path)
+    record = build_semantic_selection(
+        state,
+        vault,
+        semantic_index_sha256=index_sha,
+        policy="semantic-project-distill-v2",
+        recent_context_limit=0,
+    )
+
+    wrong_strategy = json.loads(record.to_json_bytes())
+    wrong_strategy["policy_observations"]["exploration_strategy"] = (
+        "random-anchor-v0"
+    )
+    with pytest.raises(
+        SemanticSelectionError,
+        match="exploration strategy is invalid",
+    ):
+        parse_semantic_selection(
+            json.dumps(
+                wrong_strategy,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+
+    wrong_bounds = json.loads(record.to_json_bytes())
+    wrong_bounds["policy_observations"]["anchor_candidates_examined"] = (
+        wrong_bounds["policy_observations"]["anchor_candidate_rank"] + 1
+    )
+    with pytest.raises(
+        SemanticSelectionError,
+        match="exploration bounds are invalid",
+    ):
+        parse_semantic_selection(
+            json.dumps(
+                wrong_bounds,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+
+    wrong_prior = json.loads(record.to_json_bytes())
+    wrong_prior["policy_observations"]["prior_skip_reasons"] = [
+        "recent_context_too_similar"
+    ] * wrong_prior["policy_observations"]["anchor_candidate_rank"]
+    with pytest.raises(
+        SemanticSelectionError,
+        match="prior skip reasons are invalid",
+    ):
+        parse_semantic_selection(
+            json.dumps(
+                wrong_prior,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+
+
+def test_project_distill_v2_advances_after_first_novelty_skip(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = SimpleNamespace(
+        source=SimpleNamespace(
+            path="10-Project/A/Notes.md",
+            source_kind="project-note",
+        ),
+        chunk=SimpleNamespace(chunk_id="1" * 64),
+    )
+    second = SimpleNamespace(
+        source=SimpleNamespace(
+            path="10-Project/B/Notes.md",
+            source_kind="project-note",
+        ),
+        chunk=SimpleNamespace(chunk_id="2" * 64),
+    )
+    candidates = (first, second)
+    index = SimpleNamespace(corpus_manifest_sha256="3" * 64)
+    corpus = SimpleNamespace()
+
+    monkeypatch.setattr(
+        "obsidian_automation.semantic_selection.load_verified_semantic_candidates",
+        lambda *args, **kwargs: (index, corpus, candidates),
+    )
+    monkeypatch.setattr(
+        "obsidian_automation.semantic_selection._ordered_project_anchors",
+        lambda items: candidates,
+    )
+    monkeypatch.setattr(
+        "obsidian_automation.semantic_selection._rank_for_anchors",
+        lambda items, anchors, *, policy: (
+            SimpleNamespace(chunk_id=anchors[0].chunk.chunk_id),
+        ),
+    )
+    monkeypatch.setattr(
+        "obsidian_automation.semantic_selection._unique_source_rows",
+        lambda ranked, **kwargs: ranked,
+    )
+
+    examined: list[str] = []
+
+    def fake_make_record(*args, **kwargs):
+        anchor = kwargs["anchors"][0]
+        observations = dict(kwargs["policy_observations"])
+        examined.append(anchor.source.path)
+        if observations["anchor_candidate_rank"] == 1:
+            novelty = SimpleNamespace(
+                decision="skipped",
+                skip_reason="recent_context_too_similar",
+            )
+        else:
+            novelty = SimpleNamespace(
+                decision="selected",
+                skip_reason=None,
+            )
+        return SimpleNamespace(
+            anchors=(anchor,),
+            novelty=novelty,
+            policy_observations=observations,
+        )
+
+    monkeypatch.setattr(
+        "obsidian_automation.semantic_selection._make_record",
+        fake_make_record,
+    )
+
+    record = build_semantic_selection(
+        tmp_path / "state",
+        tmp_path / "vault",
+        semantic_index_sha256="4" * 64,
+        policy="semantic-project-distill-v2",
+    )
+
+    assert examined == [
+        "10-Project/A/Notes.md",
+        "10-Project/B/Notes.md",
+    ]
+    assert record.novelty.decision == "selected"
+    assert record.anchors[0].source.path == "10-Project/B/Notes.md"
+    assert record.policy_observations["anchor_candidate_rank"] == 2
+    assert record.policy_observations["anchor_candidates_examined"] == 2
+    assert record.policy_observations["prior_skip_reasons"] == [
+        "recent_context_too_similar"
+    ]
 
 
 def test_policy_specific_anchor_contracts(tmp_path: Path) -> None:
