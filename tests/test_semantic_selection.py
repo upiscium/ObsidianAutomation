@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -38,6 +39,7 @@ from obsidian_automation.semantic_objective_identity import (
 from obsidian_automation.semantic_selection import (
     POLICIES,
     SemanticSelectionError,
+    _context_centroid,
     build_semantic_selection,
     load_semantic_selection,
     observe_semantic_selection,
@@ -323,28 +325,53 @@ def _seed_recent_objective_context(
     vault: Path,
     state: Path,
     *,
+    index_sha: str,
     source_path: str,
 ) -> str:
-    source_bytes = (vault / source_path).read_bytes()
-    source_sha = sha256_bytes(source_bytes)
+    selection = build_semantic_selection(
+        state,
+        vault,
+        semantic_index_sha256=index_sha,
+        policy="semantic-gap-v0",
+        recent_context_limit=0,
+    )
+    selected = next(
+        item
+        for item in selection.selected
+        if item.source_path == source_path
+    )
+    from obsidian_automation.semantic_retrieval import (
+        load_verified_semantic_candidates,
+    )
+
+    _index, _corpus, candidates = load_verified_semantic_candidates(
+        state,
+        vault,
+        semantic_index_sha256=index_sha,
+    )
+    candidate = next(
+        item
+        for item in candidates
+        if item.chunk.chunk_id == selected.chunk_id
+    )
     context = SemanticObjectiveContext(
         objective_policy=DEEP_KNOWLEDGE,
         candidate_kind=CANDIDATE_KIND[DEEP_KNOWLEDGE],
         selection_sha256="3" * 64,
         selection_policy="semantic-project-distill-v1",
-        semantic_index_sha256="4" * 64,
+        semantic_index_sha256=index_sha,
         corpus_manifest_sha256="5" * 64,
         created_at="2026-09-29T00:00:00Z",
         sources=(
             ObjectiveContextSource(
                 rank=1,
                 role="anchor",
-                path=source_path,
-                source_kind="project-note",
-                source_sha256=source_sha,
-                chunk_id="6" * 64,
-                content_sha256=source_sha,
-                content=source_bytes.decode("utf-8"),
+                path=candidate.source.path,
+                source_kind=candidate.source.source_kind,
+                source_sha256=candidate.source.content_sha256,
+                chunk_id=candidate.chunk.chunk_id,
+                content_sha256=candidate.chunk.content_sha256,
+                content=candidate.text,
             ),
         ),
     )
@@ -628,6 +655,7 @@ def test_recent_semantic_objective_context_participates_in_novelty(
     context_sha = _seed_recent_objective_context(
         vault,
         state,
+        index_sha=index_sha,
         source_path="10-Project/Inventory/Notes.md",
     )
 
@@ -644,6 +672,122 @@ def test_recent_semantic_objective_context_participates_in_novelty(
     assert record.novelty.recent_context_max_similarity is not None
     assert record.novelty.recent_context_max_similarity >= 0.94
     assert record.novelty.recent_contexts[0].context_sha256 == context_sha
+
+
+def test_objective_context_centroid_uses_exact_selected_chunk_only(
+    tmp_path: Path,
+) -> None:
+    state = _state(tmp_path)
+    source_path = "10-Project/Multi/Notes.md"
+    source_sha = "a" * 64
+    selected_text = "selected chunk evidence"
+    other_text = "other chunk evidence"
+    selected_content_sha = sha256_bytes(selected_text.encode("utf-8"))
+    other_content_sha = sha256_bytes(other_text.encode("utf-8"))
+    selected_chunk_id = "1" * 64
+    other_chunk_id = "2" * 64
+
+    context = SemanticObjectiveContext(
+        objective_policy=DEEP_KNOWLEDGE,
+        candidate_kind=CANDIDATE_KIND[DEEP_KNOWLEDGE],
+        selection_sha256="3" * 64,
+        selection_policy="semantic-project-distill-v1",
+        semantic_index_sha256="4" * 64,
+        corpus_manifest_sha256="5" * 64,
+        created_at="2026-10-01T00:00:00Z",
+        sources=(
+            ObjectiveContextSource(
+                rank=1,
+                role="anchor",
+                path=source_path,
+                source_kind="project-note",
+                source_sha256=source_sha,
+                chunk_id=selected_chunk_id,
+                content_sha256=selected_content_sha,
+                content=selected_text,
+            ),
+        ),
+    )
+    context_sha, _ = store_objective_context(state, context)
+
+    source = SimpleNamespace(
+        path=source_path,
+        content_sha256=source_sha,
+    )
+    selected = SimpleNamespace(
+        source=source,
+        chunk=SimpleNamespace(
+            chunk_id=selected_chunk_id,
+            content_sha256=selected_content_sha,
+        ),
+        vector=SimpleNamespace(vector=(1.0, 0.0)),
+    )
+    other = SimpleNamespace(
+        source=source,
+        chunk=SimpleNamespace(
+            chunk_id=other_chunk_id,
+            content_sha256=other_content_sha,
+        ),
+        vector=SimpleNamespace(vector=(0.0, 1.0)),
+    )
+
+    assert _context_centroid(
+        state,
+        context_sha,
+        (selected, other),
+    ) == (1.0, 0.0)
+
+
+def test_objective_context_centroid_rejects_mismatched_exact_chunk_binding(
+    tmp_path: Path,
+) -> None:
+    state = _state(tmp_path)
+    source_path = "10-Project/Multi/Notes.md"
+    source_sha = "a" * 64
+    context_text = "selected chunk evidence"
+    context_content_sha = sha256_bytes(context_text.encode("utf-8"))
+    chunk_id = "1" * 64
+
+    context = SemanticObjectiveContext(
+        objective_policy=DEEP_KNOWLEDGE,
+        candidate_kind=CANDIDATE_KIND[DEEP_KNOWLEDGE],
+        selection_sha256="3" * 64,
+        selection_policy="semantic-project-distill-v1",
+        semantic_index_sha256="4" * 64,
+        corpus_manifest_sha256="5" * 64,
+        created_at="2026-10-01T00:00:00Z",
+        sources=(
+            ObjectiveContextSource(
+                rank=1,
+                role="anchor",
+                path=source_path,
+                source_kind="project-note",
+                source_sha256=source_sha,
+                chunk_id=chunk_id,
+                content_sha256=context_content_sha,
+                content=context_text,
+            ),
+        ),
+    )
+    context_sha, _ = store_objective_context(state, context)
+
+    candidate = SimpleNamespace(
+        source=SimpleNamespace(
+            path=source_path,
+            content_sha256=source_sha,
+        ),
+        chunk=SimpleNamespace(
+            chunk_id=chunk_id,
+            content_sha256=sha256_bytes(b"different current chunk"),
+        ),
+        vector=SimpleNamespace(vector=(1.0, 0.0)),
+    )
+
+    assert _context_centroid(
+        state,
+        context_sha,
+        (candidate,),
+    ) is None
 
 
 def test_recent_context_missing_artifact_fails_closed(
