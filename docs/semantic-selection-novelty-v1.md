@@ -193,9 +193,17 @@ Historical scheduler rows may reference either a legacy
 `05-Context/<sha>.objective-context.json`. Reader resolves exactly one known
 artifact format for each recent Context SHA and preserves the artifact's
 content-addressed hash verification. Missing artifacts, unsafe paths, and
-ambiguous dual-format identities fail closed. For Semantic Objective Contexts,
-novelty compares the whole-source `source_sha256` binding rather than the
-selected chunk `content_sha256`.
+ambiguous dual-format identities fail closed.
+
+Legacy Context Bundles do not carry selected chunk identities, so they retain
+the historical source-path + whole-source SHA comparison. Semantic Objective
+Contexts do carry exact selected chunk bindings. Reader therefore verifies the
+stored `chunk_id`, source path, whole-source `source_sha256`, and chunk
+`content_sha256` against the current Semantic Index and uses only that exact
+selected chunk vector. It never expands an Objective Context source to every
+chunk currently present in the same source note. If any exact Objective Context
+chunk binding no longer matches the current index, that historical Context is
+treated as unmatched rather than partially reinterpreted.
 
 Default recent Context history:
 

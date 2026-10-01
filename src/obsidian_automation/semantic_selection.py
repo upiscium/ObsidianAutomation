@@ -604,10 +604,18 @@ def _cluster_coherence(
     return sum(values) / len(values) if values else 0.0
 
 
+@dataclass(frozen=True)
+class RecentContextBinding:
+    source_path: str
+    source_sha256: str
+    chunk_id: str | None = None
+    content_sha256: str | None = None
+
+
 def _recent_context_source_bindings(
     ai_root: Path,
     context_sha256: str,
-) -> tuple[tuple[str, str], ...]:
+) -> tuple[RecentContextBinding, ...]:
     digest = _require_selection_sha256(
         context_sha256,
         label="recent Context SHA",
@@ -629,7 +637,10 @@ def _recent_context_source_bindings(
     if legacy_exists:
         context = load_context_bundle(ai_root, digest)
         return tuple(
-            (source.path, source.content_sha256)
+            RecentContextBinding(
+                source_path=source.path,
+                source_sha256=source.content_sha256,
+            )
             for source in context.sources
         )
     if objective_exists:
@@ -639,7 +650,12 @@ def _recent_context_source_bindings(
 
         context = load_objective_context(ai_root, digest)
         return tuple(
-            (source.path, source.source_sha256)
+            RecentContextBinding(
+                source_path=source.path,
+                source_sha256=source.source_sha256,
+                chunk_id=source.chunk_id,
+                content_sha256=source.content_sha256,
+            )
             for source in context.sources
         )
     raise SemanticSelectionError(
@@ -656,14 +672,35 @@ def _context_centroid(
         ai_root,
         context_sha256,
     )
+    candidate_map = _candidate_by_chunk(candidates)
     vectors: list[Sequence[float]] = []
-    for source_path, source_sha256 in bindings:
-        for candidate in candidates:
+
+    for binding in bindings:
+        if binding.chunk_id is not None:
+            candidate = candidate_map.get(binding.chunk_id)
             if (
-                candidate.source.path == source_path
-                and candidate.source.content_sha256 == source_sha256
+                candidate is None
+                or binding.content_sha256 is None
+                or candidate.source.path != binding.source_path
+                or candidate.source.content_sha256 != binding.source_sha256
+                or candidate.chunk.content_sha256 != binding.content_sha256
             ):
-                vectors.append(candidate.vector.vector)
+                return None
+            vectors.append(candidate.vector.vector)
+            continue
+
+        # Legacy ContextBundle has no selected-chunk identity. Preserve the
+        # historical source-level fallback for those artifacts only.
+        vectors.extend(
+            candidate.vector.vector
+            for candidate in candidates
+            if (
+                candidate.source.path == binding.source_path
+                and candidate.source.content_sha256
+                == binding.source_sha256
+            )
+        )
+
     return _centroid(vectors) if vectors else None
 
 
