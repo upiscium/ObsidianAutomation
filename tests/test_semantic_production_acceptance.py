@@ -154,7 +154,7 @@ def test_verify_index_receipt_is_exact_and_content_free(
         corpus_manifest_sha256="1" * 64,
         embedding_plan_sha256="2" * 64,
         embedding_result_set_sha256="3" * 64,
-        chunk_policy="heading-section-lf-v0",
+        chunk_policy="heading-section-lf-v1",
         provider="ollama",
         adapter_version="ollama-embed-v0",
         model_identifier="embed-model:latest",
