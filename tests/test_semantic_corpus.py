@@ -332,7 +332,9 @@ def test_structural_only_project_notes_are_excluded_but_heading_context_is_retai
             "~~~meta-bind-embed\n"
             "[[project-meta]]\n"
             "~~~\n"
-            "-",
+            "-\n"
+            "1.\n"
+            "- [ ]",
         ),
         encoding="utf-8",
     )
