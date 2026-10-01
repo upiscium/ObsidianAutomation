@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from obsidian_automation.artifact_lifecycle import sha256_bytes
 from obsidian_automation.context_bundle import (
     build_context_bundle,
     store_context_bundle,
@@ -24,6 +25,15 @@ from obsidian_automation.semantic_index import (
     prepare_semantic_embedding_plan,
     store_embedding_result,
     store_embedding_result_set,
+)
+from obsidian_automation.semantic_objective import (
+    ObjectiveContextSource,
+    SemanticObjectiveContext,
+    store_objective_context,
+)
+from obsidian_automation.semantic_objective_identity import (
+    CANDIDATE_KIND,
+    DEEP_KNOWLEDGE,
 )
 from obsidian_automation.semantic_selection import (
     POLICIES,
@@ -257,20 +267,10 @@ def _semantic_index(tmp_path: Path):
     return vault, state, index_sha, index
 
 
-def _seed_recent_context(
-    vault: Path,
+def _seed_recent_job_reference(
     state: Path,
-    *,
-    source_path: str,
-) -> str:
-    context = build_context_bundle(
-        vault,
-        query="historical automatic generation",
-        source_paths=[source_path],
-        created_at="2026-09-29T00:00:00Z",
-    )
-    context_sha, _ = store_context_bundle(state, context)
-
+    context_sha: str,
+) -> None:
     db = state / "02-Orchestration" / "pre-review-jobs.sqlite3"
     conn = sqlite3.connect(db)
     try:
@@ -300,6 +300,56 @@ def _seed_recent_context(
         conn.commit()
     finally:
         conn.close()
+
+
+def _seed_recent_context(
+    vault: Path,
+    state: Path,
+    *,
+    source_path: str,
+) -> str:
+    context = build_context_bundle(
+        vault,
+        query="historical automatic generation",
+        source_paths=[source_path],
+        created_at="2026-09-29T00:00:00Z",
+    )
+    context_sha, _ = store_context_bundle(state, context)
+    _seed_recent_job_reference(state, context_sha)
+    return context_sha
+
+
+def _seed_recent_objective_context(
+    vault: Path,
+    state: Path,
+    *,
+    source_path: str,
+) -> str:
+    source_bytes = (vault / source_path).read_bytes()
+    source_sha = sha256_bytes(source_bytes)
+    context = SemanticObjectiveContext(
+        objective_policy=DEEP_KNOWLEDGE,
+        candidate_kind=CANDIDATE_KIND[DEEP_KNOWLEDGE],
+        selection_sha256="3" * 64,
+        selection_policy="semantic-project-distill-v1",
+        semantic_index_sha256="4" * 64,
+        corpus_manifest_sha256="5" * 64,
+        created_at="2026-09-29T00:00:00Z",
+        sources=(
+            ObjectiveContextSource(
+                rank=1,
+                role="anchor",
+                path=source_path,
+                source_kind="project-note",
+                source_sha256=source_sha,
+                chunk_id="6" * 64,
+                content_sha256=source_sha,
+                content=source_bytes.decode("utf-8"),
+            ),
+        ),
+    )
+    context_sha, _ = store_objective_context(state, context)
+    _seed_recent_job_reference(state, context_sha)
     return context_sha
 
 
@@ -569,6 +619,78 @@ def test_recent_generated_context_triggers_novelty_skip_and_durable_reason(
         "semantic-gap-v0:recent_context_too_similar"
     )
     assert cadence.last_submission_at is None
+
+
+def test_recent_semantic_objective_context_participates_in_novelty(
+    tmp_path: Path,
+) -> None:
+    vault, state, index_sha, _ = _semantic_index(tmp_path)
+    context_sha = _seed_recent_objective_context(
+        vault,
+        state,
+        source_path="10-Project/Inventory/Notes.md",
+    )
+
+    record = build_semantic_selection(
+        state,
+        vault,
+        semantic_index_sha256=index_sha,
+        policy="semantic-gap-v0",
+        recent_context_limit=8,
+    )
+
+    assert record.novelty.decision == "skipped"
+    assert record.novelty.skip_reason == "recent_context_too_similar"
+    assert record.novelty.recent_context_max_similarity is not None
+    assert record.novelty.recent_context_max_similarity >= 0.94
+    assert record.novelty.recent_contexts[0].context_sha256 == context_sha
+
+
+def test_recent_context_missing_artifact_fails_closed(
+    tmp_path: Path,
+) -> None:
+    vault, state, index_sha, _ = _semantic_index(tmp_path)
+    _seed_recent_job_reference(state, "7" * 64)
+
+    with pytest.raises(
+        SemanticSelectionError,
+        match="recent Context artifact is missing",
+    ):
+        build_semantic_selection(
+            state,
+            vault,
+            semantic_index_sha256=index_sha,
+            policy="semantic-gap-v0",
+            recent_context_limit=8,
+        )
+
+
+def test_recent_context_ambiguous_artifact_format_fails_closed(
+    tmp_path: Path,
+) -> None:
+    vault, state, index_sha, _ = _semantic_index(tmp_path)
+    context_sha = _seed_recent_context(
+        vault,
+        state,
+        source_path="10-Project/Inventory/Notes.md",
+    )
+    legacy_path = state / "05-Context" / f"{context_sha}.context.json"
+    objective_path = (
+        state / "05-Context" / f"{context_sha}.objective-context.json"
+    )
+    objective_path.write_bytes(legacy_path.read_bytes())
+
+    with pytest.raises(
+        SemanticSelectionError,
+        match="multiple artifact formats",
+    ):
+        build_semantic_selection(
+            state,
+            vault,
+            semantic_index_sha256=index_sha,
+            policy="semantic-gap-v0",
+            recent_context_limit=8,
+        )
 
 
 def test_selection_fails_closed_when_semantic_source_changes(
