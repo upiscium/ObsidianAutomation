@@ -79,6 +79,7 @@ from .production_io import ProductionIOError, mirror_read_lock
 from .semantic_objective import (
     DEEP_KNOWLEDGE,
     PROMPT_VERSION as SEMANTIC_OBJECTIVE_PROMPT_VERSION,
+    assess_deep_knowledge_evidence,
     build_objective_context,
     load_objective_context,
     prompt_template_sha256 as semantic_objective_prompt_sha256,
@@ -1368,6 +1369,26 @@ def _prepare_semantic_deep_plan(
         objective_policy=SEMANTIC_OBJECTIVE_POLICY,
         created_at=utc_z(observed_now),
     )
+    evidence = assess_deep_knowledge_evidence(context)
+    if not evidence.sufficient:
+        reason = evidence.reason or "insufficient_evidence"
+        record_novelty_skip(
+            ai_root,
+            skipped_at=utc_z(observed_now),
+            reason=(
+                f"{semantic_selection_policy}:{SEMANTIC_OBJECTIVE_POLICY}:{reason}"
+            ),
+        )
+        return {
+            "status": "skipped_evidence",
+            "selection_sha256": selection_sha,
+            "selection_policy": semantic_selection_policy,
+            "objective_policy": SEMANTIC_OBJECTIVE_POLICY,
+            "semantic_index_sha256": semantic_index_sha256,
+            "skip_reason": reason,
+            "selected_count": len(selection.selected),
+            "evidence": evidence.payload(),
+        }
     context_sha, _ = store_objective_context(ai_root, context)
     next_state = PlannerState(
         catalog_sha256=state.catalog_sha256,
@@ -1501,7 +1522,7 @@ def plan_once(
             state=state,
             observed_now=observed_now,
         )
-        if prepared["status"] == "skipped_novelty":
+        if prepared["status"] in {"skipped_novelty", "skipped_evidence"}:
             return {
                 "event": "ai-input-planner",
                 "input_mode": input_mode,

@@ -26,7 +26,11 @@ from .production_io import ProductionIOError, mirror_read_lock
 INDEX_STAGE = "04-Index"
 SEMANTIC_CORPUS_DIR = "semantic-corpus"
 MANIFEST_VERSION = 1
-CHUNK_POLICY_VERSION = "heading-section-lf-v0"
+LEGACY_CHUNK_POLICY_VERSION = "heading-section-lf-v0"
+CHUNK_POLICY_VERSION = "heading-section-lf-v1"
+SUPPORTED_CHUNK_POLICY_VERSIONS = frozenset(
+    {LEGACY_CHUNK_POLICY_VERSION, CHUNK_POLICY_VERSION}
+)
 DAILY_ROOT = "00-DailyNote"
 IDEA_ROOT = "05-Idea"
 PROJECT_ROOT = "10-Project"
@@ -99,12 +103,13 @@ class SemanticSource:
 class SemanticCorpusManifest:
     sources: tuple[SemanticSource, ...]
     warnings: tuple[str, ...]
+    chunk_policy: str = CHUNK_POLICY_VERSION
 
     def to_json_bytes(self) -> bytes:
         return _canonical_json_bytes(
             {
                 "record_version": MANIFEST_VERSION,
-                "chunk_policy": CHUNK_POLICY_VERSION,
+                "chunk_policy": self.chunk_policy,
                 "sources": [source.payload() for source in self.sources],
                 "warnings": list(self.warnings),
             }
@@ -318,15 +323,35 @@ def _select_h1_body(
     return list(lines[start:]) if start is not None else []
 
 
+def _semantic_line_is_substantive(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if _HEADING_RE.match(stripped) is not None:
+        return False
+    if re.fullmatch(r"(?:[-*+]|\\d+[.)])(?:[ \\t]+\\[[ xX]\\])?", stripped):
+        return False
+    if re.fullmatch(r"(?:`{3,}|~{3,})(?:[A-Za-z0-9_.+-]+)?", stripped):
+        return False
+    if re.fullmatch(r"(?:[-*_][ \\t]*){3,}", stripped):
+        return False
+    if stripped == ">":
+        return False
+    return True
+
+
 def _semantic_nonempty(lines: Sequence[tuple[int, str]]) -> bool:
-    for _, line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if stripped in {"-", "*", "+", "- [ ]", "- [x]", "- [X]"}:
-            continue
-        return True
-    return False
+    return any(_semantic_line_is_substantive(line) for _, line in lines)
+
+
+def semantic_substantive_bytes(text: str) -> int:
+    lines = list(enumerate(text.splitlines(), 1))
+    filtered = _remove_meta_bind_blocks(lines)
+    return sum(
+        len((line + "\\n").encode("utf-8"))
+        for _, line in filtered
+        if _semantic_line_is_substantive(line)
+    )
 
 
 def _chunk_bytes(lines: Sequence[tuple[int, str]]) -> bytes:
@@ -342,13 +367,14 @@ def _chunk_identity_sha256(
     end_line: int,
     heading_path: Sequence[str],
     content_sha256: str,
+    chunk_policy: str = CHUNK_POLICY_VERSION,
 ) -> str:
     return sha256_bytes(
         _canonical_json_bytes(
             {
                 "source_path": source_path,
                 "source_sha256": source_sha256,
-                "chunk_policy": CHUNK_POLICY_VERSION,
+                "chunk_policy": chunk_policy,
                 "ordinal": ordinal,
                 "start_line": start_line,
                 "end_line": end_line,
@@ -600,7 +626,8 @@ def parse_semantic_corpus_manifest(data: bytes) -> SemanticCorpusManifest:
         raise SemanticCorpusError("semantic corpus manifest properties do not match contract")
     if value["record_version"] != MANIFEST_VERSION:
         raise SemanticCorpusError("unsupported semantic corpus manifest version")
-    if value["chunk_policy"] != CHUNK_POLICY_VERSION:
+    chunk_policy = value["chunk_policy"]
+    if chunk_policy not in SUPPORTED_CHUNK_POLICY_VERSIONS:
         raise SemanticCorpusError("unsupported semantic chunk policy")
     raw_sources = value["sources"]
     raw_warnings = value["warnings"]
@@ -703,6 +730,7 @@ def parse_semantic_corpus_manifest(data: bytes) -> SemanticCorpusManifest:
                 end_line=end_line,
                 heading_path=heading_path,
                 content_sha256=content_sha,
+                chunk_policy=chunk_policy,
             )
             if chunk_id != expected_chunk_id:
                 raise SemanticCorpusError("semantic chunk identity binding mismatch")
@@ -743,6 +771,7 @@ def parse_semantic_corpus_manifest(data: bytes) -> SemanticCorpusManifest:
     return SemanticCorpusManifest(
         sources=tuple(sources),
         warnings=tuple(raw_warnings),
+        chunk_policy=chunk_policy,
     )
 
 
@@ -785,6 +814,8 @@ def verify_semantic_corpus_current(
     vault_root: Path,
     manifest: SemanticCorpusManifest,
 ) -> None:
+    if manifest.chunk_policy != CHUNK_POLICY_VERSION:
+        raise SemanticCorpusError("semantic corpus chunk policy is not current")
     current = build_semantic_corpus(vault_root)
     expected = [
         (source.path, source.content_sha256)

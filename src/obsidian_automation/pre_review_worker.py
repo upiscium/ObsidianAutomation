@@ -60,6 +60,8 @@ from .production_io import ProductionIOError, mirror_read_lock
 from .semantic_objective import (
     DEEP_KNOWLEDGE,
     PROMPT_VERSION as SEMANTIC_OBJECTIVE_PROMPT_VERSION,
+    NoCandidate,
+    load_objective_candidate,
     prompt_template_sha256 as semantic_objective_prompt_sha256,
     store_deep_knowledge_proposal,
 )
@@ -251,6 +253,31 @@ def run_generator_worker(
                     reason_code="generator_recipe_runtime_mismatch",
                 )
             objective_generation_sha = objective.generation_sha256
+            objective_candidate = load_objective_candidate(
+                ai_root,
+                objective.candidate_sha256,
+            )
+            if isinstance(objective_candidate.output, NoCandidate):
+                completed = complete_attempt(
+                    ai_root,
+                    work.attempt_id,
+                    outcome="deterministic_reject",
+                    reason_code=(
+                        "semantic_objective_" + objective_candidate.output.reason
+                    ),
+                )
+                return _json_result(
+                    "pre-review-worker",
+                    stage="generation",
+                    status="deterministic_reject",
+                    job_id=work.job_id,
+                    generation_id=work.generation_id,
+                    attempt_id=work.attempt_id,
+                    objective_candidate_sha256=objective.candidate_sha256,
+                    objective_generation_sha256=objective.generation_sha256,
+                    reason_code=completed["reason_code"],
+                    state=completed["state"],
+                )
             proposal_sha, _proposal_path = store_deep_knowledge_proposal(
                 ai_root,
                 objective_generation_sha256=objective.generation_sha256,

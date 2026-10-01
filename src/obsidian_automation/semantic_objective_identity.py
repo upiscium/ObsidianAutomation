@@ -13,7 +13,7 @@ CANDIDATE_KIND = {
 }
 
 PROMPT_VERSION = {
-    DEEP_KNOWLEDGE: "deep-knowledge-generator-v1",
+    DEEP_KNOWLEDGE: "deep-knowledge-generator-v2",
     IDEA_DISCOVERY: "idea-discovery-generator-v0",
     PROJECT_ADOPTION: "project-adoption-generator-v0",
 }
