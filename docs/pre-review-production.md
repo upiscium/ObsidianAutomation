@@ -151,7 +151,7 @@ advance the index automatically. Verify the exact index offline before enabling
 the mode.
 
 Only `deep-knowledge-v1` is admitted into the existing Knowledge pre-review
-chain. Idea discovery and Project adoption remain operator-driven.
+chain. Reader first enforces the versioned Semantic Corpus structural-content rule and the deterministic deep-Knowledge evidence-sufficiency gate; evidence failures do not call the provider. A structured provider `no_candidate` result terminates as `deterministic_reject` rather than reaching Human Review. Idea discovery and Project adoption remain operator-driven.
 
 See
 [Semantic Deep Knowledge Production v1](semantic-deep-knowledge-production-v1.md).

@@ -50,7 +50,9 @@ The Project adoption objective is narrower because its output contract requires 
 
 Candidate kind: knowledge_candidate.
 
-The output fields remain title, category, source_type and body. The prompt asks for one narrow, self-contained reusable note and, when supported by evidence, the central idea, mechanism, assumptions, constraints, trade-offs and concrete implications. Unsupported padding is prohibited.
+The normal Knowledge output fields remain title, category, source_type and body. Before provider generation, Reader applies a deterministic evidence-sufficiency gate over substantive selected bytes. Deep Knowledge requires at least two substantive sources (32 bytes each) and at least 160 substantive bytes in total; structural Markdown does not count. If this gate fails, Planner records a bounded `skipped_evidence` result and creates no durable job. The prompt asks for one narrow, self-contained reusable note and, when supported by evidence, the central idea, mechanism, assumptions, constraints, trade-offs and concrete implications. Unsupported padding is prohibited.
+
+As defense in depth, `deep-knowledge-generator-v2` also permits a structured `{status: no_candidate, reason: insufficient_evidence}` candidate. Generator persists its provenance but terminates the generation deterministically as `deterministic_reject`; it is never materialized as a Knowledge proposal or sent to Human Review.
 
 Phase F stores this as an Objective Candidate rather than the existing create-note proposal. This prevents the new objective system from silently entering the canonical Knowledge execution path before the selection/objective integration is explicitly reviewed.
 
@@ -95,7 +97,7 @@ The output never changes Idea.project, Idea.workspace, Idea.status, or Project c
 Prompt versions:
 
 ~~~text
-deep-knowledge-generator-v1
+deep-knowledge-generator-v2
 idea-discovery-generator-v0
 project-adoption-generator-v0
 ~~~
