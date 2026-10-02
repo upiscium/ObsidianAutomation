@@ -1042,9 +1042,13 @@ def render_objective_prompt(
         ],
     }
     if objective == DEEP_KNOWLEDGE:
-        payload["evidence_observation"] = (
-            assess_deep_knowledge_evidence(context).payload()
-        )
+        evidence = assess_deep_knowledge_evidence(context)
+        if not evidence.sufficient:
+            raise SemanticObjectiveError(
+                "deep Knowledge provider prompt requires sufficient "
+                "deterministic evidence"
+            )
+        payload["evidence_observation"] = evidence.payload()
         payload["input_contract"] = DEEP_KNOWLEDGE_INPUT_CONTRACT
     return ObjectivePrompt(
         objective_policy=objective,
