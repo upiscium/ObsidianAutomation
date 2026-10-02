@@ -511,11 +511,11 @@ def test_objective_prompts_and_output_contracts_are_explicit(tmp_path: Path) -> 
     prompt = render_objective_prompt(deep)
     assert prompt.objective_policy == DEEP_KNOWLEDGE
     assert prompt.candidate_kind == "knowledge_candidate"
-    assert prompt.template_version == "deep-knowledge-generator-v3"
+    assert prompt.template_version == "deep-knowledge-generator-v4"
     assert prompt.template_sha256 == prompt_template_sha256(DEEP_KNOWLEDGE)
-    assert "central idea" in prompt.system
-    assert "two or more distinct selected sources" in prompt.system
-    assert "Redundancy and consistency are evaluated downstream" in prompt.system
+    assert "Reader has already applied" in prompt.system
+    assert "narrowest coherent proposition" in prompt.system
+    assert "downstream Evaluator and Human Review responsibilities" in prompt.system
     payload = json.loads(prompt.user)
     assert payload["selection_policy"] == "semantic-project-distill-v0"
     assert payload["sources"][0]["content"]
@@ -575,20 +575,30 @@ def test_deep_knowledge_evidence_gate_rejects_structural_only_context() -> None:
     assert evidence.substantive_bytes == 0
     assert evidence.reason == "insufficient_substantive_sources"
 
+    with pytest.raises(
+        SemanticObjectiveError,
+        match="requires sufficient deterministic evidence",
+    ):
+        render_objective_prompt(context)
 
-def test_deep_knowledge_v2_prompt_hash_remains_supported() -> None:
+
+def test_deep_knowledge_historical_prompt_hashes_remain_exact() -> None:
     hashes = supported_deep_knowledge_prompt_hashes()
     assert set(hashes) == {
         "deep-knowledge-generator-v2",
         "deep-knowledge-generator-v3",
+        "deep-knowledge-generator-v4",
     }
+    assert hashes["deep-knowledge-generator-v2"] == (
+        "f0bce864011f3a95539d7f9ecb2f67aa041e7aa440eabf303a9659ebb6503d6b"
+    )
     assert hashes["deep-knowledge-generator-v3"] == (
+        "797fd4e61e71922dde3c8f8d873c46ddeb05219854055e82f9e124553788fcf1"
+    )
+    assert hashes["deep-knowledge-generator-v4"] == (
         prompt_template_sha256(DEEP_KNOWLEDGE)
     )
-    assert (
-        hashes["deep-knowledge-generator-v2"]
-        != hashes["deep-knowledge-generator-v3"]
-    )
+    assert len(set(hashes.values())) == 3
 
 
 def test_deep_knowledge_supports_structured_no_candidate(tmp_path: Path) -> None:
@@ -610,9 +620,19 @@ def test_deep_knowledge_supports_structured_no_candidate(tmp_path: Path) -> None
     output = parse_objective_output(payload, context=deep)
     assert isinstance(output, NoCandidate)
     assert output.reason == "insufficient_evidence"
+
+    # Historical v2/v3 no-candidate artifacts remain parseable, but the current
+    # provider-facing v4 schema no longer exposes that branch.
     schema = objective_output_schema(deep)
     candidate_schema = schema["properties"]["candidate"]
-    assert "anyOf" in candidate_schema
+    assert "anyOf" not in candidate_schema
+    assert "status" not in candidate_schema["properties"]
+    assert set(candidate_schema["required"]) == {
+        "title",
+        "category",
+        "source_type",
+        "body",
+    }
 
 
 def test_idea_candidate_cannot_choose_canonical_workspace_or_project(
@@ -685,7 +705,7 @@ def test_candidate_and_generation_provenance_bind_selection_objective_and_index(
         objective_context_sha256=context_sha,
         candidate_sha256=candidate_sha,
         implementation_revision=REVISION,
-        prompt_template_version="deep-knowledge-generator-v3",
+        prompt_template_version="deep-knowledge-generator-v4",
         prompt_template_sha256_value=prompt_template_sha256(DEEP_KNOWLEDGE),
         model_provider="ollama",
         model_identifier=MODEL,
@@ -720,7 +740,7 @@ def test_human_projection_explicitly_labels_objective_and_noncanonical_action(
         objective_context_sha256=context_sha,
         candidate_sha256=candidate_sha,
         implementation_revision=REVISION,
-        prompt_template_version="deep-knowledge-generator-v3",
+        prompt_template_version="deep-knowledge-generator-v4",
         prompt_template_sha256_value=prompt_template_sha256(DEEP_KNOWLEDGE),
         model_provider="ollama",
         model_identifier=MODEL,

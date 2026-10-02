@@ -35,6 +35,7 @@ from .semantic_objective_identity import (
     DEEP_KNOWLEDGE,
     DEEP_KNOWLEDGE_PROMPT_V2_VERSION,
     DEEP_KNOWLEDGE_PROMPT_V3_VERSION,
+    DEEP_KNOWLEDGE_PROMPT_V4_VERSION,
     IDEA_DISCOVERY,
     OBJECTIVES,
     PROJECT_ADOPTION,
@@ -750,10 +751,24 @@ Do not use no_candidate merely because a selected Knowledge source already cover
 Do not output YAML frontmatter or canonical control fields.
 """
 
+_DEEP_KNOWLEDGE_SYSTEM_V4 = _COMMON_SYSTEM + """
+Objective: deep-knowledge-v1.
+
+The Reader has already applied the deterministic substantive-evidence gate before this provider generation step. Your responsibility is therefore to produce one narrow, grounded, reusable Knowledge candidate from the supplied sources.
+
+Choose the narrowest coherent proposition or mechanism that the selected evidence supports. Prefer claims supported by multiple distinct sources when available. If sources disagree, state the supported boundary or uncertainty instead of inventing a resolution. If only part of the usual explanatory structure is supported, write only that supported part: missing mechanism, assumptions, constraints, trade-offs, or implications must be omitted or qualified rather than used as a reason to refuse generation.
+
+The user payload includes the deterministic evidence observation. A sufficient=true observation means the Reader found enough substantive selected text to attempt generation; it does not make unsupported claims permissible. Use the source contents themselves as evidence.
+
+Existing Knowledge content may overlap with the selected topic. Do not stop generation merely because of possible redundancy or consistency concerns; those are downstream Evaluator and Human Review responsibilities.
+
+Produce a concrete Knowledge candidate rather than a meta note about the generation process. Do not output YAML frontmatter or canonical control fields.
+"""
+
 DEEP_KNOWLEDGE_INPUT_CONTRACT = "deep-knowledge-evidence-observation-v1"
 
 _OBJECTIVE_SYSTEM = {
-    DEEP_KNOWLEDGE: _DEEP_KNOWLEDGE_SYSTEM_V3,
+    DEEP_KNOWLEDGE: _DEEP_KNOWLEDGE_SYSTEM_V4,
     IDEA_DISCOVERY: _COMMON_SYSTEM
     + """
 Objective: idea-discovery-v0.
@@ -876,7 +891,7 @@ def _candidate_schema(
     context: SemanticObjectiveContext,
 ) -> Mapping[str, object]:
     if objective == DEEP_KNOWLEDGE:
-        return {"anyOf": [dict(KNOWLEDGE_OUTPUT_SCHEMA), _no_candidate_schema()]}
+        return dict(KNOWLEDGE_OUTPUT_SCHEMA)
     if objective == IDEA_DISCOVERY:
         return _idea_schema()
     return _project_schema(context)
@@ -898,9 +913,17 @@ def objective_output_schema(
     }
 
 
-def _template_schema(objective: str) -> Mapping[str, object]:
+def _template_schema(
+    objective: str,
+    *,
+    deep_allow_no_candidate: bool = False,
+) -> Mapping[str, object]:
     if objective == DEEP_KNOWLEDGE:
-        candidate = {"anyOf": [dict(KNOWLEDGE_OUTPUT_SCHEMA), _no_candidate_schema()]}
+        candidate = (
+            {"anyOf": [dict(KNOWLEDGE_OUTPUT_SCHEMA), _no_candidate_schema()]}
+            if deep_allow_no_candidate
+            else dict(KNOWLEDGE_OUTPUT_SCHEMA)
+        )
     elif objective == IDEA_DISCOVERY:
         candidate = _idea_schema()
     else:
@@ -946,12 +969,16 @@ def _prompt_template_sha256(
     prompt_template_version: str,
     system: str,
     input_contract: str | None = None,
+    deep_allow_no_candidate: bool = False,
 ) -> str:
     payload: dict[str, object] = {
         "prompt_template_version": prompt_template_version,
         "objective_policy": objective,
         "system": system,
-        "output_schema_template": _template_schema(objective),
+        "output_schema_template": _template_schema(
+            objective,
+            deep_allow_no_candidate=deep_allow_no_candidate,
+        ),
     }
     if input_contract is not None:
         payload["input_contract"] = input_contract
@@ -978,8 +1005,16 @@ def supported_deep_knowledge_prompt_hashes() -> Mapping[str, str]:
             objective=DEEP_KNOWLEDGE,
             prompt_template_version=DEEP_KNOWLEDGE_PROMPT_V2_VERSION,
             system=_DEEP_KNOWLEDGE_SYSTEM_V2,
+            deep_allow_no_candidate=True,
         ),
-        DEEP_KNOWLEDGE_PROMPT_V3_VERSION: prompt_template_sha256(
+        DEEP_KNOWLEDGE_PROMPT_V3_VERSION: _prompt_template_sha256(
+            objective=DEEP_KNOWLEDGE,
+            prompt_template_version=DEEP_KNOWLEDGE_PROMPT_V3_VERSION,
+            system=_DEEP_KNOWLEDGE_SYSTEM_V3,
+            input_contract=DEEP_KNOWLEDGE_INPUT_CONTRACT,
+            deep_allow_no_candidate=True,
+        ),
+        DEEP_KNOWLEDGE_PROMPT_V4_VERSION: prompt_template_sha256(
             DEEP_KNOWLEDGE
         ),
     }
@@ -1007,9 +1042,13 @@ def render_objective_prompt(
         ],
     }
     if objective == DEEP_KNOWLEDGE:
-        payload["evidence_observation"] = (
-            assess_deep_knowledge_evidence(context).payload()
-        )
+        evidence = assess_deep_knowledge_evidence(context)
+        if not evidence.sufficient:
+            raise SemanticObjectiveError(
+                "deep Knowledge provider prompt requires sufficient "
+                "deterministic evidence"
+            )
+        payload["evidence_observation"] = evidence.payload()
         payload["input_contract"] = DEEP_KNOWLEDGE_INPUT_CONTRACT
     return ObjectivePrompt(
         objective_policy=objective,
