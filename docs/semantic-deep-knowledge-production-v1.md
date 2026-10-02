@@ -90,26 +90,21 @@ The existing `knowledge-pre-review-v0` orchestration state machine is retained.
 A deep recipe is identified by exact prompt identity:
 
 ```text
-deep-knowledge-generator-v3
+deep-knowledge-generator-v4
 ```
 
-v3 carries a bounded deterministic evidence observation in the prompt payload.
-After the Reader evidence gate passes, the Generator prefers a candidate when
-two or more distinct selected sources support one narrow reusable proposition.
-Missing support for every explanatory dimension does not force rejection;
-unsupported dimensions are omitted or qualified. Existing Knowledge presence
-does not force rejection because redundancy and consistency remain Evaluator
-responsibilities.
+v4 carries the same bounded deterministic evidence observation in the prompt
+payload, but the provider-facing deep-Knowledge JSON Schema exposes only the
+normal Knowledge candidate shape. The Reader evidence gate is therefore the
+admission boundary for provider generation. After admission, Generator must
+produce the narrowest grounded reusable candidate supported by the selected
+sources; unsupported explanatory dimensions are omitted or qualified.
 
-`deep-knowledge-generator-v3` may still return the structured
-`no_candidate / insufficient_evidence` form only when no such proposition can
-be grounded without invention, or the selected evidence is too contradictory
-to state one responsibly. That outcome is persisted for provenance and
-terminates as `deterministic_reject` before proposal materialization or Human
-Review.
-
-Historical `deep-knowledge-generator-v2` prompt hashes remain supported for
-immutable recipe parsing.
+Redundancy and consistency remain downstream Evaluator/Human Review
+responsibilities. Historical v2/v3 Objective Candidate and Generation artifacts
+that contain `no_candidate / insufficient_evidence` remain parseable, and their
+exact prompt hashes remain supported for immutable recipe parsing. New v4
+provider generation cannot select the historical no-candidate schema branch.
 
 
 ```text
