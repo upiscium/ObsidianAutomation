@@ -575,6 +575,12 @@ def test_deep_knowledge_evidence_gate_rejects_structural_only_context() -> None:
     assert evidence.substantive_bytes == 0
     assert evidence.reason == "insufficient_substantive_sources"
 
+    with pytest.raises(
+        SemanticObjectiveError,
+        match="requires sufficient deterministic evidence",
+    ):
+        render_objective_prompt(context)
+
 
 def test_deep_knowledge_historical_prompt_hashes_remain_exact() -> None:
     hashes = supported_deep_knowledge_prompt_hashes()
