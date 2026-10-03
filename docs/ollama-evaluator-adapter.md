@@ -233,12 +233,12 @@ Any transport, response-shape, model-identity, UTF-8, byte-bound, parser, candid
 
 Only after successful deterministic aggregation is one Evaluation Record built and stored.
 
-Current persistence writes Evaluation Record v2. Its `assessment.conflicts`
-array includes the deterministically bound `candidate_path` alongside
+Current persistence writes Evaluation Record v3. Its assessment adds
+`knowledge_quality` and `epistemic_status`, while `assessment.conflicts`
+continues to include the deterministically bound `candidate_path` alongside
 `proposal_claim`, `candidate_claim`, and `incompatibility`. Historical
-Evaluation Record v1 artifacts remain readable; their assessment has no
-`conflicts` member and they remain legacy evidence rather than being silently
-treated as current v2 output.
+Evaluation Record v1/v2 artifacts remain readable without schema upgrade; v1
+has no conflicts and v2 has conflicts but no current quality dimensions.
 
 ## Network boundary
 
@@ -263,11 +263,11 @@ The Evaluator reuses the Generator transport policy:
 - Evaluation Context SHA;
 - evaluator implementation revision;
 - prompt template version/SHA;
-- current output contract `knowledge-note-evaluator-output-v6`;
+- current output contract `knowledge-note-evaluator-output-v7`;
 - provider `ollama`;
 - resolved model identifier and digest;
-- adapter version `ollama-evaluator-chat-structured-v5`;
-- strategy `groundedness-plus-pairwise-candidates-with-independent-verifier-v2`;
+- adapter version `ollama-evaluator-chat-structured-v6`;
+- strategy `groundedness-quality-epistemic-plus-pairwise-candidates-with-independent-verifier-v3`;
 - the exact immutable recipe `think` value (`false` for new recipes; historical
   `low` remains supported);
 - exact inference options;
@@ -278,7 +278,7 @@ Raw prompts, raw model responses, and partial pairwise outputs are not persisted
 
 ## Recommendation authority
 
-`conservative-five-v0` remains unchanged:
+Current `conservative-five-v0` policy:
 
 ```text
 proceed
