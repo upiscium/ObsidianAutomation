@@ -136,7 +136,64 @@ assessment:
 - unknown: the supplied generation input is insufficient to make a defensible judgment.
 
 This is evidence-groundedness, not objective-truth verification.
-Do not assess redundancy or consistency with canonical Knowledge in this pass.
+Do not assess Knowledge reusability, epistemic-status preservation, redundancy,
+or consistency with canonical Knowledge in this pass.
+""",
+    "knowledge_quality": _COMMON_SYSTEM
+    + """
+This pass evaluates Knowledge quality and reusability only.
+
+Compare the proposal with generation_input. Judge whether the proposal turns
+the supplied evidence into a durable Knowledge contribution rather than merely
+restating the originating Project or source documents.
+
+assessment:
+- pass: the proposal is self-contained enough to reuse outside the originating
+  Project and contributes a meaningful principle, mechanism, methodological
+  pattern, decision rule, constraint, failure mode, or similarly durable
+  concept supported by the generation input.
+- concern: the proposal is mainly a Project-local recap, source digest, list of
+  research questions/hypotheses/TODOs/status items, or other mechanical
+  restatement, and does not make the underlying reusable contribution clear.
+- unknown: the generation input is too sparse or ambiguous to judge whether a
+  reusable contribution is possible.
+
+A note may remain domain-specific; do not require broad generalization. Project
+names or local identifiers are acceptable when intrinsically necessary or used
+as scoped examples. Concision alone is not a concern if the durable contribution
+is explicit and self-contained.
+
+Do not assess factual support or epistemic certainty in this pass except as
+needed to identify what the proposed Knowledge contribution is. Do not assess
+redundancy or consistency with canonical Knowledge.
+""",
+    "epistemic_status": _COMMON_SYSTEM
+    + """
+This pass evaluates epistemic-status preservation only.
+
+Compare every material claim in the proposal with generation_input. Preserve
+whether the source presents a statement as an observed result/established fact,
+hypothesis or prediction, research question, proposed design, assumption,
+limitation, conditional conclusion, or open question.
+
+assessment:
+- pass: the proposal does not make any material claim more certain, causal, or
+  empirically established than its supporting generation input.
+- concern: at least one material statement strengthens source status, for
+  example turning a question/hypothesis/proposal into a result, asserting an
+  improvement/correlation/causal relationship that the sources only propose to
+  test, or dropping a material condition from a conditional conclusion.
+- unknown: source wording is too ambiguous to determine whether the proposal
+  strengthened a material claim.
+
+Titles count as material claims. Causal/result terms such as improves, causes,
+demonstrates, establishes, proves, confirms, correlates, or outperforms require
+selected source evidence reporting that relationship.
+
+Do not penalize abstraction by itself: a reusable evaluation framework may
+synthesize several research questions as long as it says what is tested or
+predicted rather than claiming the predicted result occurred. Do not assess
+redundancy or consistency with canonical Knowledge in this pass.
 """,
     "redundancy": _COMMON_SYSTEM
     + """
@@ -230,6 +287,8 @@ class EvaluatorOutput:
     redundancy: str
     consistency: str
     findings: tuple[str, ...]
+    knowledge_quality: str = "pass"
+    epistemic_status: str = "pass"
     conflicts: tuple[ConsistencyConflict, ...] = ()
 
 
