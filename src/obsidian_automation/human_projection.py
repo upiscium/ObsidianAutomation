@@ -1148,6 +1148,7 @@ def emit_validation_projection(
 def _assessment_lines(record) -> list[str]:
     lines = [
         f"- Groundedness: **{record.assessment.groundedness}**",
+        f"- Quality: **{record.assessment.quality}**",
         f"- Redundancy: **{record.assessment.redundancy}**",
         f"- Consistency: **{record.assessment.consistency}**",
         f"- Recommendation: **{record.assessment.recommendation}**",
