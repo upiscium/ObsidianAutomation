@@ -36,6 +36,7 @@ from .semantic_objective_identity import (
     DEEP_KNOWLEDGE_PROMPT_V2_VERSION,
     DEEP_KNOWLEDGE_PROMPT_V3_VERSION,
     DEEP_KNOWLEDGE_PROMPT_V4_VERSION,
+    DEEP_KNOWLEDGE_PROMPT_V5_VERSION,
     IDEA_DISCOVERY,
     OBJECTIVES,
     PROJECT_ADOPTION,
@@ -765,10 +766,32 @@ Existing Knowledge content may overlap with the selected topic. Do not stop gene
 Produce a concrete Knowledge candidate rather than a meta note about the generation process. Do not output YAML frontmatter or canonical control fields.
 """
 
+_DEEP_KNOWLEDGE_SYSTEM_V5 = _COMMON_SYSTEM + """
+Objective: deep-knowledge-v1.
+
+The Reader has already applied the deterministic substantive-evidence gate. Produce one narrow, grounded Knowledge candidate whose main contribution is reusable outside the originating Project context.
+
+Synthesis rule:
+1. Identify the durable principle, mechanism, methodological pattern, decision rule, constraint, or failure mode supported by the selected evidence.
+2. Use Project-local structure only as evidence. Section numbers, RQ/H labels, TODOs, review comments, milestone/status wording, filenames, and document organization are not automatically the Knowledge structure.
+3. When multiple sources restate the same Project-local claim, treat repetition as corroboration rather than turning each restatement into another output bullet.
+4. Prefer cross-source synthesis: explain the relationship between supported pieces of evidence when that relationship is itself grounded.
+5. If Project-specific facts are needed, present them as a scoped example after the reusable idea, not as the organizing frame of the note.
+6. Do not generalize beyond the evidence. If the evidence supports only a bounded methodological pattern, state that bounded pattern and its assumptions explicitly.
+
+A list of research questions or hypotheses is not by itself a reusable Knowledge contribution. Do not mechanically reproduce RQ1/RQ2/RQ3, H1/H2/H3, or equivalent local labels when the evidence supports a more general evaluation design, causal distinction, or methodological decomposition. Translate that structure into the underlying reusable insight while preserving the exact distinctions supported by the sources.
+
+The user payload includes the deterministic evidence observation. A sufficient=true observation means the Reader found enough substantive selected text to attempt generation; it does not make unsupported claims permissible. Existing Knowledge overlap, redundancy, and consistency remain downstream Evaluator/Human Review responsibilities.
+
+The title should name the reusable concept or pattern, not the originating Project or document section unless that identity is intrinsically necessary to understand the knowledge.
+
+Produce a concrete Knowledge candidate rather than a Project summary, source digest, research-plan recap, or meta note about generation. Do not output YAML frontmatter or canonical control fields.
+"""
+
 DEEP_KNOWLEDGE_INPUT_CONTRACT = "deep-knowledge-evidence-observation-v1"
 
 _OBJECTIVE_SYSTEM = {
-    DEEP_KNOWLEDGE: _DEEP_KNOWLEDGE_SYSTEM_V4,
+    DEEP_KNOWLEDGE: _DEEP_KNOWLEDGE_SYSTEM_V5,
     IDEA_DISCOVERY: _COMMON_SYSTEM
     + """
 Objective: idea-discovery-v0.
@@ -1014,7 +1037,13 @@ def supported_deep_knowledge_prompt_hashes() -> Mapping[str, str]:
             input_contract=DEEP_KNOWLEDGE_INPUT_CONTRACT,
             deep_allow_no_candidate=True,
         ),
-        DEEP_KNOWLEDGE_PROMPT_V4_VERSION: prompt_template_sha256(
+        DEEP_KNOWLEDGE_PROMPT_V4_VERSION: _prompt_template_sha256(
+            objective=DEEP_KNOWLEDGE,
+            prompt_template_version=DEEP_KNOWLEDGE_PROMPT_V4_VERSION,
+            system=_DEEP_KNOWLEDGE_SYSTEM_V4,
+            input_contract=DEEP_KNOWLEDGE_INPUT_CONTRACT,
+        ),
+        DEEP_KNOWLEDGE_PROMPT_V5_VERSION: prompt_template_sha256(
             DEEP_KNOWLEDGE
         ),
     }
