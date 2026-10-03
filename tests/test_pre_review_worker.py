@@ -322,6 +322,7 @@ def _fake_ollama_evaluator(ai_root: Path, *, proposal_sha256: str, generation_sh
             "options": {"temperature": 0},
         },
         groundedness="pass",
+        quality="pass",
         redundancy="none",
         consistency="pass",
         recommendation="proceed",
@@ -341,6 +342,7 @@ def _fake_ollama_evaluator(ai_root: Path, *, proposal_sha256: str, generation_sh
         prompt_template_version=EVALUATOR_PROMPT_TEMPLATE_VERSION,
         prompt_template_sha256=evaluator_prompt_sha256(),
         groundedness="pass",
+        quality="pass",
         redundancy="none",
         consistency="pass",
         recommendation="proceed",
@@ -358,11 +360,17 @@ def _fake_evaluator(recommendation: str):
         **_kwargs,
     ):
         if recommendation == "do_not_proceed":
-            groundedness, redundancy, consistency = "pass", "likely", "pass"
+            groundedness, quality, redundancy, consistency = (
+                "pass", "pass", "likely", "pass"
+            )
         elif recommendation == "proceed":
-            groundedness, redundancy, consistency = "pass", "none", "pass"
+            groundedness, quality, redundancy, consistency = (
+                "pass", "pass", "none", "pass"
+            )
         else:
-            groundedness, redundancy, consistency = "unknown", "possible", "unknown"
+            groundedness, quality, redundancy, consistency = (
+                "unknown", "unknown", "possible", "unknown"
+            )
 
         # The accepted mutation is already bound by the Evaluation Context.
         context = worker.load_evaluation_context(ai_root, evaluation_context_sha256)
@@ -385,6 +393,7 @@ def _fake_evaluator(recommendation: str):
                 "options": {"temperature": 0},
             },
             groundedness=groundedness,
+            quality=quality,
             redundancy=redundancy,
             consistency=consistency,
             recommendation=recommendation,
@@ -404,6 +413,7 @@ def _fake_evaluator(recommendation: str):
             prompt_template_version=EVALUATOR_PROMPT_TEMPLATE_VERSION,
             prompt_template_sha256=evaluator_prompt_sha256(),
             groundedness=groundedness,
+            quality=quality,
             redundancy=redundancy,
             consistency=consistency,
             recommendation=recommendation,

@@ -22,11 +22,12 @@ from .evaluator_conflict import (
 )
 
 
-EVALUATOR_OUTPUT_CONTRACT_VERSION = "knowledge-note-evaluator-output-v6"
+EVALUATOR_OUTPUT_CONTRACT_VERSION = "knowledge-note-evaluator-output-v7"
+EVALUATOR_OUTPUT_CONTRACT_V6_VERSION = "knowledge-note-evaluator-output-v6"
 EVALUATOR_OUTPUT_CONTRACT_V5_VERSION = "knowledge-note-evaluator-output-v5"
 EVALUATOR_OUTPUT_CONTRACT_V4_VERSION = "knowledge-note-evaluator-output-v4"
 EVALUATOR_OUTPUT_CONTRACT_V3_VERSION = "knowledge-note-evaluator-output-v3"
-EVALUATOR_PROMPT_TEMPLATE_VERSION = "knowledge-note-evaluator-v7"
+EVALUATOR_PROMPT_TEMPLATE_VERSION = "knowledge-note-evaluator-v8"
 EVALUATOR_PROMPT_TEMPLATE_V3_VERSION = "knowledge-note-evaluator-v3"
 EVALUATOR_PROMPT_TEMPLATE_V3_SHA256 = (
     "bf6265294a4b346f12d1951f594760c80221380ccee9993c6ab866b6b1eca937"
@@ -43,17 +44,23 @@ EVALUATOR_PROMPT_TEMPLATE_V6_VERSION = "knowledge-note-evaluator-v6"
 EVALUATOR_PROMPT_TEMPLATE_V6_SHA256 = (
     "45439ec5f3ae0d9dd31fa5af37c45c572b3e520ac87548f0a739acf1ee5f9041"
 )
+EVALUATOR_PROMPT_TEMPLATE_V7_VERSION = "knowledge-note-evaluator-v7"
 EVALUATOR_PROMPT_TEMPLATE_V7_SHA256 = (
     "1e3b5b820b9569dc99230abd3c352e7223c1b84a3b93b66667f4a7fc1da9dbac"
+)
+EVALUATOR_PROMPT_TEMPLATE_V8_SHA256 = (
+    "f5b7c9a7034347691d6a0387b2ed9d42212c0f7a91d51ac97368bfada9358b52"
 )
 # The shorter names mirror the generator contract's historical identity
 # constants and make the compatibility pair easy to consume.
 PROMPT_TEMPLATE_V3_VERSION = EVALUATOR_PROMPT_TEMPLATE_V3_VERSION
 PROMPT_TEMPLATE_V3_SHA256 = EVALUATOR_PROMPT_TEMPLATE_V3_SHA256
-RECOMMENDATION_POLICY_VERSION = "conservative-triad-v0"
+RECOMMENDATION_POLICY_V0_VERSION = "conservative-triad-v0"
+RECOMMENDATION_POLICY_VERSION = "conservative-quality-quad-v1"
 EVALUATOR_STRATEGY_V4 = "groundedness-plus-pairwise-candidates-v0"
 EVALUATOR_STRATEGY_V5 = "groundedness-plus-pairwise-candidates-with-verifier-v1"
-EVALUATOR_STRATEGY_VERSION = "groundedness-plus-pairwise-candidates-with-independent-verifier-v2"
+EVALUATOR_STRATEGY_V7 = "groundedness-plus-pairwise-candidates-with-independent-verifier-v2"
+EVALUATOR_STRATEGY_VERSION = "groundedness-quality-plus-pairwise-candidates-with-independent-verifier-v3"
 MAX_EVALUATOR_OUTPUT_BYTES = 32 * 1024
 MAX_EVALUATOR_FINDINGS_PER_DIMENSION = 4
 MAX_EVALUATOR_FINDING_CHARS = 2048
@@ -70,10 +77,11 @@ MAX_EVALUATOR_VERIFIER_EXPLANATION_CHARS = 1000
 MAX_EVALUATOR_WALL_SECONDS = 14 * 60
 _WINDOWS_FORBIDDEN = set('<>:"|?*')
 
-_DIMENSIONS = ("groundedness", "redundancy", "consistency")
+_DIMENSIONS = ("groundedness", "quality", "redundancy", "consistency")
 _PAIRWISE_DIMENSIONS = ("redundancy", "consistency")
 _ASSESSMENT_VALUES: Mapping[str, tuple[str, ...]] = {
     "groundedness": ("pass", "concern", "unknown"),
+    "quality": ("pass", "concern", "unknown"),
     "redundancy": ("none", "possible", "likely"),
     "consistency": ("pass", "unknown", "concern"),
 }
@@ -118,7 +126,26 @@ assessment:
 - unknown: the supplied generation input is insufficient to make a defensible judgment.
 
 This is evidence-groundedness, not objective-truth verification.
-Do not assess redundancy or consistency with canonical Knowledge in this pass.
+Do not assess quality, redundancy, or consistency with canonical Knowledge in this pass.
+""",
+    "quality": _COMMON_SYSTEM
+    + """
+This pass evaluates Knowledge quality only.
+
+Compare the proposal with generation_input: the original query and exact generation-context sources. Judge whether the proposal is a durable Knowledge contribution in its intended scope, not merely whether its claims are grounded.
+
+assessment:
+- pass: the proposal is self-contained enough to reuse in its intended scope, contributes a meaningful concept, procedure, specification, methodological pattern, decision rule, constraint, or failure mode, and preserves the epistemic status and conditional scope of the generation input.
+- concern: the proposal is primarily a source digest, Project-local recap, RQ/H/TODO/status/section restatement with little durable contribution; materially depends on unexplained local context; or strengthens a question, hypothesis, prediction, proposal, assumption, limitation, or conditional statement into a stronger factual, causal, or empirical claim.
+- unknown: the generation input is too incomplete or ambiguous to judge whether the proposal's local structure, abstraction level, or epistemic strength is appropriate.
+
+Quality rules:
+- Do not require broad generalization. A narrow note can pass when its contribution is durable and self-contained within a clearly stated scope.
+- Project names, identifiers, RQ/H labels, document structure, and local terminology are allowed when intrinsically necessary to the knowledge; they are a concern only when the proposal mainly mirrors source organization instead of extracting a reusable contribution.
+- Repetition across sources is corroboration, not automatically synthesis.
+- Preserve epistemic status. Research questions and hypotheses should be described as what is tested or predicted unless the supplied sources report results. Conditional conclusions must retain their dependencies.
+- Formatting, prose length, number of headings, writing style, and brevity alone are never grounds for concern.
+- Do not assess overlap with canonical Knowledge or pairwise consistency in this pass.
 """,
     "redundancy": _COMMON_SYSTEM
     + """
@@ -209,6 +236,7 @@ class CandidateEvaluatorOutput:
 @dataclass(frozen=True)
 class EvaluatorOutput:
     groundedness: str
+    quality: str
     redundancy: str
     consistency: str
     findings: tuple[str, ...]
@@ -1261,6 +1289,7 @@ def aggregate_candidate_outputs(
 def aggregate_evaluator_outputs(
     *,
     groundedness: DimensionEvaluatorOutput,
+    quality: DimensionEvaluatorOutput,
     redundancy_pairs: Sequence[CandidateEvaluatorOutput],
     consistency_pairs: Sequence[CandidateEvaluatorOutput],
 ) -> EvaluatorOutput:
@@ -1275,6 +1304,17 @@ def aggregate_evaluator_outputs(
         require_bound_path=False,
         require_concern_evidence=False,
     )
+    if quality.dimension != "quality":
+        raise ArtifactLifecycleError("quality evaluator output is invalid")
+    if quality.assessment not in _ASSESSMENT_VALUES["quality"]:
+        raise ArtifactLifecycleError("quality evaluator assessment is invalid")
+    _validated_dimension_conflicts(
+        "quality",
+        quality.assessment,
+        quality.conflicts,
+        require_bound_path=False,
+        require_concern_evidence=False,
+    )
 
     redundancy_paths = tuple(item.candidate_path for item in redundancy_pairs)
     consistency_paths = tuple(item.candidate_path for item in consistency_pairs)
@@ -1283,12 +1323,18 @@ def aggregate_evaluator_outputs(
 
     redundancy = aggregate_candidate_outputs("redundancy", redundancy_pairs)
     consistency = aggregate_candidate_outputs("consistency", consistency_pairs)
-    findings = groundedness.findings + redundancy.findings + consistency.findings
+    findings = (
+        groundedness.findings
+        + quality.findings
+        + redundancy.findings
+        + consistency.findings
+    )
     if len(set(findings)) != len(findings):
         raise ArtifactLifecycleError("evaluator aggregated findings must not contain duplicates")
 
     return EvaluatorOutput(
         groundedness=groundedness.assessment,
+        quality=quality.assessment,
         redundancy=redundancy.assessment,
         consistency=consistency.assessment,
         findings=findings,
@@ -1299,6 +1345,7 @@ def aggregate_evaluator_outputs(
 def _validated_evaluator_output(output: EvaluatorOutput) -> EvaluatorOutput:
     values = {
         "groundedness": output.groundedness,
+        "quality": output.quality,
         "redundancy": output.redundancy,
         "consistency": output.consistency,
     }
@@ -1331,6 +1378,7 @@ def _validated_evaluator_output(output: EvaluatorOutput) -> EvaluatorOutput:
     )
     return EvaluatorOutput(
         groundedness=output.groundedness,
+        quality=output.quality,
         redundancy=output.redundancy,
         consistency=output.consistency,
         findings=output.findings,
@@ -1342,12 +1390,14 @@ def recommendation_for(output: EvaluatorOutput) -> str:
     normalized = _validated_evaluator_output(output)
     if (
         normalized.groundedness == "pass"
+        and normalized.quality == "pass"
         and normalized.redundancy == "none"
         and normalized.consistency == "pass"
     ):
         return "proceed"
     if (
         normalized.groundedness == "concern"
+        or normalized.quality == "concern"
         or normalized.redundancy == "likely"
         or normalized.consistency == "concern"
     ):
@@ -1359,6 +1409,7 @@ def to_evaluation_assessment(output: EvaluatorOutput) -> EvaluationAssessment:
     normalized = _validated_evaluator_output(output)
     return EvaluationAssessment(
         groundedness=normalized.groundedness,
+        quality=normalized.quality,
         redundancy=normalized.redundancy,
         consistency=normalized.consistency,
         recommendation=recommendation_for(normalized),
@@ -1376,13 +1427,14 @@ def prompt_template_bytes() -> bytes:
             "strategy": EVALUATOR_STRATEGY_VERSION,
             "pass_order": [
                 "groundedness",
+                "quality",
                 "candidate:(redundancy,consistency_proposer,consistency_verifier*)*",
             ],
             "passes": {
                 dimension: {
                     "system": _DIMENSION_SYSTEMS[dimension],
                     "output_schema": _output_schema_for(dimension),
-                    "user_payload_version": 7,
+                    "user_payload_version": 8,
                 }
                 for dimension in _DIMENSIONS
             }
@@ -1390,10 +1442,11 @@ def prompt_template_bytes() -> bytes:
                 "consistency_verifier": {
                     "system": _CONSISTENCY_VERIFIER_SYSTEM,
                     "output_schema": consistency_verifier_schema(),
-                    "user_payload_version": 7,
+                    "user_payload_version": 8,
                 }
             },
             "aggregation": {
+                "quality": ["pass", "unknown", "concern"],
                 "redundancy": ["none", "possible", "likely"],
                 "consistency": ["pass", "unknown", "concern"],
                 "findings": "winning-severity-only",
@@ -1415,7 +1468,8 @@ def supported_prompt_template_hashes() -> Mapping[str, str]:
         EVALUATOR_PROMPT_TEMPLATE_V4_VERSION: EVALUATOR_PROMPT_TEMPLATE_V4_SHA256,
         EVALUATOR_PROMPT_TEMPLATE_V5_VERSION: EVALUATOR_PROMPT_TEMPLATE_V5_SHA256,
         EVALUATOR_PROMPT_TEMPLATE_V6_VERSION: EVALUATOR_PROMPT_TEMPLATE_V6_SHA256,
-        EVALUATOR_PROMPT_TEMPLATE_VERSION: EVALUATOR_PROMPT_TEMPLATE_V7_SHA256,
+        EVALUATOR_PROMPT_TEMPLATE_V7_VERSION: EVALUATOR_PROMPT_TEMPLATE_V7_SHA256,
+        EVALUATOR_PROMPT_TEMPLATE_VERSION: EVALUATOR_PROMPT_TEMPLATE_V8_SHA256,
     }
 
 
@@ -1469,14 +1523,15 @@ def render_evaluator_prompts(
     template_sha = prompt_template_sha256()
     prompts: list[EvaluatorPrompt] = []
 
+    generation_input = {
+        "query": generation_context.query,
+        "sources": _generation_sources(generation_context),
+    }
     groundedness_payload = {
-        "payload_version": 7,
+        "payload_version": 8,
         "dimension": "groundedness",
         "proposal": proposal,
-        "generation_input": {
-            "query": generation_context.query,
-            "sources": _generation_sources(generation_context),
-        },
+        "generation_input": generation_input,
     }
     prompts.append(
         EvaluatorPrompt(
@@ -1491,6 +1546,25 @@ def render_evaluator_prompts(
         )
     )
 
+    quality_payload = {
+        "payload_version": 8,
+        "dimension": "quality",
+        "proposal": proposal,
+        "generation_input": generation_input,
+    }
+    prompts.append(
+        EvaluatorPrompt(
+            dimension="quality",
+            candidate_path=None,
+            template_version=EVALUATOR_PROMPT_TEMPLATE_VERSION,
+            template_sha256=template_sha,
+            system=_DIMENSION_SYSTEMS["quality"],
+            user=_canonical_json_bytes(quality_payload).decode("utf-8"),
+            output_schema=output_schema("quality"),
+            pass_kind="quality",
+        )
+    )
+
     for candidate in evaluation_context.candidates:
         candidate_payload = _candidate_payload(candidate)
         candidate_path = candidate_payload["path"]
@@ -1498,7 +1572,7 @@ def render_evaluator_prompts(
         for dimension in _PAIRWISE_DIMENSIONS:
             if dimension == "consistency":
                 payload = {
-                    "payload_version": 7,
+                    "payload_version": 8,
                     "dimension": dimension,
                     "proposal": {
                         "target_path": target_path,
@@ -1512,7 +1586,7 @@ def render_evaluator_prompts(
                 }
             else:
                 payload = {
-                    "payload_version": 7,
+                    "payload_version": 8,
                     "dimension": dimension,
                     "proposal": proposal,
                     "evaluation_candidate": candidate_payload,
@@ -1545,7 +1619,7 @@ def render_consistency_verifier_prompt(
     path = _validated_candidate_path(candidate_path)
     normalized = _validated_bound_conflict_proposal(proposal)
     payload = {
-        "payload_version": 7,
+        "payload_version": 8,
         "dimension": "consistency_verifier",
         "proposal_quote": normalized.proposal_quote,
         "candidate_quote": normalized.candidate_quote,

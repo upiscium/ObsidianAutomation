@@ -18,6 +18,7 @@ from .evaluation_artifact import (
 from .evaluator_contract import (
     EVALUATOR_STRATEGY_V4,
     EVALUATOR_STRATEGY_V5,
+    EVALUATOR_STRATEGY_V7,
     EVALUATOR_STRATEGY_VERSION,
     MAX_EVALUATOR_WALL_SECONDS,
     MAX_EVALUATOR_OUTPUT_BYTES,
@@ -52,12 +53,15 @@ from .ollama_generator import (
 
 
 PROVIDER_NAME = "ollama"
-ADAPTER_VERSION = "ollama-evaluator-chat-structured-v5"
-PREVIOUS_ADAPTER_VERSION = "ollama-evaluator-chat-structured-v4"
+ADAPTER_VERSION = "ollama-evaluator-chat-structured-v6"
+PREVIOUS_ADAPTER_VERSION = "ollama-evaluator-chat-structured-v5"
+V6_ADAPTER_VERSION = "ollama-evaluator-chat-structured-v4"
 V5_ADAPTER_VERSION = "ollama-evaluator-chat-structured-v3"
 LEGACY_ADAPTER_VERSION = "ollama-evaluator-chat-structured-v2"
 EVALUATION_STRATEGY = EVALUATOR_STRATEGY_VERSION
-PREVIOUS_EVALUATION_STRATEGY = EVALUATOR_STRATEGY_V5
+PREVIOUS_EVALUATION_STRATEGY = EVALUATOR_STRATEGY_V7
+V6_EVALUATION_STRATEGY = EVALUATOR_STRATEGY_V5
+V5_EVALUATION_STRATEGY = EVALUATOR_STRATEGY_V5
 LEGACY_EVALUATION_STRATEGY = EVALUATOR_STRATEGY_V4
 MAX_OPTIONS_BYTES = 12 * 1024
 
@@ -75,6 +79,7 @@ class OllamaEvaluationResult:
     prompt_template_version: str
     prompt_template_sha256: str
     groundedness: str
+    quality: str
     redundancy: str
     consistency: str
     recommendation: str
@@ -242,7 +247,10 @@ def _expected_prompt_order(evaluation_context: object) -> tuple[tuple[str, str |
     candidates = getattr(evaluation_context, "candidates", None)
     if not isinstance(candidates, tuple):
         raise ArtifactLifecycleError("evaluator context candidates are invalid")
-    expected: list[tuple[str, str | None]] = [("groundedness", None)]
+    expected: list[tuple[str, str | None]] = [
+        ("groundedness", None),
+        ("quality", None),
+    ]
     for candidate in candidates:
         path = getattr(candidate, "path", None)
         if not isinstance(path, str):
@@ -321,6 +329,7 @@ def evaluate_knowledge_note_with_ollama(
 
     candidate_contents = {candidate.path: candidate.content for candidate in evaluation_context.candidates}
     groundedness_output: DimensionEvaluatorOutput | None = None
+    quality_output: DimensionEvaluatorOutput | None = None
     redundancy_pairs: list[CandidateEvaluatorOutput] = []
     consistency_pairs: list[CandidateEvaluatorOutput] = []
     used_prompts = list(prompts)
@@ -342,6 +351,11 @@ def evaluate_knowledge_note_with_ollama(
             if prompt.candidate_path is not None or groundedness_output is not None:
                 raise ArtifactLifecycleError("groundedness evaluator pass is invalid")
             groundedness_output = dimension_output
+            continue
+        if prompt.pass_kind == "quality":
+            if prompt.candidate_path is not None or quality_output is not None:
+                raise ArtifactLifecycleError("quality evaluator pass is invalid")
+            quality_output = dimension_output
             continue
 
         if prompt.candidate_path is None:
@@ -387,11 +401,14 @@ def evaluate_knowledge_note_with_ollama(
             finalize_consistency_candidate(proposal_output, tuple(verifications))
         )
 
-    if groundedness_output is None:
-        raise ArtifactLifecycleError("groundedness evaluator pass is missing")
+    if groundedness_output is None or quality_output is None:
+        raise ArtifactLifecycleError(
+            "groundedness or quality evaluator pass is missing"
+        )
 
     output = aggregate_evaluator_outputs(
         groundedness=groundedness_output,
+        quality=quality_output,
         redundancy_pairs=redundancy_pairs,
         consistency_pairs=consistency_pairs,
     )
@@ -419,6 +436,7 @@ def evaluate_knowledge_note_with_ollama(
         model_revision=identity.digest,
         model_config=model_config,
         groundedness=assessment.groundedness,
+        quality=assessment.quality,
         redundancy=assessment.redundancy,
         consistency=assessment.consistency,
         recommendation=assessment.recommendation,
@@ -439,6 +457,7 @@ def evaluate_knowledge_note_with_ollama(
         prompt_template_version=prompt.template_version,
         prompt_template_sha256=prompt.template_sha256,
         groundedness=assessment.groundedness,
+        quality=assessment.quality,
         redundancy=assessment.redundancy,
         consistency=assessment.consistency,
         recommendation=assessment.recommendation,
@@ -505,6 +524,7 @@ def main(argv: list[str] | None = None) -> int:
                 "prompt_template_sha256": result.prompt_template_sha256,
                 "assessment": {
                     "groundedness": result.groundedness,
+                    "quality": result.quality,
                     "redundancy": result.redundancy,
                     "consistency": result.consistency,
                     "recommendation": result.recommendation,

@@ -48,7 +48,8 @@ MAX_EVALUATION_QUERY_CHARS = 4096
 MAX_EVALUATION_RECORD_BYTES = 64 * 1024
 MAX_FINDINGS = 16
 MAX_FINDING_CHARS = 2048
-EVALUATION_RECORD_VERSION = 2
+EVALUATION_RECORD_VERSION = 3
+CONFLICT_EVALUATION_RECORD_VERSION = 2
 LEGACY_EVALUATION_RECORD_VERSION = 1
 MAX_EVALUATION_CONFLICTS = 4
 MAX_EVALUATION_CONFLICT_FIELD_CHARS = 1000
@@ -62,6 +63,7 @@ MAX_CANDIDATE_PATH_CHARS = MAX_EVALUATION_CANDIDATE_PATH_CHARS
 
 _HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*$")
 _GROUNDEDNESS = {"pass", "concern", "unknown"}
+_QUALITY = {"pass", "concern", "unknown"}
 _REDUNDANCY = {"none", "possible", "likely"}
 _CONSISTENCY = {"pass", "concern", "unknown"}
 _RECOMMENDATION = {"proceed", "manual_review", "do_not_proceed"}
@@ -207,6 +209,7 @@ class EvaluationAssessment:
     recommendation: str
     findings: tuple[str, ...]
     conflicts: tuple[ConsistencyConflict, ...] = ()
+    quality: str = "unknown"
 
     def __post_init__(self) -> None:
         # The contract exposes tuples even when an older caller supplied a
@@ -568,9 +571,12 @@ def load_evaluation_context(ai_root: Path, context_sha256: str) -> EvaluationCon
 def _record_version(value: object) -> int:
     if type(value) is not int or value not in {
         LEGACY_EVALUATION_RECORD_VERSION,
+        CONFLICT_EVALUATION_RECORD_VERSION,
         EVALUATION_RECORD_VERSION,
     }:
-        raise ArtifactLifecycleError("evaluation record_version must be integer 1 or 2")
+        raise ArtifactLifecycleError(
+            "evaluation record_version must be integer 1, 2, or 3"
+        )
     return value
 
 
@@ -733,6 +739,30 @@ def _validated_conflicts(
 def _recommendation_for_values(
     *,
     groundedness: str,
+    quality: str,
+    redundancy: str,
+    consistency: str,
+) -> str:
+    if (
+        groundedness == "pass"
+        and quality == "pass"
+        and redundancy == "none"
+        and consistency == "pass"
+    ):
+        return "proceed"
+    if (
+        groundedness == "concern"
+        or quality == "concern"
+        or redundancy == "likely"
+        or consistency == "concern"
+    ):
+        return "do_not_proceed"
+    return "manual_review"
+
+
+def _legacy_recommendation_for_values(
+    *,
+    groundedness: str,
     redundancy: str,
     consistency: str,
 ) -> str:
@@ -754,6 +784,7 @@ def _recommendation_for_values(
 def _assessment(
     *,
     groundedness: str,
+    quality: str = "unknown",
     redundancy: str,
     consistency: str,
     recommendation: str,
@@ -764,6 +795,12 @@ def _assessment(
     version = _record_version(record_version)
     if not isinstance(groundedness, str) or groundedness not in _GROUNDEDNESS:
         raise ArtifactLifecycleError("groundedness assessment is invalid")
+    if not isinstance(quality, str) or quality not in _QUALITY:
+        raise ArtifactLifecycleError("quality assessment is invalid")
+    if version < EVALUATION_RECORD_VERSION and quality != "unknown":
+        raise ArtifactLifecycleError(
+            "historical evaluation records must not contain quality assessment"
+        )
     if not isinstance(redundancy, str) or redundancy not in _REDUNDANCY:
         raise ArtifactLifecycleError("redundancy assessment is invalid")
     if not isinstance(consistency, str) or consistency not in _CONSISTENCY:
@@ -786,27 +823,42 @@ def _assessment(
     normalized_conflicts = _validated_conflicts(conflicts)
     if version == LEGACY_EVALUATION_RECORD_VERSION:
         if normalized_conflicts:
-            raise ArtifactLifecycleError("legacy evaluation records must not contain conflicts")
+            raise ArtifactLifecycleError(
+                "legacy evaluation records must not contain conflicts"
+            )
     else:
         if consistency == "concern" and not normalized_conflicts:
             raise ArtifactLifecycleError(
-                "v2 consistency concern requires at least one conflict"
+                "evaluation consistency concern requires at least one conflict"
             )
         if consistency in {"pass", "unknown"} and normalized_conflicts:
             raise ArtifactLifecycleError(
-                "v2 consistency pass or unknown must not contain conflicts"
+                "evaluation consistency pass or unknown must not contain conflicts"
             )
-        expected_recommendation = _recommendation_for_values(
-            groundedness=groundedness,
-            redundancy=redundancy,
-            consistency=consistency,
-        )
-        if recommendation != expected_recommendation:
-            raise ArtifactLifecycleError(
-                "v2 evaluation recommendation does not match conservative triad"
+        if version == CONFLICT_EVALUATION_RECORD_VERSION:
+            expected_recommendation = _legacy_recommendation_for_values(
+                groundedness=groundedness,
+                redundancy=redundancy,
+                consistency=consistency,
             )
+            if recommendation != expected_recommendation:
+                raise ArtifactLifecycleError(
+                    "v2 evaluation recommendation does not match conservative triad"
+                )
+        else:
+            expected_recommendation = _recommendation_for_values(
+                groundedness=groundedness,
+                quality=quality,
+                redundancy=redundancy,
+                consistency=consistency,
+            )
+            if recommendation != expected_recommendation:
+                raise ArtifactLifecycleError(
+                    "v3 evaluation recommendation does not match conservative quality policy"
+                )
     return EvaluationAssessment(
         groundedness=groundedness,
+        quality=quality,
         redundancy=redundancy,
         consistency=consistency,
         recommendation=recommendation,
@@ -822,6 +874,7 @@ def _assessment_json(
 ) -> dict[str, object]:
     normalized = _assessment(
         groundedness=assessment.groundedness,
+        quality=assessment.quality,
         redundancy=assessment.redundancy,
         consistency=assessment.consistency,
         recommendation=assessment.recommendation,
@@ -836,7 +889,9 @@ def _assessment_json(
         "recommendation": normalized.recommendation,
         "findings": list(normalized.findings),
     }
-    if version == EVALUATION_RECORD_VERSION:
+    if version >= EVALUATION_RECORD_VERSION:
+        value["quality"] = normalized.quality
+    if version >= CONFLICT_EVALUATION_RECORD_VERSION:
         value["conflicts"] = [
             {
                 "candidate_path": conflict.candidate_path,
@@ -864,6 +919,7 @@ def build_evaluation_record(
     model_revision: str,
     model_config: Mapping[str, object],
     groundedness: str,
+    quality: str,
     redundancy: str,
     consistency: str,
     recommendation: str,
@@ -892,6 +948,7 @@ def build_evaluation_record(
         raise ArtifactLifecycleError("evaluated_at must be a UTC timestamp ending in Z")
     assessment = _assessment(
         groundedness=groundedness,
+        quality=quality,
         redundancy=redundancy,
         consistency=consistency,
         recommendation=recommendation,
@@ -974,15 +1031,17 @@ def parse_evaluation_record(data: bytes) -> EvaluationRecord:
         "recommendation",
         "findings",
     }
-    if record_version == EVALUATION_RECORD_VERSION:
+    if record_version >= CONFLICT_EVALUATION_RECORD_VERSION:
         expected_assessment_properties.add("conflicts")
+    if record_version >= EVALUATION_RECORD_VERSION:
+        expected_assessment_properties.add("quality")
     if not isinstance(raw_assessment, dict) or set(raw_assessment) != expected_assessment_properties:
         raise ArtifactLifecycleError("evaluation assessment properties do not match contract")
     findings = raw_assessment["findings"]
     if not isinstance(findings, list):
         raise ArtifactLifecycleError("evaluation findings must be a list")
     conflicts: tuple[ConsistencyConflict, ...] = ()
-    if record_version == EVALUATION_RECORD_VERSION:
+    if record_version >= CONFLICT_EVALUATION_RECORD_VERSION:
         raw_conflicts = raw_assessment["conflicts"]
         if not isinstance(raw_conflicts, list):
             raise ArtifactLifecycleError("evaluation conflicts must be a list")
@@ -1008,6 +1067,11 @@ def parse_evaluation_record(data: bytes) -> EvaluationRecord:
         conflicts = _validated_conflicts(tuple(parsed_conflicts))
     assessment = _assessment(
         groundedness=raw_assessment["groundedness"],
+        quality=(
+            raw_assessment["quality"]
+            if record_version >= EVALUATION_RECORD_VERSION
+            else "unknown"
+        ),
         redundancy=raw_assessment["redundancy"],
         consistency=raw_assessment["consistency"],
         recommendation=raw_assessment["recommendation"],
@@ -1052,7 +1116,7 @@ def _validate_evaluation_record_bindings(
     context = load_evaluation_context(ai_root, evaluation_context)
     if context.proposal_sha256 != proposal or context.mutation_sha256 != mutation:
         raise ArtifactLifecycleError("evaluation context is bound to another mutation")
-    if record.record_version == EVALUATION_RECORD_VERSION:
+    if record.record_version >= CONFLICT_EVALUATION_RECORD_VERSION:
         _validated_conflicts(
             record.assessment.conflicts,
             expected_paths={candidate.path for candidate in context.candidates},
@@ -1061,9 +1125,10 @@ def _validate_evaluation_record_bindings(
 
 def store_evaluation_record(ai_root: Path, record: EvaluationRecord) -> tuple[str, Path]:
     record_version = _record_version(record.record_version)
-    if record_version == LEGACY_EVALUATION_RECORD_VERSION:
-        # Legacy records are immutable evidence.  Parse/canonicalize them and
-        # validate their bindings, but never send them through the v2 builder.
+    if record_version != EVALUATION_RECORD_VERSION:
+        # Historical records are immutable evidence. Parse/canonicalize them
+        # and validate bindings, but never rewrite them into the current
+        # Evaluation Record contract.
         normalized = parse_evaluation_record(record.to_json_bytes())
         _validate_evaluation_record_bindings(ai_root, normalized)
     else:
@@ -1081,6 +1146,7 @@ def store_evaluation_record(ai_root: Path, record: EvaluationRecord) -> tuple[st
             model_revision=record.model.revision,
             model_config=record.model_config,
             groundedness=record.assessment.groundedness,
+            quality=record.assessment.quality,
             redundancy=record.assessment.redundancy,
             consistency=record.assessment.consistency,
             recommendation=record.assessment.recommendation,

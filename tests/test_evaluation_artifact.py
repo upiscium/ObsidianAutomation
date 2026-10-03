@@ -232,6 +232,7 @@ def test_evaluation_record_binds_generation_validation_and_evaluation_context(tm
         model_revision="c" * 64,
         model_config={"temperature": 0},
         groundedness="pass",
+        quality="pass",
         redundancy="likely",
         consistency="concern",
         recommendation="do_not_proceed",
@@ -250,7 +251,8 @@ def test_evaluation_record_binds_generation_validation_and_evaluation_context(tm
 
     assert path == state / EVALUATION_STAGE / f"{evaluation_sha}.evaluation.json"
     loaded = load_evaluation_record(state, evaluation_sha)
-    assert loaded.record_version == 2
+    assert loaded.record_version == 3
+    assert loaded.assessment.quality == "pass"
     assert loaded.assessment.redundancy == "likely"
     assert loaded.assessment.recommendation == "do_not_proceed"
     assert loaded.proposal_sha256 == proposal_sha
@@ -292,6 +294,7 @@ def test_evaluation_record_cannot_cross_bind_another_mutation(tmp_path: Path) ->
             model_revision="c" * 64,
             model_config={},
             groundedness="unknown",
+            quality="pass",
             redundancy="possible",
             consistency="unknown",
             recommendation="manual_review",
@@ -353,6 +356,7 @@ def _record_payload(
     *,
     record_version: int = 2,
     groundedness: str = "pass",
+    quality: str = "pass",
     redundancy: str = "none",
     consistency: str = "concern",
     recommendation: str = "do_not_proceed",
@@ -365,7 +369,7 @@ def _record_payload(
         "recommendation": recommendation,
         "findings": [" legacy evidence "],
     }
-    if record_version == 2:
+    if record_version >= 2:
         assessment["conflicts"] = (
             conflicts
             if conflicts is not None
@@ -378,6 +382,8 @@ def _record_payload(
                 }
             ]
         )
+    if record_version >= 3:
+        assessment["quality"] = quality
     return {
         "record_version": record_version,
         "proposal_sha256": "a" * 64,
@@ -453,6 +459,27 @@ def test_v2_conflicts_round_trip_with_exact_evidence_shape() -> None:
     ]
 
 
+def test_v3_quality_round_trips_and_drives_recommendation() -> None:
+    fixture = _record_bytes(
+        _record_payload(
+            record_version=3,
+            quality="concern",
+            consistency="pass",
+            recommendation="do_not_proceed",
+            conflicts=[],
+        )
+    )
+
+    parsed = parse_evaluation_record(fixture)
+    value = json.loads(parsed.to_json_bytes())
+
+    assert parsed.record_version == 3
+    assert parsed.assessment.quality == "concern"
+    assert parsed.assessment.recommendation == "do_not_proceed"
+    assert value["assessment"]["quality"] == "concern"
+    assert value["assessment"]["conflicts"] == []
+
+
 def test_v2_multiline_conflicts_round_trip_without_rewriting_quotes() -> None:
     proposal_claim = "# Proposal\n\nUse WebDAV synchronization."
     candidate_claim = "# Candidate\n\nUse local-only storage."
@@ -525,6 +552,7 @@ def test_v2_record_rejects_malformed_conflicts_and_inconsistent_evidence() -> No
 
     conflict_pass = _record_payload(
         groundedness="pass",
+        quality="pass",
         redundancy="none",
         consistency="pass",
         recommendation="proceed",
@@ -547,7 +575,14 @@ def test_evaluation_record_model_config_is_nested_immutable_and_canonical() -> N
         evaluator=EvaluatorMetadata("e" * 40, "evaluation-v1", "f" * 64),
         model=EvaluationModelMetadata("ollama", "model", "1" * 64),
         model_config=config,
-        assessment=EvaluationAssessment("pass", "none", "pass", "proceed", ()),
+        assessment=EvaluationAssessment(
+            "pass",
+            "none",
+            "pass",
+            "proceed",
+            (),
+            quality="pass",
+        ),
         evaluated_at="2026-09-20T00:00:00Z",
     )
     before = record.to_json_bytes()

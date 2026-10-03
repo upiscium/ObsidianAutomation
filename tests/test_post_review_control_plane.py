@@ -68,9 +68,9 @@ def _recipe():
             "model_identifier": "evaluator",
             "model_revision": "identifier:evaluator",
             "model_config": {
-                "adapter_version": "openai-evaluator-chat-completions-json-schema-v4",
+                "adapter_version": "openai-evaluator-chat-completions-json-schema-v5",
                 "identity_binding": "identifier-only",
-                "strategy": "groundedness-plus-pairwise-candidates-with-independent-verifier-v2",
+                "strategy": "groundedness-quality-plus-pairwise-candidates-with-independent-verifier-v3",
                 "options": {"temperature": 0},
             },
         },
