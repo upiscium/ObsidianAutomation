@@ -170,8 +170,10 @@ the path-bound conflicts under `assessment.conflicts`:
 
 ```json
 {
-  "record_version": 2,
+  "record_version": 3,
   "assessment": {
+    "knowledge_quality": "pass",
+    "epistemic_status": "pass",
     "consistency": "concern",
     "conflicts": [
       {
@@ -190,8 +192,9 @@ Across candidates, deterministic aggregation selects the winning severity using
 Consistency. Only findings/conflicts at that winning severity survive bounded
 deduplication; no candidates yield Redundancy `none` and Consistency `pass`.
 
-Historical Evaluation Record v1 artifacts remain readable as legacy evidence;
-their assessment shape has no `conflicts` member. The complete prompt, binding,
+Historical Evaluation Record v1/v2 artifacts remain readable as immutable
+evidence without schema upgrade. v1 has no `conflicts` member; v2 has
+structured conflicts but no Knowledge-quality or epistemic-status dimensions. The complete prompt, binding,
 and aggregation contract is documented in
 [Evaluator Prompt / Output Contract](evaluator-prompt-output-contract.md).
 
