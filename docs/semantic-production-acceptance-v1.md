@@ -137,12 +137,10 @@ For the initial rollout:
 sudo /opt/obsidian-automation/venv/bin/obsidian-semantic-production-acceptance \
   observe-selection \
   --semantic-index-sha <semantic-index-sha256> \
-  --policy semantic-project-distill-v2
+  --policy semantic-project-distill-v3
 ```
 
-For the controlled deep-Knowledge rollout, v2 should explore past rejected
-Project anchors and return the first viable cluster. It may still produce a
-legitimate `skipped` observation if the bounded candidate pool is exhausted.
+For the controlled deep-Knowledge rollout, v3 should explore past rejected Project anchors and return the first viable cluster after support-quality filtering. The acceptance receipt records the v3 support strategy, relevance floor, redundancy ceiling, examined/accepted counts, and rejection count. It may still produce a legitimate `skipped` observation if no anchor has enough coherent support or the bounded anchor pool is exhausted.
 
 It creates no pre-review job and must not change the Planner submission clock.
 
