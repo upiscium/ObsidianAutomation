@@ -138,22 +138,16 @@ first Semantic Planner production wave, configure
 ```text
 AI_INPUT_MODE=semantic-deep-knowledge
 AI_INPUT_SEMANTIC_INDEX_SHA=<exact-reviewed-semantic-index-sha256>
-AI_INPUT_SEMANTIC_SELECTION_POLICY=semantic-project-distill-v2
+AI_INPUT_SEMANTIC_SELECTION_POLICY=semantic-project-distill-v3
 ```
 
-The accepted rollout pair is `semantic-project-distill-v2` with
-`semantic-retrieval-v1` (lexical 0.15 / vector 0.85). v2 deterministically
-explores Project anchor sources until one passes the existing novelty,
-coherence and Knowledge-coverage gates. Production acceptance
-cross-checks the retrieval profile recorded by the benchmark and Selection
-observation before it emits a canary plan.
+The accepted rollout pair is `semantic-project-distill-v3` with `semantic-retrieval-v1` (lexical 0.15 / vector 0.85). v3 retains novelty-aware deterministic Project-anchor exploration, then admits support rows only at anchor cosine >= 0.70 and rejects later support rows whose cosine to an already accepted support is >= 0.88. It does not force source-kind coverage or pad the cluster with weak support. Production acceptance cross-checks the retrieval profile and records the support-quality contract before it emits a canary plan.
 
 Do not use a mutable alias for the index. This rollout does not rebuild or
 advance the index automatically. Verify the exact index offline before enabling
 the mode.
 
-Only `deep-knowledge-v1` is admitted into the existing Knowledge pre-review
-chain. Reader first enforces the versioned Semantic Corpus structural-content rule and the deterministic deep-Knowledge evidence-sufficiency gate; evidence failures do not call the provider. A structured provider `no_candidate` result terminates as `deterministic_reject` rather than reaching Human Review. Idea discovery and Project adoption remain operator-driven.
+Only `deep-knowledge-v1` is admitted into the existing Knowledge pre-review chain. Reader first enforces the versioned Semantic Corpus structural-content rule and the deterministic deep-Knowledge evidence-sufficiency gate; evidence failures do not call the provider. Current deep-Knowledge generation uses the Knowledge-only provider schema introduced in v4 and the reusable-synthesis v5 prompt. Historical v2/v3 `no_candidate` artifacts remain readable, but new provider generation does not expose that branch. Idea discovery and Project adoption remain operator-driven.
 
 See
 [Semantic Deep Knowledge Production v1](semantic-deep-knowledge-production-v1.md).
