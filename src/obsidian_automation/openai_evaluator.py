@@ -52,10 +52,12 @@ from .openai_compatible import (
 
 ADAPTER_VERSION = "openai-evaluator-chat-completions-json-schema-v5"
 PREVIOUS_ADAPTER_VERSION = "openai-evaluator-chat-completions-json-schema-v4"
+V6_ADAPTER_VERSION = "openai-evaluator-chat-completions-json-schema-v3"
 V5_ADAPTER_VERSION = "openai-evaluator-chat-completions-json-schema-v2"
 LEGACY_ADAPTER_VERSION = "openai-evaluator-chat-completions-json-schema-v1"
 EVALUATION_STRATEGY = EVALUATOR_STRATEGY_VERSION
 PREVIOUS_EVALUATION_STRATEGY = EVALUATOR_STRATEGY_V7
+V6_EVALUATION_STRATEGY = EVALUATOR_STRATEGY_V5
 V5_EVALUATION_STRATEGY = EVALUATOR_STRATEGY_V5
 LEGACY_EVALUATION_STRATEGY = EVALUATOR_STRATEGY_V4
 
