@@ -575,6 +575,81 @@ def test_project_distill_v1_parser_rejects_profile_or_weight_drift(
         )
 
 
+def test_project_distill_v3_support_quality_filters_weak_and_duplicate_rows() -> None:
+    def make_candidate(
+        chunk_id: str,
+        path: str,
+        vector: tuple[float, float],
+    ):
+        return SimpleNamespace(
+            source=SimpleNamespace(
+                path=path,
+                source_kind="project-note",
+            ),
+            chunk=SimpleNamespace(chunk_id=chunk_id),
+            vector=SimpleNamespace(vector=vector),
+        )
+
+    anchor = make_candidate(
+        "1" * 64,
+        "10-Project/A/Anchor.md",
+        (1.0, 0.0),
+    )
+    good = make_candidate(
+        "2" * 64,
+        "05-Idea/Good.md",
+        (0.8, 0.6),
+    )
+    duplicate = make_candidate(
+        "3" * 64,
+        "05-Idea/Duplicate.md",
+        (0.82, 0.57),
+    )
+    weak = make_candidate(
+        "4" * 64,
+        "10-Project/B/Weak.md",
+        (0.5, 0.8660254),
+    )
+
+    ranked = tuple(
+        SimpleNamespace(
+            chunk_id=item.chunk.chunk_id,
+            source_path=item.source.path,
+        )
+        for item in (anchor, good, duplicate, weak)
+    )
+
+    selected, observations = _project_distill_v3_support_rows(
+        ranked,
+        anchor=anchor,
+        candidates=(anchor, good, duplicate, weak),
+        max_selected=6,
+    )
+
+    assert [item.source_path for item in selected] == [
+        "10-Project/A/Anchor.md",
+        "05-Idea/Good.md",
+    ]
+    assert observations["support_candidates_examined"] == 3
+    assert observations["support_candidates_accepted"] == 1
+    rejections = observations["support_rejections"]
+    assert [item["reason"] for item in rejections] == [
+        "support_redundancy_above_max",
+        "anchor_relevance_below_min",
+    ]
+    assert rejections[0]["source_path"] == "05-Idea/Duplicate.md"
+    assert rejections[0]["anchor_similarity"] == pytest.approx(0.82110925)
+    assert rejections[0]["max_prior_support_similarity"] == pytest.approx(
+        0.99935003
+    )
+    assert rejections[1] == {
+        "source_path": "10-Project/B/Weak.md",
+        "reason": "anchor_relevance_below_min",
+        "anchor_similarity": pytest.approx(0.5),
+        "max_prior_support_similarity": None,
+    }
+
+
 def test_project_distill_v2_parser_rejects_exploration_contract_drift(
     tmp_path: Path,
 ) -> None:
