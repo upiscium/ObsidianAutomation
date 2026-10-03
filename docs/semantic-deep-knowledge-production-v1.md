@@ -27,7 +27,7 @@ To opt in:
 ```text
 AI_INPUT_MODE=semantic-deep-knowledge
 AI_INPUT_SEMANTIC_INDEX_SHA=<exact-reviewed-semantic-index-sha256>
-AI_INPUT_SEMANTIC_SELECTION_POLICY=semantic-project-distill-v2
+AI_INPUT_SEMANTIC_SELECTION_POLICY=semantic-project-distill-v3
 ```
 
 The Semantic Index SHA is mandatory and exact. There is no mutable `latest`
