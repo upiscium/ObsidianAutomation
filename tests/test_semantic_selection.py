@@ -40,6 +40,7 @@ from obsidian_automation.semantic_selection import (
     POLICIES,
     SemanticSelectionError,
     _context_centroid,
+    _project_distill_v3_support_rows,
     build_semantic_selection,
     load_semantic_selection,
     observe_semantic_selection,
@@ -408,7 +409,9 @@ def test_all_initial_policies_are_deterministic_and_auditable(
     assert first.corpus_manifest_sha256 == index.corpus_manifest_sha256
     assert first.retrieval_mode == "hybrid"
     assert 1 <= len(first.anchors) <= 2
-    assert 2 <= len(first.selected) <= 8
+    assert 1 <= len(first.selected) <= 8
+    if first.novelty.decision == "selected":
+        assert len(first.selected) >= 2
     assert {item.source_path for item in first.anchors}.issubset(
         {item.source_path for item in first.selected}
     )
@@ -446,6 +449,13 @@ def test_project_distill_versions_pin_retrieval_semantics(
         policy="semantic-project-distill-v2",
         recent_context_limit=0,
     )
+    v3 = build_semantic_selection(
+        state,
+        vault,
+        semantic_index_sha256=index_sha,
+        policy="semantic-project-distill-v3",
+        recent_context_limit=0,
+    )
 
     assert v0.lexical_weight == pytest.approx(0.60)
     assert "retrieval_profile" not in v0.policy_observations
@@ -472,8 +482,30 @@ def test_project_distill_versions_pin_retrieval_semantics(
         == v2.policy_observations["anchor_candidate_rank"] - 1
     )
 
+    assert v3.lexical_weight == pytest.approx(0.15)
+    assert v3.policy_observations["retrieval_profile"] == (
+        "semantic-retrieval-v1"
+    )
+    assert v3.policy_observations["exploration_strategy"] == (
+        "first-novel-project-source-with-support-quality-v1"
+    )
+    assert v3.policy_observations["support_quality_strategy"] == (
+        "anchor-relevance-and-incremental-diversity-v1"
+    )
+    assert v3.policy_observations["support_relevance_min"] == pytest.approx(
+        0.70
+    )
+    assert v3.policy_observations["support_redundancy_max"] == pytest.approx(
+        0.88
+    )
+    assert (
+        v3.policy_observations["support_candidates_accepted"]
+        == len(v3.selected) - 1
+    )
+
     assert v0.source_kind_weights == v1.source_kind_weights
     assert v1.source_kind_weights == v2.source_kind_weights
+    assert v2.source_kind_weights == v3.source_kind_weights
 
 
 def test_structural_only_project_note_cannot_enter_project_distill_cluster(
@@ -543,6 +575,81 @@ def test_project_distill_v1_parser_rejects_profile_or_weight_drift(
         )
 
 
+def test_project_distill_v3_support_quality_filters_weak_and_duplicate_rows() -> None:
+    def make_candidate(
+        chunk_id: str,
+        path: str,
+        vector: tuple[float, float],
+    ):
+        return SimpleNamespace(
+            source=SimpleNamespace(
+                path=path,
+                source_kind="project-note",
+            ),
+            chunk=SimpleNamespace(chunk_id=chunk_id),
+            vector=SimpleNamespace(vector=vector),
+        )
+
+    anchor = make_candidate(
+        "1" * 64,
+        "10-Project/A/Anchor.md",
+        (1.0, 0.0),
+    )
+    good = make_candidate(
+        "2" * 64,
+        "05-Idea/Good.md",
+        (0.8, 0.6),
+    )
+    duplicate = make_candidate(
+        "3" * 64,
+        "05-Idea/Duplicate.md",
+        (0.82, 0.57),
+    )
+    weak = make_candidate(
+        "4" * 64,
+        "10-Project/B/Weak.md",
+        (0.5, 0.8660254),
+    )
+
+    ranked = tuple(
+        SimpleNamespace(
+            chunk_id=item.chunk.chunk_id,
+            source_path=item.source.path,
+        )
+        for item in (anchor, good, duplicate, weak)
+    )
+
+    selected, observations = _project_distill_v3_support_rows(
+        ranked,
+        anchor=anchor,
+        candidates=(anchor, good, duplicate, weak),
+        max_selected=6,
+    )
+
+    assert [item.source_path for item in selected] == [
+        "10-Project/A/Anchor.md",
+        "05-Idea/Good.md",
+    ]
+    assert observations["support_candidates_examined"] == 3
+    assert observations["support_candidates_accepted"] == 1
+    rejections = observations["support_rejections"]
+    assert [item["reason"] for item in rejections] == [
+        "support_redundancy_above_max",
+        "anchor_relevance_below_min",
+    ]
+    assert rejections[0]["source_path"] == "05-Idea/Duplicate.md"
+    assert rejections[0]["anchor_similarity"] == pytest.approx(0.82110925)
+    assert rejections[0]["max_prior_support_similarity"] == pytest.approx(
+        0.99935003
+    )
+    assert rejections[1] == {
+        "source_path": "10-Project/B/Weak.md",
+        "reason": "anchor_relevance_below_min",
+        "anchor_similarity": pytest.approx(0.5),
+        "max_prior_support_similarity": None,
+    }
+
+
 def test_project_distill_v2_parser_rejects_exploration_contract_drift(
     tmp_path: Path,
 ) -> None:
@@ -600,6 +707,49 @@ def test_project_distill_v2_parser_rejects_exploration_contract_drift(
         parse_semantic_selection(
             json.dumps(
                 wrong_prior,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+
+
+def test_project_distill_v3_parser_rejects_support_quality_drift(
+    tmp_path: Path,
+) -> None:
+    vault, state, index_sha, _ = _semantic_index(tmp_path)
+    record = build_semantic_selection(
+        state,
+        vault,
+        semantic_index_sha256=index_sha,
+        policy="semantic-project-distill-v3",
+        recent_context_limit=0,
+    )
+
+    wrong_threshold = json.loads(record.to_json_bytes())
+    wrong_threshold["policy_observations"]["support_relevance_min"] = 0.60
+    with pytest.raises(
+        SemanticSelectionError,
+        match="support thresholds are invalid",
+    ):
+        parse_semantic_selection(
+            json.dumps(
+                wrong_threshold,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+
+    wrong_count = json.loads(record.to_json_bytes())
+    wrong_count["policy_observations"]["support_candidates_accepted"] += 1
+    with pytest.raises(
+        SemanticSelectionError,
+        match="support counts are invalid",
+    ):
+        parse_semantic_selection(
+            json.dumps(
+                wrong_count,
                 ensure_ascii=False,
                 sort_keys=True,
                 separators=(",", ":"),

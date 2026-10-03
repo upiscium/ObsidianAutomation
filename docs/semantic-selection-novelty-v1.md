@@ -130,6 +130,60 @@ rather than silently truncating exploration. If every candidate is skipped,
 v2 returns the final skipped Selection Record; it does not fabricate novelty or
 persist an implicit cursor.
 
+### `semantic-project-distill-v3`
+
+v3 retains v2's deterministic novelty-aware anchor exploration and
+`semantic-retrieval-v1`, but changes support selection from "fill the bounded
+cluster" to explicit quality admission.
+
+For each anchor, support rows are considered in deterministic hybrid-rank order.
+A support row is admitted only when:
+
+```text
+anchor cosine >= 0.70
+```
+
+The first admitted support may corroborate the anchor. For later supports, v3
+also requires:
+
+```text
+max cosine to already accepted supports < 0.88
+```
+
+This prevents near-duplicate paraphrases from consuming the bounded support
+budget while still allowing one corroborating source. Source kinds are not
+forced. If no additional row passes the gates, v3 stops with the smaller
+cluster rather than padding to six weak sources.
+
+Selection Records add bounded support-quality evidence:
+
+```text
+support_quality_strategy = anchor-relevance-and-incremental-diversity-v1
+support_relevance_min = 0.70
+support_redundancy_max = 0.88
+support_candidates_examined = <unique ranked support rows examined>
+support_candidates_accepted = <accepted support count>
+support_rejections = [
+  {
+    source_path,
+    reason,
+    anchor_similarity,
+    max_prior_support_similarity
+  },
+  ...
+]
+```
+
+The two rejection reasons are
+`anchor_relevance_below_min` and
+`support_redundancy_above_max`. These thresholds were calibrated from the
+first v4 production Human Review Context: relevant RQ supports had anchor cosine
+about 0.89, while contaminating cross-topic Project Notes were about 0.46-0.50;
+the two near-duplicate Idea supports had pairwise cosine about 0.90.
+
+v2 remains supported with its original semantics for historical Selection
+records.
+
 ### `semantic-timeline-v0`
 
 Chooses the lexically latest eligible Daily source as primary anchor, then

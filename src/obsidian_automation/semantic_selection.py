@@ -64,11 +64,22 @@ BRIDGE_PAIR_MAX = 0.82
 PROJECT_DISTILL_V2_MAX_ANCHOR_SOURCES = 128
 PROJECT_DISTILL_V2_EXPLORATION_STRATEGY = "first-novel-project-source-v1"
 
+PROJECT_DISTILL_V3_MAX_ANCHOR_SOURCES = 128
+PROJECT_DISTILL_V3_EXPLORATION_STRATEGY = (
+    "first-novel-project-source-with-support-quality-v1"
+)
+PROJECT_DISTILL_V3_SUPPORT_QUALITY_STRATEGY = (
+    "anchor-relevance-and-incremental-diversity-v1"
+)
+PROJECT_DISTILL_V3_SUPPORT_RELEVANCE_MIN = 0.70
+PROJECT_DISTILL_V3_SUPPORT_REDUNDANCY_MAX = 0.88
+
 POLICIES = (
     "semantic-focus-v0",
     "semantic-project-distill-v0",
     "semantic-project-distill-v1",
     "semantic-project-distill-v2",
+    "semantic-project-distill-v3",
     "semantic-timeline-v0",
     "semantic-bridge-v0",
     "semantic-gap-v0",
@@ -501,6 +512,7 @@ def _retrieval_profile(policy: str) -> str:
     if policy in {
         "semantic-project-distill-v1",
         "semantic-project-distill-v2",
+        "semantic-project-distill-v3",
     }:
         return "semantic-retrieval-v1"
     return DEFAULT_RETRIEVAL_PROFILE
@@ -524,6 +536,7 @@ def _source_kind_weights(policy: str) -> dict[str, float]:
         "semantic-project-distill-v0",
         "semantic-project-distill-v1",
         "semantic-project-distill-v2",
+        "semantic-project-distill-v3",
     }:
         weights.update(
             {
@@ -606,6 +619,112 @@ def _unique_source_rows(
         if len(selected) >= max_selected:
             break
     return tuple(selected)
+
+
+def _project_distill_v3_support_rows(
+    ranked: Sequence[RankedSemanticChunk],
+    *,
+    anchor: SemanticCandidate,
+    candidates: Sequence[SemanticCandidate],
+    max_selected: int,
+) -> tuple[
+    tuple[RankedSemanticChunk, ...],
+    dict[str, object],
+]:
+    candidate_map = _candidate_by_chunk(candidates)
+    anchor_chunk_id = anchor.chunk.chunk_id
+    anchor_row = next(
+        (item for item in ranked if item.chunk_id == anchor_chunk_id),
+        None,
+    )
+    if anchor_row is None:
+        raise SemanticSelectionError(
+            "semantic-project-distill-v3 ranked rows do not contain anchor"
+        )
+
+    selected: list[RankedSemanticChunk] = [anchor_row]
+    accepted_supports: list[SemanticCandidate] = []
+    considered_paths = {anchor.source.path.casefold()}
+    rejections: list[dict[str, object]] = []
+    examined = 0
+
+    for row in ranked:
+        if len(selected) >= max_selected:
+            break
+        path_key = row.source_path.casefold()
+        if path_key in considered_paths:
+            continue
+        considered_paths.add(path_key)
+        examined += 1
+
+        candidate = candidate_map.get(row.chunk_id)
+        if candidate is None:
+            raise SemanticSelectionError(
+                "semantic-project-distill-v3 ranked chunk is not in candidate set"
+            )
+
+        anchor_similarity = _round(
+            _cosine(
+                anchor.vector.vector,
+                candidate.vector.vector,
+            )
+        )
+        if anchor_similarity < PROJECT_DISTILL_V3_SUPPORT_RELEVANCE_MIN:
+            rejections.append(
+                {
+                    "source_path": row.source_path,
+                    "reason": "anchor_relevance_below_min",
+                    "anchor_similarity": anchor_similarity,
+                    "max_prior_support_similarity": None,
+                }
+            )
+            continue
+
+        max_prior_support_similarity: float | None = None
+        if accepted_supports:
+            max_prior_support_similarity = _round(
+                max(
+                    _cosine(
+                        candidate.vector.vector,
+                        prior.vector.vector,
+                    )
+                    for prior in accepted_supports
+                )
+            )
+            if (
+                max_prior_support_similarity
+                >= PROJECT_DISTILL_V3_SUPPORT_REDUNDANCY_MAX
+            ):
+                rejections.append(
+                    {
+                        "source_path": row.source_path,
+                        "reason": "support_redundancy_above_max",
+                        "anchor_similarity": anchor_similarity,
+                        "max_prior_support_similarity": (
+                            max_prior_support_similarity
+                        ),
+                    }
+                )
+                continue
+
+        selected.append(row)
+        accepted_supports.append(candidate)
+
+    observations: dict[str, object] = {
+        "support_quality_strategy": (
+            PROJECT_DISTILL_V3_SUPPORT_QUALITY_STRATEGY
+        ),
+        "support_relevance_min": (
+            PROJECT_DISTILL_V3_SUPPORT_RELEVANCE_MIN
+        ),
+        "support_redundancy_max": (
+            PROJECT_DISTILL_V3_SUPPORT_REDUNDANCY_MAX
+        ),
+        "support_candidates_examined": examined,
+        "support_candidates_accepted": len(accepted_supports),
+        "support_rejections": rejections,
+    }
+    return tuple(selected), observations
 
 
 def _cluster_coherence(
@@ -818,6 +937,7 @@ def _policy_thresholds(policy: str) -> dict[str, float | None]:
         "semantic-project-distill-v0",
         "semantic-project-distill-v1",
         "semantic-project-distill-v2",
+        "semantic-project-distill-v3",
     }:
         knowledge_limit = PROJECT_KNOWLEDGE_SKIP_THRESHOLD
     elif policy == "semantic-timeline-v0":
@@ -1114,6 +1234,7 @@ def parse_semantic_selection(data: bytes) -> SemanticSelectionRecord:
         policy in {
             "semantic-project-distill-v1",
             "semantic-project-distill-v2",
+            "semantic-project-distill-v3",
         }
         and observations.get("retrieval_profile") != _retrieval_profile(policy)
     ):
@@ -1169,6 +1290,183 @@ def parse_semantic_selection(data: bytes) -> SemanticSelectionRecord:
             raise SemanticSelectionError(
                 "semantic-project-distill-v2 prior skip reasons are invalid"
             )
+    if policy == "semantic-project-distill-v3":
+        expected = {
+            "retrieval_profile",
+            "exploration_strategy",
+            "anchor_candidate_rank",
+            "anchor_candidates_examined",
+            "anchor_candidate_pool_size",
+            "prior_skip_reasons",
+            "support_quality_strategy",
+            "support_relevance_min",
+            "support_redundancy_max",
+            "support_candidates_examined",
+            "support_candidates_accepted",
+            "support_rejections",
+        }
+        if set(observations) != expected:
+            raise SemanticSelectionError(
+                "semantic-project-distill-v3 policy observations do not match contract"
+            )
+        if (
+            observations["exploration_strategy"]
+            != PROJECT_DISTILL_V3_EXPLORATION_STRATEGY
+            or observations["support_quality_strategy"]
+            != PROJECT_DISTILL_V3_SUPPORT_QUALITY_STRATEGY
+        ):
+            raise SemanticSelectionError(
+                "semantic-project-distill-v3 strategy is invalid"
+            )
+        relevance_min = _require_score(
+            observations["support_relevance_min"],
+            label="support_relevance_min",
+        )
+        redundancy_max = _require_score(
+            observations["support_redundancy_max"],
+            label="support_redundancy_max",
+        )
+        if (
+            abs(
+                relevance_min
+                - PROJECT_DISTILL_V3_SUPPORT_RELEVANCE_MIN
+            )
+            > 1e-8
+            or abs(
+                redundancy_max
+                - PROJECT_DISTILL_V3_SUPPORT_REDUNDANCY_MAX
+            )
+            > 1e-8
+        ):
+            raise SemanticSelectionError(
+                "semantic-project-distill-v3 support thresholds are invalid"
+            )
+
+        rank = observations["anchor_candidate_rank"]
+        anchor_examined = observations["anchor_candidates_examined"]
+        pool_size = observations["anchor_candidate_pool_size"]
+        if (
+            type(rank) is not int
+            or type(anchor_examined) is not int
+            or type(pool_size) is not int
+            or rank < 1
+            or anchor_examined != rank
+            or pool_size < rank
+            or pool_size > PROJECT_DISTILL_V3_MAX_ANCHOR_SOURCES
+        ):
+            raise SemanticSelectionError(
+                "semantic-project-distill-v3 exploration bounds are invalid"
+            )
+        prior = observations["prior_skip_reasons"]
+        if (
+            not isinstance(prior, list)
+            or len(prior) != rank - 1
+            or any(
+                not isinstance(item, str)
+                or not item
+                or len(item) > 128
+                for item in prior
+            )
+        ):
+            raise SemanticSelectionError(
+                "semantic-project-distill-v3 prior skip reasons are invalid"
+            )
+
+        support_examined = observations["support_candidates_examined"]
+        support_accepted = observations["support_candidates_accepted"]
+        if (
+            type(support_examined) is not int
+            or type(support_accepted) is not int
+            or support_examined < 0
+            or support_examined > MAX_TOP_K
+            or support_accepted < 0
+            or support_accepted > support_examined
+            or support_accepted != len(selected) - 1
+        ):
+            raise SemanticSelectionError(
+                "semantic-project-distill-v3 support counts are invalid"
+            )
+
+        rejections = observations["support_rejections"]
+        if (
+            not isinstance(rejections, list)
+            or len(rejections) != support_examined - support_accepted
+        ):
+            raise SemanticSelectionError(
+                "semantic-project-distill-v3 support rejections are invalid"
+            )
+        rejected_paths: set[str] = set()
+        selected_paths = {
+            item.source_path.casefold()
+            for item in selected
+        }
+        for rejection in rejections:
+            if not isinstance(rejection, dict) or set(rejection) != {
+                "source_path",
+                "reason",
+                "anchor_similarity",
+                "max_prior_support_similarity",
+            }:
+                raise SemanticSelectionError(
+                    "semantic-project-distill-v3 support rejection is invalid"
+                )
+            source_path = rejection["source_path"]
+            if (
+                not isinstance(source_path, str)
+                or not source_path
+                or len(source_path) > 1024
+                or source_path.casefold() in rejected_paths
+                or source_path.casefold() in selected_paths
+            ):
+                raise SemanticSelectionError(
+                    "semantic-project-distill-v3 support rejection path is invalid"
+                )
+            rejected_paths.add(source_path.casefold())
+            reason = rejection["reason"]
+            anchor_similarity = _require_score(
+                rejection["anchor_similarity"],
+                label="support rejection anchor similarity",
+            )
+            prior_similarity_raw = rejection[
+                "max_prior_support_similarity"
+            ]
+            if not -1.0 <= anchor_similarity <= 1.0:
+                raise SemanticSelectionError(
+                    "semantic-project-distill-v3 support rejection similarity is invalid"
+                )
+            if reason == "anchor_relevance_below_min":
+                if (
+                    anchor_similarity
+                    >= PROJECT_DISTILL_V3_SUPPORT_RELEVANCE_MIN
+                    or prior_similarity_raw is not None
+                ):
+                    raise SemanticSelectionError(
+                        "semantic-project-distill-v3 relevance rejection is inconsistent"
+                    )
+            elif reason == "support_redundancy_above_max":
+                if prior_similarity_raw is None:
+                    raise SemanticSelectionError(
+                        "semantic-project-distill-v3 redundancy rejection is incomplete"
+                    )
+                prior_similarity = _require_score(
+                    prior_similarity_raw,
+                    label="support rejection prior similarity",
+                )
+                if (
+                    anchor_similarity
+                    < PROJECT_DISTILL_V3_SUPPORT_RELEVANCE_MIN
+                    or not -1.0 <= prior_similarity <= 1.0
+                    or prior_similarity
+                    < PROJECT_DISTILL_V3_SUPPORT_REDUNDANCY_MAX
+                ):
+                    raise SemanticSelectionError(
+                        "semantic-project-distill-v3 redundancy rejection is inconsistent"
+                    )
+            else:
+                raise SemanticSelectionError(
+                    "semantic-project-distill-v3 support rejection reason is invalid"
+                )
+
     return SemanticSelectionRecord(
         selection_policy=policy,
         semantic_index_sha256=index_sha,
@@ -1343,6 +1641,92 @@ def _build_project_distill_v2(
     return last_record
 
 
+def _build_project_distill_v3(
+    ai_root: Path,
+    *,
+    semantic_index_sha256: str,
+    index: SemanticIndexManifest,
+    corpus: SemanticCorpusManifest,
+    candidates: Sequence[SemanticCandidate],
+    filters: RetrievalFilter,
+    max_selected: int,
+    recent_context_limit: int,
+) -> SemanticSelectionRecord:
+    project_source_count = len(
+        {
+            item.source.path.casefold()
+            for item in candidates
+            if item.source.source_kind in {"project", "project-note"}
+        }
+    )
+    if project_source_count == 0:
+        raise SemanticSelectionError(
+            "semantic-project-distill-v3 has no Project anchor"
+        )
+    if project_source_count > PROJECT_DISTILL_V3_MAX_ANCHOR_SOURCES:
+        raise SemanticSelectionError(
+            "semantic-project-distill-v3 anchor source pool exceeds supported bound"
+        )
+
+    anchor_candidates = _ordered_project_anchors(candidates)
+    if not anchor_candidates:
+        raise SemanticSelectionError(
+            "semantic-project-distill-v3 has no Project anchor"
+        )
+
+    prior_skip_reasons: list[str] = []
+    last_record: SemanticSelectionRecord | None = None
+
+    for rank, anchor in enumerate(anchor_candidates, 1):
+        anchors = (anchor,)
+        ranked_all = _rank_for_anchors(
+            candidates,
+            anchors,
+            policy="semantic-project-distill-v3",
+        )
+        ranked, support_observations = _project_distill_v3_support_rows(
+            ranked_all,
+            anchor=anchor,
+            candidates=candidates,
+            max_selected=max_selected,
+        )
+        observations: dict[str, object] = {
+            "retrieval_profile": _retrieval_profile(
+                "semantic-project-distill-v3"
+            ),
+            "exploration_strategy": (
+                PROJECT_DISTILL_V3_EXPLORATION_STRATEGY
+            ),
+            "anchor_candidate_rank": rank,
+            "anchor_candidates_examined": rank,
+            "anchor_candidate_pool_size": len(anchor_candidates),
+            "prior_skip_reasons": list(prior_skip_reasons),
+            **support_observations,
+        }
+        record = _make_record(
+            ai_root,
+            semantic_index_sha256=semantic_index_sha256,
+            index=index,
+            corpus=corpus,
+            candidates=candidates,
+            policy="semantic-project-distill-v3",
+            filters=filters,
+            anchors=anchors,
+            ranked=ranked,
+            policy_observations=observations,
+            recent_context_limit=recent_context_limit,
+        )
+        last_record = record
+        if record.novelty.decision == "selected":
+            return record
+        prior_skip_reasons.append(
+            record.novelty.skip_reason or "unspecified_skip"
+        )
+
+    assert last_record is not None
+    return last_record
+
+
 def build_semantic_selection(
     ai_root: Path,
     vault_root: Path,
@@ -1397,6 +1781,17 @@ def build_semantic_selection(
         preferred = ("project-note", "daily", "idea", "knowledge")
     elif policy == "semantic-project-distill-v2":
         return _build_project_distill_v2(
+            ai_root,
+            semantic_index_sha256=index_sha,
+            index=index,
+            corpus=corpus,
+            candidates=candidates,
+            filters=filters,
+            max_selected=max_selected,
+            recent_context_limit=recent_context_limit,
+        )
+    elif policy == "semantic-project-distill-v3":
+        return _build_project_distill_v3(
             ai_root,
             semantic_index_sha256=index_sha,
             index=index,
