@@ -215,7 +215,7 @@ Only findings and Consistency conflicts from the winning severity are retained.
 `not_conflict` proposals are removed, unknown proposals produce `unknown` unless a
 contradiction exists, and contradiction dominates.
 Duplicate findings and duplicate conflict evidence are removed; findings are
-bounded to four per dimension (16 in the persisted assessment), and conflicts
+bounded to four per dimension (20 in the persisted assessment), and conflicts
 to four. Zero candidates produce `redundancy=none` and `consistency=pass`.
 
 If Evaluation Context has zero candidates, aggregation yields:
@@ -282,10 +282,18 @@ Raw prompts, raw model responses, and partial pairwise outputs are not persisted
 
 ```text
 proceed
-  groundedness=pass AND redundancy=none AND consistency=pass
+  groundedness=pass
+  AND knowledge_quality=pass
+  AND epistemic_status=pass
+  AND redundancy=none
+  AND consistency=pass
 
 do_not_proceed
-  groundedness=concern OR redundancy=likely OR consistency=concern
+  groundedness=concern
+  OR knowledge_quality=concern
+  OR epistemic_status=concern
+  OR redundancy=likely
+  OR consistency=concern
 
 manual_review
   otherwise
