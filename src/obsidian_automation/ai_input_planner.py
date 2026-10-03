@@ -76,6 +76,10 @@ from .human_projection import (
     emit_semantic_objective_context_projection,
 )
 from .production_io import ProductionIOError, mirror_read_lock
+from .semantic_refresh import (
+    SemanticRefreshError,
+    resolve_active_semantic_index_sha,
+)
 from .semantic_objective import (
     DEEP_KNOWLEDGE,
     PROMPT_VERSION as SEMANTIC_OBJECTIVE_PROMPT_VERSION,
@@ -1439,13 +1443,22 @@ def plan_once(
             f"input_mode must be one of {sorted(INPUT_MODES)}"
         )
     if input_mode == INPUT_MODE_SEMANTIC_DEEP:
+        if semantic_index_sha256 == "active":
+            try:
+                semantic_index_sha256 = resolve_active_semantic_index_sha(
+                    ai_root
+                )
+            except SemanticRefreshError as exc:
+                raise AIInputPlannerError(
+                    f"active semantic index binding is unavailable: {exc}"
+                ) from exc
         if (
             not isinstance(semantic_index_sha256, str)
             or len(semantic_index_sha256) != 64
             or any(ch not in "0123456789abcdef" for ch in semantic_index_sha256)
         ):
             raise AIInputPlannerError(
-                "semantic-deep-knowledge mode requires exact semantic_index_sha256"
+                "semantic-deep-knowledge mode requires exact or active semantic_index_sha256"
             )
         if semantic_selection_policy not in SEMANTIC_SELECTION_POLICIES:
             raise AIInputPlannerError(
