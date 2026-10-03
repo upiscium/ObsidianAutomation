@@ -1463,6 +1463,92 @@ def _build_project_distill_v2(
     return last_record
 
 
+def _build_project_distill_v3(
+    ai_root: Path,
+    *,
+    semantic_index_sha256: str,
+    index: SemanticIndexManifest,
+    corpus: SemanticCorpusManifest,
+    candidates: Sequence[SemanticCandidate],
+    filters: RetrievalFilter,
+    max_selected: int,
+    recent_context_limit: int,
+) -> SemanticSelectionRecord:
+    project_source_count = len(
+        {
+            item.source.path.casefold()
+            for item in candidates
+            if item.source.source_kind in {"project", "project-note"}
+        }
+    )
+    if project_source_count == 0:
+        raise SemanticSelectionError(
+            "semantic-project-distill-v3 has no Project anchor"
+        )
+    if project_source_count > PROJECT_DISTILL_V3_MAX_ANCHOR_SOURCES:
+        raise SemanticSelectionError(
+            "semantic-project-distill-v3 anchor source pool exceeds supported bound"
+        )
+
+    anchor_candidates = _ordered_project_anchors(candidates)
+    if not anchor_candidates:
+        raise SemanticSelectionError(
+            "semantic-project-distill-v3 has no Project anchor"
+        )
+
+    prior_skip_reasons: list[str] = []
+    last_record: SemanticSelectionRecord | None = None
+
+    for rank, anchor in enumerate(anchor_candidates, 1):
+        anchors = (anchor,)
+        ranked_all = _rank_for_anchors(
+            candidates,
+            anchors,
+            policy="semantic-project-distill-v3",
+        )
+        ranked, support_observations = _project_distill_v3_support_rows(
+            ranked_all,
+            anchor=anchor,
+            candidates=candidates,
+            max_selected=max_selected,
+        )
+        observations: dict[str, object] = {
+            "retrieval_profile": _retrieval_profile(
+                "semantic-project-distill-v3"
+            ),
+            "exploration_strategy": (
+                PROJECT_DISTILL_V3_EXPLORATION_STRATEGY
+            ),
+            "anchor_candidate_rank": rank,
+            "anchor_candidates_examined": rank,
+            "anchor_candidate_pool_size": len(anchor_candidates),
+            "prior_skip_reasons": list(prior_skip_reasons),
+            **support_observations,
+        }
+        record = _make_record(
+            ai_root,
+            semantic_index_sha256=semantic_index_sha256,
+            index=index,
+            corpus=corpus,
+            candidates=candidates,
+            policy="semantic-project-distill-v3",
+            filters=filters,
+            anchors=anchors,
+            ranked=ranked,
+            policy_observations=observations,
+            recent_context_limit=recent_context_limit,
+        )
+        last_record = record
+        if record.novelty.decision == "selected":
+            return record
+        prior_skip_reasons.append(
+            record.novelty.skip_reason or "unspecified_skip"
+        )
+
+    assert last_record is not None
+    return last_record
+
+
 def build_semantic_selection(
     ai_root: Path,
     vault_root: Path,
@@ -1517,6 +1603,17 @@ def build_semantic_selection(
         preferred = ("project-note", "daily", "idea", "knowledge")
     elif policy == "semantic-project-distill-v2":
         return _build_project_distill_v2(
+            ai_root,
+            semantic_index_sha256=index_sha,
+            index=index,
+            corpus=corpus,
+            candidates=candidates,
+            filters=filters,
+            max_selected=max_selected,
+            recent_context_limit=recent_context_limit,
+        )
+    elif policy == "semantic-project-distill-v3":
+        return _build_project_distill_v3(
             ai_root,
             semantic_index_sha256=index_sha,
             index=index,
