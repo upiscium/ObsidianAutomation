@@ -665,6 +665,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             }
     except (
+        ArtifactLifecycleError,
         OSError,
         ProductionIOError,
         SemanticCorpusError,
