@@ -10,6 +10,7 @@ from obsidian_automation.semantic_corpus import (
     store_semantic_corpus_manifest,
 )
 from obsidian_automation.semantic_index import (
+    SemanticIndexError,
     embed_semantic_plan_incremental_with_ollama,
     embed_semantic_plan_with_ollama,
     finalize_semantic_index,
@@ -282,7 +283,7 @@ def test_mirror_change_after_embedding_leaves_previous_binding_active(
         encoding="utf-8",
     )
 
-    with pytest.raises(Exception, match="stale"):
+    with pytest.raises(SemanticIndexError, match="stale"):
         finalize_refresh(state, vault)
 
     assert resolve_active_semantic_index_sha(state) == index_sha
