@@ -23,7 +23,11 @@ TIMERS = (
     "obsidian-github-sync.timer", "obsidian-core-promotion.timer",
 )
 SERVICES = (
-    "obsidian-ai-vault-pull.service", "obsidian-ai-input-planner.service",
+    "obsidian-ai-vault-pull.service",
+    "obsidian-semantic-index-refresh-prepare.service",
+    "obsidian-semantic-index-refresh-embed.service",
+    "obsidian-semantic-index-refresh-finalize.service",
+    "obsidian-ai-input-planner.service",
     "obsidian-ai-human-projection-sync.service",
     "obsidian-ai-human-projection-cleanup-sync.service",
     "obsidian-ai-review-intake.service",
