@@ -1340,18 +1340,38 @@ def aggregate_evaluator_outputs(
     groundedness: DimensionEvaluatorOutput,
     redundancy_pairs: Sequence[CandidateEvaluatorOutput],
     consistency_pairs: Sequence[CandidateEvaluatorOutput],
+    knowledge_quality: DimensionEvaluatorOutput | None = None,
+    epistemic_status: DimensionEvaluatorOutput | None = None,
 ) -> EvaluatorOutput:
-    if groundedness.dimension != "groundedness":
-        raise ArtifactLifecycleError("groundedness evaluator output is invalid")
-    if groundedness.assessment not in _ASSESSMENT_VALUES["groundedness"]:
-        raise ArtifactLifecycleError("groundedness evaluator assessment is invalid")
-    _validated_dimension_conflicts(
-        "groundedness",
-        groundedness.assessment,
-        groundedness.conflicts,
-        require_bound_path=False,
-        require_concern_evidence=False,
-    )
+    generation_outputs = {
+        "groundedness": groundedness,
+        "knowledge_quality": (
+            knowledge_quality
+            if knowledge_quality is not None
+            else DimensionEvaluatorOutput("knowledge_quality", "pass", ())
+        ),
+        "epistemic_status": (
+            epistemic_status
+            if epistemic_status is not None
+            else DimensionEvaluatorOutput("epistemic_status", "pass", ())
+        ),
+    }
+    for dimension, output in generation_outputs.items():
+        if output.dimension != dimension:
+            raise ArtifactLifecycleError(
+                f"{dimension} evaluator output is invalid"
+            )
+        if output.assessment not in _ASSESSMENT_VALUES[dimension]:
+            raise ArtifactLifecycleError(
+                f"{dimension} evaluator assessment is invalid"
+            )
+        _validated_dimension_conflicts(
+            dimension,
+            output.assessment,
+            output.conflicts,
+            require_bound_path=False,
+            require_concern_evidence=False,
+        )
 
     redundancy_paths = tuple(item.candidate_path for item in redundancy_pairs)
     consistency_paths = tuple(item.candidate_path for item in consistency_pairs)
@@ -1360,12 +1380,22 @@ def aggregate_evaluator_outputs(
 
     redundancy = aggregate_candidate_outputs("redundancy", redundancy_pairs)
     consistency = aggregate_candidate_outputs("consistency", consistency_pairs)
-    findings = groundedness.findings + redundancy.findings + consistency.findings
+    findings = (
+        groundedness.findings
+        + generation_outputs["knowledge_quality"].findings
+        + generation_outputs["epistemic_status"].findings
+        + redundancy.findings
+        + consistency.findings
+    )
     if len(set(findings)) != len(findings):
-        raise ArtifactLifecycleError("evaluator aggregated findings must not contain duplicates")
+        raise ArtifactLifecycleError(
+            "evaluator aggregated findings must not contain duplicates"
+        )
 
     return EvaluatorOutput(
         groundedness=groundedness.assessment,
+        knowledge_quality=generation_outputs["knowledge_quality"].assessment,
+        epistemic_status=generation_outputs["epistemic_status"].assessment,
         redundancy=redundancy.assessment,
         consistency=consistency.assessment,
         findings=findings,
@@ -1376,6 +1406,8 @@ def aggregate_evaluator_outputs(
 def _validated_evaluator_output(output: EvaluatorOutput) -> EvaluatorOutput:
     values = {
         "groundedness": output.groundedness,
+        "knowledge_quality": output.knowledge_quality,
+        "epistemic_status": output.epistemic_status,
         "redundancy": output.redundancy,
         "consistency": output.consistency,
     }
@@ -1408,6 +1440,8 @@ def _validated_evaluator_output(output: EvaluatorOutput) -> EvaluatorOutput:
     )
     return EvaluatorOutput(
         groundedness=output.groundedness,
+        knowledge_quality=output.knowledge_quality,
+        epistemic_status=output.epistemic_status,
         redundancy=output.redundancy,
         consistency=output.consistency,
         findings=output.findings,
@@ -1419,12 +1453,16 @@ def recommendation_for(output: EvaluatorOutput) -> str:
     normalized = _validated_evaluator_output(output)
     if (
         normalized.groundedness == "pass"
+        and normalized.knowledge_quality == "pass"
+        and normalized.epistemic_status == "pass"
         and normalized.redundancy == "none"
         and normalized.consistency == "pass"
     ):
         return "proceed"
     if (
         normalized.groundedness == "concern"
+        or normalized.knowledge_quality == "concern"
+        or normalized.epistemic_status == "concern"
         or normalized.redundancy == "likely"
         or normalized.consistency == "concern"
     ):
@@ -1441,6 +1479,8 @@ def to_evaluation_assessment(output: EvaluatorOutput) -> EvaluationAssessment:
         recommendation=recommendation_for(normalized),
         findings=normalized.findings,
         conflicts=normalized.conflicts,
+        knowledge_quality=normalized.knowledge_quality,
+        epistemic_status=normalized.epistemic_status,
     )
 
 
