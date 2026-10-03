@@ -99,6 +99,8 @@ DIRECTORIES: tuple[tuple[str, str, str, int], ...] = (
     ("/var/lib/obsidian-ai/state/04-Index/semantic-embedding-results", "root", "root", 0o700),
     ("/var/lib/obsidian-ai/state/04-Index/semantic-embedding-result-sets", "root", "root", 0o700),
     ("/var/lib/obsidian-ai/state/04-Index/semantic-index", "root", "root", 0o700),
+    ("/var/lib/obsidian-ai/state/04-Index/semantic-refresh-reader", "root", "root", 0o700),
+    ("/var/lib/obsidian-ai/state/04-Index/semantic-refresh-embedder", "root", "root", 0o700),
     ("/var/lib/obsidian-ai/state/05-Context", "root", "root", 0o700),
     ("/var/lib/obsidian-ai/state/10-Validation", "root", "root", 0o700),
     ("/var/lib/obsidian-ai/state/12-Evaluation-Request", "root", "root", 0o700),
@@ -218,6 +220,14 @@ AI_ACLS: dict[str, tuple[str, ...]] = {
     ),
     "/var/lib/obsidian-ai/state/04-Index/semantic-index": (
         "u:obsidian-ai-reader:rwx",
+    ),
+    "/var/lib/obsidian-ai/state/04-Index/semantic-refresh-reader": (
+        "u:obsidian-ai-reader:rwx",
+        "u:obsidian-ai-embedder:r-x",
+    ),
+    "/var/lib/obsidian-ai/state/04-Index/semantic-refresh-embedder": (
+        "u:obsidian-ai-reader:r-x",
+        "u:obsidian-ai-embedder:rwx",
     ),
     "/var/lib/obsidian-ai/state/05-Context": (
         "u:obsidian-ai-reader:rwx",
@@ -618,6 +628,46 @@ def _apply_ai_acls(runner: Runner) -> None:
         path="/var/lib/obsidian-ai/state/04-Index/semantic-corpus",
         expected=False,
         label="embedder cannot read semantic corpus manifest",
+    )
+    _require_access(
+        runner,
+        user="obsidian-ai-embedder",
+        flag="-r",
+        path="/var/lib/obsidian-ai/state/04-Index/semantic-refresh-reader",
+        expected=True,
+        label="embedder reads Reader semantic refresh control",
+    )
+    _require_access(
+        runner,
+        user="obsidian-ai-embedder",
+        flag="-w",
+        path="/var/lib/obsidian-ai/state/04-Index/semantic-refresh-reader",
+        expected=False,
+        label="embedder cannot write Reader semantic refresh control",
+    )
+    _require_access(
+        runner,
+        user="obsidian-ai-embedder",
+        flag="-w",
+        path="/var/lib/obsidian-ai/state/04-Index/semantic-refresh-embedder",
+        expected=True,
+        label="embedder writes own semantic refresh result",
+    )
+    _require_access(
+        runner,
+        user="obsidian-ai-reader",
+        flag="-r",
+        path="/var/lib/obsidian-ai/state/04-Index/semantic-refresh-embedder",
+        expected=True,
+        label="reader reads Embedder semantic refresh result",
+    )
+    _require_access(
+        runner,
+        user="obsidian-ai-reader",
+        flag="-w",
+        path="/var/lib/obsidian-ai/state/04-Index/semantic-refresh-embedder",
+        expected=False,
+        label="reader cannot write Embedder semantic refresh result",
     )
     _require_access(
         runner,

@@ -113,6 +113,18 @@ def test_ai_acl_matrix_keeps_semantic_authorities_distinct() -> None:
     assert "u:obsidian-ai-embedder:rwx" in acls[
         "/var/lib/obsidian-ai/state/04-Index/semantic-embedding-results"
     ]
+    assert acls[
+        "/var/lib/obsidian-ai/state/04-Index/semantic-refresh-reader"
+    ] == (
+        "u:obsidian-ai-reader:rwx",
+        "u:obsidian-ai-embedder:r-x",
+    )
+    assert acls[
+        "/var/lib/obsidian-ai/state/04-Index/semantic-refresh-embedder"
+    ] == (
+        "u:obsidian-ai-reader:r-x",
+        "u:obsidian-ai-embedder:rwx",
+    )
     assert not any(
         entry.startswith("u:obsidian-ai-embedder:")
         for entry in acls["/var/lib/obsidian-ai/state/04-Index/semantic-corpus"]

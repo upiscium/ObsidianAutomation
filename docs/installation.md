@@ -148,16 +148,34 @@ Do not store these files in this repository. Model names and exact model revisio
 Semantic Embedding Index v1 uses a separate `obsidian-ai-embedder` Unix identity
 instead of granting provider access to Reader.
 
-The initial rollout is operator-driven and uses Ollama's native embedding API.
-No recurring semantic-index service or timer is installed by this stage.
+The initial index remains operator-driven and uses Ollama's native embedding API.
 
 Reader pins an exact installed model identifier and digest into the immutable
 embedding plan. Embedder re-resolves that identity before inference and refuses a
 digest mismatch.
 
-For a local Ollama endpoint, no provider credential file is required. Run the
-prepare/embed/finalize flow described in
-[Semantic Embedding Index v1](semantic-embedding-index-v1.md).
+After one reviewed finalized index exists, automatic incremental refresh may be
+opted in with:
+
+```text
+/etc/obsidian-ai/semantic-index-refresh.env
+```
+
+Typical local configuration:
+
+```text
+SEMANTIC_EMBEDDING_BASE_URL=http://127.0.0.1:11434
+```
+
+The refresh endpoint cannot override model identity; refresh inherits the exact
+model identifier and digest from the active finalized index. The installed
+refresh units remain inert until the env file exists and a successful Vault pull
+triggers the chain.
+
+For the initial prepare/embed/finalize flow see
+[Semantic Embedding Index v1](semantic-embedding-index-v1.md). For activation
+and recurring refresh see
+[Automatic Semantic Index refresh v1](semantic-index-auto-refresh-v1.md).
 
 The Embedder has no Vault access. Do not work around an ACL failure by granting
 it read access to `/var/lib/obsidian-ai/vault`; the bounded embedding request is

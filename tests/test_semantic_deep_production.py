@@ -40,6 +40,7 @@ from obsidian_automation.semantic_corpus import (
     build_semantic_corpus,
     store_semantic_corpus_manifest,
 )
+from obsidian_automation.semantic_refresh import activate_semantic_index
 from obsidian_automation.semantic_retrieval import RetrievalFilter
 from obsidian_automation.semantic_index import (
     EmbeddingResult,
@@ -396,6 +397,32 @@ def test_semantic_deep_mode_reaches_human_review_through_existing_chain(
         "awaiting_human_review"
     )
 
+
+
+def test_semantic_deep_mode_resolves_active_index_binding(
+    tmp_path: Path,
+) -> None:
+    vault, state, index_sha = _semantic_index(tmp_path)
+    activate_semantic_index(
+        state,
+        vault,
+        semantic_index_sha256=index_sha,
+    )
+
+    planned = plan_once(
+        state,
+        vault,
+        deployed_revision=REVISION,
+        input_mode=INPUT_MODE_SEMANTIC_DEEP,
+        semantic_index_sha256="active",
+        semantic_selection_policy="semantic-project-distill-v0",
+        generator_model=GEN_MODEL,
+        evaluator_model=EVAL_MODEL,
+        now=datetime(2026, 9, 29, 4, 0, tzinfo=timezone.utc),
+    )
+
+    assert planned["status"] == "submitted"
+    assert planned["semantic_index_sha256"] == index_sha
 
 
 def test_semantic_deep_provider_no_candidate_is_deterministic_reject(

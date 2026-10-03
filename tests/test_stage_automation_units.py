@@ -105,7 +105,7 @@ def _fixture_source(tmp_path: Path) -> Path:
 
 def test_managed_unit_set_is_complete_and_unique() -> None:
     names = set(stage.SOURCE_LAYOUT)
-    assert len(names) == 24
+    assert len(names) == 27
     assert names == set(
         (*stage.AI_UNITS, *stage.GITHUB_UNITS, *stage.PROMOTION_UNITS)
     )
@@ -157,7 +157,7 @@ def test_stage_installs_units_and_leaves_host_inert(tmp_path: Path) -> None:
     )
 
     assert result["result"] == "passed"
-    assert result["installed_unit_count"] == 24
+    assert result["installed_unit_count"] == 27
     assert result["timers_enabled"] is False
     assert result["timers_active"] is False
     assert result["services_active"] is False
@@ -279,6 +279,54 @@ def test_real_timer_sources_rearm_from_timer_activation() -> None:
         text = source.read_text(encoding="utf-8")
         assert "OnActiveSec=" in text, timer
         assert "OnBootSec=" not in text, timer
+
+
+def test_vault_pull_success_chains_opt_in_semantic_refresh_units() -> None:
+    vault_pull = Path(
+        stage.SOURCE_LAYOUT["obsidian-ai-vault-pull.service"]
+    ).read_text(encoding="utf-8")
+    prepare = Path(
+        stage.SOURCE_LAYOUT[
+            "obsidian-semantic-index-refresh-prepare.service"
+        ]
+    ).read_text(encoding="utf-8")
+    embed = Path(
+        stage.SOURCE_LAYOUT[
+            "obsidian-semantic-index-refresh-embed.service"
+        ]
+    ).read_text(encoding="utf-8")
+    finalize = Path(
+        stage.SOURCE_LAYOUT[
+            "obsidian-semantic-index-refresh-finalize.service"
+        ]
+    ).read_text(encoding="utf-8")
+
+    assert (
+        "OnSuccess=obsidian-semantic-index-refresh-prepare.service"
+        in vault_pull
+    )
+    assert (
+        "ConditionPathExists=/etc/obsidian-ai/semantic-index-refresh.env"
+        in prepare
+    )
+    assert "User=obsidian-ai-reader" in prepare
+    assert (
+        "OnSuccess=obsidian-semantic-index-refresh-embed.service"
+        in prepare
+    )
+
+    assert "User=obsidian-ai-embedder" in embed
+    assert (
+        "EnvironmentFile=/etc/obsidian-ai/semantic-index-refresh.env"
+        in embed
+    )
+    assert (
+        "OnSuccess=obsidian-semantic-index-refresh-finalize.service"
+        in embed
+    )
+
+    assert "User=obsidian-ai-reader" in finalize
+    assert "PrivateNetwork=yes" in finalize
 
 
 def test_real_unit_sources_render_to_consolidated_paths() -> None:
