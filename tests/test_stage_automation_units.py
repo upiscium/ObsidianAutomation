@@ -281,6 +281,54 @@ def test_real_timer_sources_rearm_from_timer_activation() -> None:
         assert "OnBootSec=" not in text, timer
 
 
+def test_vault_pull_success_chains_opt_in_semantic_refresh_units() -> None:
+    vault_pull = Path(
+        stage.SOURCE_LAYOUT["obsidian-ai-vault-pull.service"]
+    ).read_text(encoding="utf-8")
+    prepare = Path(
+        stage.SOURCE_LAYOUT[
+            "obsidian-semantic-index-refresh-prepare.service"
+        ]
+    ).read_text(encoding="utf-8")
+    embed = Path(
+        stage.SOURCE_LAYOUT[
+            "obsidian-semantic-index-refresh-embed.service"
+        ]
+    ).read_text(encoding="utf-8")
+    finalize = Path(
+        stage.SOURCE_LAYOUT[
+            "obsidian-semantic-index-refresh-finalize.service"
+        ]
+    ).read_text(encoding="utf-8")
+
+    assert (
+        "OnSuccess=obsidian-semantic-index-refresh-prepare.service"
+        in vault_pull
+    )
+    assert (
+        "ConditionPathExists=/etc/obsidian-ai/semantic-index-refresh.env"
+        in prepare
+    )
+    assert "User=obsidian-ai-reader" in prepare
+    assert (
+        "OnSuccess=obsidian-semantic-index-refresh-embed.service"
+        in prepare
+    )
+
+    assert "User=obsidian-ai-embedder" in embed
+    assert (
+        "EnvironmentFile=/etc/obsidian-ai/semantic-index-refresh.env"
+        in embed
+    )
+    assert (
+        "OnSuccess=obsidian-semantic-index-refresh-finalize.service"
+        in embed
+    )
+
+    assert "User=obsidian-ai-reader" in finalize
+    assert "PrivateNetwork=yes" in finalize
+
+
 def test_real_unit_sources_render_to_consolidated_paths() -> None:
     for unit, relative in stage.SOURCE_LAYOUT.items():
         source = Path(relative)
