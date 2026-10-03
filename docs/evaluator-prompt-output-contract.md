@@ -79,18 +79,21 @@ knowledge-note-evaluator-output-v7
 The current prompt/input contract is:
 
 ```text
-knowledge-note-evaluator-v8
+knowledge-note-evaluator-v9
 ```
 
 The current prompt-template SHA-256 is:
 
 ```text
-341d88c600e220361ed766118c3f2e362d8f5489ecc8094c330da60fd3ffa6b1
+fd707fda8186aeb09422bd3f0241b6bc1c136a07e7e1ad3acd0967f29b01e7d1
 ```
 
 Historical readable prompt identities remain exact version/hash pairs:
 
 ```text
+knowledge-note-evaluator-v8
+341d88c600e220361ed766118c3f2e362d8f5489ecc8094c330da60fd3ffa6b1
+
 knowledge-note-evaluator-v7
 1e3b5b820b9569dc99230abd3c352e7223c1b84a3b93b66667f4a7fc1da9dbac
 
@@ -107,7 +110,7 @@ knowledge-note-evaluator-v3
 bf6265294a4b346f12d1951f594760c80221380ccee9993c6ab866b6b1eca937
 ```
 
-Recipe parsing accepts the historical v3, v4, v5, v6, and v7 pairs for readability and audit, but current runtime preflight requires the v8 pair and blocks historical recipes before provider contact. Unknown prompt identities and cross-paired version/hash values are rejected. The dimension, candidate identity, and recommendation are fixed outside the model; the model cannot return `candidate_path` or `recommendation`.
+Recipe parsing accepts the historical v3, v4, v5, v6, v7, and v8 pairs for readability and audit, but current runtime preflight requires the v9 pair and blocks historical recipes before provider contact. Unknown prompt identities and cross-paired version/hash values are rejected. The dimension, candidate identity, and recommendation are fixed outside the model; the model cannot return `candidate_path` or `recommendation`.
 
 ## Groundedness pass
 

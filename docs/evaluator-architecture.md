@@ -98,8 +98,8 @@ The current prompt/output identities are:
 
 ```text
 output: knowledge-note-evaluator-output-v7
-prompt: knowledge-note-evaluator-v8
-SHA:    341d88c600e220361ed766118c3f2e362d8f5489ecc8094c330da60fd3ffa6b1
+prompt: knowledge-note-evaluator-v9
+SHA:    fd707fda8186aeb09422bd3f0241b6bc1c136a07e7e1ad3acd0967f29b01e7d1
 ```
 
 The historical prompts `knowledge-note-evaluator-v3` with SHA
@@ -112,6 +112,8 @@ and `knowledge-note-evaluator-v6` with SHA
 `45439ec5f3ae0d9dd31fa5af37c45c572b3e520ac87548f0a739acf1ee5f9041`,
 plus `knowledge-note-evaluator-v7` with SHA
 `1e3b5b820b9569dc99230abd3c352e7223c1b84a3b93b66667f4a7fc1da9dbac`,
+and `knowledge-note-evaluator-v8` with SHA
+`341d88c600e220361ed766118c3f2e362d8f5489ecc8094c330da60fd3ffa6b1`,
 remain readable in recipes for audit. Current runtime preflight blocks historical
 recipes before provider contact. Unknown and cross-paired prompt version/hash
 identities are rejected.

@@ -346,7 +346,8 @@
             "knowledge-note-evaluator-v5",
             "knowledge-note-evaluator-v6",
             "knowledge-note-evaluator-v7",
-            "knowledge-note-evaluator-v8"
+            "knowledge-note-evaluator-v8",
+            "knowledge-note-evaluator-v9"
           ]
         },
         "prompt_template_sha256": {
@@ -850,6 +851,87 @@
             },
             "prompt_template_sha256": {
               "const": "341d88c600e220361ed766118c3f2e362d8f5489ecc8094c330da60fd3ffa6b1"
+            },
+            "provider": {
+              "const": "ollama"
+            },
+            "model_revision": {
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "model_config": {
+              "additionalProperties": false,
+              "required": [
+                "adapter_version",
+                "think",
+                "strategy",
+                "options"
+              ],
+              "properties": {
+                "adapter_version": {
+                  "const": "ollama-evaluator-chat-structured-v6"
+                },
+                "think": {
+                  "enum": [
+                    false,
+                    "low"
+                  ]
+                },
+                "strategy": {
+                  "const": "groundedness-quality-epistemic-plus-pairwise-candidates-with-independent-verifier-v3"
+                },
+                "options": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "prompt_template_version": {
+              "const": "knowledge-note-evaluator-v9"
+            },
+            "prompt_template_sha256": {
+              "const": "fd707fda8186aeb09422bd3f0241b6bc1c136a07e7e1ad3acd0967f29b01e7d1"
+            },
+            "provider": {
+              "const": "openai-compatible"
+            },
+            "model_revision": {
+              "pattern": "^identifier:.{1,500}$"
+            },
+            "model_config": {
+              "additionalProperties": false,
+              "required": [
+                "adapter_version",
+                "identity_binding",
+                "strategy",
+                "options"
+              ],
+              "properties": {
+                "adapter_version": {
+                  "const": "openai-evaluator-chat-completions-json-schema-v5"
+                },
+                "identity_binding": {
+                  "const": "identifier-only"
+                },
+                "strategy": {
+                  "const": "groundedness-quality-epistemic-plus-pairwise-candidates-with-independent-verifier-v3"
+                },
+                "options": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "prompt_template_version": {
+              "const": "knowledge-note-evaluator-v9"
+            },
+            "prompt_template_sha256": {
+              "const": "fd707fda8186aeb09422bd3f0241b6bc1c136a07e7e1ad3acd0967f29b01e7d1"
             },
             "provider": {
               "const": "ollama"
