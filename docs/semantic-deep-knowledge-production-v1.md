@@ -90,15 +90,10 @@ The existing `knowledge-pre-review-v0` orchestration state machine is retained.
 A deep recipe is identified by exact prompt identity:
 
 ```text
-deep-knowledge-generator-v5
+deep-knowledge-generator-v6
 ```
 
-v5 retains the v4 provider contract: the deep-Knowledge JSON Schema exposes
-only the normal Knowledge candidate shape after the Reader evidence gate admits
-generation. v5 additionally makes reusable synthesis explicit. Project-local
-structure such as RQ/H numbering, TODOs, review comments, status wording,
-filenames and section organization is treated as evidence context rather than
-the default output structure.
+v6 retains the v4 Knowledge-only provider contract and v5 reusable-synthesis objective, then adds epistemic-status preservation. Research questions, hypotheses, predictions, proposed evaluations, assumptions, limitations and open questions must remain distinct from observed results or established relationships. Causal/result wording and titles may be used only when selected evidence reports that relationship.
 
 Generator should identify the durable principle, mechanism, methodological
 pattern, decision rule, constraint or failure mode supported by the selected
