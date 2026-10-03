@@ -356,13 +356,16 @@ conservative-five-v0
 
 ```text
 proceed
-  groundedness = pass
-  redundancy   = none
-  consistency  = pass
-
+  groundedness      = pass
+  knowledge_quality = pass
+  epistemic_status  = pass
+  redundancy        = none
+  consistency       = pass
 
 do_not_proceed
   groundedness = concern
+  OR knowledge_quality = concern
+  OR epistemic_status = concern
   OR redundancy = likely
   OR consistency = concern
 
@@ -376,12 +379,13 @@ Recommendation remains advisory and is not Human approval or execution authority
 
 The current prompt-template SHA binds:
 
-- `knowledge-note-evaluator-v7`;
-- output contract `knowledge-note-evaluator-output-v6`;
-- pairwise strategy identifier;
+- `knowledge-note-evaluator-v8`;
+- output contract `knowledge-note-evaluator-output-v7`;
+- five-dimension strategy identifier;
 - all dimension-specific system prompts;
 - all JSON Schemas;
-- payload version 7;
+- payload version 8;
+- the Groundedness / Knowledge Quality / Epistemic Status generation-input pass order;
 - the Consistency proposer/verifier pass order and verdict aggregation;
 - deterministic severity order;
 - bounded finding and conflict aggregation policy;
