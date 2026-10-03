@@ -40,6 +40,7 @@ from obsidian_automation.semantic_selection import (
     POLICIES,
     SemanticSelectionError,
     _context_centroid,
+    _project_distill_v3_support_rows,
     build_semantic_selection,
     load_semantic_selection,
     observe_semantic_selection,
@@ -408,7 +409,9 @@ def test_all_initial_policies_are_deterministic_and_auditable(
     assert first.corpus_manifest_sha256 == index.corpus_manifest_sha256
     assert first.retrieval_mode == "hybrid"
     assert 1 <= len(first.anchors) <= 2
-    assert 2 <= len(first.selected) <= 8
+    assert 1 <= len(first.selected) <= 8
+    if first.novelty.decision == "selected":
+        assert len(first.selected) >= 2
     assert {item.source_path for item in first.anchors}.issubset(
         {item.source_path for item in first.selected}
     )
@@ -446,6 +449,13 @@ def test_project_distill_versions_pin_retrieval_semantics(
         policy="semantic-project-distill-v2",
         recent_context_limit=0,
     )
+    v3 = build_semantic_selection(
+        state,
+        vault,
+        semantic_index_sha256=index_sha,
+        policy="semantic-project-distill-v3",
+        recent_context_limit=0,
+    )
 
     assert v0.lexical_weight == pytest.approx(0.60)
     assert "retrieval_profile" not in v0.policy_observations
@@ -472,8 +482,30 @@ def test_project_distill_versions_pin_retrieval_semantics(
         == v2.policy_observations["anchor_candidate_rank"] - 1
     )
 
+    assert v3.lexical_weight == pytest.approx(0.15)
+    assert v3.policy_observations["retrieval_profile"] == (
+        "semantic-retrieval-v1"
+    )
+    assert v3.policy_observations["exploration_strategy"] == (
+        "first-novel-project-source-with-support-quality-v1"
+    )
+    assert v3.policy_observations["support_quality_strategy"] == (
+        "anchor-relevance-and-incremental-diversity-v1"
+    )
+    assert v3.policy_observations["support_relevance_min"] == pytest.approx(
+        0.70
+    )
+    assert v3.policy_observations["support_redundancy_max"] == pytest.approx(
+        0.88
+    )
+    assert (
+        v3.policy_observations["support_candidates_accepted"]
+        == len(v3.selected) - 1
+    )
+
     assert v0.source_kind_weights == v1.source_kind_weights
     assert v1.source_kind_weights == v2.source_kind_weights
+    assert v2.source_kind_weights == v3.source_kind_weights
 
 
 def test_structural_only_project_note_cannot_enter_project_distill_cluster(
