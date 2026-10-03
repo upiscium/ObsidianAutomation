@@ -248,19 +248,27 @@ Automatic planning is enabled by creating:
 The service itself defaults to `AI_INPUT_MODE=legacy`. Deploying a release does
 not enable semantic production automatically.
 
-For controlled semantic deep-Knowledge rollout, add:
+For controlled semantic deep-Knowledge canaries, an exact reviewed index SHA
+may still be supplied. After the reviewed index is explicitly activated, normal
+production can bind through Reader-owned control state:
 
 ```text
 AI_INPUT_MODE=semantic-deep-knowledge
-AI_INPUT_SEMANTIC_INDEX_SHA=<exact-reviewed-semantic-index-sha256>
+AI_INPUT_SEMANTIC_INDEX_SHA=active
 AI_INPUT_SEMANTIC_SELECTION_POLICY=semantic-project-distill-v3
 ```
 
+The token `active` is resolved once per Planner invocation to one exact
+finalized Semantic Index SHA. Pending state, Selection, Context and jobs store
+that exact SHA rather than the token.
+
 The controlled rollout uses `semantic-project-distill-v3`, which retains v2's deterministic novelty-aware Project-anchor exploration and `semantic-retrieval-v1` (lexical 0.15 / vector 0.85). Support rows are admitted only when anchor cosine is at least 0.70, and after the first support, a candidate with cosine at least 0.88 to an already accepted support is rejected as redundant. The policy does not pad the Context to six sources when no additional support meets those gates. Historical `semantic-project-distill-v0`, v1 and v2 remain available with their original semantics.
 
-The Semantic Index identity is exact and immutable for the cycle. There is no
-`latest` pointer and the Planner does not rebuild the index automatically. A
-missing/stale index fails before job submission.
+The Semantic Index manifest identity remains exact and immutable for the cycle.
+There is no mutable `latest` manifest. The separate active binding can advance
+only after the Reader -> Embedder -> Reader refresh chain finalizes a new
+content-addressed index against the current mirror. A missing or stale binding
+fails before job submission.
 
 Set `AI_INPUT_MODE=legacy` (and leave the index value disabled) to retain or
 restore the original catalog/coverage Planner.
