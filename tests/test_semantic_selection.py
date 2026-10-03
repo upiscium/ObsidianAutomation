@@ -714,6 +714,49 @@ def test_project_distill_v2_parser_rejects_exploration_contract_drift(
         )
 
 
+def test_project_distill_v3_parser_rejects_support_quality_drift(
+    tmp_path: Path,
+) -> None:
+    vault, state, index_sha, _ = _semantic_index(tmp_path)
+    record = build_semantic_selection(
+        state,
+        vault,
+        semantic_index_sha256=index_sha,
+        policy="semantic-project-distill-v3",
+        recent_context_limit=0,
+    )
+
+    wrong_threshold = json.loads(record.to_json_bytes())
+    wrong_threshold["policy_observations"]["support_relevance_min"] = 0.60
+    with pytest.raises(
+        SemanticSelectionError,
+        match="support thresholds are invalid",
+    ):
+        parse_semantic_selection(
+            json.dumps(
+                wrong_threshold,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+
+    wrong_count = json.loads(record.to_json_bytes())
+    wrong_count["policy_observations"]["support_candidates_accepted"] += 1
+    with pytest.raises(
+        SemanticSelectionError,
+        match="support counts are invalid",
+    ):
+        parse_semantic_selection(
+            json.dumps(
+                wrong_count,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+
+
 def test_project_distill_v2_advances_after_first_novelty_skip(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
