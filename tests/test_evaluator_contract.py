@@ -939,27 +939,31 @@ def test_prompts_isolate_every_candidate_pair() -> None:
 
     assert tuple((prompt.dimension, prompt.candidate_path) for prompt in prompts) == (
         ("groundedness", None),
+        ("knowledge_quality", None),
+        ("epistemic_status", None),
         ("redundancy", "11-Knowledge/existing.md"),
         ("consistency", "11-Knowledge/existing.md"),
         ("redundancy", "11-Knowledge/unrelated.md"),
         ("consistency", "11-Knowledge/unrelated.md"),
     )
 
-    groundedness = json.loads(prompts[0].user)
-    assert groundedness["generation_input"]["query"] == "Nextcloud Obsidian Vault 共有"
-    assert "evaluation_candidate" not in groundedness
+    for prompt in prompts[:3]:
+        payload = json.loads(prompt.user)
+        assert payload["generation_input"]["query"] == "Nextcloud Obsidian Vault 共有"
+        assert "evaluation_candidate" not in payload
+        assert prompt.candidate_path is None
 
-    for prompt in prompts[1:]:
+    for prompt in prompts[3:]:
         payload = json.loads(prompt.user)
         assert "generation_input" not in payload
         assert "evaluation_candidates" not in payload
         assert payload["evaluation_candidate"]["path"] == prompt.candidate_path
         assert "score" not in payload["evaluation_candidate"]
 
-    first_redundancy = json.loads(prompts[1].user)
+    first_redundancy = json.loads(prompts[3].user)
     assert first_redundancy["evaluation_candidate"]["path"] == "11-Knowledge/existing.md"
-    assert "unrelated.md" not in prompts[1].user
-    assert "exactly one evaluation_candidate" in prompts[1].system
+    assert "unrelated.md" not in prompts[3].user
+    assert "exactly one evaluation_candidate" in prompts[3].system
     assert all(
         prompt.template_version == EVALUATOR_PROMPT_TEMPLATE_VERSION
         for prompt in prompts
@@ -971,6 +975,8 @@ def test_prompts_isolate_every_candidate_pair() -> None:
 def test_dimension_schemas_are_minimal_ollama_compatible_and_authority_free() -> None:
     expected_sets = {
         "groundedness": {"pass", "concern", "unknown"},
+        "knowledge_quality": {"pass", "concern", "unknown"},
+        "epistemic_status": {"pass", "concern", "unknown"},
         "redundancy": {"none", "possible", "likely"},
         "consistency": {"pass", "concern", "unknown"},
     }
@@ -1018,6 +1024,8 @@ def test_all_model_facing_object_schemas_are_recursively_strict() -> None:
 
     for schema in (
         output_schema("groundedness"),
+        output_schema("knowledge_quality"),
+        output_schema("epistemic_status"),
         output_schema("redundancy"),
         output_schema("consistency"),
         consistency_verifier_schema(),
