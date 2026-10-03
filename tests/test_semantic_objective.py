@@ -511,11 +511,12 @@ def test_objective_prompts_and_output_contracts_are_explicit(tmp_path: Path) -> 
     prompt = render_objective_prompt(deep)
     assert prompt.objective_policy == DEEP_KNOWLEDGE
     assert prompt.candidate_kind == "knowledge_candidate"
-    assert prompt.template_version == "deep-knowledge-generator-v4"
+    assert prompt.template_version == "deep-knowledge-generator-v5"
     assert prompt.template_sha256 == prompt_template_sha256(DEEP_KNOWLEDGE)
-    assert "Reader has already applied" in prompt.system
-    assert "narrowest coherent proposition" in prompt.system
-    assert "downstream Evaluator and Human Review responsibilities" in prompt.system
+    assert "main contribution is reusable outside the originating Project context" in prompt.system
+    assert "Project-local structure only as evidence" in prompt.system
+    assert "A list of research questions or hypotheses is not by itself" in prompt.system
+    assert "Project summary" in prompt.system
     payload = json.loads(prompt.user)
     assert payload["selection_policy"] == "semantic-project-distill-v0"
     assert payload["sources"][0]["content"]
@@ -588,6 +589,7 @@ def test_deep_knowledge_historical_prompt_hashes_remain_exact() -> None:
         "deep-knowledge-generator-v2",
         "deep-knowledge-generator-v3",
         "deep-knowledge-generator-v4",
+        "deep-knowledge-generator-v5",
     }
     assert hashes["deep-knowledge-generator-v2"] == (
         "f0bce864011f3a95539d7f9ecb2f67aa041e7aa440eabf303a9659ebb6503d6b"
@@ -596,9 +598,12 @@ def test_deep_knowledge_historical_prompt_hashes_remain_exact() -> None:
         "797fd4e61e71922dde3c8f8d873c46ddeb05219854055e82f9e124553788fcf1"
     )
     assert hashes["deep-knowledge-generator-v4"] == (
+        "1552e7e2cdf794cf6535c3f52c4768761013a56be5fb0c1d3007cd2d8d103d98"
+    )
+    assert hashes["deep-knowledge-generator-v5"] == (
         prompt_template_sha256(DEEP_KNOWLEDGE)
     )
-    assert len(set(hashes.values())) == 3
+    assert len(set(hashes.values())) == 4
 
 
 def test_deep_knowledge_supports_structured_no_candidate(tmp_path: Path) -> None:
@@ -705,7 +710,7 @@ def test_candidate_and_generation_provenance_bind_selection_objective_and_index(
         objective_context_sha256=context_sha,
         candidate_sha256=candidate_sha,
         implementation_revision=REVISION,
-        prompt_template_version="deep-knowledge-generator-v4",
+        prompt_template_version="deep-knowledge-generator-v5",
         prompt_template_sha256_value=prompt_template_sha256(DEEP_KNOWLEDGE),
         model_provider="ollama",
         model_identifier=MODEL,
@@ -740,7 +745,7 @@ def test_human_projection_explicitly_labels_objective_and_noncanonical_action(
         objective_context_sha256=context_sha,
         candidate_sha256=candidate_sha,
         implementation_revision=REVISION,
-        prompt_template_version="deep-knowledge-generator-v4",
+        prompt_template_version="deep-knowledge-generator-v5",
         prompt_template_sha256_value=prompt_template_sha256(DEEP_KNOWLEDGE),
         model_provider="ollama",
         model_identifier=MODEL,

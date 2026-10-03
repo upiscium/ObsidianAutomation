@@ -90,21 +90,28 @@ The existing `knowledge-pre-review-v0` orchestration state machine is retained.
 A deep recipe is identified by exact prompt identity:
 
 ```text
-deep-knowledge-generator-v4
+deep-knowledge-generator-v5
 ```
 
-v4 carries the same bounded deterministic evidence observation in the prompt
-payload, but the provider-facing deep-Knowledge JSON Schema exposes only the
-normal Knowledge candidate shape. The Reader evidence gate is therefore the
-admission boundary for provider generation. After admission, Generator must
-produce the narrowest grounded reusable candidate supported by the selected
-sources; unsupported explanatory dimensions are omitted or qualified.
+v5 retains the v4 provider contract: the deep-Knowledge JSON Schema exposes
+only the normal Knowledge candidate shape after the Reader evidence gate admits
+generation. v5 additionally makes reusable synthesis explicit. Project-local
+structure such as RQ/H numbering, TODOs, review comments, status wording,
+filenames and section organization is treated as evidence context rather than
+the default output structure.
+
+Generator should identify the durable principle, mechanism, methodological
+pattern, decision rule, constraint or failure mode supported by the selected
+sources. Repeated Project-local formulations are corroboration, not separate
+output bullets. When the evidence supports a more general but still bounded
+methodological decomposition, that reusable insight should organize the note;
+Project-specific details may appear as scoped examples.
 
 Redundancy and consistency remain downstream Evaluator/Human Review
 responsibilities. Historical v2/v3 Objective Candidate and Generation artifacts
-that contain `no_candidate / insufficient_evidence` remain parseable, and their
-exact prompt hashes remain supported for immutable recipe parsing. New v4
-provider generation cannot select the historical no-candidate schema branch.
+that contain `no_candidate / insufficient_evidence` remain parseable. Exact
+v2/v3/v4 prompt hashes remain supported for immutable recipe parsing, and new
+v5 provider generation still cannot select the historical no-candidate branch.
 
 
 ```text
