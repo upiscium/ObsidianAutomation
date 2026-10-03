@@ -87,8 +87,8 @@ The currently executable pipeline contracts are:
 - Validator policy `knowledge-note-v0`;
 - Evaluation Context policy `bm25-topk-recall-v0` with `top_k=5`;
 - Evaluator output contract `knowledge-note-evaluator-output-v7`;
-- Evaluator prompt `knowledge-note-evaluator-v8`;
-- Evaluator prompt SHA `341d88c600e220361ed766118c3f2e362d8f5489ecc8094c330da60fd3ffa6b1`;
+- Evaluator prompt `knowledge-note-evaluator-v9`;
+- Evaluator prompt SHA `fd707fda8186aeb09422bd3f0241b6bc1c136a07e7e1ad3acd0967f29b01e7d1`;
 - Evaluator provider `openai-compatible` or `ollama`;
 - Evaluator adapter `openai-evaluator-chat-completions-json-schema-v5` or `ollama-evaluator-chat-structured-v6`;
 - Evaluator strategy `groundedness-quality-epistemic-plus-pairwise-candidates-with-independent-verifier-v3`.
@@ -103,8 +103,10 @@ and `knowledge-note-evaluator-v5` /
 plus `knowledge-note-evaluator-v6` /
 `45439ec5f3ae0d9dd31fa5af37c45c572b3e520ac87548f0a739acf1ee5f9041`
 and `knowledge-note-evaluator-v7` /
-`1e3b5b820b9569dc99230abd3c352e7223c1b84a3b93b66667f4a7fc1da9dbac`
-remain readable in recipes for audit. Runtime preflight requires the current v8
+`1e3b5b820b9569dc99230abd3c352e7223c1b84a3b93b66667f4a7fc1da9dbac`,
+plus `knowledge-note-evaluator-v8` /
+`341d88c600e220361ed766118c3f2e362d8f5489ecc8094c330da60fd3ffa6b1`
+remain readable in recipes for audit. Runtime preflight requires the current v9
 version/hash pair and blocks historical recipes before provider contact.
 Unknown prompt identities and cross-paired version/hash values are rejected;
 the same exact-pair rule applies to the Generator's supported v0/v1/v2 prompt
