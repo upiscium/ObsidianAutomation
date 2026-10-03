@@ -1,0 +1,22 @@
+[Unit]
+Description=Finalize and activate refreshed Obsidian Semantic Index
+After=obsidian-semantic-index-refresh-embed.service
+ConditionPathExists=/etc/obsidian-ai/semantic-index-refresh.env
+
+[Service]
+Type=oneshot
+User=obsidian-ai-reader
+Group=obsidian-ai-reader
+ExecStart=/opt/obsidian-automation/venv/bin/obsidian-semantic-index-refresh finalize \
+  --ai-root /var/lib/obsidian-ai/state \
+  --vault-root /var/lib/obsidian-ai/vault
+TimeoutStartSec=5min
+
+NoNewPrivileges=yes
+PrivateNetwork=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadOnlyPaths=/var/lib/obsidian-ai/vault
+ReadWritePaths=/var/lib/obsidian-ai/state/04-Index /var/lib/obsidian-ai/state/24-Locks/read-view
+UMask=0007
