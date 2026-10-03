@@ -22,11 +22,12 @@ from .evaluator_conflict import (
 )
 
 
-EVALUATOR_OUTPUT_CONTRACT_VERSION = "knowledge-note-evaluator-output-v6"
+EVALUATOR_OUTPUT_CONTRACT_VERSION = "knowledge-note-evaluator-output-v7"
+EVALUATOR_OUTPUT_CONTRACT_V6_VERSION = "knowledge-note-evaluator-output-v6"
 EVALUATOR_OUTPUT_CONTRACT_V5_VERSION = "knowledge-note-evaluator-output-v5"
 EVALUATOR_OUTPUT_CONTRACT_V4_VERSION = "knowledge-note-evaluator-output-v4"
 EVALUATOR_OUTPUT_CONTRACT_V3_VERSION = "knowledge-note-evaluator-output-v3"
-EVALUATOR_PROMPT_TEMPLATE_VERSION = "knowledge-note-evaluator-v7"
+EVALUATOR_PROMPT_TEMPLATE_VERSION = "knowledge-note-evaluator-v8"
 EVALUATOR_PROMPT_TEMPLATE_V3_VERSION = "knowledge-note-evaluator-v3"
 EVALUATOR_PROMPT_TEMPLATE_V3_SHA256 = (
     "bf6265294a4b346f12d1951f594760c80221380ccee9993c6ab866b6b1eca937"
@@ -43,6 +44,7 @@ EVALUATOR_PROMPT_TEMPLATE_V6_VERSION = "knowledge-note-evaluator-v6"
 EVALUATOR_PROMPT_TEMPLATE_V6_SHA256 = (
     "45439ec5f3ae0d9dd31fa5af37c45c572b3e520ac87548f0a739acf1ee5f9041"
 )
+EVALUATOR_PROMPT_TEMPLATE_V7_VERSION = "knowledge-note-evaluator-v7"
 EVALUATOR_PROMPT_TEMPLATE_V7_SHA256 = (
     "1e3b5b820b9569dc99230abd3c352e7223c1b84a3b93b66667f4a7fc1da9dbac"
 )
@@ -50,10 +52,13 @@ EVALUATOR_PROMPT_TEMPLATE_V7_SHA256 = (
 # constants and make the compatibility pair easy to consume.
 PROMPT_TEMPLATE_V3_VERSION = EVALUATOR_PROMPT_TEMPLATE_V3_VERSION
 PROMPT_TEMPLATE_V3_SHA256 = EVALUATOR_PROMPT_TEMPLATE_V3_SHA256
-RECOMMENDATION_POLICY_VERSION = "conservative-triad-v0"
+RECOMMENDATION_POLICY_VERSION = "conservative-five-v0"
 EVALUATOR_STRATEGY_V4 = "groundedness-plus-pairwise-candidates-v0"
 EVALUATOR_STRATEGY_V5 = "groundedness-plus-pairwise-candidates-with-verifier-v1"
-EVALUATOR_STRATEGY_VERSION = "groundedness-plus-pairwise-candidates-with-independent-verifier-v2"
+EVALUATOR_STRATEGY_V7 = "groundedness-plus-pairwise-candidates-with-independent-verifier-v2"
+EVALUATOR_STRATEGY_VERSION = (
+    "groundedness-quality-epistemic-plus-pairwise-candidates-with-independent-verifier-v3"
+)
 MAX_EVALUATOR_OUTPUT_BYTES = 32 * 1024
 MAX_EVALUATOR_FINDINGS_PER_DIMENSION = 4
 MAX_EVALUATOR_FINDING_CHARS = 2048
@@ -70,10 +75,23 @@ MAX_EVALUATOR_VERIFIER_EXPLANATION_CHARS = 1000
 MAX_EVALUATOR_WALL_SECONDS = 14 * 60
 _WINDOWS_FORBIDDEN = set('<>:"|?*')
 
-_DIMENSIONS = ("groundedness", "redundancy", "consistency")
+_DIMENSIONS = (
+    "groundedness",
+    "knowledge_quality",
+    "epistemic_status",
+    "redundancy",
+    "consistency",
+)
+_GENERATION_INPUT_DIMENSIONS = (
+    "groundedness",
+    "knowledge_quality",
+    "epistemic_status",
+)
 _PAIRWISE_DIMENSIONS = ("redundancy", "consistency")
 _ASSESSMENT_VALUES: Mapping[str, tuple[str, ...]] = {
     "groundedness": ("pass", "concern", "unknown"),
+    "knowledge_quality": ("pass", "concern", "unknown"),
+    "epistemic_status": ("pass", "concern", "unknown"),
     "redundancy": ("none", "possible", "likely"),
     "consistency": ("pass", "unknown", "concern"),
 }
