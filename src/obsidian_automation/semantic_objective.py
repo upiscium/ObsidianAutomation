@@ -37,6 +37,7 @@ from .semantic_objective_identity import (
     DEEP_KNOWLEDGE_PROMPT_V3_VERSION,
     DEEP_KNOWLEDGE_PROMPT_V4_VERSION,
     DEEP_KNOWLEDGE_PROMPT_V5_VERSION,
+    DEEP_KNOWLEDGE_PROMPT_V6_VERSION,
     IDEA_DISCOVERY,
     OBJECTIVES,
     PROJECT_ADOPTION,
@@ -789,10 +790,22 @@ The title should name the reusable concept or pattern, not the originating Proje
 Produce a concrete Knowledge candidate rather than a Project summary, source digest, research-plan recap, or meta note about generation. Do not output YAML frontmatter or canonical control fields.
 """
 
+_DEEP_KNOWLEDGE_SYSTEM_V6 = _DEEP_KNOWLEDGE_SYSTEM_V5 + """
+Epistemic-status preservation:
+- Preserve whether each source statement is an observed result, established fact, hypothesis or prediction, research question, proposed design, assumption, limitation, or open question.
+- Never strengthen a question, hypothesis, prediction, proposal, or planned evaluation into an observed result or established relationship.
+- When synthesizing research questions or hypotheses into a reusable method, write what the method tests, distinguishes, or would support under stated outcomes. Do not state that the predicted improvement occurred unless a selected source reports that result.
+- Causal and empirical-result verbs such as improves, causes, demonstrates, establishes, proves, confirms, correlates, and outperforms require selected evidence reporting that relationship. Otherwise use status-preserving language such as tests whether, predicts, is intended to distinguish, or would support.
+- Preserve conditional dependencies. If a fallback conclusion is valid only when another condition or result holds, keep that dependency explicit.
+- The title must preserve epistemic status too. Do not name a correlation, effect, superiority, or established mechanism when the sources only propose to test it.
+
+Before finalizing, check each material claim against the selected sources and verify that its certainty and causal strength are no stronger than the strongest supporting source.
+"""
+
 DEEP_KNOWLEDGE_INPUT_CONTRACT = "deep-knowledge-evidence-observation-v1"
 
 _OBJECTIVE_SYSTEM = {
-    DEEP_KNOWLEDGE: _DEEP_KNOWLEDGE_SYSTEM_V5,
+    DEEP_KNOWLEDGE: _DEEP_KNOWLEDGE_SYSTEM_V6,
     IDEA_DISCOVERY: _COMMON_SYSTEM
     + """
 Objective: idea-discovery-v0.
@@ -1044,7 +1057,13 @@ def supported_deep_knowledge_prompt_hashes() -> Mapping[str, str]:
             system=_DEEP_KNOWLEDGE_SYSTEM_V4,
             input_contract=DEEP_KNOWLEDGE_INPUT_CONTRACT,
         ),
-        DEEP_KNOWLEDGE_PROMPT_V5_VERSION: prompt_template_sha256(
+        DEEP_KNOWLEDGE_PROMPT_V5_VERSION: _prompt_template_sha256(
+            objective=DEEP_KNOWLEDGE,
+            prompt_template_version=DEEP_KNOWLEDGE_PROMPT_V5_VERSION,
+            system=_DEEP_KNOWLEDGE_SYSTEM_V5,
+            input_contract=DEEP_KNOWLEDGE_INPUT_CONTRACT,
+        ),
+        DEEP_KNOWLEDGE_PROMPT_V6_VERSION: prompt_template_sha256(
             DEEP_KNOWLEDGE
         ),
     }
