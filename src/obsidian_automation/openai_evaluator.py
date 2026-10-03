@@ -15,6 +15,7 @@ from .evaluation_artifact import (
 from .evaluator_contract import (
     EVALUATOR_STRATEGY_V4,
     EVALUATOR_STRATEGY_V5,
+    EVALUATOR_STRATEGY_V7,
     EVALUATOR_STRATEGY_VERSION,
     MAX_EVALUATOR_WALL_SECONDS,
     MAX_EVALUATOR_OUTPUT_BYTES,
@@ -49,11 +50,13 @@ from .openai_compatible import (
 )
 
 
-ADAPTER_VERSION = "openai-evaluator-chat-completions-json-schema-v4"
+ADAPTER_VERSION = "openai-evaluator-chat-completions-json-schema-v5"
+V7_ADAPTER_VERSION = "openai-evaluator-chat-completions-json-schema-v4"
 PREVIOUS_ADAPTER_VERSION = "openai-evaluator-chat-completions-json-schema-v3"
 V5_ADAPTER_VERSION = "openai-evaluator-chat-completions-json-schema-v2"
 LEGACY_ADAPTER_VERSION = "openai-evaluator-chat-completions-json-schema-v1"
 EVALUATION_STRATEGY = EVALUATOR_STRATEGY_VERSION
+V7_EVALUATION_STRATEGY = EVALUATOR_STRATEGY_V7
 PREVIOUS_EVALUATION_STRATEGY = EVALUATOR_STRATEGY_V5
 LEGACY_EVALUATION_STRATEGY = EVALUATOR_STRATEGY_V4
 
@@ -62,7 +65,11 @@ def _expected_prompt_order(evaluation_context: object) -> tuple[tuple[str, str |
     candidates = getattr(evaluation_context, "candidates", None)
     if not isinstance(candidates, tuple):
         raise ArtifactLifecycleError("evaluator context candidates are invalid")
-    expected: list[tuple[str, str | None]] = [("groundedness", None)]
+    expected: list[tuple[str, str | None]] = [
+        ("groundedness", None),
+        ("knowledge_quality", None),
+        ("epistemic_status", None),
+    ]
     for candidate in candidates:
         path = getattr(candidate, "path", None)
         if not isinstance(path, str):
@@ -87,6 +94,8 @@ class OpenAICompatibleEvaluationResult:
     prompt_template_version: str
     prompt_template_sha256: str
     groundedness: str
+    knowledge_quality: str
+    epistemic_status: str
     redundancy: str
     consistency: str
     recommendation: str
@@ -233,7 +242,7 @@ def evaluate_knowledge_note_with_openai_compatible(
         raise ArtifactLifecycleError("evaluator prompt pass order is invalid")
 
     candidate_contents = {candidate.path: candidate.content for candidate in evaluation_context.candidates}
-    groundedness_output: DimensionEvaluatorOutput | None = None
+    generation_outputs: dict[str, DimensionEvaluatorOutput] = {}
     redundancy_pairs: list[CandidateEvaluatorOutput] = []
     consistency_pairs: list[CandidateEvaluatorOutput] = []
     response_model: str | None = None
@@ -259,10 +268,19 @@ def evaluate_knowledge_note_with_openai_compatible(
                 "OpenAI-compatible evaluator returned inconsistent model identities"
             )
 
-        if prompt.pass_kind == "groundedness":
-            if prompt.candidate_path is not None or groundedness_output is not None:
-                raise ArtifactLifecycleError("groundedness evaluator pass is invalid")
-            groundedness_output = dimension_output
+        if prompt.pass_kind in {
+            "groundedness",
+            "knowledge_quality",
+            "epistemic_status",
+        }:
+            if (
+                prompt.candidate_path is not None
+                or prompt.pass_kind in generation_outputs
+            ):
+                raise ArtifactLifecycleError(
+                    f"{prompt.pass_kind} evaluator pass is invalid"
+                )
+            generation_outputs[prompt.pass_kind] = dimension_output
             continue
         if prompt.candidate_path is None:
             raise ArtifactLifecycleError("pairwise evaluator pass is missing candidate path")
@@ -313,11 +331,17 @@ def evaluate_knowledge_note_with_openai_compatible(
             finalize_consistency_candidate(proposal_output, tuple(verifications))
         )
 
-    if groundedness_output is None or response_model is None:
+    if (
+        set(generation_outputs)
+        != {"groundedness", "knowledge_quality", "epistemic_status"}
+        or response_model is None
+    ):
         raise ArtifactLifecycleError("evaluator output is incomplete")
 
     output = aggregate_evaluator_outputs(
-        groundedness=groundedness_output,
+        groundedness=generation_outputs["groundedness"],
+        knowledge_quality=generation_outputs["knowledge_quality"],
+        epistemic_status=generation_outputs["epistemic_status"],
         redundancy_pairs=redundancy_pairs,
         consistency_pairs=consistency_pairs,
     )
@@ -345,6 +369,8 @@ def evaluate_knowledge_note_with_openai_compatible(
         model_revision=model_revision,
         model_config=model_config,
         groundedness=assessment.groundedness,
+        knowledge_quality=assessment.knowledge_quality or "unknown",
+        epistemic_status=assessment.epistemic_status or "unknown",
         redundancy=assessment.redundancy,
         consistency=assessment.consistency,
         recommendation=assessment.recommendation,
@@ -364,6 +390,8 @@ def evaluate_knowledge_note_with_openai_compatible(
         prompt_template_version=prompt.template_version,
         prompt_template_sha256=prompt.template_sha256,
         groundedness=assessment.groundedness,
+        knowledge_quality=assessment.knowledge_quality or "unknown",
+        epistemic_status=assessment.epistemic_status or "unknown",
         redundancy=assessment.redundancy,
         consistency=assessment.consistency,
         recommendation=assessment.recommendation,

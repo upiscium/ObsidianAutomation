@@ -141,6 +141,8 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, str, str, str]:
 def _good_outputs() -> dict[str, dict[str, object]]:
     return {
         "groundedness": {"assessment": "pass", "findings": []},
+        "knowledge_quality": {"assessment": "pass", "findings": []},
+        "epistemic_status": {"assessment": "pass", "findings": []},
         "redundancy": {
             "assessment": "likely",
             "findings": [{"detail": "The proposal covers the same core procedure."}],
@@ -221,19 +223,22 @@ def test_near_duplicate_e2e_uses_pairwise_candidate_passes_and_persists_likely(t
         "options": {"temperature": 0},
     }
 
-    assert len(calls) == 4
+    assert len(calls) == 6
     chat_calls = calls[1:]
     assert [json.loads(call["payload"]["messages"][1]["content"])["dimension"] for call in chat_calls] == [
         "groundedness",
+        "knowledge_quality",
+        "epistemic_status",
         "redundancy",
         "consistency",
     ]
 
-    groundedness_payload = json.loads(chat_calls[0]["payload"]["messages"][1]["content"])
-    assert "generation_input" in groundedness_payload
-    assert "evaluation_candidate" not in groundedness_payload
+    for call in chat_calls[:3]:
+        generation_payload = json.loads(call["payload"]["messages"][1]["content"])
+        assert "generation_input" in generation_payload
+        assert "evaluation_candidate" not in generation_payload
 
-    for call in chat_calls[1:]:
+    for call in chat_calls[3:]:
         payload = call["payload"]
         assert payload["stream"] is False
         assert payload["think"] is False
@@ -245,7 +250,7 @@ def test_near_duplicate_e2e_uses_pairwise_candidate_passes_and_persists_likely(t
         assert user_payload["evaluation_candidate"]["path"] == EXISTING_PATH
         assert "score" not in user_payload["evaluation_candidate"]
 
-    consistency_schema = chat_calls[2]["payload"]["format"]
+    consistency_schema = chat_calls[4]["payload"]["format"]
     assert set(consistency_schema["required"]) == set(consistency_schema["properties"])
     assert set(consistency_schema["properties"]["conflicts"]["items"]["required"]) == {
         "proposal_excerpt_id",
@@ -375,7 +380,14 @@ def test_openai_compatible_verifier_path_preserves_pass_order(tmp_path: Path) ->
     assert [
         json.loads(call["payload"]["messages"][1]["content"])["dimension"]
         for call in calls
-    ] == ["groundedness", "redundancy", "consistency", "consistency_verifier"]
+    ] == [
+        "groundedness",
+        "knowledge_quality",
+        "epistemic_status",
+        "redundancy",
+        "consistency",
+        "consistency_verifier",
+    ]
     verifier_payload = json.loads(calls[-1]["payload"]["messages"][1]["content"])
     assert "candidate_path" not in verifier_payload
     assert "proposed_incompatibility" not in verifier_payload
@@ -458,7 +470,8 @@ def test_pairwise_pass_failure_does_not_persist_partial_evaluation(tmp_path: Pat
             transport=_transport_with_outputs(outputs, calls),
         )
 
-    assert len(calls) == 3
+    # tags + three generation-input passes + the failing redundancy pass.
+    assert len(calls) == 5
     assert list((state / EVALUATION_STAGE).iterdir()) == []
 
 

@@ -361,6 +361,8 @@ def _evaluator_transport(calls: list[dict[str, object]]):
         dimension = user["dimension"]
         assessment = {
             "groundedness": "pass",
+            "knowledge_quality": "pass",
+            "epistemic_status": "pass",
             "redundancy": "none",
             "consistency": "pass",
         }[dimension]

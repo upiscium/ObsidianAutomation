@@ -1148,10 +1148,22 @@ def emit_validation_projection(
 def _assessment_lines(record) -> list[str]:
     lines = [
         f"- Groundedness: **{record.assessment.groundedness}**",
-        f"- Redundancy: **{record.assessment.redundancy}**",
-        f"- Consistency: **{record.assessment.consistency}**",
-        f"- Recommendation: **{record.assessment.recommendation}**",
     ]
+    if record.assessment.knowledge_quality is not None:
+        lines.append(
+            f"- Knowledge quality: **{record.assessment.knowledge_quality}**"
+        )
+    if record.assessment.epistemic_status is not None:
+        lines.append(
+            f"- Epistemic status: **{record.assessment.epistemic_status}**"
+        )
+    lines.extend(
+        [
+            f"- Redundancy: **{record.assessment.redundancy}**",
+            f"- Consistency: **{record.assessment.consistency}**",
+            f"- Recommendation: **{record.assessment.recommendation}**",
+        ]
+    )
     if record.assessment.findings:
         lines.extend(["", "### Findings"])
         for finding in record.assessment.findings:

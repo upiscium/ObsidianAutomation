@@ -17,6 +17,8 @@ from obsidian_automation.evaluator_contract import (
     EVALUATOR_PROMPT_TEMPLATE_V5_VERSION,
     EVALUATOR_PROMPT_TEMPLATE_V6_SHA256,
     EVALUATOR_PROMPT_TEMPLATE_V6_VERSION,
+    EVALUATOR_PROMPT_TEMPLATE_V7_SHA256,
+    EVALUATOR_PROMPT_TEMPLATE_V7_VERSION,
     EVALUATOR_PROMPT_TEMPLATE_VERSION,
     prompt_template_sha256 as evaluator_prompt_template_sha256,
 )
@@ -27,6 +29,8 @@ from obsidian_automation.openai_evaluator import (
     PREVIOUS_ADAPTER_VERSION as PREVIOUS_OPENAI_EVALUATOR_ADAPTER_VERSION,
     PREVIOUS_EVALUATION_STRATEGY as PREVIOUS_OPENAI_EVALUATION_STRATEGY,
     V5_ADAPTER_VERSION as V5_OPENAI_EVALUATOR_ADAPTER_VERSION,
+    V7_ADAPTER_VERSION as V7_OPENAI_EVALUATOR_ADAPTER_VERSION,
+    V7_EVALUATION_STRATEGY as V7_OPENAI_EVALUATION_STRATEGY,
     EVALUATION_STRATEGY,
 )
 from obsidian_automation.ollama_evaluator import (
@@ -36,6 +40,8 @@ from obsidian_automation.ollama_evaluator import (
     PREVIOUS_ADAPTER_VERSION as PREVIOUS_OLLAMA_EVALUATOR_ADAPTER_VERSION,
     PREVIOUS_EVALUATION_STRATEGY as PREVIOUS_OLLAMA_EVALUATION_STRATEGY,
     V5_ADAPTER_VERSION as V5_OLLAMA_EVALUATOR_ADAPTER_VERSION,
+    V7_ADAPTER_VERSION as V7_OLLAMA_EVALUATOR_ADAPTER_VERSION,
+    V7_EVALUATION_STRATEGY as V7_OLLAMA_EVALUATION_STRATEGY,
 )
 from obsidian_automation.ollama_generator import ADAPTER_VERSION as OLLAMA_GENERATOR_ADAPTER_VERSION
 from obsidian_automation.generator_contract import (
@@ -102,6 +108,7 @@ def _recipe(
     }
     v5_evaluator = evaluator_prompt_version == EVALUATOR_PROMPT_TEMPLATE_V5_VERSION
     v6_evaluator = evaluator_prompt_version == EVALUATOR_PROMPT_TEMPLATE_V6_VERSION
+    v7_evaluator = evaluator_prompt_version == EVALUATOR_PROMPT_TEMPLATE_V7_VERSION
     evaluator_adapter = (
         LEGACY_OPENAI_EVALUATOR_ADAPTER_VERSION
         if legacy_evaluator
@@ -111,7 +118,11 @@ def _recipe(
             else (
                 PREVIOUS_OPENAI_EVALUATOR_ADAPTER_VERSION
                 if v6_evaluator
-                else OPENAI_EVALUATOR_ADAPTER_VERSION
+                else (
+                    V7_OPENAI_EVALUATOR_ADAPTER_VERSION
+                    if v7_evaluator
+                    else OPENAI_EVALUATOR_ADAPTER_VERSION
+                )
             )
         )
     )
@@ -121,7 +132,11 @@ def _recipe(
         else (
             PREVIOUS_OPENAI_EVALUATION_STRATEGY
             if v5_evaluator or v6_evaluator
-            else EVALUATION_STRATEGY
+            else (
+                V7_OPENAI_EVALUATION_STRATEGY
+                if v7_evaluator
+                else EVALUATION_STRATEGY
+            )
         )
     )
     evaluator = {
@@ -280,6 +295,7 @@ def test_recipe_accepts_native_ollama_digest_binding_and_role_thinking() -> None
         (EVALUATOR_PROMPT_TEMPLATE_V4_VERSION, EVALUATOR_PROMPT_TEMPLATE_V4_SHA256),
         (EVALUATOR_PROMPT_TEMPLATE_V5_VERSION, EVALUATOR_PROMPT_TEMPLATE_V5_SHA256),
         (EVALUATOR_PROMPT_TEMPLATE_V6_VERSION, EVALUATOR_PROMPT_TEMPLATE_V6_SHA256),
+        (EVALUATOR_PROMPT_TEMPLATE_V7_VERSION, EVALUATOR_PROMPT_TEMPLATE_V7_SHA256),
         (EVALUATOR_PROMPT_TEMPLATE_VERSION, EVALUATOR_PROMPT_SHA),
     ],
 )
@@ -968,11 +984,13 @@ def test_public_cli_and_json_schemas_are_pinned() -> None:
         (EVALUATOR_PROMPT_TEMPLATE_V4_VERSION, EVALUATOR_PROMPT_TEMPLATE_V4_SHA256, "openai-compatible"),
         (EVALUATOR_PROMPT_TEMPLATE_V5_VERSION, EVALUATOR_PROMPT_TEMPLATE_V5_SHA256, "openai-compatible"),
         (EVALUATOR_PROMPT_TEMPLATE_V6_VERSION, EVALUATOR_PROMPT_TEMPLATE_V6_SHA256, "openai-compatible"),
+        (EVALUATOR_PROMPT_TEMPLATE_V7_VERSION, EVALUATOR_PROMPT_TEMPLATE_V7_SHA256, "openai-compatible"),
         (EVALUATOR_PROMPT_TEMPLATE_VERSION, EVALUATOR_PROMPT_SHA, "openai-compatible"),
         (EVALUATOR_PROMPT_TEMPLATE_V3_VERSION, EVALUATOR_PROMPT_TEMPLATE_V3_SHA256, "ollama"),
         (EVALUATOR_PROMPT_TEMPLATE_V4_VERSION, EVALUATOR_PROMPT_TEMPLATE_V4_SHA256, "ollama"),
         (EVALUATOR_PROMPT_TEMPLATE_V5_VERSION, EVALUATOR_PROMPT_TEMPLATE_V5_SHA256, "ollama"),
         (EVALUATOR_PROMPT_TEMPLATE_V6_VERSION, EVALUATOR_PROMPT_TEMPLATE_V6_SHA256, "ollama"),
+        (EVALUATOR_PROMPT_TEMPLATE_V7_VERSION, EVALUATOR_PROMPT_TEMPLATE_V7_SHA256, "ollama"),
         (EVALUATOR_PROMPT_TEMPLATE_VERSION, EVALUATOR_PROMPT_SHA, "ollama"),
     }
 

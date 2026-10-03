@@ -250,7 +250,9 @@ def test_evaluation_record_binds_generation_validation_and_evaluation_context(tm
 
     assert path == state / EVALUATION_STAGE / f"{evaluation_sha}.evaluation.json"
     loaded = load_evaluation_record(state, evaluation_sha)
-    assert loaded.record_version == 2
+    assert loaded.record_version == 3
+    assert loaded.assessment.knowledge_quality == "pass"
+    assert loaded.assessment.epistemic_status == "pass"
     assert loaded.assessment.redundancy == "likely"
     assert loaded.assessment.recommendation == "do_not_proceed"
     assert loaded.proposal_sha256 == proposal_sha
@@ -533,7 +535,7 @@ def test_v2_record_rejects_malformed_conflicts_and_inconsistent_evidence() -> No
         parse_evaluation_record(_record_bytes(conflict_pass))
 
     wrong_recommendation = _record_payload(recommendation="manual_review")
-    with pytest.raises(ArtifactLifecycleError, match="conservative triad"):
+    with pytest.raises(ArtifactLifecycleError, match="deterministic policy"):
         parse_evaluation_record(_record_bytes(wrong_recommendation))
 
 
@@ -547,7 +549,15 @@ def test_evaluation_record_model_config_is_nested_immutable_and_canonical() -> N
         evaluator=EvaluatorMetadata("e" * 40, "evaluation-v1", "f" * 64),
         model=EvaluationModelMetadata("ollama", "model", "1" * 64),
         model_config=config,
-        assessment=EvaluationAssessment("pass", "none", "pass", "proceed", ()),
+        assessment=EvaluationAssessment(
+            "pass",
+            "none",
+            "pass",
+            "proceed",
+            (),
+            knowledge_quality="pass",
+            epistemic_status="pass",
+        ),
         evaluated_at="2026-09-20T00:00:00Z",
     )
     before = record.to_json_bytes()

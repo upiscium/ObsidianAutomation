@@ -15,6 +15,10 @@ GET /api/tags -> resolve exact model identifier/digest
         ↓
 Groundedness /api/chat
         ↓
+Knowledge Quality /api/chat
+        ↓
+Epistemic Status /api/chat
+        ↓
 for each candidate, in Evaluation Context order:
   Redundancy /api/chat
   Consistency proposer /api/chat
@@ -25,7 +29,7 @@ for each candidate, in Evaluation Context order:
         ↓
 all calls strict-parse and bind successfully
         ↓ deterministic severity aggregation
-conservative-triad-v0
+conservative-five-v0
         ↓
 15-Evaluation/<sha>.evaluation.json
 ```
@@ -35,8 +39,8 @@ No partial Evaluation Record is written if any provider call or parser/binding s
 The current prompt identity is:
 
 ```text
-knowledge-note-evaluator-v7
-1e3b5b820b9569dc99230abd3c352e7223c1b84a3b93b66667f4a7fc1da9dbac
+knowledge-note-evaluator-v8
+341d88c600e220361ed766118c3f2e362d8f5489ecc8094c330da60fd3ffa6b1
 ```
 
 The historical identities `knowledge-note-evaluator-v3` /
@@ -47,6 +51,8 @@ and `knowledge-note-evaluator-v5` /
 `ca9755c7b448be9bb2a42ab41ba182deb7b45785a4099d6ac85d854131a06291`,
 plus `knowledge-note-evaluator-v6` /
 `45439ec5f3ae0d9dd31fa5af37c45c572b3e520ac87548f0a739acf1ee5f9041`
+and `knowledge-note-evaluator-v7` /
+`1e3b5b820b9569dc99230abd3c352e7223c1b84a3b93b66667f4a7fc1da9dbac`
 remain readable in recipes for audit. Current runtime preflight blocks historical
 recipes before provider contact; unknown and cross-paired prompt version/hash
 identities are rejected.
@@ -77,7 +83,7 @@ Before inference, the adapter verifies:
 3. the exact `05-Context` bound by the Generation Record hash-validates;
 4. `14-Evaluation-Context` is bound to the same proposal and accepted mutation;
 5. endpoint, timeout, model options, and implementation revision satisfy existing contracts;
-6. generated provider-call order exactly matches Groundedness followed by `(Redundancy, Consistency proposer, Consistency verifier*)` for every candidate in Evaluation Context order.
+6. generated provider-call order exactly matches Groundedness, Knowledge Quality, Epistemic Status, followed by `(Redundancy, Consistency proposer, Consistency verifier*)` for every candidate in Evaluation Context order.
 
 ## Model identity
 
@@ -143,17 +149,18 @@ The verifier receives only the two anchored quotes; proposer-generated rationale
 is intentionally absent so the verifier independently judges the pair. It does
 not receive or control candidate identity or path. The
 model never controls dimension, candidate identity, candidate path,
-recommendation, model identity, or aggregation policy. The current output contract is `knowledge-note-evaluator-output-v6`.
+recommendation, model identity, or aggregation policy. The current output contract is `knowledge-note-evaluator-output-v7`.
 
 ## Evidence isolation
 
-Groundedness receives:
+Groundedness, Knowledge Quality, and Epistemic Status each receive:
 
 ```text
 proposal + original generation input
 ```
 
-Each Redundancy or Consistency proposer call receives:
+They are independent passes with separate system prompts and structured
+assessments. Each Redundancy or Consistency proposer call receives:
 
 ```text
 proposal + exactly one evaluation_candidate
@@ -208,7 +215,7 @@ Only findings and Consistency conflicts from the winning severity are retained.
 `not_conflict` proposals are removed, unknown proposals produce `unknown` unless a
 contradiction exists, and contradiction dominates.
 Duplicate findings and duplicate conflict evidence are removed; findings are
-bounded to four per dimension (16 in the persisted assessment), and conflicts
+bounded to four per dimension (20 in the persisted assessment), and conflicts
 to four. Zero candidates produce `redundancy=none` and `consistency=pass`.
 
 If Evaluation Context has zero candidates, aggregation yields:
@@ -226,12 +233,12 @@ Any transport, response-shape, model-identity, UTF-8, byte-bound, parser, candid
 
 Only after successful deterministic aggregation is one Evaluation Record built and stored.
 
-Current persistence writes Evaluation Record v2. Its `assessment.conflicts`
-array includes the deterministically bound `candidate_path` alongside
+Current persistence writes Evaluation Record v3. Its assessment adds
+`knowledge_quality` and `epistemic_status`, while `assessment.conflicts`
+continues to include the deterministically bound `candidate_path` alongside
 `proposal_claim`, `candidate_claim`, and `incompatibility`. Historical
-Evaluation Record v1 artifacts remain readable; their assessment has no
-`conflicts` member and they remain legacy evidence rather than being silently
-treated as current v2 output.
+Evaluation Record v1/v2 artifacts remain readable without schema upgrade; v1
+has no conflicts and v2 has conflicts but no current quality dimensions.
 
 ## Network boundary
 
@@ -256,11 +263,11 @@ The Evaluator reuses the Generator transport policy:
 - Evaluation Context SHA;
 - evaluator implementation revision;
 - prompt template version/SHA;
-- current output contract `knowledge-note-evaluator-output-v6`;
+- current output contract `knowledge-note-evaluator-output-v7`;
 - provider `ollama`;
 - resolved model identifier and digest;
-- adapter version `ollama-evaluator-chat-structured-v5`;
-- strategy `groundedness-plus-pairwise-candidates-with-independent-verifier-v2`;
+- adapter version `ollama-evaluator-chat-structured-v6`;
+- strategy `groundedness-quality-epistemic-plus-pairwise-candidates-with-independent-verifier-v3`;
 - the exact immutable recipe `think` value (`false` for new recipes; historical
   `low` remains supported);
 - exact inference options;
@@ -271,14 +278,22 @@ Raw prompts, raw model responses, and partial pairwise outputs are not persisted
 
 ## Recommendation authority
 
-`conservative-triad-v0` remains unchanged:
+Current `conservative-five-v0` policy:
 
 ```text
 proceed
-  groundedness=pass AND redundancy=none AND consistency=pass
+  groundedness=pass
+  AND knowledge_quality=pass
+  AND epistemic_status=pass
+  AND redundancy=none
+  AND consistency=pass
 
 do_not_proceed
-  groundedness=concern OR redundancy=likely OR consistency=concern
+  groundedness=concern
+  OR knowledge_quality=concern
+  OR epistemic_status=concern
+  OR redundancy=likely
+  OR consistency=concern
 
 manual_review
   otherwise

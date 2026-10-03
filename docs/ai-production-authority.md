@@ -231,17 +231,22 @@ Human reviewer / Review Intake
   write immutable case/evaluation/mutation projection binding in 20-Review
 ```
 
-Evaluator assesses groundedness, redundancy, and consistency using output
-contract `knowledge-note-evaluator-output-v6` and current prompt
-`knowledge-note-evaluator-v7` (SHA
-`1e3b5b820b9569dc99230abd3c352e7223c1b84a3b93b66667f4a7fc1da9dbac`). Its
-recommendation is advisory machine output. For Consistency, deterministic code
-builds exact proposal/candidate excerpt tables and the model selects excerpt IDs.
-Code resolves those IDs back to exact source bytes before independent verifier
-calls. The verifier receives only the exact quote pair and no proposer-generated
-rationale; only a verifier `contradiction` becomes persisted evidence. Deterministic
-code also binds each `candidate_path` outside the model. Current Evaluation Records are v2, while
-historical v1 records remain readable.
+Evaluator assesses groundedness, Knowledge quality, epistemic-status
+preservation, redundancy, and consistency using output contract
+`knowledge-note-evaluator-output-v7` and current prompt
+`knowledge-note-evaluator-v8` (SHA
+`341d88c600e220361ed766118c3f2e362d8f5489ecc8094c330da60fd3ffa6b1`).
+Groundedness, Knowledge quality, and epistemic status each compare the proposal
+with the exact Generation input. Redundancy and Consistency remain isolated
+pairwise passes against canonical Knowledge candidates. Recommendation is
+advisory deterministic machine output under `conservative-five-v0`. For
+Consistency, deterministic code builds exact proposal/candidate excerpt tables
+and the model selects excerpt IDs. Code resolves those IDs back to exact source
+bytes before independent verifier calls. The verifier receives only the exact
+quote pair and no proposer-generated rationale; only a verifier
+`contradiction` becomes persisted evidence. Deterministic code also binds each
+`candidate_path` outside the model. Current Evaluation Records are v3, while
+historical v1/v2 records remain readable without schema upgrade.
 
 Human-facing Obsidian views are projected through separate non-authoritative stages.
 Reader, Generator, Validator, Evaluator, Reviewer, Executor and Sync may write only
