@@ -314,6 +314,7 @@ def test_observe_selection_does_not_move_cadence_clock(
     (
         "semantic-project-distill-v1",
         "semantic-project-distill-v2",
+        "semantic-project-distill-v3",
     ),
 )
 def test_observe_selection_binds_project_distill_retrieval_profile(
@@ -326,6 +327,20 @@ def test_observe_selection_binds_project_distill_retrieval_profile(
         selection_policy=selection_policy,
         policy_observations={
             "retrieval_profile": "semantic-retrieval-v1",
+            **(
+                {
+                    "support_quality_strategy": (
+                        "anchor-relevance-and-incremental-diversity-v1"
+                    ),
+                    "support_relevance_min": 0.70,
+                    "support_redundancy_max": 0.88,
+                    "support_candidates_examined": 3,
+                    "support_candidates_accepted": 1,
+                    "support_rejections": [{}, {}],
+                }
+                if selection_policy == "semantic-project-distill-v3"
+                else {}
+            ),
         },
         selected=(SimpleNamespace(source_kind="project-note"),),
         novelty=SimpleNamespace(
@@ -362,6 +377,17 @@ def test_observe_selection_binds_project_distill_retrieval_profile(
         selection_policy=selection_policy,
     )
     assert receipt.payload["retrieval_profile"] == "semantic-retrieval-v1"
+    if selection_policy == "semantic-project-distill-v3":
+        assert receipt.payload["support_quality"] == {
+            "strategy": "anchor-relevance-and-incremental-diversity-v1",
+            "relevance_min": 0.70,
+            "redundancy_max": 0.88,
+            "candidates_examined": 3,
+            "candidates_accepted": 1,
+            "rejection_count": 2,
+        }
+    else:
+        assert receipt.payload["support_quality"] is None
 
 
 def _receipt(
