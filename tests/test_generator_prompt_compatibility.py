@@ -15,6 +15,10 @@ from obsidian_automation.evaluator_contract import (
     EVALUATOR_PROMPT_TEMPLATE_VERSION,
     prompt_template_sha256 as evaluator_prompt_sha256,
 )
+from obsidian_automation.openai_evaluator import (
+    ADAPTER_VERSION as EVALUATOR_ADAPTER_VERSION,
+    EVALUATION_STRATEGY,
+)
 from obsidian_automation.generator_contract import (
     PROMPT_TEMPLATE_V0_SHA256,
     PROMPT_TEMPLATE_V0_VERSION,
@@ -76,9 +80,9 @@ def _recipe_value(
             "model_identifier": EVALUATOR_MODEL,
             "model_revision": f"identifier:{EVALUATOR_MODEL}",
             "model_config": {
-                "adapter_version": "openai-evaluator-chat-completions-json-schema-v4",
+                "adapter_version": EVALUATOR_ADAPTER_VERSION,
                 "identity_binding": "identifier-only",
-                "strategy": "groundedness-plus-pairwise-candidates-with-independent-verifier-v2",
+                "strategy": EVALUATION_STRATEGY,
                 "options": {"temperature": 0},
             },
         },
