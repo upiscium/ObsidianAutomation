@@ -316,13 +316,15 @@ Any provider/parser/binding failure aborts the whole Evaluation without writing 
 
 ## Evaluation Record compatibility
 
-Current evaluations persist Evaluation Record v2. Its structured conflict evidence is stored under `assessment.conflicts`, with the deterministic candidate path added to every item:
+Current evaluations persist Evaluation Record v3. Its structured conflict evidence is stored under `assessment.conflicts`, with the deterministic candidate path added to every item:
 
 ```json
 {
-  "record_version": 2,
+  "record_version": 3,
   "assessment": {
     "groundedness": "pass",
+    "knowledge_quality": "pass",
+    "epistemic_status": "pass",
     "redundancy": "none",
     "consistency": "concern",
     "recommendation": "do_not_proceed",
@@ -339,9 +341,9 @@ Current evaluations persist Evaluation Record v2. Its structured conflict eviden
 }
 ```
 
-For v2 `pass` or `unknown`, `assessment.conflicts` is the empty array. Historical Evaluation Record v1 artifacts remain readable as immutable evidence; their assessment shape has no `conflicts` member and they are not silently rewritten as current v2 records.
+For v3 `pass` or `unknown`, `assessment.conflicts` is the empty array. Historical Evaluation Record v1/v2 artifacts remain readable as immutable evidence and are not silently rewritten as current v3 records. v1 has no `conflicts`; v2 has conflicts but no Knowledge-quality or epistemic-status fields.
 
-For current v2 records, deterministically resolved and verifier-confirmed proposal
+For current v3 records, deterministically resolved and verifier-confirmed proposal
 and candidate excerpts are persisted in the existing `proposal_claim` and
 `candidate_claim` fields so historical readers remain compatible. Those persisted quote fields preserve
 embedded LF line breaks exactly; `incompatibility` remains single-line.
