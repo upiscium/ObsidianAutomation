@@ -1127,7 +1127,7 @@ def test_epistemic_status_prompt_requires_local_claim_detection() -> None:
     )
 
     assert "atomic claim-by-claim check" in prompt.system
-    assert "one local strengthening is sufficient for concern" in prompt.system
+    assert "One local strengthening is sufficient for concern" in prompt.system
     assert "Do not average across the document" in prompt.system
     assert "X improves Y" in prompt.system
     assert "Titles count as material claims" in prompt.system
