@@ -533,6 +533,8 @@ def main(argv: list[str] | None = None) -> int:
                 "prompt_template_sha256": result.prompt_template_sha256,
                 "assessment": {
                     "groundedness": result.groundedness,
+                    "knowledge_quality": result.knowledge_quality,
+                    "epistemic_status": result.epistemic_status,
                     "redundancy": result.redundancy,
                     "consistency": result.consistency,
                     "recommendation": result.recommendation,
