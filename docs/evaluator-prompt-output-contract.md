@@ -79,13 +79,13 @@ knowledge-note-evaluator-output-v7
 The current prompt/input contract is:
 
 ```text
-knowledge-note-evaluator-v8
+knowledge-note-evaluator-v9
 ```
 
 The current prompt-template SHA-256 is:
 
 ```text
-341d88c600e220361ed766118c3f2e362d8f5489ecc8094c330da60fd3ffa6b1
+fd707fda8186aeb09422bd3f0241b6bc1c136a07e7e1ad3acd0967f29b01e7d1
 ```
 
 Historical readable prompt identities remain exact version/hash pairs:
