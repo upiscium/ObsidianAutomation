@@ -335,7 +335,24 @@ coherence, and Knowledge-coverage gates.
 This prevents a fixed index from repeatedly stopping on one already-used
 Project cluster while preserving deterministic, auditable selection.
 
-Use for the controlled deep-Knowledge production rollout.
+v2 remains supported as the historical novelty-aware anchor-exploration policy.
+
+#### `semantic-project-distill-v3`
+
+Retain v2 anchor exploration and retrieval semantics, then gate support rows by
+anchor-relative relevance and incremental diversity.
+
+```text
+minimum anchor cosine                0.70
+maximum cosine to prior supports     0.88
+```
+
+The first support may corroborate the anchor. Later supports at or above the
+redundancy ceiling are rejected. Rows below the relevance floor are rejected.
+Source kinds are not forced and the policy does not pad the cluster to the
+configured maximum when no further support passes.
+
+Use v3 for the controlled deep-Knowledge production rollout.
 
 #### `semantic-timeline-v0`
 
