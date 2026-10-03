@@ -37,6 +37,8 @@ EMBEDDING_PLANS="$INDEX/semantic-embedding-plans"
 EMBEDDING_RESULTS="$INDEX/semantic-embedding-results"
 EMBEDDING_RESULT_SETS="$INDEX/semantic-embedding-result-sets"
 SEMANTIC_INDEX="$INDEX/semantic-index"
+SEMANTIC_REFRESH_READER="$INDEX/semantic-refresh-reader"
+SEMANTIC_REFRESH_EMBEDDER="$INDEX/semantic-refresh-embedder"
 CONTEXT="$AI_ROOT/05-Context"
 EVALUATION_REQUEST="$AI_ROOT/12-Evaluation-Request"
 EVALUATION_CONTEXT="$AI_ROOT/14-Evaluation-Context"
@@ -204,7 +206,9 @@ for directory in \
   "$EMBEDDING_PLANS" \
   "$EMBEDDING_RESULTS" \
   "$EMBEDDING_RESULT_SETS" \
-  "$SEMANTIC_INDEX"; do
+  "$SEMANTIC_INDEX" \
+  "$SEMANTIC_REFRESH_READER" \
+  "$SEMANTIC_REFRESH_EMBEDDER"; do
   install -d -o root -g root -m 0700 "$directory"
   setfacl -b "$directory"
   setfacl -k "$directory" || true
@@ -226,6 +230,12 @@ apply_directory_acl "$EMBEDDING_RESULT_SETS" \
   "u:$EMBEDDER_USER:rwx"
 apply_directory_acl "$SEMANTIC_INDEX" \
   "u:$READER_USER:rwx"
+apply_directory_acl "$SEMANTIC_REFRESH_READER" \
+  "u:$READER_USER:rwx" \
+  "u:$EMBEDDER_USER:r-x"
+apply_directory_acl "$SEMANTIC_REFRESH_EMBEDDER" \
+  "u:$READER_USER:r-x" \
+  "u:$EMBEDDER_USER:rwx"
 
 apply_directory_acl "$CONTEXT" \
   "u:$READER_USER:rwx" \
