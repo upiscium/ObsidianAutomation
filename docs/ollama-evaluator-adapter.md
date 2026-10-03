@@ -15,6 +15,10 @@ GET /api/tags -> resolve exact model identifier/digest
         ↓
 Groundedness /api/chat
         ↓
+Knowledge Quality /api/chat
+        ↓
+Epistemic Status /api/chat
+        ↓
 for each candidate, in Evaluation Context order:
   Redundancy /api/chat
   Consistency proposer /api/chat
@@ -25,7 +29,7 @@ for each candidate, in Evaluation Context order:
         ↓
 all calls strict-parse and bind successfully
         ↓ deterministic severity aggregation
-conservative-triad-v0
+conservative-five-v0
         ↓
 15-Evaluation/<sha>.evaluation.json
 ```
@@ -35,8 +39,8 @@ No partial Evaluation Record is written if any provider call or parser/binding s
 The current prompt identity is:
 
 ```text
-knowledge-note-evaluator-v7
-1e3b5b820b9569dc99230abd3c352e7223c1b84a3b93b66667f4a7fc1da9dbac
+knowledge-note-evaluator-v8
+341d88c600e220361ed766118c3f2e362d8f5489ecc8094c330da60fd3ffa6b1
 ```
 
 The historical identities `knowledge-note-evaluator-v3` /
@@ -47,6 +51,8 @@ and `knowledge-note-evaluator-v5` /
 `ca9755c7b448be9bb2a42ab41ba182deb7b45785a4099d6ac85d854131a06291`,
 plus `knowledge-note-evaluator-v6` /
 `45439ec5f3ae0d9dd31fa5af37c45c572b3e520ac87548f0a739acf1ee5f9041`
+and `knowledge-note-evaluator-v7` /
+`1e3b5b820b9569dc99230abd3c352e7223c1b84a3b93b66667f4a7fc1da9dbac`
 remain readable in recipes for audit. Current runtime preflight blocks historical
 recipes before provider contact; unknown and cross-paired prompt version/hash
 identities are rejected.
@@ -77,7 +83,7 @@ Before inference, the adapter verifies:
 3. the exact `05-Context` bound by the Generation Record hash-validates;
 4. `14-Evaluation-Context` is bound to the same proposal and accepted mutation;
 5. endpoint, timeout, model options, and implementation revision satisfy existing contracts;
-6. generated provider-call order exactly matches Groundedness followed by `(Redundancy, Consistency proposer, Consistency verifier*)` for every candidate in Evaluation Context order.
+6. generated provider-call order exactly matches Groundedness, Knowledge Quality, Epistemic Status, followed by `(Redundancy, Consistency proposer, Consistency verifier*)` for every candidate in Evaluation Context order.
 
 ## Model identity
 
@@ -143,17 +149,18 @@ The verifier receives only the two anchored quotes; proposer-generated rationale
 is intentionally absent so the verifier independently judges the pair. It does
 not receive or control candidate identity or path. The
 model never controls dimension, candidate identity, candidate path,
-recommendation, model identity, or aggregation policy. The current output contract is `knowledge-note-evaluator-output-v6`.
+recommendation, model identity, or aggregation policy. The current output contract is `knowledge-note-evaluator-output-v7`.
 
 ## Evidence isolation
 
-Groundedness receives:
+Groundedness, Knowledge Quality, and Epistemic Status each receive:
 
 ```text
 proposal + original generation input
 ```
 
-Each Redundancy or Consistency proposer call receives:
+They are independent passes with separate system prompts and structured
+assessments. Each Redundancy or Consistency proposer call receives:
 
 ```text
 proposal + exactly one evaluation_candidate
@@ -271,7 +278,7 @@ Raw prompts, raw model responses, and partial pairwise outputs are not persisted
 
 ## Recommendation authority
 
-`conservative-triad-v0` remains unchanged:
+`conservative-five-v0` remains unchanged:
 
 ```text
 proceed
