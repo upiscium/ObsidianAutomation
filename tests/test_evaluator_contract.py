@@ -17,6 +17,7 @@ from obsidian_automation.evaluator_contract import (
     EVALUATOR_PROMPT_TEMPLATE_V6_SHA256,
     EVALUATOR_PROMPT_TEMPLATE_V6_VERSION,
     EVALUATOR_PROMPT_TEMPLATE_V7_SHA256,
+    EVALUATOR_PROMPT_TEMPLATE_V7_VERSION,
     EVALUATOR_OUTPUT_CONTRACT_VERSION,
     EVALUATOR_PROMPT_TEMPLATE_VERSION,
     MAX_EVALUATOR_WALL_SECONDS,
@@ -54,6 +55,7 @@ from obsidian_automation.evaluator_contract import (
 def _output(**overrides: object) -> EvaluatorOutput:
     values: dict[str, object] = {
         "groundedness": "pass",
+        "quality": "pass",
         "redundancy": "none",
         "consistency": "pass",
         "findings": (),
@@ -708,6 +710,7 @@ def test_pairwise_aggregation_uses_strongest_severity_and_winning_findings_only(
     consistency_pairs = (consistency_pairs[0], consistency_pairs[1])
     aggregated = aggregate_evaluator_outputs(
         groundedness=DimensionEvaluatorOutput("groundedness", "pass", ()),
+        quality=DimensionEvaluatorOutput("quality", "pass", ()),
         redundancy_pairs=redundancy_pairs,
         consistency_pairs=consistency_pairs,
     )
@@ -781,6 +784,7 @@ def test_consistency_aggregation_keeps_only_winning_conflicts_in_candidate_order
 
     output = aggregate_evaluator_outputs(
         groundedness=DimensionEvaluatorOutput("groundedness", "pass", ()),
+        quality=DimensionEvaluatorOutput("quality", "pass", ()),
         redundancy_pairs=tuple(
             CandidateEvaluatorOutput(
                 "redundancy",
@@ -832,12 +836,14 @@ def test_consistency_aggregation_keeps_only_winning_conflicts_in_candidate_order
 def test_pairwise_aggregation_defaults_when_no_candidates_exist() -> None:
     aggregated = aggregate_evaluator_outputs(
         groundedness=DimensionEvaluatorOutput("groundedness", "pass", ()),
+        quality=DimensionEvaluatorOutput("quality", "pass", ()),
         redundancy_pairs=(),
         consistency_pairs=(),
     )
 
     assert aggregated == EvaluatorOutput(
         groundedness="pass",
+        quality="pass",
         redundancy="none",
         consistency="pass",
         findings=(),
@@ -882,9 +888,11 @@ def test_recommendation_policy_remains_deterministic_and_conservative() -> None:
     assert recommendation_for(_output()) == "proceed"
     assert recommendation_for(_output(redundancy="possible")) == "manual_review"
     assert recommendation_for(_output(groundedness="unknown")) == "manual_review"
+    assert recommendation_for(_output(quality="unknown")) == "manual_review"
     assert recommendation_for(_output(consistency="unknown")) == "manual_review"
     assert recommendation_for(_output(redundancy="likely")) == "do_not_proceed"
     assert recommendation_for(_output(groundedness="concern")) == "do_not_proceed"
+    assert recommendation_for(_output(quality="concern")) == "do_not_proceed"
     assert recommendation_for(_output(consistency="concern")) == "do_not_proceed"
     assert to_evaluation_assessment(_output()).recommendation == "proceed"
 
@@ -932,6 +940,7 @@ def test_prompts_isolate_every_candidate_pair() -> None:
 
     assert tuple((prompt.dimension, prompt.candidate_path) for prompt in prompts) == (
         ("groundedness", None),
+        ("quality", None),
         ("redundancy", "11-Knowledge/existing.md"),
         ("consistency", "11-Knowledge/existing.md"),
         ("redundancy", "11-Knowledge/unrelated.md"),
@@ -941,18 +950,21 @@ def test_prompts_isolate_every_candidate_pair() -> None:
     groundedness = json.loads(prompts[0].user)
     assert groundedness["generation_input"]["query"] == "Nextcloud Obsidian Vault 共有"
     assert "evaluation_candidate" not in groundedness
+    quality = json.loads(prompts[1].user)
+    assert quality["generation_input"] == groundedness["generation_input"]
+    assert "evaluation_candidate" not in quality
 
-    for prompt in prompts[1:]:
+    for prompt in prompts[2:]:
         payload = json.loads(prompt.user)
         assert "generation_input" not in payload
         assert "evaluation_candidates" not in payload
         assert payload["evaluation_candidate"]["path"] == prompt.candidate_path
         assert "score" not in payload["evaluation_candidate"]
 
-    first_redundancy = json.loads(prompts[1].user)
+    first_redundancy = json.loads(prompts[2].user)
     assert first_redundancy["evaluation_candidate"]["path"] == "11-Knowledge/existing.md"
-    assert "unrelated.md" not in prompts[1].user
-    assert "exactly one evaluation_candidate" in prompts[1].system
+    assert "unrelated.md" not in prompts[2].user
+    assert "exactly one evaluation_candidate" in prompts[2].system
     assert all(
         prompt.template_version == EVALUATOR_PROMPT_TEMPLATE_VERSION
         for prompt in prompts
@@ -964,6 +976,7 @@ def test_prompts_isolate_every_candidate_pair() -> None:
 def test_dimension_schemas_are_minimal_ollama_compatible_and_authority_free() -> None:
     expected_sets = {
         "groundedness": {"pass", "concern", "unknown"},
+        "quality": {"pass", "concern", "unknown"},
         "redundancy": {"none", "possible", "likely"},
         "consistency": {"pass", "concern", "unknown"},
     }
@@ -1024,11 +1037,13 @@ def test_prompt_template_hash_binds_pairwise_strategy_and_versions() -> None:
     assert value["template_version"] == EVALUATOR_PROMPT_TEMPLATE_VERSION
     assert value["output_contract_version"] == EVALUATOR_OUTPUT_CONTRACT_VERSION
     assert value["recommendation_policy_version"] == RECOMMENDATION_POLICY_VERSION
-    assert value["strategy"] == "groundedness-plus-pairwise-candidates-with-independent-verifier-v2"
+    assert value["strategy"] == "groundedness-quality-plus-pairwise-candidates-with-independent-verifier-v3"
     assert value["pass_order"] == [
         "groundedness",
+        "quality",
         "candidate:(redundancy,consistency_proposer,consistency_verifier*)*",
     ]
+    assert value["aggregation"]["quality"] == ["pass", "unknown", "concern"]
     assert value["aggregation"]["redundancy"] == ["none", "possible", "likely"]
     assert value["aggregation"]["consistency"] == ["pass", "unknown", "concern"]
     assert value["aggregation"]["conflicts"] == "verified-contradiction-only"
@@ -1044,12 +1059,13 @@ def test_prompt_template_hash_binds_pairwise_strategy_and_versions() -> None:
 
 
 def test_contract_versions_and_supported_prompt_identity_pairs_are_exact() -> None:
-    assert EVALUATOR_OUTPUT_CONTRACT_VERSION == "knowledge-note-evaluator-output-v6"
-    assert EVALUATOR_PROMPT_TEMPLATE_VERSION == "knowledge-note-evaluator-v7"
+    assert EVALUATOR_OUTPUT_CONTRACT_VERSION == "knowledge-note-evaluator-output-v7"
+    assert EVALUATOR_PROMPT_TEMPLATE_VERSION == "knowledge-note-evaluator-v8"
     assert EVALUATOR_PROMPT_TEMPLATE_V3_VERSION == "knowledge-note-evaluator-v3"
     assert EVALUATOR_PROMPT_TEMPLATE_V4_VERSION == "knowledge-note-evaluator-v4"
     assert EVALUATOR_PROMPT_TEMPLATE_V5_VERSION == "knowledge-note-evaluator-v5"
     assert EVALUATOR_PROMPT_TEMPLATE_V6_VERSION == "knowledge-note-evaluator-v6"
+    assert EVALUATOR_PROMPT_TEMPLATE_V7_VERSION == "knowledge-note-evaluator-v7"
     assert EVALUATOR_PROMPT_TEMPLATE_V3_SHA256 == (
         "bf6265294a4b346f12d1951f594760c80221380ccee9993c6ab866b6b1eca937"
     )
@@ -1064,10 +1080,13 @@ def test_contract_versions_and_supported_prompt_identity_pairs_are_exact() -> No
         EVALUATOR_PROMPT_TEMPLATE_V4_VERSION: EVALUATOR_PROMPT_TEMPLATE_V4_SHA256,
         EVALUATOR_PROMPT_TEMPLATE_V5_VERSION: EVALUATOR_PROMPT_TEMPLATE_V5_SHA256,
         EVALUATOR_PROMPT_TEMPLATE_V6_VERSION: EVALUATOR_PROMPT_TEMPLATE_V6_SHA256,
-        EVALUATOR_PROMPT_TEMPLATE_VERSION: EVALUATOR_PROMPT_TEMPLATE_V7_SHA256,
+        EVALUATOR_PROMPT_TEMPLATE_V7_VERSION: EVALUATOR_PROMPT_TEMPLATE_V7_SHA256,
+        EVALUATOR_PROMPT_TEMPLATE_VERSION: prompt_template_sha256(),
     }
-    assert prompt_template_sha256() == EVALUATOR_PROMPT_TEMPLATE_V7_SHA256
-    assert RECOMMENDATION_POLICY_VERSION == "conservative-triad-v0"
+    assert supported_prompt_template_hashes()[EVALUATOR_PROMPT_TEMPLATE_V7_VERSION] == (
+        EVALUATOR_PROMPT_TEMPLATE_V7_SHA256
+    )
+    assert RECOMMENDATION_POLICY_VERSION == "conservative-quality-quad-v1"
 
 
 def test_consistency_prompt_defines_explicit_incompatibility_not_scope_difference() -> None:
@@ -1076,7 +1095,8 @@ def test_consistency_prompt_defines_explicit_incompatibility_not_scope_differenc
         proposal_content="# Generated\n\nProposal body.\n",
         generation_context=_generation_context(),
         evaluation_context=_evaluation_context(),
-    )[2]
+    )
+    prompt = next(item for item in prompt if item.dimension == "consistency")
 
     assert "explicit material factual or procedural incompatibility" in prompt.system
     assert "cannot both be true or followed in the same relevant context" in prompt.system
@@ -1182,6 +1202,7 @@ def test_production_like_scope_difference_is_pass_and_direct_procedure_conflict_
 
     aggregated = aggregate_evaluator_outputs(
         groundedness=DimensionEvaluatorOutput("groundedness", "pass", ()),
+        quality=DimensionEvaluatorOutput("quality", "pass", ()),
         redundancy_pairs=(
             CandidateEvaluatorOutput(
                 "redundancy",
