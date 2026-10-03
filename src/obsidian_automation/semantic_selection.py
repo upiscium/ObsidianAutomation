@@ -621,6 +621,112 @@ def _unique_source_rows(
     return tuple(selected)
 
 
+def _project_distill_v3_support_rows(
+    ranked: Sequence[RankedSemanticChunk],
+    *,
+    anchor: SemanticCandidate,
+    candidates: Sequence[SemanticCandidate],
+    max_selected: int,
+) -> tuple[
+    tuple[RankedSemanticChunk, ...],
+    dict[str, object],
+]:
+    candidate_map = _candidate_by_chunk(candidates)
+    anchor_chunk_id = anchor.chunk.chunk_id
+    anchor_row = next(
+        (item for item in ranked if item.chunk_id == anchor_chunk_id),
+        None,
+    )
+    if anchor_row is None:
+        raise SemanticSelectionError(
+            "semantic-project-distill-v3 ranked rows do not contain anchor"
+        )
+
+    selected: list[RankedSemanticChunk] = [anchor_row]
+    accepted_supports: list[SemanticCandidate] = []
+    considered_paths = {anchor.source.path.casefold()}
+    rejections: list[dict[str, object]] = []
+    examined = 0
+
+    for row in ranked:
+        if len(selected) >= max_selected:
+            break
+        path_key = row.source_path.casefold()
+        if path_key in considered_paths:
+            continue
+        considered_paths.add(path_key)
+        examined += 1
+
+        candidate = candidate_map.get(row.chunk_id)
+        if candidate is None:
+            raise SemanticSelectionError(
+                "semantic-project-distill-v3 ranked chunk is not in candidate set"
+            )
+
+        anchor_similarity = _round(
+            _cosine(
+                anchor.vector.vector,
+                candidate.vector.vector,
+            )
+        )
+        if anchor_similarity < PROJECT_DISTILL_V3_SUPPORT_RELEVANCE_MIN:
+            rejections.append(
+                {
+                    "source_path": row.source_path,
+                    "reason": "anchor_relevance_below_min",
+                    "anchor_similarity": anchor_similarity,
+                    "max_prior_support_similarity": None,
+                }
+            )
+            continue
+
+        max_prior_support_similarity: float | None = None
+        if accepted_supports:
+            max_prior_support_similarity = _round(
+                max(
+                    _cosine(
+                        candidate.vector.vector,
+                        prior.vector.vector,
+                    )
+                    for prior in accepted_supports
+                )
+            )
+            if (
+                max_prior_support_similarity
+                >= PROJECT_DISTILL_V3_SUPPORT_REDUNDANCY_MAX
+            ):
+                rejections.append(
+                    {
+                        "source_path": row.source_path,
+                        "reason": "support_redundancy_above_max",
+                        "anchor_similarity": anchor_similarity,
+                        "max_prior_support_similarity": (
+                            max_prior_support_similarity
+                        ),
+                    }
+                )
+                continue
+
+        selected.append(row)
+        accepted_supports.append(candidate)
+
+    observations: dict[str, object] = {
+        "support_quality_strategy": (
+            PROJECT_DISTILL_V3_SUPPORT_QUALITY_STRATEGY
+        ),
+        "support_relevance_min": (
+            PROJECT_DISTILL_V3_SUPPORT_RELEVANCE_MIN
+        ),
+        "support_redundancy_max": (
+            PROJECT_DISTILL_V3_SUPPORT_REDUNDANCY_MAX
+        ),
+        "support_candidates_examined": examined,
+        "support_candidates_accepted": len(accepted_supports),
+        "support_rejections": rejections,
+    }
+    return tuple(selected), observations
+
+
 def _cluster_coherence(
     selected: Sequence[RankedSemanticChunk],
     candidate_map: Mapping[str, SemanticCandidate],
