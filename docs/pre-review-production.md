@@ -155,7 +155,7 @@ mirror. Automatic refresh is opt-in through
 `/etc/obsidian-ai/semantic-index-refresh.env`; see
 [Automatic Semantic Index refresh v1](semantic-index-auto-refresh-v1.md).
 
-Only `deep-knowledge-v1` is admitted into the existing Knowledge pre-review chain. Reader first enforces the versioned Semantic Corpus structural-content rule and the deterministic deep-Knowledge evidence-sufficiency gate; evidence failures do not call the provider. Current deep-Knowledge generation uses the Knowledge-only provider schema introduced in v4 and the reusable-synthesis v5 prompt. Historical v2/v3 `no_candidate` artifacts remain readable, but new provider generation does not expose that branch. Idea discovery and Project adoption remain operator-driven.
+Only `deep-knowledge-v1` is admitted into the existing Knowledge pre-review chain. Reader first enforces the versioned Semantic Corpus structural-content rule and the deterministic deep-Knowledge evidence-sufficiency gate; evidence failures do not call the provider. Current deep-Knowledge generation uses the Knowledge-only provider schema introduced in v4, the reusable-synthesis v5 behavior, and the epistemic-status-preserving `deep-knowledge-generator-v6` prompt. Historical v2/v3 `no_candidate` artifacts remain readable, but new provider generation does not expose that branch. Idea discovery and Project adoption remain operator-driven.
 
 See
 [Semantic Deep Knowledge Production v1](semantic-deep-knowledge-production-v1.md).
