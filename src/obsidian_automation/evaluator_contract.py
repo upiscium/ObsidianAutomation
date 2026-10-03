@@ -1493,13 +1493,15 @@ def prompt_template_bytes() -> bytes:
             "strategy": EVALUATOR_STRATEGY_VERSION,
             "pass_order": [
                 "groundedness",
+                "knowledge_quality",
+                "epistemic_status",
                 "candidate:(redundancy,consistency_proposer,consistency_verifier*)*",
             ],
             "passes": {
                 dimension: {
                     "system": _DIMENSION_SYSTEMS[dimension],
                     "output_schema": _output_schema_for(dimension),
-                    "user_payload_version": 7,
+                    "user_payload_version": 8,
                 }
                 for dimension in _DIMENSIONS
             }
@@ -1507,10 +1509,12 @@ def prompt_template_bytes() -> bytes:
                 "consistency_verifier": {
                     "system": _CONSISTENCY_VERIFIER_SYSTEM,
                     "output_schema": consistency_verifier_schema(),
-                    "user_payload_version": 7,
+                    "user_payload_version": 8,
                 }
             },
             "aggregation": {
+                "knowledge_quality": ["pass", "unknown", "concern"],
+                "epistemic_status": ["pass", "unknown", "concern"],
                 "redundancy": ["none", "possible", "likely"],
                 "consistency": ["pass", "unknown", "concern"],
                 "findings": "winning-severity-only",
@@ -1532,7 +1536,8 @@ def supported_prompt_template_hashes() -> Mapping[str, str]:
         EVALUATOR_PROMPT_TEMPLATE_V4_VERSION: EVALUATOR_PROMPT_TEMPLATE_V4_SHA256,
         EVALUATOR_PROMPT_TEMPLATE_V5_VERSION: EVALUATOR_PROMPT_TEMPLATE_V5_SHA256,
         EVALUATOR_PROMPT_TEMPLATE_V6_VERSION: EVALUATOR_PROMPT_TEMPLATE_V6_SHA256,
-        EVALUATOR_PROMPT_TEMPLATE_VERSION: EVALUATOR_PROMPT_TEMPLATE_V7_SHA256,
+        EVALUATOR_PROMPT_TEMPLATE_V7_VERSION: EVALUATOR_PROMPT_TEMPLATE_V7_SHA256,
+        EVALUATOR_PROMPT_TEMPLATE_VERSION: prompt_template_sha256(),
     }
 
 
@@ -1586,27 +1591,29 @@ def render_evaluator_prompts(
     template_sha = prompt_template_sha256()
     prompts: list[EvaluatorPrompt] = []
 
-    groundedness_payload = {
-        "payload_version": 7,
-        "dimension": "groundedness",
-        "proposal": proposal,
-        "generation_input": {
-            "query": generation_context.query,
-            "sources": _generation_sources(generation_context),
-        },
+    generation_input = {
+        "query": generation_context.query,
+        "sources": _generation_sources(generation_context),
     }
-    prompts.append(
-        EvaluatorPrompt(
-            dimension="groundedness",
-            candidate_path=None,
-            template_version=EVALUATOR_PROMPT_TEMPLATE_VERSION,
-            template_sha256=template_sha,
-            system=_DIMENSION_SYSTEMS["groundedness"],
-            user=_canonical_json_bytes(groundedness_payload).decode("utf-8"),
-            output_schema=output_schema("groundedness"),
-            pass_kind="groundedness",
+    for dimension in _GENERATION_INPUT_DIMENSIONS:
+        payload = {
+            "payload_version": 8,
+            "dimension": dimension,
+            "proposal": proposal,
+            "generation_input": generation_input,
+        }
+        prompts.append(
+            EvaluatorPrompt(
+                dimension=dimension,
+                candidate_path=None,
+                template_version=EVALUATOR_PROMPT_TEMPLATE_VERSION,
+                template_sha256=template_sha,
+                system=_DIMENSION_SYSTEMS[dimension],
+                user=_canonical_json_bytes(payload).decode("utf-8"),
+                output_schema=output_schema(dimension),
+                pass_kind=dimension,
+            )
         )
-    )
 
     for candidate in evaluation_context.candidates:
         candidate_payload = _candidate_payload(candidate)
@@ -1615,7 +1622,7 @@ def render_evaluator_prompts(
         for dimension in _PAIRWISE_DIMENSIONS:
             if dimension == "consistency":
                 payload = {
-                    "payload_version": 7,
+                    "payload_version": 8,
                     "dimension": dimension,
                     "proposal": {
                         "target_path": target_path,
@@ -1629,7 +1636,7 @@ def render_evaluator_prompts(
                 }
             else:
                 payload = {
-                    "payload_version": 7,
+                    "payload_version": 8,
                     "dimension": dimension,
                     "proposal": proposal,
                     "evaluation_candidate": candidate_payload,
@@ -1662,7 +1669,7 @@ def render_consistency_verifier_prompt(
     path = _validated_candidate_path(candidate_path)
     normalized = _validated_bound_conflict_proposal(proposal)
     payload = {
-        "payload_version": 7,
+        "payload_version": 8,
         "dimension": "consistency_verifier",
         "proposal_quote": normalized.proposal_quote,
         "candidate_quote": normalized.candidate_quote,
