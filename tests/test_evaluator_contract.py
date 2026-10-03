@@ -875,6 +875,7 @@ def test_pairwise_aggregation_requires_same_candidate_order() -> None:
     with pytest.raises(ArtifactLifecycleError, match="candidate sets"):
         aggregate_evaluator_outputs(
             groundedness=DimensionEvaluatorOutput("groundedness", "pass", ()),
+            quality=DimensionEvaluatorOutput("quality", "pass", ()),
             redundancy_pairs=(
                 CandidateEvaluatorOutput("redundancy", "11-Knowledge/a.md", "none", ()),
             ),
@@ -971,6 +972,27 @@ def test_prompts_isolate_every_candidate_pair() -> None:
     )
     assert len({prompt.template_sha256 for prompt in prompts}) == 1
     assert prompts[0].template_sha256 == prompt_template_sha256()
+
+
+def test_quality_prompt_separates_reusability_and_epistemic_status() -> None:
+    prompts = render_evaluator_prompts(
+        target_path="11-Knowledge/generated.md",
+        proposal_content="# Generated\n\nCandidate body.\n",
+        generation_context=_generation_context(),
+        evaluation_context=_evaluation_context(),
+    )
+    quality = next(item for item in prompts if item.dimension == "quality")
+    payload = json.loads(quality.user)
+
+    assert quality.pass_kind == "quality"
+    assert quality.candidate_path is None
+    assert payload["dimension"] == "quality"
+    assert payload["generation_input"]["sources"]
+    assert "evaluation_candidate" not in payload
+    assert "durable Knowledge contribution" in quality.system
+    assert "Project-local recap" in quality.system
+    assert "Preserve epistemic status" in quality.system
+    assert "Formatting, prose length" in quality.system
 
 
 def test_dimension_schemas_are_minimal_ollama_compatible_and_authority_free() -> None:
