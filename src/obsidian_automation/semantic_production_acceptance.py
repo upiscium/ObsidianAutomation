@@ -599,6 +599,7 @@ def observe_selection_acceptance(
                 in {
                     "semantic-project-distill-v1",
                     "semantic-project-distill-v2",
+                    "semantic-project-distill-v3",
                 }
                 else DEFAULT_RETRIEVAL_PROFILE
             ),
@@ -613,6 +614,34 @@ def observe_selection_acceptance(
             ),
             "knowledge_max_similarity": (
                 selection.novelty.knowledge_max_similarity
+            ),
+            "support_quality": (
+                {
+                    "strategy": selection.policy_observations.get(
+                        "support_quality_strategy"
+                    ),
+                    "relevance_min": selection.policy_observations.get(
+                        "support_relevance_min"
+                    ),
+                    "redundancy_max": selection.policy_observations.get(
+                        "support_redundancy_max"
+                    ),
+                    "candidates_examined": selection.policy_observations.get(
+                        "support_candidates_examined"
+                    ),
+                    "candidates_accepted": selection.policy_observations.get(
+                        "support_candidates_accepted"
+                    ),
+                    "rejection_count": len(
+                        selection.policy_observations.get(
+                            "support_rejections",
+                            [],
+                        )
+                    ),
+                }
+                if selection.selection_policy
+                == "semantic-project-distill-v3"
+                else None
             ),
             "cadence_state_unchanged": True,
         },
