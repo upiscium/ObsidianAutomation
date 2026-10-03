@@ -313,9 +313,13 @@ it cannot replace or invalidate the previous content-addressed index. The new
 index is published only after Reader finalization succeeds against the current
 mirror snapshot.
 
-The first rollout is intentionally operator-driven/offline. No systemd timer,
-Input Planner selection, Generator Context creation, or automatic generation
-behavior is changed by this stage.
+The Phase B primitives remain independently operator-runnable. Production
+automation is layered on top by
+[Automatic Semantic Index refresh v1](semantic-index-auto-refresh-v1.md):
+a successful Vault pull can trigger Reader prepare -> Embedder incremental
+embedding -> Reader finalize/activate. The finalized Semantic Index artifacts
+remain unchanged and content addressed; only the separate Reader-owned active
+binding is mutable control state.
 
 ## Observability
 
