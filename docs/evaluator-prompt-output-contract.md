@@ -31,7 +31,7 @@ all provider calls strict-parse successfully
         ↓
 deterministic per-dimension severity aggregation
         ↓
-conservative-triad-v0
+conservative-five-v0
         ↓
 15-Evaluation
         ↓ advisory input
@@ -73,24 +73,27 @@ For a Consistency pass, the model always returns a `conflicts` array. A concern 
 The current output contract version is:
 
 ```text
-knowledge-note-evaluator-output-v6
+knowledge-note-evaluator-output-v7
 ```
 
 The current prompt/input contract is:
 
 ```text
-knowledge-note-evaluator-v7
+knowledge-note-evaluator-v8
 ```
 
 The current prompt-template SHA-256 is:
 
 ```text
-1e3b5b820b9569dc99230abd3c352e7223c1b84a3b93b66667f4a7fc1da9dbac
+341d88c600e220361ed766118c3f2e362d8f5489ecc8094c330da60fd3ffa6b1
 ```
 
 Historical readable prompt identities remain exact version/hash pairs:
 
 ```text
+knowledge-note-evaluator-v7
+1e3b5b820b9569dc99230abd3c352e7223c1b84a3b93b66667f4a7fc1da9dbac
+
 knowledge-note-evaluator-v6
 45439ec5f3ae0d9dd31fa5af37c45c572b3e520ac87548f0a739acf1ee5f9041
 
@@ -104,7 +107,7 @@ knowledge-note-evaluator-v3
 bf6265294a4b346f12d1951f594760c80221380ccee9993c6ab866b6b1eca937
 ```
 
-Recipe parsing accepts the historical v3, v4, v5, and v6 pairs for readability and audit, but current runtime preflight requires the v7 pair and blocks historical recipes before provider contact. Unknown prompt identities and cross-paired version/hash values are rejected. The dimension, candidate identity, and recommendation are fixed outside the model; the model cannot return `candidate_path` or `recommendation`.
+Recipe parsing accepts the historical v3, v4, v5, v6, and v7 pairs for readability and audit, but current runtime preflight requires the v8 pair and blocks historical recipes before provider contact. Unknown prompt identities and cross-paired version/hash values are rejected. The dimension, candidate identity, and recommendation are fixed outside the model; the model cannot return `candidate_path` or `recommendation`.
 
 ## Groundedness pass
 
@@ -128,6 +131,42 @@ unknown
 ```
 
 Groundedness asks only whether material proposal claims are supported by the exact evidence supplied to the Generator.
+
+## Knowledge Quality pass
+
+Input is the same proposal + exact generation input boundary as Groundedness.
+
+Assessment values:
+
+```text
+pass
+concern
+unknown
+```
+
+This pass asks whether the candidate makes a durable, self-contained Knowledge
+contribution rather than mainly mirroring Project-local RQ/H lists, TODOs,
+status text, source structure, or a mechanical digest. Domain-specific Knowledge
+is valid; broad generalization is not required.
+
+## Epistemic Status pass
+
+This pass also receives only proposal + exact generation input.
+
+Assessment values:
+
+```text
+pass
+concern
+unknown
+```
+
+It checks that research questions, hypotheses, predictions, proposed designs,
+assumptions, limitations, conditional conclusions, and observed results retain
+their source epistemic status. Titles count as material claims. A question or
+prediction becoming an asserted effect, correlation, or causal result is a
+`concern`.
+
 
 ## Pairwise Redundancy
 
@@ -312,7 +351,7 @@ embedded LF line breaks exactly; `incompatibility` remains single-line.
 Version remains:
 
 ```text
-conservative-triad-v0
+conservative-five-v0
 ```
 
 ```text
@@ -346,7 +385,7 @@ The current prompt-template SHA binds:
 - the Consistency proposer/verifier pass order and verdict aggregation;
 - deterministic severity order;
 - bounded finding and conflict aggregation policy;
-- `conservative-triad-v0`.
+- `conservative-five-v0`.
 
 ## Structured-output compatibility
 
