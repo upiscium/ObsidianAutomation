@@ -470,7 +470,8 @@ def test_pairwise_pass_failure_does_not_persist_partial_evaluation(tmp_path: Pat
             transport=_transport_with_outputs(outputs, calls),
         )
 
-    assert len(calls) == 3
+    # tags + three generation-input passes + the failing redundancy pass.
+    assert len(calls) == 5
     assert list((state / EVALUATION_STAGE).iterdir()) == []
 
 
