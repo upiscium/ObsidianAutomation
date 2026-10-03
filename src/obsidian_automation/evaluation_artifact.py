@@ -1139,7 +1139,7 @@ def _validate_evaluation_record_bindings(
     context = load_evaluation_context(ai_root, evaluation_context)
     if context.proposal_sha256 != proposal or context.mutation_sha256 != mutation:
         raise ArtifactLifecycleError("evaluation context is bound to another mutation")
-    if record.record_version == EVALUATION_RECORD_VERSION:
+    if record.record_version >= PREVIOUS_EVALUATION_RECORD_VERSION:
         _validated_conflicts(
             record.assessment.conflicts,
             expected_paths={candidate.path for candidate in context.candidates},
@@ -1148,9 +1148,9 @@ def _validate_evaluation_record_bindings(
 
 def store_evaluation_record(ai_root: Path, record: EvaluationRecord) -> tuple[str, Path]:
     record_version = _record_version(record.record_version)
-    if record_version == LEGACY_EVALUATION_RECORD_VERSION:
-        # Legacy records are immutable evidence.  Parse/canonicalize them and
-        # validate their bindings, but never send them through the v2 builder.
+    if record_version != EVALUATION_RECORD_VERSION:
+        # Historical v1/v2 records are immutable evidence. Parse/canonicalize
+        # them and validate their bindings without upgrading their schema.
         normalized = parse_evaluation_record(record.to_json_bytes())
         _validate_evaluation_record_bindings(ai_root, normalized)
     else:
@@ -1173,6 +1173,8 @@ def store_evaluation_record(ai_root: Path, record: EvaluationRecord) -> tuple[st
             recommendation=record.assessment.recommendation,
             findings=record.assessment.findings,
             conflicts=record.assessment.conflicts,
+            knowledge_quality=record.assessment.knowledge_quality or "pass",
+            epistemic_status=record.assessment.epistemic_status or "pass",
             evaluated_at=record.evaluated_at,
         )
     data = normalized.to_json_bytes()
