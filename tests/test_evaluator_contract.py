@@ -18,6 +18,8 @@ from obsidian_automation.evaluator_contract import (
     EVALUATOR_PROMPT_TEMPLATE_V6_VERSION,
     EVALUATOR_PROMPT_TEMPLATE_V7_SHA256,
     EVALUATOR_PROMPT_TEMPLATE_V7_VERSION,
+    EVALUATOR_PROMPT_TEMPLATE_V8_SHA256,
+    EVALUATOR_PROMPT_TEMPLATE_V8_VERSION,
     EVALUATOR_OUTPUT_CONTRACT_VERSION,
     EVALUATOR_PROMPT_TEMPLATE_VERSION,
     MAX_EVALUATOR_WALL_SECONDS,
@@ -1075,12 +1077,13 @@ def test_prompt_template_hash_binds_pairwise_strategy_and_versions() -> None:
 
 def test_contract_versions_and_supported_prompt_identity_pairs_are_exact() -> None:
     assert EVALUATOR_OUTPUT_CONTRACT_VERSION == "knowledge-note-evaluator-output-v7"
-    assert EVALUATOR_PROMPT_TEMPLATE_VERSION == "knowledge-note-evaluator-v8"
+    assert EVALUATOR_PROMPT_TEMPLATE_VERSION == "knowledge-note-evaluator-v9"
     assert EVALUATOR_PROMPT_TEMPLATE_V3_VERSION == "knowledge-note-evaluator-v3"
     assert EVALUATOR_PROMPT_TEMPLATE_V4_VERSION == "knowledge-note-evaluator-v4"
     assert EVALUATOR_PROMPT_TEMPLATE_V5_VERSION == "knowledge-note-evaluator-v5"
     assert EVALUATOR_PROMPT_TEMPLATE_V6_VERSION == "knowledge-note-evaluator-v6"
     assert EVALUATOR_PROMPT_TEMPLATE_V7_VERSION == "knowledge-note-evaluator-v7"
+    assert EVALUATOR_PROMPT_TEMPLATE_V8_VERSION == "knowledge-note-evaluator-v8"
     assert EVALUATOR_PROMPT_TEMPLATE_V3_SHA256 == (
         "bf6265294a4b346f12d1951f594760c80221380ccee9993c6ab866b6b1eca937"
     )
@@ -1093,18 +1096,41 @@ def test_contract_versions_and_supported_prompt_identity_pairs_are_exact() -> No
     assert EVALUATOR_PROMPT_TEMPLATE_V7_SHA256 == (
         "1e3b5b820b9569dc99230abd3c352e7223c1b84a3b93b66667f4a7fc1da9dbac"
     )
+    assert EVALUATOR_PROMPT_TEMPLATE_V8_SHA256 == (
+        "341d88c600e220361ed766118c3f2e362d8f5489ecc8094c330da60fd3ffa6b1"
+    )
     assert supported_prompt_template_hashes() == {
         EVALUATOR_PROMPT_TEMPLATE_V3_VERSION: EVALUATOR_PROMPT_TEMPLATE_V3_SHA256,
         EVALUATOR_PROMPT_TEMPLATE_V4_VERSION: EVALUATOR_PROMPT_TEMPLATE_V4_SHA256,
         EVALUATOR_PROMPT_TEMPLATE_V5_VERSION: EVALUATOR_PROMPT_TEMPLATE_V5_SHA256,
         EVALUATOR_PROMPT_TEMPLATE_V6_VERSION: EVALUATOR_PROMPT_TEMPLATE_V6_SHA256,
         EVALUATOR_PROMPT_TEMPLATE_V7_VERSION: EVALUATOR_PROMPT_TEMPLATE_V7_SHA256,
+        EVALUATOR_PROMPT_TEMPLATE_V8_VERSION: EVALUATOR_PROMPT_TEMPLATE_V8_SHA256,
         EVALUATOR_PROMPT_TEMPLATE_VERSION: prompt_template_sha256(),
     }
     assert prompt_template_sha256() == (
-        "341d88c600e220361ed766118c3f2e362d8f5489ecc8094c330da60fd3ffa6b1"
+        "fd707fda8186aeb09422bd3f0241b6bc1c136a07e7e1ad3acd0967f29b01e7d1"
     )
     assert RECOMMENDATION_POLICY_VERSION == "conservative-five-v0"
+
+
+def test_epistemic_status_prompt_requires_local_claim_detection() -> None:
+    prompt = next(
+        item
+        for item in render_evaluator_prompts(
+            target_path="11-Knowledge/generated.md",
+            proposal_content="# Generated\n\nProposal body.\n",
+            generation_context=_generation_context(),
+            evaluation_context=_evaluation_context(),
+        )
+        if item.dimension == "epistemic_status"
+    )
+
+    assert "atomic claim-by-claim check" in prompt.system
+    assert "one local strengthening is sufficient for concern" in prompt.system
+    assert "Do not average across the document" in prompt.system
+    assert "X improves Y" in prompt.system
+    assert "Titles count as material claims" in prompt.system
 
 
 def test_consistency_prompt_defines_explicit_incompatibility_not_scope_difference() -> None:
