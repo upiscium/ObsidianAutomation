@@ -64,11 +64,22 @@ BRIDGE_PAIR_MAX = 0.82
 PROJECT_DISTILL_V2_MAX_ANCHOR_SOURCES = 128
 PROJECT_DISTILL_V2_EXPLORATION_STRATEGY = "first-novel-project-source-v1"
 
+PROJECT_DISTILL_V3_MAX_ANCHOR_SOURCES = 128
+PROJECT_DISTILL_V3_EXPLORATION_STRATEGY = (
+    "first-novel-project-source-with-support-quality-v1"
+)
+PROJECT_DISTILL_V3_SUPPORT_QUALITY_STRATEGY = (
+    "anchor-relevance-and-incremental-diversity-v1"
+)
+PROJECT_DISTILL_V3_SUPPORT_RELEVANCE_MIN = 0.70
+PROJECT_DISTILL_V3_SUPPORT_REDUNDANCY_MAX = 0.88
+
 POLICIES = (
     "semantic-focus-v0",
     "semantic-project-distill-v0",
     "semantic-project-distill-v1",
     "semantic-project-distill-v2",
+    "semantic-project-distill-v3",
     "semantic-timeline-v0",
     "semantic-bridge-v0",
     "semantic-gap-v0",
@@ -501,6 +512,7 @@ def _retrieval_profile(policy: str) -> str:
     if policy in {
         "semantic-project-distill-v1",
         "semantic-project-distill-v2",
+        "semantic-project-distill-v3",
     }:
         return "semantic-retrieval-v1"
     return DEFAULT_RETRIEVAL_PROFILE
@@ -524,6 +536,7 @@ def _source_kind_weights(policy: str) -> dict[str, float]:
         "semantic-project-distill-v0",
         "semantic-project-distill-v1",
         "semantic-project-distill-v2",
+        "semantic-project-distill-v3",
     }:
         weights.update(
             {
@@ -818,6 +831,7 @@ def _policy_thresholds(policy: str) -> dict[str, float | None]:
         "semantic-project-distill-v0",
         "semantic-project-distill-v1",
         "semantic-project-distill-v2",
+        "semantic-project-distill-v3",
     }:
         knowledge_limit = PROJECT_KNOWLEDGE_SKIP_THRESHOLD
     elif policy == "semantic-timeline-v0":
