@@ -131,21 +131,29 @@ identity remains pinned by the submitted immutable recipe.
 
 ### Controlled Semantic Planner rollout
 
-The installed Input Planner unit remains `legacy` by default. To enable the
-first Semantic Planner production wave, configure
-`/etc/obsidian-ai/pre-review-input.env` with an exact reviewed index:
+The installed Input Planner unit remains `legacy` by default. Exact SHA
+binding remains available for controlled canaries. After the reviewed index is
+explicitly activated through the Semantic Index refresh control plane, normal
+semantic production should use the Reader-owned active binding:
 
 ```text
 AI_INPUT_MODE=semantic-deep-knowledge
-AI_INPUT_SEMANTIC_INDEX_SHA=<exact-reviewed-semantic-index-sha256>
+AI_INPUT_SEMANTIC_INDEX_SHA=active
 AI_INPUT_SEMANTIC_SELECTION_POLICY=semantic-project-distill-v3
 ```
 
+The Planner resolves `active` once per invocation to one exact finalized index
+SHA before any Selection/Context/job state is created. The durable job never
+stores a mutable alias.
+
 The accepted rollout pair is `semantic-project-distill-v3` with `semantic-retrieval-v1` (lexical 0.15 / vector 0.85). v3 retains novelty-aware deterministic Project-anchor exploration, then admits support rows only at anchor cosine >= 0.70 and rejects later support rows whose cosine to an already accepted support is >= 0.88. It does not force source-kind coverage or pad the cluster with weak support. Production acceptance cross-checks the retrieval profile and records the support-quality contract before it emits a canary plan.
 
-Do not use a mutable alias for the index. This rollout does not rebuild or
-advance the index automatically. Verify the exact index offline before enabling
-the mode.
+Semantic Index manifests remain immutable and content addressed. The only
+mutable control is `04-Index/semantic-active-index.json`, owned by Reader and
+atomically replaced only after a refreshed index finalizes against the current
+mirror. Automatic refresh is opt-in through
+`/etc/obsidian-ai/semantic-index-refresh.env`; see
+[Automatic Semantic Index refresh v1](semantic-index-auto-refresh-v1.md).
 
 Only `deep-knowledge-v1` is admitted into the existing Knowledge pre-review chain. Reader first enforces the versioned Semantic Corpus structural-content rule and the deterministic deep-Knowledge evidence-sufficiency gate; evidence failures do not call the provider. Current deep-Knowledge generation uses the Knowledge-only provider schema introduced in v4 and the reusable-synthesis v5 prompt. Historical v2/v3 `no_candidate` artifacts remain readable, but new provider generation does not expose that branch. Idea discovery and Project adoption remain operator-driven.
 
