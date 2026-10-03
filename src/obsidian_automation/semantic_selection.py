@@ -1234,6 +1234,7 @@ def parse_semantic_selection(data: bytes) -> SemanticSelectionRecord:
         policy in {
             "semantic-project-distill-v1",
             "semantic-project-distill-v2",
+            "semantic-project-distill-v3",
         }
         and observations.get("retrieval_profile") != _retrieval_profile(policy)
     ):
@@ -1289,6 +1290,183 @@ def parse_semantic_selection(data: bytes) -> SemanticSelectionRecord:
             raise SemanticSelectionError(
                 "semantic-project-distill-v2 prior skip reasons are invalid"
             )
+    if policy == "semantic-project-distill-v3":
+        expected = {
+            "retrieval_profile",
+            "exploration_strategy",
+            "anchor_candidate_rank",
+            "anchor_candidates_examined",
+            "anchor_candidate_pool_size",
+            "prior_skip_reasons",
+            "support_quality_strategy",
+            "support_relevance_min",
+            "support_redundancy_max",
+            "support_candidates_examined",
+            "support_candidates_accepted",
+            "support_rejections",
+        }
+        if set(observations) != expected:
+            raise SemanticSelectionError(
+                "semantic-project-distill-v3 policy observations do not match contract"
+            )
+        if (
+            observations["exploration_strategy"]
+            != PROJECT_DISTILL_V3_EXPLORATION_STRATEGY
+            or observations["support_quality_strategy"]
+            != PROJECT_DISTILL_V3_SUPPORT_QUALITY_STRATEGY
+        ):
+            raise SemanticSelectionError(
+                "semantic-project-distill-v3 strategy is invalid"
+            )
+        relevance_min = _require_score(
+            observations["support_relevance_min"],
+            label="support_relevance_min",
+        )
+        redundancy_max = _require_score(
+            observations["support_redundancy_max"],
+            label="support_redundancy_max",
+        )
+        if (
+            abs(
+                relevance_min
+                - PROJECT_DISTILL_V3_SUPPORT_RELEVANCE_MIN
+            )
+            > 1e-8
+            or abs(
+                redundancy_max
+                - PROJECT_DISTILL_V3_SUPPORT_REDUNDANCY_MAX
+            )
+            > 1e-8
+        ):
+            raise SemanticSelectionError(
+                "semantic-project-distill-v3 support thresholds are invalid"
+            )
+
+        rank = observations["anchor_candidate_rank"]
+        anchor_examined = observations["anchor_candidates_examined"]
+        pool_size = observations["anchor_candidate_pool_size"]
+        if (
+            type(rank) is not int
+            or type(anchor_examined) is not int
+            or type(pool_size) is not int
+            or rank < 1
+            or anchor_examined != rank
+            or pool_size < rank
+            or pool_size > PROJECT_DISTILL_V3_MAX_ANCHOR_SOURCES
+        ):
+            raise SemanticSelectionError(
+                "semantic-project-distill-v3 exploration bounds are invalid"
+            )
+        prior = observations["prior_skip_reasons"]
+        if (
+            not isinstance(prior, list)
+            or len(prior) != rank - 1
+            or any(
+                not isinstance(item, str)
+                or not item
+                or len(item) > 128
+                for item in prior
+            )
+        ):
+            raise SemanticSelectionError(
+                "semantic-project-distill-v3 prior skip reasons are invalid"
+            )
+
+        support_examined = observations["support_candidates_examined"]
+        support_accepted = observations["support_candidates_accepted"]
+        if (
+            type(support_examined) is not int
+            or type(support_accepted) is not int
+            or support_examined < 0
+            or support_examined > MAX_TOP_K
+            or support_accepted < 0
+            or support_accepted > support_examined
+            or support_accepted != len(selected) - 1
+        ):
+            raise SemanticSelectionError(
+                "semantic-project-distill-v3 support counts are invalid"
+            )
+
+        rejections = observations["support_rejections"]
+        if (
+            not isinstance(rejections, list)
+            or len(rejections) != support_examined - support_accepted
+        ):
+            raise SemanticSelectionError(
+                "semantic-project-distill-v3 support rejections are invalid"
+            )
+        rejected_paths: set[str] = set()
+        selected_paths = {
+            item.source_path.casefold()
+            for item in selected
+        }
+        for rejection in rejections:
+            if not isinstance(rejection, dict) or set(rejection) != {
+                "source_path",
+                "reason",
+                "anchor_similarity",
+                "max_prior_support_similarity",
+            }:
+                raise SemanticSelectionError(
+                    "semantic-project-distill-v3 support rejection is invalid"
+                )
+            source_path = rejection["source_path"]
+            if (
+                not isinstance(source_path, str)
+                or not source_path
+                or len(source_path) > 1024
+                or source_path.casefold() in rejected_paths
+                or source_path.casefold() in selected_paths
+            ):
+                raise SemanticSelectionError(
+                    "semantic-project-distill-v3 support rejection path is invalid"
+                )
+            rejected_paths.add(source_path.casefold())
+            reason = rejection["reason"]
+            anchor_similarity = _require_score(
+                rejection["anchor_similarity"],
+                label="support rejection anchor similarity",
+            )
+            prior_similarity_raw = rejection[
+                "max_prior_support_similarity"
+            ]
+            if not -1.0 <= anchor_similarity <= 1.0:
+                raise SemanticSelectionError(
+                    "semantic-project-distill-v3 support rejection similarity is invalid"
+                )
+            if reason == "anchor_relevance_below_min":
+                if (
+                    anchor_similarity
+                    >= PROJECT_DISTILL_V3_SUPPORT_RELEVANCE_MIN
+                    or prior_similarity_raw is not None
+                ):
+                    raise SemanticSelectionError(
+                        "semantic-project-distill-v3 relevance rejection is inconsistent"
+                    )
+            elif reason == "support_redundancy_above_max":
+                if prior_similarity_raw is None:
+                    raise SemanticSelectionError(
+                        "semantic-project-distill-v3 redundancy rejection is incomplete"
+                    )
+                prior_similarity = _require_score(
+                    prior_similarity_raw,
+                    label="support rejection prior similarity",
+                )
+                if (
+                    anchor_similarity
+                    < PROJECT_DISTILL_V3_SUPPORT_RELEVANCE_MIN
+                    or not -1.0 <= prior_similarity <= 1.0
+                    or prior_similarity
+                    < PROJECT_DISTILL_V3_SUPPORT_REDUNDANCY_MAX
+                ):
+                    raise SemanticSelectionError(
+                        "semantic-project-distill-v3 redundancy rejection is inconsistent"
+                    )
+            else:
+                raise SemanticSelectionError(
+                    "semantic-project-distill-v3 support rejection reason is invalid"
+                )
+
     return SemanticSelectionRecord(
         selection_policy=policy,
         semantic_index_sha256=index_sha,
