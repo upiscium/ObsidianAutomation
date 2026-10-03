@@ -17,6 +17,7 @@ from obsidian_automation.evaluator_contract import (
     EVALUATOR_PROMPT_TEMPLATE_V6_SHA256,
     EVALUATOR_PROMPT_TEMPLATE_V6_VERSION,
     EVALUATOR_PROMPT_TEMPLATE_V7_SHA256,
+    EVALUATOR_PROMPT_TEMPLATE_V7_VERSION,
     EVALUATOR_OUTPUT_CONTRACT_VERSION,
     EVALUATOR_PROMPT_TEMPLATE_VERSION,
     MAX_EVALUATOR_WALL_SECONDS,
@@ -54,6 +55,8 @@ from obsidian_automation.evaluator_contract import (
 def _output(**overrides: object) -> EvaluatorOutput:
     values: dict[str, object] = {
         "groundedness": "pass",
+        "knowledge_quality": "pass",
+        "epistemic_status": "pass",
         "redundancy": "none",
         "consistency": "pass",
         "findings": (),
@@ -882,9 +885,13 @@ def test_recommendation_policy_remains_deterministic_and_conservative() -> None:
     assert recommendation_for(_output()) == "proceed"
     assert recommendation_for(_output(redundancy="possible")) == "manual_review"
     assert recommendation_for(_output(groundedness="unknown")) == "manual_review"
+    assert recommendation_for(_output(knowledge_quality="unknown")) == "manual_review"
+    assert recommendation_for(_output(epistemic_status="unknown")) == "manual_review"
     assert recommendation_for(_output(consistency="unknown")) == "manual_review"
     assert recommendation_for(_output(redundancy="likely")) == "do_not_proceed"
     assert recommendation_for(_output(groundedness="concern")) == "do_not_proceed"
+    assert recommendation_for(_output(knowledge_quality="concern")) == "do_not_proceed"
+    assert recommendation_for(_output(epistemic_status="concern")) == "do_not_proceed"
     assert recommendation_for(_output(consistency="concern")) == "do_not_proceed"
     assert to_evaluation_assessment(_output()).recommendation == "proceed"
 
