@@ -27,7 +27,7 @@ EVALUATOR_OUTPUT_CONTRACT_V6_VERSION = "knowledge-note-evaluator-output-v6"
 EVALUATOR_OUTPUT_CONTRACT_V5_VERSION = "knowledge-note-evaluator-output-v5"
 EVALUATOR_OUTPUT_CONTRACT_V4_VERSION = "knowledge-note-evaluator-output-v4"
 EVALUATOR_OUTPUT_CONTRACT_V3_VERSION = "knowledge-note-evaluator-output-v3"
-EVALUATOR_PROMPT_TEMPLATE_VERSION = "knowledge-note-evaluator-v8"
+EVALUATOR_PROMPT_TEMPLATE_VERSION = "knowledge-note-evaluator-v9"
 EVALUATOR_PROMPT_TEMPLATE_V3_VERSION = "knowledge-note-evaluator-v3"
 EVALUATOR_PROMPT_TEMPLATE_V3_SHA256 = (
     "bf6265294a4b346f12d1951f594760c80221380ccee9993c6ab866b6b1eca937"
@@ -47,6 +47,10 @@ EVALUATOR_PROMPT_TEMPLATE_V6_SHA256 = (
 EVALUATOR_PROMPT_TEMPLATE_V7_VERSION = "knowledge-note-evaluator-v7"
 EVALUATOR_PROMPT_TEMPLATE_V7_SHA256 = (
     "1e3b5b820b9569dc99230abd3c352e7223c1b84a3b93b66667f4a7fc1da9dbac"
+)
+EVALUATOR_PROMPT_TEMPLATE_V8_VERSION = "knowledge-note-evaluator-v8"
+EVALUATOR_PROMPT_TEMPLATE_V8_SHA256 = (
+    "341d88c600e220361ed766118c3f2e362d8f5489ecc8094c330da60fd3ffa6b1"
 )
 # The shorter names mirror the generator contract's historical identity
 # constants and make the compatibility pair easy to consume.
@@ -171,29 +175,56 @@ redundancy or consistency with canonical Knowledge.
     + """
 This pass evaluates epistemic-status preservation only.
 
-Compare every material claim in the proposal with generation_input. Preserve
-whether the source presents a statement as an observed result/established fact,
-hypothesis or prediction, research question, proposed design, assumption,
-limitation, conditional conclusion, or open question.
+Use an atomic claim-by-claim check. Inspect the title first, then each material
+sentence, numbered item, bullet, heading that states a relationship, and
+conclusion independently. For each proposal claim, identify the strongest
+supporting source statement and compare certainty, causality, and empirical
+status.
 
 assessment:
-- pass: the proposal does not make any material claim more certain, causal, or
-  empirically established than its supporting generation input.
-- concern: at least one material statement strengthens source status, for
-  example turning a question/hypothesis/proposal into a result, asserting an
-  improvement/correlation/causal relationship that the sources only propose to
-  test, or dropping a material condition from a conditional conclusion.
-- unknown: source wording is too ambiguous to determine whether the proposal
-  strengthened a material claim.
+- pass: every material proposal claim is no stronger than its strongest
+  supporting generation-input statement.
+- concern: at least one material proposal claim is stronger than its supporting
+  source status. One local strengthening is sufficient for concern even when
+  the surrounding introduction, other bullets, or conclusion use cautious
+  wording.
+- unknown: at least one potentially material claim cannot be matched to source
+  wording clearly enough to determine whether status was strengthened, and no
+  definite strengthening was found.
 
-Titles count as material claims. Causal/result terms such as improves, causes,
-demonstrates, establishes, proves, confirms, correlates, or outperforms require
-selected source evidence reporting that relationship.
+Do not average across the document. Global hedges such as "this study examines",
+"is considered", "we evaluate", or "we test whether" do not neutralize a
+different sentence that directly asserts an effect or relationship.
+
+Preserve whether source material presents something as an observed
+result/established fact, hypothesis or prediction, research question, proposed
+design, assumption, limitation, conditional conclusion, or open question.
+
+Mandatory checks:
+- If a source asks whether X improves Y or predicts that X will improve Y, then
+  a proposal sentence saying "X improves Y" is concern unless another selected
+  source reports that result.
+- If sources propose comparing X and Y, a title or claim naming an established
+  correlation, superiority, effect, or causal relationship is concern unless
+  selected evidence reports it.
+- If a source gives a fallback or limited conclusion only under another
+  condition, dropping that dependency is concern.
+- Titles count as material claims and are checked independently from the body.
+
+Result-like terms such as improves, increases, reduces, causes, demonstrates,
+establishes, proves, confirms, correlates, is superior to, and outperforms
+require selected source evidence reporting that relationship. Equivalent
+wording in any language follows the same rule.
+
+For concern findings, identify the specific offending proposal claim and state
+the weaker source status that supports it (for example, research question,
+hypothesis, proposed comparison, or conditional conclusion).
 
 Do not penalize abstraction by itself: a reusable evaluation framework may
-synthesize several research questions as long as it says what is tested or
-predicted rather than claiming the predicted result occurred. Do not assess
-redundancy or consistency with canonical Knowledge in this pass.
+synthesize several research questions as long as each sentence says what is
+tested, predicted, or conditionally supported instead of asserting that the
+predicted result occurred. Do not assess redundancy or consistency with
+canonical Knowledge in this pass.
 """,
     "redundancy": _COMMON_SYSTEM
     + """
@@ -1537,6 +1568,7 @@ def supported_prompt_template_hashes() -> Mapping[str, str]:
         EVALUATOR_PROMPT_TEMPLATE_V5_VERSION: EVALUATOR_PROMPT_TEMPLATE_V5_SHA256,
         EVALUATOR_PROMPT_TEMPLATE_V6_VERSION: EVALUATOR_PROMPT_TEMPLATE_V6_SHA256,
         EVALUATOR_PROMPT_TEMPLATE_V7_VERSION: EVALUATOR_PROMPT_TEMPLATE_V7_SHA256,
+        EVALUATOR_PROMPT_TEMPLATE_V8_VERSION: EVALUATOR_PROMPT_TEMPLATE_V8_SHA256,
         EVALUATOR_PROMPT_TEMPLATE_VERSION: prompt_template_sha256(),
     }
 
