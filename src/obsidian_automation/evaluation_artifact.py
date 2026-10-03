@@ -46,9 +46,10 @@ EVALUATION_CONTEXT_POLICY_VERSION = "bm25-topk-recall-v0"
 DEFAULT_EVALUATION_TOP_K = 5
 MAX_EVALUATION_QUERY_CHARS = 4096
 MAX_EVALUATION_RECORD_BYTES = 64 * 1024
-MAX_FINDINGS = 16
+MAX_FINDINGS = 20
 MAX_FINDING_CHARS = 2048
-EVALUATION_RECORD_VERSION = 2
+EVALUATION_RECORD_VERSION = 3
+PREVIOUS_EVALUATION_RECORD_VERSION = 2
 LEGACY_EVALUATION_RECORD_VERSION = 1
 MAX_EVALUATION_CONFLICTS = 4
 MAX_EVALUATION_CONFLICT_FIELD_CHARS = 1000
@@ -62,6 +63,8 @@ MAX_CANDIDATE_PATH_CHARS = MAX_EVALUATION_CANDIDATE_PATH_CHARS
 
 _HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*$")
 _GROUNDEDNESS = {"pass", "concern", "unknown"}
+_KNOWLEDGE_QUALITY = {"pass", "concern", "unknown"}
+_EPISTEMIC_STATUS = {"pass", "concern", "unknown"}
 _REDUNDANCY = {"none", "possible", "likely"}
 _CONSISTENCY = {"pass", "concern", "unknown"}
 _RECOMMENDATION = {"proceed", "manual_review", "do_not_proceed"}
@@ -207,6 +210,8 @@ class EvaluationAssessment:
     recommendation: str
     findings: tuple[str, ...]
     conflicts: tuple[ConsistencyConflict, ...] = ()
+    knowledge_quality: str | None = None
+    epistemic_status: str | None = None
 
     def __post_init__(self) -> None:
         # The contract exposes tuples even when an older caller supplied a
@@ -568,9 +573,12 @@ def load_evaluation_context(ai_root: Path, context_sha256: str) -> EvaluationCon
 def _record_version(value: object) -> int:
     if type(value) is not int or value not in {
         LEGACY_EVALUATION_RECORD_VERSION,
+        PREVIOUS_EVALUATION_RECORD_VERSION,
         EVALUATION_RECORD_VERSION,
     }:
-        raise ArtifactLifecycleError("evaluation record_version must be integer 1 or 2")
+        raise ArtifactLifecycleError(
+            "evaluation record_version must be integer 1, 2, or 3"
+        )
     return value
 
 
@@ -735,15 +743,40 @@ def _recommendation_for_values(
     groundedness: str,
     redundancy: str,
     consistency: str,
+    knowledge_quality: str | None = None,
+    epistemic_status: str | None = None,
 ) -> str:
+    if knowledge_quality is None and epistemic_status is None:
+        if (
+            groundedness == "pass"
+            and redundancy == "none"
+            and consistency == "pass"
+        ):
+            return "proceed"
+        if (
+            groundedness == "concern"
+            or redundancy == "likely"
+            or consistency == "concern"
+        ):
+            return "do_not_proceed"
+        return "manual_review"
+
+    if knowledge_quality is None or epistemic_status is None:
+        raise ArtifactLifecycleError(
+            "current evaluation recommendation requires all quality dimensions"
+        )
     if (
         groundedness == "pass"
+        and knowledge_quality == "pass"
+        and epistemic_status == "pass"
         and redundancy == "none"
         and consistency == "pass"
     ):
         return "proceed"
     if (
         groundedness == "concern"
+        or knowledge_quality == "concern"
+        or epistemic_status == "concern"
         or redundancy == "likely"
         or consistency == "concern"
     ):
@@ -759,11 +792,28 @@ def _assessment(
     recommendation: str,
     findings: Sequence[str],
     conflicts: Sequence[ConsistencyConflict] = (),
+    knowledge_quality: str | None = None,
+    epistemic_status: str | None = None,
     record_version: int = EVALUATION_RECORD_VERSION,
 ) -> EvaluationAssessment:
     version = _record_version(record_version)
     if not isinstance(groundedness, str) or groundedness not in _GROUNDEDNESS:
         raise ArtifactLifecycleError("groundedness assessment is invalid")
+    if version == EVALUATION_RECORD_VERSION:
+        if (
+            not isinstance(knowledge_quality, str)
+            or knowledge_quality not in _KNOWLEDGE_QUALITY
+        ):
+            raise ArtifactLifecycleError("knowledge_quality assessment is invalid")
+        if (
+            not isinstance(epistemic_status, str)
+            or epistemic_status not in _EPISTEMIC_STATUS
+        ):
+            raise ArtifactLifecycleError("epistemic_status assessment is invalid")
+    elif knowledge_quality is not None or epistemic_status is not None:
+        raise ArtifactLifecycleError(
+            "historical evaluation record must not contain current quality dimensions"
+        )
     if not isinstance(redundancy, str) or redundancy not in _REDUNDANCY:
         raise ArtifactLifecycleError("redundancy assessment is invalid")
     if not isinstance(consistency, str) or consistency not in _CONSISTENCY:
@@ -786,24 +836,36 @@ def _assessment(
     normalized_conflicts = _validated_conflicts(conflicts)
     if version == LEGACY_EVALUATION_RECORD_VERSION:
         if normalized_conflicts:
-            raise ArtifactLifecycleError("legacy evaluation records must not contain conflicts")
+            raise ArtifactLifecycleError(
+                "legacy evaluation records must not contain conflicts"
+            )
     else:
         if consistency == "concern" and not normalized_conflicts:
             raise ArtifactLifecycleError(
-                "v2 consistency concern requires at least one conflict"
+                "current consistency concern requires at least one conflict"
             )
         if consistency in {"pass", "unknown"} and normalized_conflicts:
             raise ArtifactLifecycleError(
-                "v2 consistency pass or unknown must not contain conflicts"
+                "current consistency pass or unknown must not contain conflicts"
             )
         expected_recommendation = _recommendation_for_values(
             groundedness=groundedness,
             redundancy=redundancy,
             consistency=consistency,
+            knowledge_quality=(
+                knowledge_quality
+                if version == EVALUATION_RECORD_VERSION
+                else None
+            ),
+            epistemic_status=(
+                epistemic_status
+                if version == EVALUATION_RECORD_VERSION
+                else None
+            ),
         )
         if recommendation != expected_recommendation:
             raise ArtifactLifecycleError(
-                "v2 evaluation recommendation does not match conservative triad"
+                "evaluation recommendation does not match deterministic policy"
             )
     return EvaluationAssessment(
         groundedness=groundedness,
@@ -812,6 +874,8 @@ def _assessment(
         recommendation=recommendation,
         findings=tuple(normalized),
         conflicts=normalized_conflicts,
+        knowledge_quality=knowledge_quality,
+        epistemic_status=epistemic_status,
     )
 
 
@@ -827,6 +891,8 @@ def _assessment_json(
         recommendation=assessment.recommendation,
         findings=assessment.findings,
         conflicts=assessment.conflicts,
+        knowledge_quality=assessment.knowledge_quality,
+        epistemic_status=assessment.epistemic_status,
         record_version=version,
     )
     value: dict[str, object] = {
@@ -837,6 +903,9 @@ def _assessment_json(
         "findings": list(normalized.findings),
     }
     if version == EVALUATION_RECORD_VERSION:
+        value["knowledge_quality"] = normalized.knowledge_quality
+        value["epistemic_status"] = normalized.epistemic_status
+    if version >= PREVIOUS_EVALUATION_RECORD_VERSION:
         value["conflicts"] = [
             {
                 "candidate_path": conflict.candidate_path,
@@ -869,6 +938,8 @@ def build_evaluation_record(
     recommendation: str,
     findings: Sequence[str],
     conflicts: Sequence[ConsistencyConflict] = (),
+    knowledge_quality: str = "pass",
+    epistemic_status: str = "pass",
     evaluated_at: str | None = None,
 ) -> EvaluationRecord:
     proposal = _require_sha256(proposal_sha256, label="proposal_sha256")
@@ -897,6 +968,8 @@ def build_evaluation_record(
         recommendation=recommendation,
         findings=findings,
         conflicts=conflicts,
+        knowledge_quality=knowledge_quality,
+        epistemic_status=epistemic_status,
         record_version=EVALUATION_RECORD_VERSION,
     )
     _validated_conflicts(assessment.conflicts, expected_paths=candidate_paths)
@@ -974,15 +1047,19 @@ def parse_evaluation_record(data: bytes) -> EvaluationRecord:
         "recommendation",
         "findings",
     }
-    if record_version == EVALUATION_RECORD_VERSION:
+    if record_version >= PREVIOUS_EVALUATION_RECORD_VERSION:
         expected_assessment_properties.add("conflicts")
+    if record_version == EVALUATION_RECORD_VERSION:
+        expected_assessment_properties.update(
+            {"knowledge_quality", "epistemic_status"}
+        )
     if not isinstance(raw_assessment, dict) or set(raw_assessment) != expected_assessment_properties:
         raise ArtifactLifecycleError("evaluation assessment properties do not match contract")
     findings = raw_assessment["findings"]
     if not isinstance(findings, list):
         raise ArtifactLifecycleError("evaluation findings must be a list")
     conflicts: tuple[ConsistencyConflict, ...] = ()
-    if record_version == EVALUATION_RECORD_VERSION:
+    if record_version >= PREVIOUS_EVALUATION_RECORD_VERSION:
         raw_conflicts = raw_assessment["conflicts"]
         if not isinstance(raw_conflicts, list):
             raise ArtifactLifecycleError("evaluation conflicts must be a list")
@@ -1013,6 +1090,16 @@ def parse_evaluation_record(data: bytes) -> EvaluationRecord:
         recommendation=raw_assessment["recommendation"],
         findings=findings,
         conflicts=conflicts,
+        knowledge_quality=(
+            raw_assessment["knowledge_quality"]
+            if record_version == EVALUATION_RECORD_VERSION
+            else None
+        ),
+        epistemic_status=(
+            raw_assessment["epistemic_status"]
+            if record_version == EVALUATION_RECORD_VERSION
+            else None
+        ),
         record_version=record_version,
     )
     evaluated_at = value["evaluated_at"]
