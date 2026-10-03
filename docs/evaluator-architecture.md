@@ -82,7 +82,7 @@ freshness.
 
 ## Evaluator assessment contract
 
-Current Evaluation Records use version 2 and bind:
+Current Evaluation Records use version 3 and bind:
 
 - proposal SHA-256;
 - accepted mutation SHA-256;
@@ -97,9 +97,9 @@ Current Evaluation Records use version 2 and bind:
 The current prompt/output identities are:
 
 ```text
-output: knowledge-note-evaluator-output-v6
-prompt: knowledge-note-evaluator-v7
-SHA:    1e3b5b820b9569dc99230abd3c352e7223c1b84a3b93b66667f4a7fc1da9dbac
+output: knowledge-note-evaluator-output-v7
+prompt: knowledge-note-evaluator-v8
+SHA:    341d88c600e220361ed766118c3f2e362d8f5489ecc8094c330da60fd3ffa6b1
 ```
 
 The historical prompts `knowledge-note-evaluator-v3` with SHA
@@ -109,7 +109,9 @@ The historical prompts `knowledge-note-evaluator-v3` with SHA
 and `knowledge-note-evaluator-v5` with SHA
 `ca9755c7b448be9bb2a42ab41ba182deb7b45785a4099d6ac85d854131a06291`,
 and `knowledge-note-evaluator-v6` with SHA
-`45439ec5f3ae0d9dd31fa5af37c45c572b3e520ac87548f0a739acf1ee5f9041`
+`45439ec5f3ae0d9dd31fa5af37c45c572b3e520ac87548f0a739acf1ee5f9041`,
+plus `knowledge-note-evaluator-v7` with SHA
+`1e3b5b820b9569dc99230abd3c352e7223c1b84a3b93b66667f4a7fc1da9dbac`,
 remain readable in recipes for audit. Current runtime preflight blocks historical
 recipes before provider contact. Unknown and cross-paired prompt version/hash
 identities are rejected.
@@ -118,6 +120,12 @@ Assessment dimensions:
 
 ```text
 groundedness:
+  pass | concern | unknown
+
+knowledge_quality:
+  pass | concern | unknown
+
+epistemic_status:
   pass | concern | unknown
 
 redundancy:
@@ -156,8 +164,8 @@ Different topic/scope,
 missing framework/details, omissions, extra detail, formatting, and style are
 not conflicts.
 
-Findings are bounded to four per dimension in the provider output (16 in the
-persisted assessment), with bounded detail strings. Evaluation Record v2 stores
+Findings are bounded to four per dimension in the provider output (20 in the
+persisted assessment), with bounded detail strings. Evaluation Record v3 stores
 the path-bound conflicts under `assessment.conflicts`:
 
 ```json
