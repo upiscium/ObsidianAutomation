@@ -574,6 +574,7 @@ def observe_selection_acceptance(
         in {
             "semantic-project-distill-v1",
             "semantic-project-distill-v2",
+            "semantic-project-distill-v3",
         }
         and selection.policy_observations.get("retrieval_profile")
         != "semantic-retrieval-v1"
