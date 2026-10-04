@@ -25,6 +25,9 @@ MIRROR_TIMER_UNIT = "obsidian-ai-vault-pull.timer"
 MIRROR_SERVICE_UNIT = "obsidian-ai-vault-pull.service"
 PRE_REVIEW_SERVICES = (
     "obsidian-pre-review-status.service",
+    "obsidian-ai-semantic-refresh-prepare.service",
+    "obsidian-ai-semantic-refresh-embed.service",
+    "obsidian-ai-semantic-refresh-finalize.service",
     "obsidian-ai-input-planner.service",
     "obsidian-ai-human-projection-sync.service",
     "obsidian-ai-human-projection-cleanup-sync.service",
@@ -42,6 +45,9 @@ PRE_REVIEW_SERVICES = (
 OBSOLETE_UNITS = ("obsidian-pre-review-evaluator.timer",)
 REQUIRED_UNITS = frozenset(
     {
+        "obsidian-ai-semantic-refresh-prepare.service",
+        "obsidian-ai-semantic-refresh-embed.service",
+        "obsidian-ai-semantic-refresh-finalize.service",
         "obsidian-ai-input-planner.service",
         "obsidian-ai-human-projection-sync.service",
         "obsidian-ai-human-projection-cleanup-sync.service",
