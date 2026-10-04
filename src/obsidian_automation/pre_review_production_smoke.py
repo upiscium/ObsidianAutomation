@@ -11,9 +11,36 @@ from typing import Sequence
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40,64}$")
 REQUIRED_UNITS = {
+    "obsidian-ai-semantic-refresh-prepare.service": (
+        "User=obsidian-ai-reader",
+        "obsidian-semantic-refresh prepare",
+        "ConditionPathExists=/etc/obsidian-ai/semantic-refresh.env",
+        "PrivateNetwork=true",
+        "/var/lib/obsidian-ai/state/04-Index",
+        "/var/lib/obsidian-ai/state/24-Locks/read-view",
+    ),
+    "obsidian-ai-semantic-refresh-embed.service": (
+        "User=obsidian-ai-embedder",
+        "obsidian-semantic-refresh embed",
+        "Requires=obsidian-ai-semantic-refresh-prepare.service",
+        "ConditionPathExists=/etc/obsidian-ai/semantic-refresh.env",
+        "/var/lib/obsidian-ai/state/04-Index/semantic-refresh/reader",
+        "/var/lib/obsidian-ai/state/04-Index/semantic-refresh/embedder",
+    ),
+    "obsidian-ai-semantic-refresh-finalize.service": (
+        "User=obsidian-ai-reader",
+        "obsidian-semantic-refresh finalize",
+        "Requires=obsidian-ai-semantic-refresh-embed.service",
+        "ConditionPathExists=/etc/obsidian-ai/semantic-refresh.env",
+        "PrivateNetwork=true",
+        "/var/lib/obsidian-ai/state/04-Index",
+        "/var/lib/obsidian-ai/state/24-Locks/read-view",
+    ),
     "obsidian-ai-input-planner.service": (
         "User=obsidian-ai-reader",
         "obsidian-ai-input-planner",
+        "Requires=obsidian-ai-semantic-refresh-finalize.service",
+        "After=obsidian-ai-semantic-refresh-finalize.service",
         "PrivateNetwork=true",
         "ConditionPathExists=/etc/obsidian-ai/pre-review-input.env",
         "Environment=AI_INPUT_MODE=legacy",
