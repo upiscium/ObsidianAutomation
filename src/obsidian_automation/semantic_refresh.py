@@ -17,6 +17,7 @@ from .artifact_lifecycle import (
     _require_sha256,
     sha256_bytes,
 )
+from .ollama_generator import OllamaProviderError
 from .production_io import ProductionIOError, mirror_read_lock
 from .semantic_corpus import (
     SemanticCorpusError,
@@ -647,6 +648,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         SemanticIndexError,
         SemanticRefreshError,
         ProductionIOError,
+        OllamaProviderError,
         OSError,
     ) as exc:
         print(f"error: {exc}", file=os.sys.stderr)
