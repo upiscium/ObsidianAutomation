@@ -1,0 +1,24 @@
+[Unit]
+Description=Embed automatic Obsidian Semantic Index refresh
+Requires=obsidian-ai-semantic-refresh-prepare.service
+After=network-online.target obsidian-ai-semantic-refresh-prepare.service
+Wants=network-online.target
+ConditionPathExists=/etc/obsidian-ai/semantic-refresh.env
+
+[Service]
+Type=oneshot
+User=obsidian-ai-embedder
+Group=obsidian-ai-embedder
+Environment=SEMANTIC_REFRESH_BASE_URL=http://127.0.0.1:11434
+EnvironmentFile=/etc/obsidian-ai/semantic-refresh.env
+ExecStart=/opt/obsidian-ai/venv/bin/obsidian-semantic-refresh embed \
+  --ai-root /var/lib/obsidian-ai/state \
+  --base-url ${SEMANTIC_REFRESH_BASE_URL}
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/var/lib/obsidian-ai/state/04-Index/semantic-embedding-requests /var/lib/obsidian-ai/state/04-Index/semantic-embedding-plans /var/lib/obsidian-ai/state/04-Index/semantic-refresh/reader
+ReadWritePaths=/var/lib/obsidian-ai/state/04-Index/semantic-embedding-results /var/lib/obsidian-ai/state/04-Index/semantic-embedding-result-sets /var/lib/obsidian-ai/state/04-Index/semantic-refresh/embedder
+UMask=0007
+TimeoutStartSec=20min
