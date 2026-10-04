@@ -99,6 +99,10 @@ DIRECTORIES: tuple[tuple[str, str, str, int], ...] = (
     ("/var/lib/obsidian-ai/state/04-Index/semantic-embedding-results", "root", "root", 0o700),
     ("/var/lib/obsidian-ai/state/04-Index/semantic-embedding-result-sets", "root", "root", 0o700),
     ("/var/lib/obsidian-ai/state/04-Index/semantic-index", "root", "root", 0o700),
+    ("/var/lib/obsidian-ai/state/04-Index/semantic-refresh", "root", "root", 0o700),
+    ("/var/lib/obsidian-ai/state/04-Index/semantic-refresh/reader", "root", "root", 0o700),
+    ("/var/lib/obsidian-ai/state/04-Index/semantic-refresh/embedder", "root", "root", 0o700),
+    ("/var/lib/obsidian-ai/state/04-Index/semantic-refresh/active", "root", "root", 0o700),
     ("/var/lib/obsidian-ai/state/05-Context", "root", "root", 0o700),
     ("/var/lib/obsidian-ai/state/10-Validation", "root", "root", 0o700),
     ("/var/lib/obsidian-ai/state/12-Evaluation-Request", "root", "root", 0o700),
@@ -217,6 +221,21 @@ AI_ACLS: dict[str, tuple[str, ...]] = {
         "u:obsidian-ai-embedder:rwx",
     ),
     "/var/lib/obsidian-ai/state/04-Index/semantic-index": (
+        "u:obsidian-ai-reader:rwx",
+    ),
+    "/var/lib/obsidian-ai/state/04-Index/semantic-refresh": (
+        "u:obsidian-ai-reader:--x",
+        "u:obsidian-ai-embedder:--x",
+    ),
+    "/var/lib/obsidian-ai/state/04-Index/semantic-refresh/reader": (
+        "u:obsidian-ai-reader:rwx",
+        "u:obsidian-ai-embedder:r-x",
+    ),
+    "/var/lib/obsidian-ai/state/04-Index/semantic-refresh/embedder": (
+        "u:obsidian-ai-reader:r-x",
+        "u:obsidian-ai-embedder:rwx",
+    ),
+    "/var/lib/obsidian-ai/state/04-Index/semantic-refresh/active": (
         "u:obsidian-ai-reader:rwx",
     ),
     "/var/lib/obsidian-ai/state/05-Context": (
@@ -610,6 +629,30 @@ def _apply_ai_acls(runner: Runner) -> None:
         path="/var/lib/obsidian-ai/state/04-Index/semantic-embedding-results",
         expected=True,
         label="embedder writes embedding results",
+    )
+    _require_access(
+        runner,
+        user="obsidian-ai-embedder",
+        flag="-r",
+        path="/var/lib/obsidian-ai/state/04-Index/semantic-refresh/reader",
+        expected=True,
+        label="embedder reads Reader semantic refresh handoff",
+    )
+    _require_access(
+        runner,
+        user="obsidian-ai-embedder",
+        flag="-w",
+        path="/var/lib/obsidian-ai/state/04-Index/semantic-refresh/embedder",
+        expected=True,
+        label="embedder writes own semantic refresh handoff",
+    )
+    _require_access(
+        runner,
+        user="obsidian-ai-embedder",
+        flag="-r",
+        path="/var/lib/obsidian-ai/state/04-Index/semantic-refresh/active",
+        expected=False,
+        label="embedder cannot read active Semantic Index binding",
     )
     _require_access(
         runner,
