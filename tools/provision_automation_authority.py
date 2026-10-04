@@ -99,6 +99,8 @@ DIRECTORIES: tuple[tuple[str, str, str, int], ...] = (
     ("/var/lib/obsidian-ai/state/04-Index/semantic-embedding-results", "root", "root", 0o700),
     ("/var/lib/obsidian-ai/state/04-Index/semantic-embedding-result-sets", "root", "root", 0o700),
     ("/var/lib/obsidian-ai/state/04-Index/semantic-index", "root", "root", 0o700),
+    ("/var/lib/obsidian-ai/state/04-Index/semantic-refresh-reader", "root", "root", 0o700),
+    ("/var/lib/obsidian-ai/state/04-Index/semantic-refresh-embedder", "root", "root", 0o700),
     ("/var/lib/obsidian-ai/state/05-Context", "root", "root", 0o700),
     ("/var/lib/obsidian-ai/state/10-Validation", "root", "root", 0o700),
     ("/var/lib/obsidian-ai/state/12-Evaluation-Request", "root", "root", 0o700),
@@ -218,6 +220,14 @@ AI_ACLS: dict[str, tuple[str, ...]] = {
     ),
     "/var/lib/obsidian-ai/state/04-Index/semantic-index": (
         "u:obsidian-ai-reader:rwx",
+    ),
+    "/var/lib/obsidian-ai/state/04-Index/semantic-refresh-reader": (
+        "u:obsidian-ai-reader:rwx",
+        "u:obsidian-ai-embedder:r-x",
+    ),
+    "/var/lib/obsidian-ai/state/04-Index/semantic-refresh-embedder": (
+        "u:obsidian-ai-reader:r-x",
+        "u:obsidian-ai-embedder:rwx",
     ),
     "/var/lib/obsidian-ai/state/05-Context": (
         "u:obsidian-ai-reader:rwx",
@@ -623,6 +633,46 @@ def _apply_ai_acls(runner: Runner) -> None:
         runner,
         user="obsidian-ai-embedder",
         flag="-r",
+        path="/var/lib/obsidian-ai/state/04-Index/semantic-refresh-reader",
+        expected=True,
+        label="embedder reads Reader semantic refresh control",
+    )
+    _require_access(
+        runner,
+        user="obsidian-ai-embedder",
+        flag="-w",
+        path="/var/lib/obsidian-ai/state/04-Index/semantic-refresh-reader",
+        expected=False,
+        label="embedder cannot write Reader semantic refresh control",
+    )
+    _require_access(
+        runner,
+        user="obsidian-ai-embedder",
+        flag="-w",
+        path="/var/lib/obsidian-ai/state/04-Index/semantic-refresh-embedder",
+        expected=True,
+        label="embedder writes own semantic refresh result",
+    )
+    _require_access(
+        runner,
+        user="obsidian-ai-reader",
+        flag="-r",
+        path="/var/lib/obsidian-ai/state/04-Index/semantic-refresh-embedder",
+        expected=True,
+        label="reader reads Embedder semantic refresh result",
+    )
+    _require_access(
+        runner,
+        user="obsidian-ai-reader",
+        flag="-w",
+        path="/var/lib/obsidian-ai/state/04-Index/semantic-refresh-embedder",
+        expected=False,
+        label="reader cannot write Embedder semantic refresh result",
+    )
+    _require_access(
+        runner,
+        user="obsidian-ai-embedder",
+        flag="-r",
         path="/var/lib/obsidian-ai/vault/11-Knowledge",
         expected=False,
         label="embedder cannot read Vault",
@@ -899,20 +949,72 @@ def provision(
     }
 
 
+def provision_semantic_refresh(
+    *,
+    runner: Runner = _default_runner,
+    require_root: bool = True,
+) -> dict[str, object]:
+    """Add only the refresh handoffs on an already provisioned AI host."""
+    if require_root and os.geteuid() != 0:
+        raise AuthorityProvisionError("authority provisioning requires root")
+    for command in ("id", "install", "runuser", "setfacl"):
+        _command_exists(runner, command)
+    for user in ("obsidian-ai-reader", "obsidian-ai-embedder"):
+        _run(runner, ("id", user), label=f"require production identity {user}")
+    index_root = "/var/lib/obsidian-ai/state/04-Index"
+    _refuse_symlink(Path(index_root))
+    _require_access(
+        runner, user="obsidian-ai-reader", flag="-w", path=index_root,
+        expected=True, label="reader writes existing Index",
+    )
+    paths = (
+        f"{index_root}/semantic-refresh-reader",
+        f"{index_root}/semantic-refresh-embedder",
+    )
+    for path in paths:
+        _ensure_dir(runner, path=path, owner="root", group="root", mode=0o700)
+        _reset_acl_dir(runner, path, AI_ACLS[path])
+    for user, path, readable, writable in (
+        ("obsidian-ai-reader", paths[0], True, True),
+        ("obsidian-ai-embedder", paths[0], True, False),
+        ("obsidian-ai-reader", paths[1], True, False),
+        ("obsidian-ai-embedder", paths[1], True, True),
+    ):
+        for flag, expected in (("-r", readable), ("-w", writable)):
+            _require_access(
+                runner, user=user, flag=flag, path=path, expected=expected,
+                label=f"semantic refresh {user} {flag}",
+            )
+    return {
+        "record_version": 1,
+        "profile": "semantic-refresh-only",
+        "result": "passed",
+        "directory_count": len(paths),
+        "credentials_installed": False,
+        "systemd_units_installed": False,
+        "recurring_services_activated": False,
+    }
+
+
 def _build_parser() -> argparse.ArgumentParser:
-    return argparse.ArgumentParser(
+    parser = argparse.ArgumentParser(
         prog="obsidian-automation-authority-provision",
         description=(
             "Provision consolidated local Unix identities/directories/ACLs only. "
             "Credentials and systemd production units are intentionally excluded."
         ),
     )
+    parser.add_argument(
+        "--semantic-refresh-only", action="store_true",
+        help="Install refresh handoff directories and ACLs on an existing AI host only.",
+    )
+    return parser
 
 
 def main(argv: Iterable[str] | None = None) -> int:
-    _build_parser().parse_args(list(argv) if argv is not None else None)
+    args = _build_parser().parse_args(list(argv) if argv is not None else None)
     try:
-        result = provision()
+        result = provision_semantic_refresh() if args.semantic_refresh_only else provision()
     except AuthorityProvisionError as exc:
         print(
             json.dumps(

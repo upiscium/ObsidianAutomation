@@ -9,6 +9,8 @@ import sys
 
 import pytest
 
+from obsidian_automation.pre_review_production_update import RefreshUpdateInhibit
+
 
 def load(path, name):
     spec = importlib.util.spec_from_file_location(name, path)
@@ -110,6 +112,7 @@ def setup(tmp_path):
     source.mkdir()
     shutil.copytree("tools", source / "tools", ignore=shutil.ignore_patterns("__pycache__"))
     shutil.copytree("examples", source / "examples")
+    shutil.copytree("src", source / "src", ignore=shutil.ignore_patterns("__pycache__"))
     systemd = tmp_path / "systemd"
     systemd.mkdir()
     revision = tmp_path / "etc/pre-review-revision.env"
@@ -123,7 +126,8 @@ def setup(tmp_path):
     system.source, system.app = source, app
     kwargs = dict(source_root=source, target_sha=TARGET, venv_root=venv,
                   receipt_dir=tmp_path / "receipts", runner=system, require_root=False,
-                  systemd_dir=systemd, revision_env=revision, config_exists=lambda path: True)
+                  systemd_dir=systemd, revision_env=revision, config_exists=lambda path: True,
+                  refresh_inhibit_path=tmp_path / "run/semantic-refresh-inhibited.json")
     return kwargs, system, app
 
 
@@ -151,7 +155,7 @@ def test_timer_state_matrix_and_no_unrequested_activation(setup, enabled, active
     assert not (kwargs["receipt_dir"] / "pending-runtime.json").exists()
     assert len(list(kwargs["receipt_dir"].glob("*.runtime.json"))) == 1
     assert kwargs["revision_env"].read_text() == f"OBSIDIAN_AUTOMATION_REVISION={TARGET}\n"
-    assert len(list(kwargs["systemd_dir"].glob("*.service"))) == 20
+    assert len(list(kwargs["systemd_dir"].glob("*.service"))) == 23
     assert all("gitea-runner" not in " ".join(c) and "obsidian-snapshot" not in " ".join(c) for c in system.commands)
 
 
@@ -192,6 +196,119 @@ def test_drain_timeout_precedes_any_package_or_unit_mutation(setup):
     assert not list(kwargs["systemd_dir"].iterdir())
     assert not any(c[:2] == ("systemctl", "stop") for c in system.commands)
     assert all(system.states[t]["ActiveState"] == "inactive" for t in life.TIMERS)
+
+
+@pytest.mark.parametrize("stage", ["prepare", "embed", "finalize"])
+def test_queued_refresh_stage_prevents_package_or_unit_mutation(setup, stage):
+    kwargs, system, _ = setup
+    name = f"obsidian-semantic-index-refresh-{stage}.service"
+    system.states[name]["Job"] = "41"
+    ticks = iter([0, 400])
+    kwargs["clock"] = lambda: next(ticks)
+    with pytest.raises(life.LifecycleError, match="drain_timeout"):
+        complete(kwargs)
+    assert kwargs["refresh_inhibit_path"].is_file()
+    assert not list(kwargs["systemd_dir"].iterdir())
+    assert all(system.states[t]["ActiveState"] == "inactive" for t in life.TIMERS)
+
+
+def test_late_success_callback_is_inhibited_through_stage_and_restore(setup):
+    kwargs, system, _ = setup
+    for name in life.TIMERS:
+        system.states[name].update(UnitFileState="enabled", ActiveState="active")
+    boundaries = []
+
+    def runner(args):
+        command = tuple(map(str, args))
+        if command[:2] in {
+            ("systemctl", "disable"), ("systemctl", "daemon-reload"),
+            ("systemctl", "enable"), ("systemctl", "start"),
+        }:
+            # Simulate an OnSuccess job reaching its unit conditions after a
+            # drain query, during unit staging, or while timers are restored.
+            # The root-owned marker is already present at all three points.
+            assert kwargs["refresh_inhibit_path"].is_file()
+            boundaries.append(command[:2])
+        return system(command)
+
+    complete({**kwargs, "runner": runner})
+    assert ("systemctl", "daemon-reload") in boundaries
+    assert ("systemctl", "start") in boundaries
+    assert not kwargs["refresh_inhibit_path"].exists()
+    for stage in ("prepare", "embed", "finalize"):
+        text = (kwargs["systemd_dir"] / f"obsidian-semantic-index-refresh-{stage}.service").read_text()
+        assert "ConditionPathExists=!/run/obsidian-automation/semantic-refresh-inhibited.json" in text
+
+
+def test_other_updater_inhibit_intent_is_preserved_before_timer_mutation(setup):
+    kwargs, system, _ = setup
+    path = kwargs["refresh_inhibit_path"]
+    path.parent.mkdir()
+    before = json.dumps({"record_version": 1, "target_sha": TARGET, "owner": "pre-review"})
+    path.write_text(before)
+    path.chmod(0o600)
+    with pytest.raises(life.LifecycleError, match="semantic_refresh_inhibit_failed"):
+        complete(kwargs)
+    assert path.read_text() == before
+    assert not any(c[:2] == ("systemctl", "disable") for c in system.commands)
+
+
+def test_host_captures_restored_timers_after_legacy_releases_shared_lock(setup):
+    kwargs, system, _ = setup
+    # The legacy updater has disabled only the two AI timers while it works.
+    for name in life.TIMERS[2:]:
+        system.states[name].update(UnitFileState="enabled", ActiveState="active")
+    predecessor = RefreshUpdateInhibit(
+        kwargs["refresh_inhibit_path"], "b" * 40, "pre-review", require_root=False,
+    )
+    predecessor.acquire()
+    predecessor_restored = False
+
+    def runner(args):
+        nonlocal predecessor_restored
+        command = tuple(map(str, args))
+        result = system(command)
+        if not predecessor_restored and command[:3] == ("systemctl", "show", life.SERVICES[-1]):
+            # Host preflight already observed the temporary disabled states.
+            # Legacy now completes before Host can acquire the shared lock.
+            for name in life.TIMERS[:2]:
+                system.states[name].update(UnitFileState="enabled", ActiveState="active")
+            predecessor.release()
+            predecessor.close()
+            predecessor_restored = True
+        return result
+
+    try:
+        complete({**kwargs, "runner": runner})
+    finally:
+        predecessor.close()
+    assert predecessor_restored
+    assert all(system.states[name]["UnitFileState"] == "enabled" for name in life.TIMERS)
+    assert all(system.states[name]["ActiveState"] == "active" for name in life.TIMERS)
+    history = next(kwargs["receipt_dir"].glob("*.runtime.json"))
+    intent = json.loads(history.read_text())
+    assert all(state["enabled"] and state["active"] for state in intent["timers"].values())
+
+
+def test_host_revalidates_timers_under_shared_lock_before_publishing_marker(setup):
+    kwargs, system, _ = setup
+    changed = False
+
+    def runner(args):
+        nonlocal changed
+        command = tuple(map(str, args))
+        result = system(command)
+        if not changed and command[:3] == ("systemctl", "show", life.SERVICES[-1]):
+            system.states[life.TIMERS[0]]["UnitFileState"] = "masked"
+            changed = True
+        return result
+
+    with pytest.raises(life.LifecycleError, match="unsupported_timer_state"):
+        complete({**kwargs, "runner": runner})
+    assert changed
+    assert not kwargs["refresh_inhibit_path"].exists()
+    assert not (kwargs["receipt_dir"] / "pending-runtime.json").exists()
+    assert not any(c[:2] == ("systemctl", "disable") for c in system.commands)
 
 
 def test_failed_smoke_disables_and_same_target_retry_restores_original_intent(setup):
@@ -270,7 +387,8 @@ def test_full_bootstrap_orders_quiesce_package_smoke_restore(setup, monkeypatch)
     kwargs, system, app = setup
     factory = lambda **args: life.RuntimeTransaction(**{**args,
         "systemd_dir": kwargs["systemd_dir"], "revision_env": kwargs["revision_env"],
-        "config_exists": lambda path: True})
+        "config_exists": lambda path: True,
+        "refresh_inhibit_path": kwargs["refresh_inhibit_path"]})
     monkeypatch.setattr(bootstrap, "_load_host_lifecycle", lambda _: factory)
     for name in life.TIMERS:
         system.states[name].update(UnitFileState="enabled", ActiveState="active")
@@ -296,7 +414,8 @@ def test_full_bootstrap_orders_quiesce_package_smoke_restore(setup, monkeypatch)
 def test_failed_package_does_not_resume_timers(setup, monkeypatch):
     kwargs, system, app = setup
     monkeypatch.setattr(bootstrap, "_load_host_lifecycle", lambda _: lambda **args: life.RuntimeTransaction(**{
-        **args, "systemd_dir": kwargs["systemd_dir"], "revision_env": kwargs["revision_env"]}))
+        **args, "systemd_dir": kwargs["systemd_dir"], "revision_env": kwargs["revision_env"],
+        "refresh_inhibit_path": kwargs["refresh_inhibit_path"]}))
     for name in life.TIMERS:
         system.states[name].update(UnitFileState="enabled", ActiveState="active")
     system.fail = lambda c: "--no-build-isolation" in c

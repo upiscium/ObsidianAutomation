@@ -131,23 +131,34 @@ identity remains pinned by the submitted immutable recipe.
 
 ### Controlled Semantic Planner rollout
 
-The installed Input Planner unit remains `legacy` by default. To enable the
-first Semantic Planner production wave, configure
-`/etc/obsidian-ai/pre-review-input.env` with an exact reviewed index:
+The installed Input Planner unit remains `legacy` by default. Exact SHA
+binding remains available for controlled canaries. After the reviewed index is
+explicitly activated through the Semantic Index refresh control plane, normal
+semantic production should use the Reader-owned active binding:
 
 ```text
 AI_INPUT_MODE=semantic-deep-knowledge
-AI_INPUT_SEMANTIC_INDEX_SHA=<exact-reviewed-semantic-index-sha256>
+AI_INPUT_SEMANTIC_INDEX_SHA=active
 AI_INPUT_SEMANTIC_SELECTION_POLICY=semantic-project-distill-v3
 ```
 
+For each new transaction, the Planner resolves `active` once to one exact
+finalized index SHA before any Selection/Context/job state is created. Pending
+transactions recover their saved immutable Context and index before resolving
+the binding again. Rotation or loss of the binding therefore cannot strand
+already journaled work. New Selection still requires a current mirror corpus.
+
 The accepted rollout pair is `semantic-project-distill-v3` with `semantic-retrieval-v1` (lexical 0.15 / vector 0.85). v3 retains novelty-aware deterministic Project-anchor exploration, then admits support rows only at anchor cosine >= 0.70 and rejects later support rows whose cosine to an already accepted support is >= 0.88. It does not force source-kind coverage or pad the cluster with weak support. Production acceptance cross-checks the retrieval profile and records the support-quality contract before it emits a canary plan.
 
-Do not use a mutable alias for the index. This rollout does not rebuild or
-advance the index automatically. Verify the exact index offline before enabling
-the mode.
+Semantic Index manifests remain immutable and content addressed. The current
+index binding is `04-Index/semantic-active-index.json`, owned by Reader and
+atomically replaced while holding the mirror lock after finalization and a
+fresh corpus check. Separate bounded Reader and Embedder handoffs coordinate
+each refresh. Automatic refresh is opt-in through
+`/etc/obsidian-ai/semantic-index-refresh.env`; see
+[Automatic Semantic Index refresh v1](semantic-index-auto-refresh-v1.md).
 
-Only `deep-knowledge-v1` is admitted into the existing Knowledge pre-review chain. Reader first enforces the versioned Semantic Corpus structural-content rule and the deterministic deep-Knowledge evidence-sufficiency gate; evidence failures do not call the provider. Current deep-Knowledge generation uses the Knowledge-only provider schema introduced in v4 and the reusable-synthesis v5 prompt. Historical v2/v3 `no_candidate` artifacts remain readable, but new provider generation does not expose that branch. Idea discovery and Project adoption remain operator-driven.
+Only `deep-knowledge-v1` is admitted into the existing Knowledge pre-review chain. Reader first enforces the versioned Semantic Corpus structural-content rule and the deterministic deep-Knowledge evidence-sufficiency gate; evidence failures do not call the provider. Current deep-Knowledge generation uses the Knowledge-only provider schema introduced in v4, the reusable-synthesis v5 behavior, and the epistemic-status-preserving `deep-knowledge-generator-v6` prompt. Historical v2/v3 `no_candidate` artifacts remain readable, but new provider generation does not expose that branch. Idea discovery and Project adoption remain operator-driven.
 
 See
 [Semantic Deep Knowledge Production v1](semantic-deep-knowledge-production-v1.md).
@@ -294,8 +305,9 @@ record pre-review timer state
 record mirror timer state
         |
         v
-stop recurring pre-review chain (when already installed)
-stop mirror timer + mirror service
+create shared refresh inhibitor
+stop both timers, then mirror service and refresh workers
+stop remaining pre-review workers (when already installed)
         |
         v
 git reset --hard <exact target>
@@ -312,6 +324,9 @@ systemctl daemon-reload
 force pre-review timer disabled/inactive
         |
         v
+provision refresh handoff ACLs and pre-review authority
+        |
+        v
 safe smoke (no provider, no Nextcloud, no canonical write)
         |
         v
@@ -320,6 +335,7 @@ restore pre-review timer state only on later deployments
         |
         v
 persist secret-free deployment receipt
+remove shared refresh inhibitor
 ```
 
 On first installation, `obsidian-pre-review.timer` remains disabled/inactive
@@ -328,6 +344,21 @@ even after success. Automation is enabled only after the acceptance gate below.
 Any failure after recurring services are stopped is fail-closed: the updater
 leaves the relevant timers disabled rather than running an uncertain mixed
 revision.
+
+Both this updater and the consolidated host lifecycle inhibit late systemd
+success handlers with
+`/run/obsidian-automation/semantic-refresh-inhibited.json`. The marker is owned
+by root with mode `0600`; a separate stable lock serializes the two updater
+paths. It records the exact target SHA and updater owner and remains present
+when an update fails. After correcting the failure, retry the same updater and
+target. A different owner or target is refused. The consolidated lifecycle also
+retains the original timer states in its durable pending transaction; this
+legacy updater retains the states observed at the start of each retry. See
+[Automatic Semantic Index refresh v1](semantic-index-auto-refresh-v1.md#runtime-updates)
+for the success-handler and recovery contract. The first upgrade introducing
+refresh must use the target-owned `obsidian-automation-update` path documented
+for the consolidated host; an already installed older legacy updater does not
+know the new managed unit set.
 
 ## Safe smoke
 

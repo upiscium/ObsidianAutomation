@@ -11,6 +11,55 @@ from typing import Sequence
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40,64}$")
 REQUIRED_UNITS = {
+    "obsidian-ai-vault-pull.service": (
+        "User=obsidian-ai-sync",
+        "obsidian-production-vault-pull",
+        "OnSuccess=obsidian-semantic-index-refresh-prepare.service",
+    ),
+    "obsidian-semantic-index-refresh-prepare.service": (
+        "User=obsidian-ai-reader",
+        "obsidian-semantic-index-refresh prepare",
+        "After=obsidian-ai-vault-pull.service",
+        "OnSuccess=obsidian-semantic-index-refresh-embed.service",
+        "ConditionPathExists=/etc/obsidian-ai/semantic-index-refresh.env",
+        "ConditionPathExists=!/run/obsidian-automation/semantic-refresh-inhibited.json",
+        '"$$MONITOR_UNIT" = "obsidian-ai-vault-pull.service"',
+        '"$$MONITOR_SERVICE_RESULT" = success',
+        '"$$MONITOR_EXIT_CODE" = exited',
+        '"$$MONITOR_EXIT_STATUS" = 0',
+        "PrivateNetwork=yes",
+        "/var/lib/obsidian-ai/state/04-Index",
+        "/var/lib/obsidian-ai/state/24-Locks/read-view",
+    ),
+    "obsidian-semantic-index-refresh-embed.service": (
+        "User=obsidian-ai-embedder",
+        "obsidian-semantic-index-refresh embed",
+        "After=obsidian-semantic-index-refresh-prepare.service",
+        "OnSuccess=obsidian-semantic-index-refresh-finalize.service",
+        "ConditionPathExists=/etc/obsidian-ai/semantic-index-refresh.env",
+        "ConditionPathExists=!/run/obsidian-automation/semantic-refresh-inhibited.json",
+        "EnvironmentFile=/etc/obsidian-ai/semantic-index-refresh.env",
+        '"$$MONITOR_UNIT" = "obsidian-semantic-index-refresh-prepare.service"',
+        '"$$MONITOR_SERVICE_RESULT" = success',
+        '"$$MONITOR_EXIT_CODE" = exited',
+        '"$$MONITOR_EXIT_STATUS" = 0',
+        "/var/lib/obsidian-ai/state/04-Index/semantic-refresh-reader",
+        "/var/lib/obsidian-ai/state/04-Index/semantic-refresh-embedder",
+    ),
+    "obsidian-semantic-index-refresh-finalize.service": (
+        "User=obsidian-ai-reader",
+        "obsidian-semantic-index-refresh finalize",
+        "After=obsidian-semantic-index-refresh-embed.service",
+        "ConditionPathExists=/etc/obsidian-ai/semantic-index-refresh.env",
+        "ConditionPathExists=!/run/obsidian-automation/semantic-refresh-inhibited.json",
+        '"$$MONITOR_UNIT" = "obsidian-semantic-index-refresh-embed.service"',
+        '"$$MONITOR_SERVICE_RESULT" = success',
+        '"$$MONITOR_EXIT_CODE" = exited',
+        '"$$MONITOR_EXIT_STATUS" = 0',
+        "PrivateNetwork=yes",
+        "/var/lib/obsidian-ai/state/04-Index",
+        "/var/lib/obsidian-ai/state/24-Locks/read-view",
+    ),
     "obsidian-ai-input-planner.service": (
         "User=obsidian-ai-reader",
         "obsidian-ai-input-planner",
@@ -188,6 +237,16 @@ def validate_units(systemd_dir: Path) -> tuple[str, ...]:
                 )
         if "User=root" in text:
             raise PreReviewProductionSmokeError(f"systemd unit {name} must not run as root")
+        if name == "obsidian-ai-input-planner.service":
+            for line in text.splitlines():
+                key, _, value = line.strip().partition("=")
+                if key in {"Requires", "Wants", "Requisite"} and any(
+                    unit.startswith("obsidian-semantic-index-refresh-")
+                    for unit in value.split()
+                ):
+                    raise PreReviewProductionSmokeError(
+                        "Input Planner must not start Semantic Index refresh"
+                    )
         joined += text + "\n"
         checked.append(name)
 

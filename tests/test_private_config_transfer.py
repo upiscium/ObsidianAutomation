@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from io import BytesIO
 import json
 import os
@@ -65,6 +66,119 @@ def test_ai_bundle_round_trip_uses_only_declared_logical_ids(tmp_path: Path) -> 
         "ai_evaluator_env",
     }
     assert all(data == SECRET for _entry, data in values)
+
+
+def test_ai_bundle_preserves_optional_semantic_refresh_env(tmp_path: Path) -> None:
+    _populate_required(tmp_path, "ai")
+    refresh_bytes = b"SEMANTIC_EMBEDDING_BASE_URL=http://127.0.0.1:11434\n"
+    _write(tmp_path, "/etc/obsidian-ai/semantic-index-refresh.env", refresh_bytes)
+
+    stream = BytesIO()
+    status = transfer.write_bundle("ai", stream, source_root=tmp_path)
+    assert status["file_count"] == 4
+    stream.seek(0)
+    values = {
+        entry.logical_id: (entry, data)
+        for entry, data in transfer.read_bundle(stream, expected_role="ai")
+    }
+    entry, data = values["ai_semantic_refresh_env"]
+    assert data == refresh_bytes
+    assert (entry.owner, entry.group, entry.mode, entry.required) == (
+        "root", "root", 0o600, False,
+    )
+    assert transfer.READERS["ai"][entry.logical_id] == ()
+
+
+@pytest.fixture
+def installed_ai_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    entries = tuple(
+        replace(entry, path=str(transfer._rooted(tmp_path, entry.path)))
+        for entry in transfer.ROLE_FILES["ai"]
+    )
+    monkeypatch.setitem(transfer.ROLE_FILES, "ai", entries)
+    by_path = {entry.path: entry for entry in entries}
+    for entry in entries:
+        if entry.required:
+            target = Path(entry.path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(SECRET)
+            target.chmod(entry.mode)
+    # Account IDs differ across CI hosts; actual file modes remain under test.
+    monkeypatch.setattr(
+        transfer, "_identity_ids", lambda entry: (os.getuid(), os.getgid()),
+    )
+    probes: list[tuple[str, str]] = []
+
+    def can_read(user: str, path: str) -> bool:
+        probes.append((user, path))
+        return user in transfer.READERS["ai"][by_path[path].logical_id]
+
+    monkeypatch.setattr(transfer, "_can_read", can_read)
+    refresh = next(
+        entry for entry in entries if entry.logical_id == "ai_semantic_refresh_env"
+    )
+    return refresh, probes
+
+
+def test_verify_accepts_absent_optional_semantic_refresh_env(installed_ai_files) -> None:
+    refresh, probes = installed_ai_files
+    result = transfer.verify_installed("ai")
+    assert result["result"] == "passed"
+    assert result["file_count"] == 3
+    assert all(path != refresh.path for _user, path in probes)
+
+
+def test_verify_accepts_root_only_semantic_refresh_env(installed_ai_files) -> None:
+    refresh, probes = installed_ai_files
+    path = Path(refresh.path)
+    path.write_bytes(SECRET)
+    path.chmod(0o600)
+
+    result = transfer.verify_installed("ai")
+    assert result["result"] == "passed"
+    assert result["file_count"] == 4
+    assert result["values_read_for_verification"] is False
+    assert {user for user, checked in probes if checked == refresh.path} == set(
+        transfer.ROLE_USERS["ai"]
+    )
+
+
+@pytest.mark.parametrize("mode", [0o640, 0o604, 0o644])
+def test_verify_rejects_semantic_refresh_env_with_broad_mode(
+    installed_ai_files, mode: int,
+) -> None:
+    refresh, _probes = installed_ai_files
+    path = Path(refresh.path)
+    path.write_bytes(SECRET)
+    path.chmod(mode)
+
+    with pytest.raises(
+        transfer.PrivateConfigTransferError,
+        match="destination_mode_mismatch:ai_semantic_refresh_env",
+    ):
+        transfer.verify_installed("ai")
+
+
+def test_verify_rejects_semantic_refresh_env_readable_by_embedder(
+    installed_ai_files, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refresh, _probes = installed_ai_files
+    path = Path(refresh.path)
+    path.write_bytes(SECRET)
+    path.chmod(0o600)
+    original_can_read = transfer._can_read
+
+    def can_read(user: str, checked: str) -> bool:
+        if checked == refresh.path and user == "obsidian-ai-embedder":
+            return True
+        return original_can_read(user, checked)
+
+    monkeypatch.setattr(transfer, "_can_read", can_read)
+    with pytest.raises(
+        transfer.PrivateConfigTransferError,
+        match="readability_gate_failed:ai_semantic_refresh_env:obsidian-ai-embedder",
+    ):
+        transfer.verify_installed("ai")
 
 
 def test_status_metadata_does_not_contain_secret(tmp_path: Path) -> None:

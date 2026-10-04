@@ -40,6 +40,10 @@ from obsidian_automation.semantic_corpus import (
     build_semantic_corpus,
     store_semantic_corpus_manifest,
 )
+from obsidian_automation.semantic_refresh import (
+    activate_semantic_index,
+    active_binding_path,
+)
 from obsidian_automation.semantic_retrieval import RetrievalFilter
 from obsidian_automation.semantic_index import (
     EmbeddingResult,
@@ -170,6 +174,10 @@ def _state(tmp_path: Path) -> Path:
 def _semantic_index(tmp_path: Path) -> tuple[Path, Path, str]:
     vault = _vault(tmp_path)
     state = _state(tmp_path)
+    return vault, state, _index_current_vault(state, vault)
+
+
+def _index_current_vault(state: Path, vault: Path) -> str:
     corpus = build_semantic_corpus(vault)
     corpus_sha, _ = store_semantic_corpus_manifest(state, corpus)
     plan_sha, _, plan = prepare_semantic_embedding_plan(
@@ -210,7 +218,7 @@ def _semantic_index(tmp_path: Path) -> tuple[Path, Path, str]:
         plan_sha256=plan_sha,
         result_set_sha256=result_set_sha,
     )
-    return vault, state, index_sha
+    return index_sha
 
 
 def _deep_provider_transport(base_url: str, **kwargs):
@@ -398,6 +406,44 @@ def test_semantic_deep_mode_reaches_human_review_through_existing_chain(
 
 
 
+def test_semantic_deep_mode_resolves_active_index_binding(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import obsidian_automation.ai_input_planner as planner
+
+    vault, state, index_sha = _semantic_index(tmp_path)
+    activate_semantic_index(
+        state,
+        vault,
+        semantic_index_sha256=index_sha,
+    )
+    resolutions = []
+    resolve = planner.resolve_active_semantic_index_sha
+
+    def resolve_once(ai_root):
+        resolutions.append(ai_root)
+        return resolve(ai_root)
+
+    monkeypatch.setattr(planner, "resolve_active_semantic_index_sha", resolve_once)
+
+    planned = plan_once(
+        state,
+        vault,
+        deployed_revision=REVISION,
+        input_mode=INPUT_MODE_SEMANTIC_DEEP,
+        semantic_index_sha256="active",
+        semantic_selection_policy="semantic-project-distill-v0",
+        generator_model=GEN_MODEL,
+        evaluator_model=EVAL_MODEL,
+        now=datetime(2026, 9, 29, 4, 0, tzinfo=timezone.utc),
+    )
+
+    assert planned["status"] == "submitted"
+    assert planned["semantic_index_sha256"] == index_sha
+    assert resolutions == [state]
+
+
 def test_semantic_deep_provider_no_candidate_is_deterministic_reject(
     tmp_path: Path,
 ) -> None:
@@ -547,8 +593,10 @@ def test_semantic_novelty_skip_does_not_create_job_or_submission_clock(
     )
 
 
-def test_semantic_mode_missing_or_stale_exact_index_never_submits(
+@pytest.mark.parametrize("index_mode", ["exact", "active"])
+def test_semantic_mode_missing_or_stale_index_never_submits(
     tmp_path: Path,
+    index_mode: str,
 ) -> None:
     vault, state, index_sha = _semantic_index(tmp_path)
     with pytest.raises(ArtifactLifecycleError):
@@ -557,13 +605,15 @@ def test_semantic_mode_missing_or_stale_exact_index_never_submits(
             vault,
             deployed_revision=REVISION,
             input_mode=INPUT_MODE_SEMANTIC_DEEP,
-            semantic_index_sha256="f" * 64,
+            semantic_index_sha256="active" if index_mode == "active" else "f" * 64,
             semantic_selection_policy="semantic-project-distill-v0",
             generator_model=GEN_MODEL,
             evaluator_model=EVAL_MODEL,
         )
     assert not (state / "02-Orchestration" / "pre-review-jobs.sqlite3").exists()
 
+    if index_mode == "active":
+        activate_semantic_index(state, vault, semantic_index_sha256=index_sha)
     source = vault / "10-Project" / "Inventory" / "Design.md"
     source.write_text(
         source.read_text(encoding="utf-8") + "\nChanged after indexing.\n",
@@ -575,7 +625,7 @@ def test_semantic_mode_missing_or_stale_exact_index_never_submits(
             vault,
             deployed_revision=REVISION,
             input_mode=INPUT_MODE_SEMANTIC_DEEP,
-            semantic_index_sha256=index_sha,
+            semantic_index_sha256="active" if index_mode == "active" else index_sha,
             semantic_selection_policy="semantic-project-distill-v0",
             generator_model=GEN_MODEL,
             evaluator_model=EVAL_MODEL,
@@ -707,3 +757,130 @@ def test_semantic_pending_recovery_rejects_index_configuration_drift(
             now=datetime(2026, 9, 29, 4, 1, tzinfo=timezone.utc),
         )
 
+
+@pytest.mark.parametrize("phase", ["prepared", "submitted", "committed"])
+@pytest.mark.parametrize("binding_change", ["rotated", "missing"])
+def test_active_pending_recovery_preserves_journaled_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    phase: str,
+    binding_change: str,
+) -> None:
+    import sqlite3
+    import obsidian_automation.ai_input_planner as planner
+
+    vault, state, index_sha = _semantic_index(tmp_path)
+    activate_semantic_index(state, vault, semantic_index_sha256=index_sha)
+    arguments = {
+        "deployed_revision": REVISION,
+        "input_mode": INPUT_MODE_SEMANTIC_DEEP,
+        "semantic_index_sha256": "active",
+        "semantic_selection_policy": "semantic-project-distill-v0",
+        "generator_model": GEN_MODEL,
+        "evaluator_model": EVAL_MODEL,
+        "now": datetime(2026, 9, 29, 4, 0, tzinfo=timezone.utc),
+    }
+
+    def interrupt(*args, **kwargs):
+        raise OSError("fixture interrupted transaction")
+
+    failure_target = {
+        "prepared": "submit_job",
+        "submitted": "emit_semantic_objective_context_projection",
+        "committed": "_clear_pending",
+    }[phase]
+    with monkeypatch.context() as failure:
+        failure.setattr(planner, failure_target, interrupt)
+        with pytest.raises(OSError, match="fixture interrupted transaction"):
+            plan_once(state, vault, **arguments)
+
+    pending_path = state / "02-Orchestration" / "input-planner-pending.json"
+    pending = json.loads(pending_path.read_text(encoding="utf-8"))
+    assert pending["phase"] == ("prepared" if phase == "prepared" else "submitted")
+    assert pending["semantic_index_sha256"] == index_sha
+    context_sha = pending["context_sha256"]
+    original_context = load_objective_context(state, context_sha)
+    assert original_context.semantic_index_sha256 == index_sha
+
+    source = vault / "10-Project" / "Inventory" / "Design.md"
+    source.write_text(
+        source.read_text(encoding="utf-8") + "\nChanged after Context was journaled.\n",
+        encoding="utf-8",
+    )
+    if binding_change == "rotated":
+        next_index = _index_current_vault(state, vault)
+        assert next_index != index_sha
+        activate_semantic_index(state, vault, semantic_index_sha256=next_index)
+        binding_before = active_binding_path(state).read_bytes()
+    else:
+        active_binding_path(state).unlink()
+        binding_before = None
+
+    def reject_new_selection(*args, **kwargs):
+        pytest.fail("pending recovery must not resolve active or build a new selection")
+
+    monkeypatch.setattr(planner, "resolve_active_semantic_index_sha", reject_new_selection)
+    monkeypatch.setattr(planner, "_prepare_semantic_deep_plan", reject_new_selection)
+    recovered = plan_once(state, vault, **arguments)
+
+    assert recovered["status"] == (
+        "recovered_committed_submission"
+        if phase == "committed"
+        else "recovered_pending_submission"
+    )
+    assert recovered["semantic_index_sha256"] == index_sha
+    assert recovered["context_sha256"] == context_sha
+    assert recovered["selection_sha256"] == pending["selection_sha256"]
+    assert load_objective_context(state, context_sha) == original_context
+    assert not pending_path.exists()
+    assert load_cadence_state(state).last_submission_at == pending["cadence_anchor_at"]
+
+    conn = sqlite3.connect(state / "02-Orchestration" / "pre-review-jobs.sqlite3")
+    try:
+        rows = conn.execute("SELECT job_id, context_sha256 FROM jobs").fetchall()
+    finally:
+        conn.close()
+    assert len(rows) == 1
+    assert rows[0][1] == context_sha
+    if phase != "prepared":
+        assert rows[0][0] == pending["job_id"]
+    if binding_before is None:
+        assert not active_binding_path(state).exists()
+    else:
+        assert active_binding_path(state).read_bytes() == binding_before
+
+
+def test_active_pending_recovery_rejects_relabelled_context_index(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import obsidian_automation.ai_input_planner as planner
+
+    vault, state, index_sha = _semantic_index(tmp_path)
+    activate_semantic_index(state, vault, semantic_index_sha256=index_sha)
+    arguments = {
+        "deployed_revision": REVISION,
+        "input_mode": INPUT_MODE_SEMANTIC_DEEP,
+        "semantic_index_sha256": "active",
+        "semantic_selection_policy": "semantic-project-distill-v0",
+        "generator_model": GEN_MODEL,
+        "evaluator_model": EVAL_MODEL,
+        "now": datetime(2026, 9, 29, 4, 0, tzinfo=timezone.utc),
+    }
+
+    def interrupt(*args, **kwargs):
+        raise OSError("fixture interrupted transaction")
+
+    with monkeypatch.context() as failure:
+        failure.setattr(planner, "submit_job", interrupt)
+        with pytest.raises(OSError, match="fixture interrupted transaction"):
+            plan_once(state, vault, **arguments)
+
+    pending = planner._load_pending(state)
+    assert pending is not None
+    pending["semantic_index_sha256"] = "e" * 64
+    planner._store_pending(state, pending)
+    with pytest.raises(ArtifactLifecycleError, match="Context semantic_index_sha256"):
+        plan_once(state, vault, **arguments)
+    assert planner._load_pending(state) == pending
+    assert not (state / "02-Orchestration" / "pre-review-jobs.sqlite3").exists()

@@ -2,6 +2,7 @@
 Description=Refresh Obsidian AI pull-only Vault mirror
 After=network-online.target
 Wants=network-online.target
+OnSuccess=obsidian-semantic-index-refresh-prepare.service
 
 [Service]
 Type=oneshot

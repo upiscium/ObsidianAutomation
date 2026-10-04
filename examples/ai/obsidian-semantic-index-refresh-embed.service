@@ -1,0 +1,26 @@
+[Unit]
+Description=Embed incremental Obsidian Semantic Index refresh
+After=obsidian-semantic-index-refresh-prepare.service
+ConditionPathExists=/etc/obsidian-ai/semantic-index-refresh.env
+ConditionPathExists=!/run/obsidian-automation/semantic-refresh-inhibited.json
+OnSuccess=obsidian-semantic-index-refresh-finalize.service
+
+[Service]
+Type=oneshot
+User=obsidian-ai-embedder
+Group=obsidian-ai-embedder
+EnvironmentFile=/etc/obsidian-ai/semantic-index-refresh.env
+# Accept only a completed predecessor invocation, never a skipped or stopped job.
+ExecStartPre=/bin/sh -c 'test "$$MONITOR_UNIT" = "obsidian-semantic-index-refresh-prepare.service" && test "$$MONITOR_SERVICE_RESULT" = success && test "$$MONITOR_EXIT_CODE" = exited && test "$$MONITOR_EXIT_STATUS" = 0'
+ExecStart=/opt/obsidian-ai/venv/bin/obsidian-semantic-index-refresh embed \
+  --ai-root /var/lib/obsidian-ai/state \
+  --base-url ${SEMANTIC_EMBEDDING_BASE_URL}
+TimeoutStartSec=15min
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadOnlyPaths=/etc/obsidian-ai /var/lib/obsidian-ai/state/04-Index/semantic-refresh-reader /var/lib/obsidian-ai/state/04-Index/semantic-embedding-requests /var/lib/obsidian-ai/state/04-Index/semantic-embedding-plans
+ReadWritePaths=/var/lib/obsidian-ai/state/04-Index/semantic-refresh-embedder /var/lib/obsidian-ai/state/04-Index/semantic-embedding-results /var/lib/obsidian-ai/state/04-Index/semantic-embedding-result-sets
+UMask=0007

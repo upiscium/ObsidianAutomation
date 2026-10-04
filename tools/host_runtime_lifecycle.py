@@ -23,7 +23,11 @@ TIMERS = (
     "obsidian-github-sync.timer", "obsidian-core-promotion.timer",
 )
 SERVICES = (
-    "obsidian-ai-vault-pull.service", "obsidian-ai-input-planner.service",
+    "obsidian-ai-vault-pull.service",
+    "obsidian-semantic-index-refresh-prepare.service",
+    "obsidian-semantic-index-refresh-embed.service",
+    "obsidian-semantic-index-refresh-finalize.service",
+    "obsidian-ai-input-planner.service",
     "obsidian-ai-human-projection-sync.service",
     "obsidian-ai-human-projection-cleanup-sync.service",
     "obsidian-ai-review-intake.service",
@@ -46,6 +50,7 @@ ROLE_CONFIGS = {
     "ai": (
         "/etc/obsidian-ai/rclone.conf",
         "/etc/obsidian-ai/pre-review-generator.env",
+        "/etc/obsidian-ai/semantic-index-refresh.env",
         "/etc/obsidian-ai/pre-review-evaluator.env",
         "/etc/obsidian-ai/review-intake.env",
         "/etc/obsidian-ai/review-intake-password",
@@ -57,6 +62,7 @@ ROLE_CONFIGS = {
     "publisher": ("/etc/obsidian-core-promotion/promotion.env", "/etc/obsidian-core-promotion/public-export.toml",
                   "/etc/obsidian-core-promotion/nextcloud.password"),
 }
+DEFAULT_REFRESH_INHIBIT = Path("/run/obsidian-automation/semantic-refresh-inhibited.json")
 
 
 class LifecycleError(RuntimeError):
@@ -117,6 +123,7 @@ class RuntimeTransaction:
         revision_env: Path = Path("/etc/obsidian-ai/pre-review-revision.env"),
         drain_timeout: float = 300.0, clock: Callable = time.monotonic,
         sleep: Callable = time.sleep, config_exists: Callable = os.path.lexists,
+        refresh_inhibit_path: Path = DEFAULT_REFRESH_INHIBIT,
     ):
         if not re.fullmatch(r"[0-9a-f]{40,64}", target_sha):
             raise LifecycleError("invalid_target_sha")
@@ -131,6 +138,8 @@ class RuntimeTransaction:
         self.finished = False
         self.host_activation = "not_attempted"
         self.mutation_started = False
+        self.refresh_inhibit_path = refresh_inhibit_path
+        self.refresh_inhibit = None
 
     def _run(self, args: Sequence[str], code: str) -> str:
         result = self.runner(tuple(str(arg) for arg in args))
@@ -254,13 +263,35 @@ class RuntimeTransaction:
     def prepare(self) -> None:
         # Reading every unit before the first mutation distinguishes a broken
         # systemd query from genuinely absent units on first installation.
-        current = self._snapshot()
+        self._snapshot()
         for name in SERVICES:
             self._state(name)
-        if self.intent_path.exists():
-            self.intent = self._read_intent()
-        else:
-            self.intent = {"record_version": 1, "target_sha": self.target_sha, "timers": current, "phase": "prepared"}
+        pending_intent = self._read_intent() if self.intent_path.exists() else None
+        # Block every not-yet-started OnSuccess handler before timer/drain
+        # mutations. A callback queued after the final state query must not run
+        # against a package or unit set that is being replaced.
+        updater = _load_source_module(
+            self.source_root / "src/obsidian_automation/pre_review_production_update.py",
+            "_target_refresh_update_inhibit",
+        )
+        self.refresh_inhibit = updater.RefreshUpdateInhibit(
+            self.refresh_inhibit_path, self.target_sha, "host-runtime",
+            require_root=self.require_root,
+        )
+        try:
+            self.refresh_inhibit.acquire(publish=False)
+        except (updater.PreReviewProductionUpdateError, OSError) as exc:
+            raise LifecycleError("semantic_refresh_inhibit_failed") from exc
+        # The legacy updater may have restored its timers between preflight and
+        # our shared-lock acquisition. Only this serialized snapshot can become
+        # a new restoration intent; an interrupted host update retains its
+        # previously recorded original states.
+        current = self._snapshot()
+        self.intent = pending_intent or {
+            "record_version": 1, "target_sha": self.target_sha,
+            "timers": current, "phase": "prepared",
+        }
+        self.refresh_inhibit.publish()
         self._save("prepared")
         self.mutation_started = True
         if not self._disable_all():
@@ -345,6 +376,8 @@ class RuntimeTransaction:
         _write_json(history, self.intent)
         self.intent_path.unlink()
         _fsync_directory(self.receipt_dir)
+        assert self.refresh_inhibit is not None
+        self.refresh_inhibit.release()
         self.finished = True
 
     def __exit__(self, exc_type, exc, traceback):
@@ -353,6 +386,8 @@ class RuntimeTransaction:
                 contained = self._disable_all()
                 self._save("failed", containment="disabled" if contained else "manual_intervention_required")
         finally:
+            if self.refresh_inhibit is not None:
+                self.refresh_inhibit.close()
             if self.lock_fd is not None:
                 os.close(self.lock_fd)
                 self.lock_fd = None

@@ -1,0 +1,25 @@
+[Unit]
+Description=Finalize and activate refreshed Obsidian Semantic Index
+After=obsidian-semantic-index-refresh-embed.service
+ConditionPathExists=/etc/obsidian-ai/semantic-index-refresh.env
+ConditionPathExists=!/run/obsidian-automation/semantic-refresh-inhibited.json
+
+[Service]
+Type=oneshot
+User=obsidian-ai-reader
+Group=obsidian-ai-reader
+# Accept only a completed predecessor invocation, never a skipped or stopped job.
+ExecStartPre=/bin/sh -c 'test "$$MONITOR_UNIT" = "obsidian-semantic-index-refresh-embed.service" && test "$$MONITOR_SERVICE_RESULT" = success && test "$$MONITOR_EXIT_CODE" = exited && test "$$MONITOR_EXIT_STATUS" = 0'
+ExecStart=/opt/obsidian-ai/venv/bin/obsidian-semantic-index-refresh finalize \
+  --ai-root /var/lib/obsidian-ai/state \
+  --vault-root /var/lib/obsidian-ai/vault
+TimeoutStartSec=5min
+
+NoNewPrivileges=yes
+PrivateNetwork=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadOnlyPaths=/var/lib/obsidian-ai/vault
+ReadWritePaths=/var/lib/obsidian-ai/state/04-Index /var/lib/obsidian-ai/state/24-Locks/read-view
+UMask=0007

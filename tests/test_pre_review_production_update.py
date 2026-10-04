@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -8,8 +9,10 @@ import pytest
 from obsidian_automation.pre_review_production_update import (
     CommandResult,
     PreReviewProductionUpdateError,
+    RefreshUpdateInhibit,
     MIRROR_SERVICE_UNIT,
     MIRROR_TIMER_UNIT,
+    SEMANTIC_REFRESH_SERVICES,
     PRE_REVIEW_SERVICES,
     REQUIRED_UNITS,
     TIMER_UNIT,
@@ -61,6 +64,7 @@ class Runner:
         fail_install: bool = False,
         mirror_enabled: bool = True,
         mirror_active: bool = True,
+        refresh_exists: bool = True,
     ) -> None:
         self.systemd_dir = systemd_dir
         self.timer_exists = timer_exists
@@ -69,6 +73,7 @@ class Runner:
         self.fail_install = fail_install
         self.mirror_enabled = mirror_enabled
         self.mirror_active = mirror_active
+        self.refresh_exists = refresh_exists
         self.head = PREVIOUS
         self.commands: list[tuple[str, ...]] = []
 
@@ -126,6 +131,12 @@ class Runner:
             return CommandResult(0, "", "")
         if command == ("systemctl", "stop", MIRROR_SERVICE_UNIT):
             return CommandResult(0, "", "")
+        if command[:2] == ("systemctl", "show") and command[2] in SEMANTIC_REFRESH_SERVICES:
+            if "--value" in command:
+                return CommandResult(0, "loaded\n" if self.refresh_exists else "not-found\n", "")
+            return CommandResult(0, "ActiveState=inactive\nMainPID=0\nControlPID=0\nJob=\n", "")
+        if command == ("systemctl", "stop", *SEMANTIC_REFRESH_SERVICES):
+            return CommandResult(0, "", "")
         if (
             len(command) == 3
             and command[:2] == ("systemctl", "stop")
@@ -177,6 +188,10 @@ class Runner:
             "/obsidian-pre-review-production-smoke"
         ):
             return CommandResult(0, '{"status":"passed"}\n', "")
+        if command[:1] == ("sh",) and command[1].endswith("bootstrap-pre-review-authority.sh"):
+            return CommandResult(0, "", "")
+        if command[-1:] == ("--semantic-refresh-only",):
+            return CommandResult(0, "", "")
 
         raise AssertionError(f"unexpected command: {command!r}")
 
@@ -196,6 +211,7 @@ def test_first_install_leaves_new_timer_disabled_and_installs_exact_revision(
         systemd_dir=systemd,
         receipt_dir=receipts,
         revision_env=revision_env,
+        refresh_inhibit_path=receipts / "semantic-refresh-inhibited.json",
         runner=runner,
         require_root=False,
     )
@@ -251,6 +267,7 @@ def test_existing_enabled_active_timer_is_restored_after_safe_update(
         systemd_dir=systemd,
         receipt_dir=receipts,
         revision_env=revision_env,
+        refresh_inhibit_path=receipts / "semantic-refresh-inhibited.json",
         runner=runner,
         require_root=False,
     )
@@ -284,6 +301,7 @@ def test_existing_disabled_inactive_timer_stays_disabled(
         systemd_dir=systemd,
         receipt_dir=receipts,
         revision_env=revision_env,
+        refresh_inhibit_path=receipts / "semantic-refresh-inhibited.json",
         runner=runner,
         require_root=False,
     )
@@ -316,6 +334,7 @@ def test_failure_after_timer_stop_leaves_timer_disabled_and_persists_safe_receip
             systemd_dir=systemd,
             receipt_dir=receipts,
             revision_env=revision_env,
+            refresh_inhibit_path=receipts / "semantic-refresh-inhibited.json",
             runner=runner,
             require_root=False,
         )
@@ -360,6 +379,7 @@ def test_dirty_checkout_fails_before_timer_is_touched(tmp_path: Path) -> None:
             systemd_dir=systemd,
             receipt_dir=receipts,
             revision_env=revision_env,
+            refresh_inhibit_path=receipts / "semantic-refresh-inhibited.json",
             runner=dirty_runner,
             require_root=False,
         )
@@ -390,6 +410,7 @@ def test_bootstrap_pre_disabled_mirror_is_logically_restored(
         systemd_dir=systemd,
         receipt_dir=receipts,
         revision_env=revision_env,
+        refresh_inhibit_path=receipts / "semantic-refresh-inhibited.json",
         runner=runner,
         require_root=False,
         bootstrap_mirror_pre_disabled=True,
@@ -426,7 +447,219 @@ def test_bootstrap_pre_disabled_mode_rejects_running_mirror(
             systemd_dir=systemd,
             receipt_dir=receipts,
             revision_env=revision_env,
+            refresh_inhibit_path=receipts / "semantic-refresh-inhibited.json",
             runner=runner,
             require_root=False,
             bootstrap_mirror_pre_disabled=True,
         )
+
+
+def test_refresh_is_inhibited_and_stopped_before_package_mutation(tmp_path: Path) -> None:
+    app, venv, systemd, receipts, revision_env = _layout(tmp_path)
+    gate = receipts / "semantic-refresh-inhibited.json"
+    base = Runner(systemd_dir=systemd, timer_exists=True, enabled=True, active=True)
+
+    def runner(argv):
+        command = tuple(map(str, argv))
+        if command[:2] in {("systemctl", "disable"), ("systemctl", "stop"), ("systemctl", "enable")}:
+            # A queued OnSuccess callback cannot start at any of these points.
+            assert gate.is_file()
+        if command and command[0].endswith("/pip"):
+            assert gate.is_file()
+            assert ("systemctl", "stop", *SEMANTIC_REFRESH_SERVICES) in base.commands
+        return base(command)
+
+    execute_update(
+        target_sha=TARGET, app_root=app, venv_root=venv, systemd_dir=systemd,
+        receipt_dir=receipts, revision_env=revision_env, runner=runner,
+        require_root=False, refresh_inhibit_path=gate,
+    )
+    commands = base.commands
+    assert commands.index(("systemctl", "stop", MIRROR_SERVICE_UNIT)) < commands.index(
+        ("systemctl", "stop", *SEMANTIC_REFRESH_SERVICES)
+    )
+    authority = next(i for i, c in enumerate(commands) if c[:1] == ("sh",))
+    smoke = next(i for i, c in enumerate(commands) if c[0].endswith("production-smoke"))
+    assert authority < smoke
+    assert not gate.exists()
+
+
+def test_legacy_captures_restored_timers_and_head_after_host_releases_shared_lock(tmp_path: Path) -> None:
+    app, venv, systemd, receipts, revision_env = _layout(tmp_path)
+    gate = receipts / "semantic-refresh-inhibited.json"
+    base = Runner(
+        systemd_dir=systemd, timer_exists=True, enabled=False, active=False,
+        mirror_enabled=False, mirror_active=False,
+    )
+    predecessor_sha = "c" * 40
+    predecessor = RefreshUpdateInhibit(gate, predecessor_sha, "host-runtime", require_root=False)
+    predecessor.acquire()
+    predecessor_restored = False
+
+    def runner(argv):
+        nonlocal predecessor_restored
+        command = tuple(map(str, argv))
+        result = base(command)
+        if not predecessor_restored and command == ("systemctl", "is-active", MIRROR_TIMER_UNIT):
+            # Return the final old preflight value, then let the host update
+            # complete before the legacy updater acquires the shared lock.
+            base.enabled = base.active = base.mirror_enabled = base.mirror_active = True
+            base.head = predecessor_sha
+            predecessor.release()
+            predecessor.close()
+            predecessor_restored = True
+        return result
+
+    try:
+        receipt, _ = execute_update(
+            target_sha=TARGET, app_root=app, venv_root=venv, systemd_dir=systemd,
+            receipt_dir=receipts, revision_env=revision_env, runner=runner,
+            require_root=False, refresh_inhibit_path=gate,
+        )
+    finally:
+        predecessor.close()
+    assert predecessor_restored
+    assert receipt.previous_sha == predecessor_sha
+    assert receipt.timer_was_enabled and receipt.timer_was_active
+    assert receipt.mirror_timer_was_enabled and receipt.mirror_timer_was_active
+    assert base.enabled and base.active and base.mirror_enabled and base.mirror_active
+    assert not gate.exists()
+
+
+def test_legacy_revalidates_timers_under_shared_lock_before_publishing_marker(tmp_path: Path) -> None:
+    app, venv, systemd, receipts, revision_env = _layout(tmp_path)
+    gate = receipts / "semantic-refresh-inhibited.json"
+    base = Runner(systemd_dir=systemd, timer_exists=True, enabled=True, active=True)
+    changed = False
+
+    def runner(argv):
+        nonlocal changed
+        command = tuple(map(str, argv))
+        if changed and command == ("systemctl", "is-enabled", TIMER_UNIT):
+            return CommandResult(1, "masked\n", "")
+        result = base(command)
+        if command == ("systemctl", "is-active", MIRROR_TIMER_UNIT):
+            changed = True
+        return result
+
+    with pytest.raises(PreReviewProductionUpdateError, match="enablement state"):
+        execute_update(
+            target_sha=TARGET, app_root=app, venv_root=venv, systemd_dir=systemd,
+            receipt_dir=receipts, revision_env=revision_env, runner=runner,
+            require_root=False, refresh_inhibit_path=gate,
+        )
+    assert not gate.exists()
+    assert base.head == PREVIOUS
+    assert not any(c[:2] == ("systemctl", "disable") for c in base.commands)
+
+
+def test_absent_refresh_units_are_supported_on_first_upgrade(tmp_path: Path) -> None:
+    app, venv, systemd, receipts, revision_env = _layout(tmp_path)
+    runner = Runner(systemd_dir=systemd, timer_exists=True, refresh_exists=False)
+    execute_update(
+        target_sha=TARGET, app_root=app, venv_root=venv, systemd_dir=systemd,
+        receipt_dir=receipts, revision_env=revision_env, runner=runner,
+        require_root=False, refresh_inhibit_path=receipts / "inhibit.json",
+    )
+    assert ("systemctl", "stop", *SEMANTIC_REFRESH_SERVICES) not in runner.commands
+    assert all((systemd / unit).is_file() for unit in SEMANTIC_REFRESH_SERVICES)
+
+
+def test_queued_refresh_job_blocks_legacy_update_before_checkout(tmp_path: Path) -> None:
+    app, venv, systemd, receipts, revision_env = _layout(tmp_path)
+    gate = receipts / "inhibit.json"
+    base = Runner(systemd_dir=systemd, timer_exists=True, enabled=True, active=True)
+
+    def runner(argv):
+        command = tuple(map(str, argv))
+        if command[:2] == ("systemctl", "show") and "--property=ActiveState" in command:
+            return CommandResult(0, "ActiveState=inactive\nMainPID=0\nControlPID=0\nJob=17\n", "")
+        return base(command)
+
+    with pytest.raises(PreReviewProductionUpdateError, match="did not become inert"):
+        execute_update(
+            target_sha=TARGET, app_root=app, venv_root=venv, systemd_dir=systemd,
+            receipt_dir=receipts, revision_env=revision_env, runner=runner,
+            require_root=False, refresh_inhibit_path=gate,
+        )
+    assert gate.is_file()
+    assert base.head == PREVIOUS
+    assert not any(c[0].endswith("/pip") for c in base.commands)
+    assert not base.active and not base.mirror_active
+
+
+def test_interrupted_legacy_restore_keeps_timers_and_refresh_inert(tmp_path: Path) -> None:
+    app, venv, systemd, receipts, revision_env = _layout(tmp_path)
+    gate = receipts / "inhibit.json"
+    base = Runner(systemd_dir=systemd, timer_exists=True, enabled=True, active=True)
+
+    def runner(argv):
+        command = tuple(map(str, argv))
+        if command == ("systemctl", "enable", "--now", TIMER_UNIT):
+            # The mirror timer was already restored when interruption arrived.
+            assert base.mirror_active
+            raise KeyboardInterrupt
+        return base(command)
+
+    with pytest.raises(PreReviewProductionUpdateError, match="restore_pre_review_timer"):
+        execute_update(
+            target_sha=TARGET, app_root=app, venv_root=venv, systemd_dir=systemd,
+            receipt_dir=receipts, revision_env=revision_env, runner=runner,
+            require_root=False, refresh_inhibit_path=gate,
+        )
+    assert gate.exists()
+    assert not base.active and not base.mirror_active
+    assert not base.enabled and not base.mirror_enabled
+
+
+@pytest.mark.parametrize("other_target,other_owner", [(PREVIOUS, "host-runtime"), (TARGET, "pre-review")])
+def test_inhibit_preserves_other_update_intent(tmp_path: Path, other_target: str, other_owner: str) -> None:
+    path = tmp_path / "inhibit.json"
+    first = RefreshUpdateInhibit(path, TARGET, "host-runtime", require_root=False)
+    first.acquire()
+    before = path.read_bytes()
+    first.close()  # Interrupted updates intentionally leave the marker.
+    other = RefreshUpdateInhibit(path, other_target, other_owner, require_root=False)
+    with pytest.raises(PreReviewProductionUpdateError, match="another target or updater"):
+        other.acquire()
+    assert path.read_bytes() == before
+    retry = RefreshUpdateInhibit(path, TARGET, "host-runtime", require_root=False)
+    retry.acquire()
+    retry.release()
+    retry.close()
+    assert not path.exists()
+
+
+def test_shared_inhibit_serializes_both_updater_paths(tmp_path: Path) -> None:
+    path = tmp_path / "inhibit.json"
+    first = RefreshUpdateInhibit(path, TARGET, "host-runtime", require_root=False)
+    second = RefreshUpdateInhibit(path, TARGET, "pre-review", require_root=False)
+    first.acquire()
+    try:
+        assert path.stat().st_mode & 0o777 == 0o600
+        with pytest.raises(PreReviewProductionUpdateError, match="already in progress"):
+            second.acquire()
+        first.release()
+    finally:
+        first.close()
+
+
+@pytest.mark.parametrize("unsafe", ["symlink", "hardlink", "public"])
+def test_unsafe_inhibit_is_rejected_without_replacement(tmp_path: Path, unsafe: str) -> None:
+    path = tmp_path / "inhibit.json"
+    value = {"record_version": 1, "target_sha": TARGET, "owner": "host-runtime"}
+    outside = tmp_path / "outside.json"
+    outside.write_text(json.dumps(value))
+    outside.chmod(0o600)
+    if unsafe == "symlink":
+        path.symlink_to(outside)
+    elif unsafe == "hardlink":
+        os.link(outside, path)
+    else:
+        path.write_text(json.dumps(value))
+        path.chmod(0o644)
+    before = outside.read_bytes()
+    gate = RefreshUpdateInhibit(path, TARGET, "host-runtime", require_root=False)
+    with pytest.raises(PreReviewProductionUpdateError, match="unsafe"):
+        gate.acquire()
+    assert outside.read_bytes() == before
