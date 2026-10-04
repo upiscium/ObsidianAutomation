@@ -497,13 +497,17 @@ def finalize_refresh(
     if result.prepare_sha256 != prepare_sha or result.action != prepare.action:
         raise SemanticRefreshError("semantic refresh prepare/embed handoff mismatch")
 
+    existing_active = load_active_semantic_index(ai_root)
+
     if prepare.action == "noop":
         previous = load_semantic_index_manifest(
             ai_root,
             prepare.previous_index_sha256,
         )
         if previous.corpus_manifest_sha256 != prepare.corpus_manifest_sha256:
-            raise SemanticRefreshError("noop semantic refresh previous index corpus mismatch")
+            raise SemanticRefreshError(
+                "noop semantic refresh previous index corpus mismatch"
+            )
         corpus = load_semantic_corpus_manifest(
             ai_root,
             prepare.corpus_manifest_sha256,
@@ -516,6 +520,16 @@ def finalize_refresh(
         index_sha = prepare.previous_index_sha256
         changed = False
         source = "seed-current"
+        if existing_active is not None:
+            if (
+                existing_active.semantic_index_sha256 != index_sha
+                or existing_active.corpus_manifest_sha256
+                != prepare.corpus_manifest_sha256
+            ):
+                raise SemanticRefreshError(
+                    "noop semantic refresh disagrees with active binding"
+                )
+            return existing_active, False
     else:
         if prepare.plan_sha256 is None or result.result_set_sha256 is None:
             raise SemanticRefreshError("refresh finalization identities are incomplete")
