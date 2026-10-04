@@ -23,7 +23,11 @@ TIMERS = (
     "obsidian-github-sync.timer", "obsidian-core-promotion.timer",
 )
 SERVICES = (
-    "obsidian-ai-vault-pull.service", "obsidian-ai-input-planner.service",
+    "obsidian-ai-vault-pull.service",
+    "obsidian-ai-semantic-refresh-prepare.service",
+    "obsidian-ai-semantic-refresh-embed.service",
+    "obsidian-ai-semantic-refresh-finalize.service",
+    "obsidian-ai-input-planner.service",
     "obsidian-ai-human-projection-sync.service",
     "obsidian-ai-human-projection-cleanup-sync.service",
     "obsidian-ai-review-intake.service",
@@ -46,6 +50,7 @@ ROLE_CONFIGS = {
     "ai": (
         "/etc/obsidian-ai/rclone.conf",
         "/etc/obsidian-ai/pre-review-generator.env",
+        "/etc/obsidian-ai/semantic-refresh.env",
         "/etc/obsidian-ai/pre-review-evaluator.env",
         "/etc/obsidian-ai/review-intake.env",
         "/etc/obsidian-ai/review-intake-password",
