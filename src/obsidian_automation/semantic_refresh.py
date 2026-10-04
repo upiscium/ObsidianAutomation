@@ -353,6 +353,14 @@ def resolve_active_semantic_index(ai_root: Path, vault_root: Path) -> str:
 def _previous_index_sha(ai_root: Path, seed_index_sha256: str | None) -> str:
     active = load_active_semantic_index(ai_root)
     if active is not None:
+        index = load_semantic_index_manifest(
+            ai_root,
+            active.semantic_index_sha256,
+        )
+        if index.corpus_manifest_sha256 != active.corpus_manifest_sha256:
+            raise SemanticRefreshError(
+                "active semantic index binding does not match finalized index"
+            )
         return active.semantic_index_sha256
     if seed_index_sha256 is None:
         raise SemanticRefreshError(
