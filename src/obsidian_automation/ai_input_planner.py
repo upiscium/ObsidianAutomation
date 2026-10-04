@@ -89,6 +89,11 @@ from .semantic_objective_generation import (
     OBJECTIVE_OLLAMA_ADAPTER_VERSION,
     OBJECTIVE_OPENAI_ADAPTER_VERSION,
 )
+from .semantic_refresh import (
+    ACTIVE_TOKEN as ACTIVE_SEMANTIC_INDEX_TOKEN,
+    SemanticRefreshError,
+    resolve_active_semantic_index,
+)
 from .semantic_selection import (
     POLICIES as SEMANTIC_SELECTION_POLICIES,
     build_semantic_selection,
@@ -1439,13 +1444,33 @@ def plan_once(
             f"input_mode must be one of {sorted(INPUT_MODES)}"
         )
     if input_mode == INPUT_MODE_SEMANTIC_DEEP:
+        if not isinstance(semantic_index_sha256, str):
+            raise AIInputPlannerError(
+                "semantic-deep-knowledge mode requires semantic index configuration"
+            )
+        pending_for_index = _load_pending(ai_root)
+        if semantic_index_sha256 == ACTIVE_SEMANTIC_INDEX_TOKEN:
+            if (
+                pending_for_index is not None
+                and pending_for_index["input_mode"] == INPUT_MODE_SEMANTIC_DEEP
+            ):
+                semantic_index_sha256 = str(
+                    pending_for_index["semantic_index_sha256"]
+                )
+            else:
+                try:
+                    semantic_index_sha256 = resolve_active_semantic_index(
+                        ai_root,
+                        vault_root,
+                    )
+                except SemanticRefreshError as exc:
+                    raise AIInputPlannerError(str(exc)) from exc
         if (
-            not isinstance(semantic_index_sha256, str)
-            or len(semantic_index_sha256) != 64
+            len(semantic_index_sha256) != 64
             or any(ch not in "0123456789abcdef" for ch in semantic_index_sha256)
         ):
             raise AIInputPlannerError(
-                "semantic-deep-knowledge mode requires exact semantic_index_sha256"
+                "semantic-deep-knowledge mode requires exact or active semantic index"
             )
         if semantic_selection_policy not in SEMANTIC_SELECTION_POLICIES:
             raise AIInputPlannerError(
