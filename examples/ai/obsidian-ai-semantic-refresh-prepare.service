@@ -1,0 +1,23 @@
+[Unit]
+Description=Prepare automatic Obsidian Semantic Index refresh
+ConditionPathExists=/etc/obsidian-ai/semantic-refresh.env
+
+[Service]
+Type=oneshot
+User=obsidian-ai-reader
+Group=obsidian-ai-reader
+Environment=SEMANTIC_REFRESH_SEED_INDEX_SHA=disabled
+EnvironmentFile=/etc/obsidian-ai/semantic-refresh.env
+ExecStart=/opt/obsidian-ai/venv/bin/obsidian-semantic-refresh prepare \
+  --ai-root /var/lib/obsidian-ai/state \
+  --vault-root /var/lib/obsidian-ai/vault \
+  --seed-index-sha ${SEMANTIC_REFRESH_SEED_INDEX_SHA}
+NoNewPrivileges=true
+PrivateNetwork=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/var/lib/obsidian-ai/vault
+ReadWritePaths=/var/lib/obsidian-ai/state/04-Index /var/lib/obsidian-ai/state/24-Locks/read-view
+UMask=0007
+TimeoutStartSec=5min
