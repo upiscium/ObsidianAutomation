@@ -120,6 +120,14 @@ ROLE_FILES: dict[str, tuple[PrivateFile, ...]] = {
             0o600,
         ),
         PrivateFile(
+            "ai_semantic_refresh_env",
+            "/etc/obsidian-ai/semantic-refresh.env",
+            "root",
+            "root",
+            0o600,
+            required=False,
+        ),
+        PrivateFile(
             "ai_review_intake_env",
             "/etc/obsidian-ai/review-intake.env",
             "root",
@@ -197,6 +205,7 @@ READERS: dict[str, dict[str, tuple[str, ...]]] = {
         "ai_projection_cleanup_password": ("obsidian-ai-sync",),
         "ai_generator_env": (),
         "ai_evaluator_env": (),
+        "ai_semantic_refresh_env": (),
         "ai_review_intake_env": ("obsidian-ai-reviewer",),
         "ai_review_intake_password": ("obsidian-ai-reviewer",),
     },
