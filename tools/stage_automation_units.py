@@ -64,6 +64,9 @@ def _default_runner(argv: Sequence[str]) -> CommandResult:
 AI_UNITS = (
     "obsidian-ai-vault-pull.service",
     "obsidian-ai-vault-pull.timer",
+    "obsidian-ai-semantic-refresh-prepare.service",
+    "obsidian-ai-semantic-refresh-embed.service",
+    "obsidian-ai-semantic-refresh-finalize.service",
     "obsidian-ai-input-planner.service",
     "obsidian-ai-human-projection-sync.service",
     "obsidian-ai-human-projection-cleanup-sync.service",
