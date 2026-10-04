@@ -1,5 +1,7 @@
 [Unit]
 Description=Plan one automatic Obsidian AI input batch
+Requires=obsidian-ai-semantic-refresh-finalize.service
+After=obsidian-ai-semantic-refresh-finalize.service
 ConditionPathExists=/etc/obsidian-ai/pre-review-input.env
 ConditionPathExists=/etc/obsidian-ai/pre-review-revision.env
 
