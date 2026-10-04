@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -20,10 +21,19 @@ DEFAULT_VENV_ROOT = Path("/opt/obsidian-ai/venv")
 DEFAULT_SYSTEMD_DIR = Path("/etc/systemd/system")
 DEFAULT_RECEIPT_DIR = Path("/var/lib/obsidian-ai/deployments")
 DEFAULT_REVISION_ENV = Path("/etc/obsidian-ai/pre-review-revision.env")
+DEFAULT_REFRESH_INHIBIT = Path(
+    "/run/obsidian-automation/semantic-refresh-inhibited.json"
+)
 TIMER_UNIT = "obsidian-pre-review.timer"
 MIRROR_TIMER_UNIT = "obsidian-ai-vault-pull.timer"
 MIRROR_SERVICE_UNIT = "obsidian-ai-vault-pull.service"
+SEMANTIC_REFRESH_SERVICES = (
+    "obsidian-semantic-index-refresh-prepare.service",
+    "obsidian-semantic-index-refresh-embed.service",
+    "obsidian-semantic-index-refresh-finalize.service",
+)
 PRE_REVIEW_SERVICES = (
+    *SEMANTIC_REFRESH_SERVICES,
     "obsidian-pre-review-status.service",
     "obsidian-ai-input-planner.service",
     "obsidian-ai-human-projection-sync.service",
@@ -42,6 +52,8 @@ PRE_REVIEW_SERVICES = (
 OBSOLETE_UNITS = ("obsidian-pre-review-evaluator.timer",)
 REQUIRED_UNITS = frozenset(
     {
+        MIRROR_SERVICE_UNIT,
+        *SEMANTIC_REFRESH_SERVICES,
         "obsidian-ai-input-planner.service",
         "obsidian-ai-human-projection-sync.service",
         "obsidian-ai-human-projection-cleanup-sync.service",
@@ -64,6 +76,101 @@ _SHA_RE = re.compile(r"^[0-9a-f]{40,64}$")
 
 class PreReviewProductionUpdateError(RuntimeError):
     """Raised when exact-revision pre-review deployment cannot complete safely."""
+
+
+class RefreshUpdateInhibit:
+    """Prevent queued success handlers from starting during either updater.
+
+    PID1 checks the marker before activating each refresh stage. A separate,
+    stable inode serializes both updater paths; an interrupted owner must retry
+    its exact target before another updater may remove the marker.
+    """
+
+    def __init__(self, path: Path, target_sha: str, owner: str, *, require_root: bool = True):
+        self.path = path.absolute()
+        self.require_root = require_root
+        self.value = {"record_version": 1, "target_sha": target_sha, "owner": owner}
+        self.lock_fd: int | None = None
+        if _SHA_RE.fullmatch(target_sha) is None or owner not in {"host-runtime", "pre-review"}:
+            raise PreReviewProductionUpdateError("invalid semantic refresh update owner")
+
+    def _safe_path(self, path: Path) -> None:
+        if ".." in path.parts or any(part.is_symlink() for part in (path, *path.parents)):
+            raise PreReviewProductionUpdateError("unsafe semantic refresh inhibit path")
+
+    def _private_regular(self, path: Path) -> None:
+        self._safe_path(path)
+        info = path.stat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_mode & 0o077
+            or info.st_uid != (0 if self.require_root else os.geteuid())):
+            raise PreReviewProductionUpdateError("unsafe semantic refresh inhibit file")
+
+    def _read(self) -> dict:
+        self._private_regular(self.path)
+        if self.path.stat().st_size > 4096:
+            raise PreReviewProductionUpdateError("invalid semantic refresh update intent")
+        try:
+            value = json.loads(self.path.read_bytes())
+        except (ValueError, UnicodeError) as exc:
+            raise PreReviewProductionUpdateError("invalid semantic refresh update intent") from exc
+        if value != self.value:
+            raise PreReviewProductionUpdateError("semantic refresh update intent belongs to another target or updater")
+        return value
+
+    def acquire(self, *, publish: bool = True) -> None:
+        self._safe_path(self.path)
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+        self._safe_path(self.path.parent)
+        info = self.path.parent.stat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_mode & 0o022
+            or info.st_uid != (0 if self.require_root else os.geteuid())):
+            raise PreReviewProductionUpdateError("unsafe semantic refresh inhibit directory")
+        lock_path = self.path.with_suffix(".lock")
+        self._safe_path(lock_path)
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        try:
+            self._private_regular(lock_path)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise PreReviewProductionUpdateError("semantic refresh update already in progress") from exc
+            if os.path.lexists(self.path):
+                self._read()
+            self.lock_fd = fd
+            if publish:
+                self.publish()
+        except BaseException:
+            self.lock_fd = None
+            os.close(fd)
+            raise
+
+    def publish(self) -> None:
+        if self.lock_fd is None:
+            raise PreReviewProductionUpdateError("semantic refresh inhibit is not owned")
+        if os.path.lexists(self.path):
+            self._read()
+        else:
+            _atomic_install_bytes(
+                (json.dumps(self.value, sort_keys=True) + "\n").encode(),
+                self.path,
+                mode=0o600,
+            )
+
+    def release(self) -> None:
+        if self.lock_fd is None:
+            raise PreReviewProductionUpdateError("semantic refresh inhibit is not owned")
+        self._read()
+        self.path.unlink()
+        fd = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    def close(self) -> None:
+        if self.lock_fd is not None:
+            os.close(self.lock_fd)
+            self.lock_fd = None
 
 
 @dataclass(frozen=True)
@@ -236,6 +343,18 @@ def _validate_target(
     return target_sha
 
 
+def _starting_revision(runner: CommandRunner, app_root: Path) -> str:
+    branch = _git_output(runner, app_root, "branch", "--show-current", label="read current branch")
+    if branch != "main":
+        raise PreReviewProductionUpdateError("production checkout must be on main")
+    if _git_output(runner, app_root, "status", "--porcelain", label="read working tree status"):
+        raise PreReviewProductionUpdateError("production checkout is not clean")
+    previous = _git_output(runner, app_root, "rev-parse", "HEAD", label="read current production SHA")
+    if _SHA_RE.fullmatch(previous) is None:
+        raise PreReviewProductionUpdateError("current production HEAD is not a supported Git digest")
+    return previous
+
+
 def _timer_state(
     runner: CommandRunner,
     unit: str,
@@ -268,6 +387,24 @@ def _timer_state(
             f"{unit} activity state is not active/inactive"
         )
     return exists, was_enabled, was_active
+
+
+def _update_timer_snapshot(
+    runner: CommandRunner, *, bootstrap_mirror_pre_disabled: bool,
+) -> tuple[bool, bool, bool, bool, bool]:
+    timer_existed, enabled, active = _timer_state(runner, TIMER_UNIT, allow_missing=True)
+    mirror_exists, mirror_enabled, mirror_active = _timer_state(
+        runner, MIRROR_TIMER_UNIT, allow_missing=False,
+    )
+    if not mirror_exists:
+        raise PreReviewProductionUpdateError("mirror timer must already exist")
+    if bootstrap_mirror_pre_disabled:
+        if mirror_enabled or mirror_active:
+            raise PreReviewProductionUpdateError(
+                "bootstrap mirror pre-disabled mode requires disabled/inactive mirror timer"
+            )
+        mirror_enabled, mirror_active = True, True
+    return timer_existed, enabled, active, mirror_enabled, mirror_active
 
 
 def _managed_unit_sources(app_root: Path) -> tuple[Path, ...]:
@@ -350,6 +487,34 @@ def _install_managed_units(
                 )
             path.unlink()
     return tuple(installed)
+
+
+def _stop_refresh_services(runner: CommandRunner) -> None:
+    """Stop existing stages, accepting absent units on the first upgrade."""
+    loaded: list[str] = []
+    for unit in SEMANTIC_REFRESH_SERVICES:
+        result = runner((
+            "systemctl", "show", unit, "--property=LoadState", "--value",
+        ))
+        state = result.stdout.strip()
+        if state == "not-found" and result.returncode in {0, 1}:
+            continue
+        if result.returncode != 0 or state != "loaded":
+            raise PreReviewProductionUpdateError("cannot determine semantic refresh service state")
+        loaded.append(unit)
+    # One transaction prevents a stopped predecessor from replacing another
+    # stage's pending stop; the inhibit marker also blocks late success jobs.
+    if loaded:
+        _run(runner, ("systemctl", "stop", *loaded), label="stop semantic refresh services")
+    for unit in loaded:
+        result = _run(runner, (
+            "systemctl", "show", unit, "--property=ActiveState",
+            "--property=MainPID", "--property=ControlPID", "--property=Job",
+        ), label="verify semantic refresh stopped")
+        state = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+        if (state.get("ActiveState") not in {"inactive", "failed"}
+            or any(state.get(key) not in {"0", ""} for key in ("MainPID", "ControlPID", "Job"))):
+            raise PreReviewProductionUpdateError("semantic refresh service did not become inert")
 
 
 def _write_revision_env(path: Path, target_sha: str) -> None:
@@ -476,6 +641,7 @@ def execute_update(
     runner: CommandRunner = _default_runner,
     require_root: bool = True,
     bootstrap_mirror_pre_disabled: bool = False,
+    refresh_inhibit_path: Path = DEFAULT_REFRESH_INHIBIT,
 ) -> tuple[DeploymentReceipt, Path]:
     stage = "preflight"
     previous_sha: str | None = None
@@ -488,6 +654,7 @@ def execute_update(
     timer_controlled = False
     mirror_timer_controlled = False
     units_installed = False
+    refresh_inhibit: RefreshUpdateInhibit | None = None
 
     try:
         if require_root and os.geteuid() != 0:
@@ -504,66 +671,31 @@ def execute_update(
             label="pre-review configuration directory",
         )
 
-        branch = _git_output(
-            runner,
-            app_root,
-            "branch",
-            "--show-current",
-            label="read current branch",
-        )
-        if branch != "main":
-            raise PreReviewProductionUpdateError(
-                "production checkout must be on main"
-            )
-        dirty = _git_output(
-            runner,
-            app_root,
-            "status",
-            "--porcelain",
-            label="read working tree status",
-        )
-        if dirty:
-            raise PreReviewProductionUpdateError(
-                "production checkout is not clean"
-            )
-        previous_sha = _git_output(
-            runner,
-            app_root,
-            "rev-parse",
-            "HEAD",
-            label="read current production SHA",
-        )
-        if _SHA_RE.fullmatch(previous_sha) is None:
-            raise PreReviewProductionUpdateError(
-                "current production HEAD is not a supported Git digest"
-            )
-
+        previous_sha = _starting_revision(runner, app_root)
         _validate_target(target_sha, app_root=app_root, runner=runner)
         (
-            timer_existed,
-            timer_was_enabled,
-            timer_was_active,
-        ) = _timer_state(runner, TIMER_UNIT, allow_missing=True)
-
-        (
-            mirror_exists,
-            observed_mirror_enabled,
-            observed_mirror_active,
-        ) = _timer_state(runner, MIRROR_TIMER_UNIT, allow_missing=False)
-        if not mirror_exists:
-            raise PreReviewProductionUpdateError("mirror timer must already exist")
-        if bootstrap_mirror_pre_disabled:
-            if observed_mirror_enabled or observed_mirror_active:
-                raise PreReviewProductionUpdateError(
-                    "bootstrap mirror pre-disabled mode requires disabled/inactive mirror timer"
-                )
-            mirror_timer_was_enabled = True
-            mirror_timer_was_active = True
-        else:
-            mirror_timer_was_enabled = observed_mirror_enabled
-            mirror_timer_was_active = observed_mirror_active
+            timer_existed, timer_was_enabled, timer_was_active,
+            mirror_timer_was_enabled, mirror_timer_was_active,
+        ) = _update_timer_snapshot(
+            runner, bootstrap_mirror_pre_disabled=bootstrap_mirror_pre_disabled,
+        )
 
         stage = "stop_recurring_services"
+        refresh_inhibit = RefreshUpdateInhibit(
+            refresh_inhibit_path, target_sha, "pre-review", require_root=require_root,
+        )
+        refresh_inhibit.acquire(publish=False)
+        # Another updater may have restored timers or advanced HEAD after our
+        # preflight. Capture restoration state and receipt provenance only once
+        # both updater paths are excluded by the shared lock.
+        previous_sha = _starting_revision(runner, app_root)
+        (
+            timer_existed, timer_was_enabled, timer_was_active,
+            mirror_timer_was_enabled, mirror_timer_was_active,
+        ) = _update_timer_snapshot(
+            runner, bootstrap_mirror_pre_disabled=bootstrap_mirror_pre_disabled,
+        )
+        refresh_inhibit.publish()
         if timer_existed:
             _run(
                 runner,
@@ -571,12 +703,6 @@ def execute_update(
                 label="pre-review timer stop",
             )
             timer_controlled = True
-            for unit in PRE_REVIEW_SERVICES:
-                _run(
-                    runner,
-                    ("systemctl", "stop", unit),
-                    label=f"stop {unit}",
-                )
 
         _run(
             runner,
@@ -589,6 +715,11 @@ def execute_update(
             ("systemctl", "stop", MIRROR_SERVICE_UNIT),
             label="mirror service stop",
         )
+        _stop_refresh_services(runner)
+        if timer_existed:
+            for unit in PRE_REVIEW_SERVICES:
+                if unit not in SEMANTIC_REFRESH_SERVICES:
+                    _run(runner, ("systemctl", "stop", unit), label=f"stop {unit}")
 
         stage = "checkout_target"
         _git(
@@ -652,6 +783,22 @@ def execute_update(
         )
         timer_controlled = True
 
+        # Existing installations need file-level handoff ACLs as well as the
+        # newly shipped units before any refresh worker may restart.
+        stage = "apply_authority"
+        _run(
+            runner,
+            (str(venv_root / "bin/python"),
+             str(app_root / "tools/provision_automation_authority.py"),
+             "--semantic-refresh-only"),
+            label="semantic refresh authority provisioning",
+        )
+        _run(
+            runner,
+            ("sh", str(app_root / "examples/ai/bootstrap-pre-review-authority.sh")),
+            label="pre-review authority bootstrap",
+        )
+
         smoke = venv_root / "bin" / "obsidian-pre-review-production-smoke"
         if not smoke.is_file():
             raise PreReviewProductionUpdateError(
@@ -714,9 +861,10 @@ def execute_update(
             completed_at=completed_at,
         )
         path = _persist_receipt(receipt_dir, receipt)
+        refresh_inhibit.release()
         return receipt, path
 
-    except Exception as exc:
+    except BaseException as exc:
         if timer_controlled or units_installed:
             runner(("systemctl", "disable", "--now", TIMER_UNIT))
         if mirror_timer_controlled:
@@ -747,6 +895,9 @@ def execute_update(
         raise PreReviewProductionUpdateError(
             f"{stage}: unexpected production update failure"
         ) from exc
+    finally:
+        if refresh_inhibit is not None:
+            refresh_inhibit.close()
 
 
 def _build_parser() -> argparse.ArgumentParser:

@@ -17,9 +17,14 @@ The target implementation:
 
 1. Locks a root-owned deployment journal directory against concurrent updates.
 2. Rechecks the clean production `main` checkout and target ancestry.
-3. Captures the independent enabled/active states of all four managed timers and
-   fsyncs `pending-runtime.json` **before** changing any timer.
-4. Disables/stops those timers and drains all thirteen managed role services.
+3. Acquires the shared refresh-update lock, rechecks the independent
+   enabled/active states of all four managed timers and prepares the restoration
+   intent. Capturing the states
+   inside the shared lock prevents a concurrent legacy updater's temporary
+   stopped state from becoming a new restoration intent.
+4. Publishes the refresh inhibitor and fsyncs `pending-runtime.json` **before**
+   changing any timer, then disables/stops those timers and drains all
+   managed role services, including the three Semantic Index refresh workers.
    It does not kill a running writer to make an update succeed. A 300-second
    drain deadline fails the update before package/authority mutation.
 5. Updates the production checkout to the exact SHA, installs the non-editable
@@ -35,7 +40,8 @@ The target implementation:
    No LLM request, GitHub observation or Nextcloud write is part of safe smoke.
 8. Restores only the captured timer states after all gates pass. Starting a timer
    can cause a normal production run according to its scheduling policy.
-9. Writes completion evidence and removes the pending intent only after success.
+9. Writes completion evidence and removes the pending intent and shared refresh
+   inhibitor only after success.
 
 Managed recurrence is exactly:
 
@@ -92,6 +98,12 @@ new target-owned implementation. Fresh bootstrap continues to use the exact
 source copy of `tools/production_bootstrap.py`; there is no floating-main deploy.
 The automation production profile requires its canonical app/venv paths.
 
+The first upgrade that introduces automatic Semantic Index refresh must use
+this target-owned launcher. An older installed legacy pre-review updater does
+not know the new managed service list. During controlled refresh acceptance,
+the already disabled mirror/pre-review timers remain disabled through the
+update; no recurrence is enabled by installing the refresh units alone.
+
 ## Failure and recovery
 
 Catchable failure after quiesce attempts to leave all managed timers disabled.
@@ -108,6 +120,15 @@ operator's original preference. A different target is refused while intent is
 pending. Do not delete that journal to bypass a failed gate; inspect the failed
 stage, repair the prerequisite and retry the same reviewed SHA. Escalation to a
 new target needs an explicit operator recovery decision and retained evidence.
+
+Both updater paths also use a root-owned `0600` marker at
+`/run/obsidian-automation/semantic-refresh-inhibited.json` and a separate stable
+lock file. Every refresh service condition-checks this marker, blocking late
+`OnSuccess` callbacks throughout quiesce, package/unit replacement, safe smoke
+and timer restoration. A failed transaction retains its marker; a retry must
+match both the target SHA and updater owner. The marker lives in `/run`; the
+durable recovery record remains `pending-runtime.json`. See the
+[refresh runtime contract](semantic-index-auto-refresh-v1.md#runtime-updates).
 
 No code/state rollback is attempted automatically. A package or unit install may
 be partially applied; the quiesced state and same-target replay are the recovery

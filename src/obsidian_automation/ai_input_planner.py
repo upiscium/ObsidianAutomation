@@ -1154,7 +1154,14 @@ def _recover_pending_submission(
             "pending planner input_mode does not match current production configuration"
         )
     if pending_mode == INPUT_MODE_SEMANTIC_DEEP:
-        if pending["semantic_index_sha256"] != semantic_index_sha256:
+        # The journal already binds a validated immutable Context. Automatic
+        # active-index rotation only selects the snapshot for the next new
+        # transaction; it must not replace or strand this pending snapshot.
+        # Explicit fixed-SHA configuration still requires an exact match.
+        if (
+            semantic_index_sha256 != "active"
+            and pending["semantic_index_sha256"] != semantic_index_sha256
+        ):
             raise AIInputPlannerError(
                 "pending semantic index does not match current production configuration"
             )
@@ -1183,6 +1190,8 @@ def _recover_pending_submission(
         return {
             "event": "ai-input-planner",
             "status": "recovered_committed_submission",
+            "input_mode": pending_mode,
+            "semantic_index_sha256": pending["semantic_index_sha256"],
             "selection_sha256": pending["selection_sha256"],
             "context_sha256": pending["context_sha256"],
         }
@@ -1196,6 +1205,16 @@ def _recover_pending_submission(
             ai_root,
             str(pending["context_sha256"]),
         )
+        for name in (
+            "semantic_index_sha256",
+            "selection_sha256",
+            "selection_policy",
+            "objective_policy",
+        ):
+            if getattr(context, name) != pending[name]:
+                raise AIInputPlannerError(
+                    f"pending semantic Context {name} binding mismatch"
+                )
     else:
         context = load_context_bundle(
             ai_root,
@@ -1307,6 +1326,7 @@ def _recover_pending_submission(
             else "recovered_pending_submission"
         ),
         "input_mode": pending_mode,
+        "semantic_index_sha256": updated["semantic_index_sha256"],
         "selection_sha256": updated["selection_sha256"],
         "context_sha256": updated["context_sha256"],
         "job_id": submitted["job_id"],
@@ -1443,16 +1463,7 @@ def plan_once(
             f"input_mode must be one of {sorted(INPUT_MODES)}"
         )
     if input_mode == INPUT_MODE_SEMANTIC_DEEP:
-        if semantic_index_sha256 == "active":
-            try:
-                semantic_index_sha256 = resolve_active_semantic_index_sha(
-                    ai_root
-                )
-            except SemanticRefreshError as exc:
-                raise AIInputPlannerError(
-                    f"active semantic index binding is unavailable: {exc}"
-                ) from exc
-        if (
+        if semantic_index_sha256 != "active" and (
             not isinstance(semantic_index_sha256, str)
             or len(semantic_index_sha256) != 64
             or any(ch not in "0123456789abcdef" for ch in semantic_index_sha256)
@@ -1484,6 +1495,16 @@ def plan_once(
     )
     if recovered is not None:
         return recovered
+
+    # Resolve once only when starting a new transaction. Recovery above uses
+    # its journaled exact provenance even if the mutable pointer is unavailable.
+    if semantic_index_sha256 == "active":
+        try:
+            semantic_index_sha256 = resolve_active_semantic_index_sha(ai_root)
+        except SemanticRefreshError as exc:
+            raise AIInputPlannerError(
+                f"active semantic index binding is unavailable: {exc}"
+            ) from exc
 
     states = _current_states(ai_root)
     if states.get("blocked", 0) or states.get("retry_exhausted", 0):

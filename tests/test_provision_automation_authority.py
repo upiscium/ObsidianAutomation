@@ -4,6 +4,8 @@ import importlib.util
 from pathlib import Path
 import sys
 
+import pytest
+
 
 def _load_provisioner():
     path = Path("tools/provision_automation_authority.py")
@@ -233,3 +235,43 @@ def test_github_mirror_read_view_lock_directory_is_provisioned() -> None:
         "obsidian-github-mirror",
         0o700,
     )
+
+
+def test_refresh_only_upgrade_creates_exact_handoffs_and_checks_cross_role_access() -> None:
+    commands = []
+
+    def runner(argv):
+        command = tuple(map(str, argv))
+        commands.append(command)
+        if command[:1] == ("runuser",):
+            user, flag, path = command[2], command[-2], command[-1]
+            allowed = flag == "-r" or (
+                user.endswith("reader") and not path.endswith("embedder")
+            ) or (user.endswith("embedder") and path.endswith("embedder"))
+            return authority.CommandResult(0 if allowed else 1, "", "")
+        return authority.CommandResult(0, "", "")
+
+    result = authority.provision_semantic_refresh(runner=runner, require_root=False)
+    root = "/var/lib/obsidian-ai/state/04-Index"
+    paths = {f"{root}/semantic-refresh-reader", f"{root}/semantic-refresh-embedder"}
+    assert {command[-1] for command in commands if command[0] == "install"} == paths
+    assert {command[-1] for command in commands if command[0] == "setfacl"} == paths
+    assert not any(command[0] in {"useradd", "groupadd", "systemctl"} for command in commands)
+    for path in paths:
+        for entry in authority.AI_ACLS[path]:
+            assert ("setfacl", "-m", f"d:{entry}", path) in commands
+    assert result["directory_count"] == 2
+    assert result["recurring_services_activated"] is False
+
+
+def test_refresh_only_upgrade_requires_existing_reader_index_authority() -> None:
+    commands = []
+
+    def runner(argv):
+        command = tuple(map(str, argv))
+        commands.append(command)
+        return authority.CommandResult(1 if command[:1] == ("runuser",) else 0, "", "")
+
+    with pytest.raises(authority.AuthorityProvisionError, match="reader writes existing Index"):
+        authority.provision_semantic_refresh(runner=runner, require_root=False)
+    assert not any(command[0] in {"install", "setfacl"} for command in commands)

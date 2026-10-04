@@ -2,13 +2,16 @@
 Description=Prepare incremental Obsidian Semantic Index refresh
 After=obsidian-ai-vault-pull.service
 ConditionPathExists=/etc/obsidian-ai/semantic-index-refresh.env
+ConditionPathExists=!/run/obsidian-automation/semantic-refresh-inhibited.json
 OnSuccess=obsidian-semantic-index-refresh-embed.service
 
 [Service]
 Type=oneshot
 User=obsidian-ai-reader
 Group=obsidian-ai-reader
-ExecStart=/opt/obsidian-automation/venv/bin/obsidian-semantic-index-refresh prepare \
+# Accept only a completed predecessor invocation, never a skipped or stopped job.
+ExecStartPre=/bin/sh -c 'test "$$MONITOR_UNIT" = "obsidian-ai-vault-pull.service" && test "$$MONITOR_SERVICE_RESULT" = success && test "$$MONITOR_EXIT_CODE" = exited && test "$$MONITOR_EXIT_STATUS" = 0'
+ExecStart=/opt/obsidian-ai/venv/bin/obsidian-semantic-index-refresh prepare \
   --ai-root /var/lib/obsidian-ai/state \
   --vault-root /var/lib/obsidian-ai/vault
 TimeoutStartSec=5min

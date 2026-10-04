@@ -142,16 +142,19 @@ AI_INPUT_SEMANTIC_INDEX_SHA=active
 AI_INPUT_SEMANTIC_SELECTION_POLICY=semantic-project-distill-v3
 ```
 
-The Planner resolves `active` once per invocation to one exact finalized index
-SHA before any Selection/Context/job state is created. The durable job never
-stores a mutable alias.
+For each new transaction, the Planner resolves `active` once to one exact
+finalized index SHA before any Selection/Context/job state is created. Pending
+transactions recover their saved immutable Context and index before resolving
+the binding again. Rotation or loss of the binding therefore cannot strand
+already journaled work. New Selection still requires a current mirror corpus.
 
 The accepted rollout pair is `semantic-project-distill-v3` with `semantic-retrieval-v1` (lexical 0.15 / vector 0.85). v3 retains novelty-aware deterministic Project-anchor exploration, then admits support rows only at anchor cosine >= 0.70 and rejects later support rows whose cosine to an already accepted support is >= 0.88. It does not force source-kind coverage or pad the cluster with weak support. Production acceptance cross-checks the retrieval profile and records the support-quality contract before it emits a canary plan.
 
-Semantic Index manifests remain immutable and content addressed. The only
-mutable control is `04-Index/semantic-active-index.json`, owned by Reader and
-atomically replaced only after a refreshed index finalizes against the current
-mirror. Automatic refresh is opt-in through
+Semantic Index manifests remain immutable and content addressed. The current
+index binding is `04-Index/semantic-active-index.json`, owned by Reader and
+atomically replaced while holding the mirror lock after finalization and a
+fresh corpus check. Separate bounded Reader and Embedder handoffs coordinate
+each refresh. Automatic refresh is opt-in through
 `/etc/obsidian-ai/semantic-index-refresh.env`; see
 [Automatic Semantic Index refresh v1](semantic-index-auto-refresh-v1.md).
 
@@ -302,8 +305,9 @@ record pre-review timer state
 record mirror timer state
         |
         v
-stop recurring pre-review chain (when already installed)
-stop mirror timer + mirror service
+create shared refresh inhibitor
+stop both timers, then mirror service and refresh workers
+stop remaining pre-review workers (when already installed)
         |
         v
 git reset --hard <exact target>
@@ -320,6 +324,9 @@ systemctl daemon-reload
 force pre-review timer disabled/inactive
         |
         v
+provision refresh handoff ACLs and pre-review authority
+        |
+        v
 safe smoke (no provider, no Nextcloud, no canonical write)
         |
         v
@@ -328,6 +335,7 @@ restore pre-review timer state only on later deployments
         |
         v
 persist secret-free deployment receipt
+remove shared refresh inhibitor
 ```
 
 On first installation, `obsidian-pre-review.timer` remains disabled/inactive
@@ -336,6 +344,21 @@ even after success. Automation is enabled only after the acceptance gate below.
 Any failure after recurring services are stopped is fail-closed: the updater
 leaves the relevant timers disabled rather than running an uncertain mixed
 revision.
+
+Both this updater and the consolidated host lifecycle inhibit late systemd
+success handlers with
+`/run/obsidian-automation/semantic-refresh-inhibited.json`. The marker is owned
+by root with mode `0600`; a separate stable lock serializes the two updater
+paths. It records the exact target SHA and updater owner and remains present
+when an update fails. After correcting the failure, retry the same updater and
+target. A different owner or target is refused. The consolidated lifecycle also
+retains the original timer states in its durable pending transaction; this
+legacy updater retains the states observed at the start of each retry. See
+[Automatic Semantic Index refresh v1](semantic-index-auto-refresh-v1.md#runtime-updates)
+for the success-handler and recovery contract. The first upgrade introducing
+refresh must use the target-owned `obsidian-automation-update` path documented
+for the consolidated host; an already installed older legacy updater does not
+know the new managed unit set.
 
 ## Safe smoke
 

@@ -37,6 +37,8 @@ EMBEDDING_PLANS="$INDEX/semantic-embedding-plans"
 EMBEDDING_RESULTS="$INDEX/semantic-embedding-results"
 EMBEDDING_RESULT_SETS="$INDEX/semantic-embedding-result-sets"
 SEMANTIC_INDEX="$INDEX/semantic-index"
+SEMANTIC_REFRESH_READER="$INDEX/semantic-refresh-reader"
+SEMANTIC_REFRESH_EMBEDDER="$INDEX/semantic-refresh-embedder"
 CONTEXT="$AI_ROOT/05-Context"
 VALIDATION="$AI_ROOT/10-Validation"
 EVALUATION_REQUEST="$AI_ROOT/12-Evaluation-Request"
@@ -86,6 +88,7 @@ done
 for directory in \
   "$DAILY" "$IDEAS" "$KNOWLEDGE" "$UNTRUSTED" "$ORCHESTRATION" "$SEMANTIC_SELECTIONS" "$STATUS_DIR" "$INDEX" \
   "$SEMANTIC_CORPUS" "$EMBEDDING_REQUESTS" "$EMBEDDING_PLANS" "$EMBEDDING_RESULTS" "$EMBEDDING_RESULT_SETS" "$SEMANTIC_INDEX" \
+  "$SEMANTIC_REFRESH_READER" "$SEMANTIC_REFRESH_EMBEDDER" \
   "$CONTEXT" "$VALIDATION" \
   "$EVALUATION_REQUEST" "$EVALUATION_CONTEXT" "$EVALUATION" "$PROJECTION" "$PROJECTION_RESULT" \
   "$PROJECTION/reader" "$PROJECTION/generator" "$PROJECTION/validator" "$PROJECTION/evaluator" \
@@ -128,6 +131,34 @@ create_seed() {
   runuser -u "$user" -- sh -c 'printf "authority-gate-seed\n" > "$1"' sh "$path"
 }
 
+create_control_seed() {
+  create_seed "$1" "$2"
+  # Match semantic_refresh._atomic_store's final mode, including ACL mask.
+  runuser -u "$1" -- chmod 0660 -- "$2"
+}
+
+probe_rewrite() {
+  local user=$1 path=$2 expected=$3 label=$4
+  if runuser -u "$user" -- sh -c 'printf "gate\n" >> "$1"' sh "$path" >/dev/null 2>&1; then
+    [[ $expected == allow ]] && pass "$label" || fail "$label (unexpected rewrite succeeded)"
+  else
+    [[ $expected == deny ]] && pass "$label" || fail "$label (expected rewrite failed)"
+  fi
+}
+
+probe_replace() {
+  local user=$1 path=$2 writable_directory=$3 expected=$4 label=$5
+  local source="$writable_directory/.authority-gate-replace-${$}-${RANDOM}"
+  created+=("$source")
+  # The source is created where this identity is allowed to write, so denial
+  # proves that it cannot publish over the other identity's existing control.
+  if runuser -u "$user" -- sh -c 'printf "gate\n" > "$1" && mv -f -- "$1" "$2"' sh "$source" "$path" >/dev/null 2>&1; then
+    [[ $expected == allow ]] && pass "$label" || fail "$label (unexpected replacement succeeded)"
+  else
+    [[ $expected == deny ]] && pass "$label" || fail "$label (expected replacement failed)"
+  fi
+}
+
 probe_read() {
   local user=$1 path=$2 expected=$3 label=$4
   if runuser -u "$user" -- cat -- "$path" >/dev/null 2>&1; then
@@ -148,6 +179,9 @@ embedding_plan_seed="$EMBEDDING_PLANS/.authority-gate-embedding-plan"
 embedding_result_seed="$EMBEDDING_RESULTS/.authority-gate-embedding-result"
 embedding_result_set_seed="$EMBEDDING_RESULT_SETS/.authority-gate-embedding-result-set"
 semantic_index_seed="$SEMANTIC_INDEX/.authority-gate-semantic-index"
+semantic_refresh_reader_seed="$SEMANTIC_REFRESH_READER/.authority-gate-refresh-reader"
+semantic_refresh_embedder_seed="$SEMANTIC_REFRESH_EMBEDDER/.authority-gate-refresh-embedder"
+semantic_active_seed="$INDEX/.authority-gate-active-binding"
 context_seed="$CONTEXT/.authority-gate-context"
 validation_seed="$VALIDATION/.authority-gate-validation"
 evaluation_request_seed="$EVALUATION_REQUEST/.authority-gate-evaluation-request"
@@ -176,6 +210,9 @@ create_seed "$READER_USER" "$embedding_plan_seed"
 create_seed "$EMBEDDER_USER" "$embedding_result_seed"
 create_seed "$EMBEDDER_USER" "$embedding_result_set_seed"
 create_seed "$READER_USER" "$semantic_index_seed"
+create_control_seed "$READER_USER" "$semantic_refresh_reader_seed"
+create_control_seed "$EMBEDDER_USER" "$semantic_refresh_embedder_seed"
+create_control_seed "$READER_USER" "$semantic_active_seed"
 create_seed "$READER_USER" "$context_seed"
 create_seed "$VALIDATOR_USER" "$validation_seed"
 create_seed "$VALIDATOR_USER" "$evaluation_request_seed"
@@ -206,6 +243,9 @@ probe_read "$READER_USER" "$embedding_result_set_seed" allow "Reader reads embed
 probe_read "$READER_USER" "$semantic_index_seed" allow "Reader reads semantic index"
 probe_read "$EMBEDDER_USER" "$embedding_request_seed" allow "Embedder reads bounded embedding request"
 probe_read "$EMBEDDER_USER" "$embedding_plan_seed" allow "Embedder reads embedding plan"
+probe_read "$EMBEDDER_USER" "$semantic_refresh_reader_seed" allow "Embedder reads Reader refresh control with production file mode"
+probe_read "$READER_USER" "$semantic_refresh_embedder_seed" allow "Reader reads Embedder refresh control with production file mode"
+probe_read "$READER_USER" "$semantic_active_seed" allow "Reader reads active Semantic Index binding"
 probe_read "$READER_USER" "$evaluation_request_seed" allow "Reader reads Evaluation Request"
 probe_read "$GENERATOR_USER" "$untrusted_seed" allow "Generator reads Untrusted"
 probe_read "$GENERATOR_USER" "$context_seed" allow "Generator reads Context"
@@ -251,6 +291,9 @@ probe_read "$EMBEDDER_USER" "$knowledge_seed" deny "Embedder cannot read canonic
 probe_read "$EMBEDDER_USER" "$index_seed" deny "Embedder cannot list/read generic Index"
 probe_read "$EMBEDDER_USER" "$semantic_corpus_seed" deny "Embedder cannot read Semantic Corpus manifest"
 probe_read "$EMBEDDER_USER" "$semantic_index_seed" deny "Embedder cannot read finalized semantic index"
+probe_read "$EMBEDDER_USER" "$semantic_active_seed" deny "Embedder cannot read active Semantic Index binding"
+probe_read "$GENERATOR_USER" "$semantic_refresh_reader_seed" deny "Generator cannot read Reader refresh control"
+probe_read "$GENERATOR_USER" "$semantic_refresh_embedder_seed" deny "Generator cannot read Embedder refresh control"
 probe_read "$EMBEDDER_USER" "$context_seed" deny "Embedder cannot read Generator Context"
 probe_read "$GENERATOR_USER" "$semantic_selection_seed" deny "Generator cannot read Semantic Selection Store"
 probe_read "$VALIDATOR_USER" "$semantic_selection_seed" deny "Validator cannot read Semantic Selection Store"
@@ -296,6 +339,19 @@ probe_write "$EMBEDDER_USER" "$EMBEDDING_REQUESTS" deny "Embedder cannot rewrite
 probe_write "$EMBEDDER_USER" "$EMBEDDING_PLANS" deny "Embedder cannot rewrite embedding plans"
 probe_write "$EMBEDDER_USER" "$SEMANTIC_CORPUS" deny "Embedder cannot write Semantic Corpus manifest"
 probe_write "$EMBEDDER_USER" "$SEMANTIC_INDEX" deny "Embedder cannot write finalized semantic index"
+probe_write "$READER_USER" "$SEMANTIC_REFRESH_READER" allow "Reader writes Reader refresh control directory"
+probe_write "$EMBEDDER_USER" "$SEMANTIC_REFRESH_READER" deny "Embedder cannot write Reader refresh control directory"
+probe_write "$EMBEDDER_USER" "$SEMANTIC_REFRESH_EMBEDDER" allow "Embedder writes Embedder refresh control directory"
+probe_write "$READER_USER" "$SEMANTIC_REFRESH_EMBEDDER" deny "Reader cannot write Embedder refresh control directory"
+probe_rewrite "$READER_USER" "$semantic_refresh_reader_seed" allow "Reader updates its refresh control"
+probe_rewrite "$EMBEDDER_USER" "$semantic_refresh_embedder_seed" allow "Embedder updates its refresh control"
+probe_rewrite "$EMBEDDER_USER" "$semantic_refresh_reader_seed" deny "Embedder cannot rewrite Reader refresh control"
+probe_rewrite "$READER_USER" "$semantic_refresh_embedder_seed" deny "Reader cannot rewrite Embedder refresh control"
+probe_replace "$EMBEDDER_USER" "$semantic_refresh_reader_seed" "$SEMANTIC_REFRESH_EMBEDDER" deny "Embedder cannot replace Reader refresh control"
+probe_replace "$READER_USER" "$semantic_refresh_embedder_seed" "$SEMANTIC_REFRESH_READER" deny "Reader cannot replace Embedder refresh control"
+probe_write "$EMBEDDER_USER" "$INDEX" deny "Embedder cannot write active binding parent directory"
+probe_rewrite "$EMBEDDER_USER" "$semantic_active_seed" deny "Embedder cannot rewrite active Semantic Index binding"
+probe_replace "$EMBEDDER_USER" "$semantic_active_seed" "$SEMANTIC_REFRESH_EMBEDDER" deny "Embedder cannot replace active Semantic Index binding"
 probe_write "$READER_USER" "$CONTEXT" allow "Reader writes Context"
 probe_write "$READER_USER" "$EVALUATION_CONTEXT" allow "Reader writes Evaluation Context"
 probe_write "$GENERATOR_USER" "$UNTRUSTED" allow "Generator writes Untrusted"

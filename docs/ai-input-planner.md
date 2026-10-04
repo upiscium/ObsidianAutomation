@@ -152,6 +152,14 @@ started, the old generation is retained as audited `superseded` state and the
 same immutable Context is submitted with the new exact recipe revision. A
 generation with any attempt/output evidence is never superseded by this path.
 
+In semantic mode, pending reconciliation runs before resolving the mutable
+`active` binding. A rotated or missing binding does not strand a journaled
+transaction: recovery validates the saved Context's exact index, selection and
+policy identities and completes that immutable snapshot. It does not select
+new sources or reread the Vault. An explicit fixed-SHA configuration change
+still conflicts with the pending transaction. New transactions resolve the
+binding once and must pass the current-mirror corpus guard before submission.
+
 Immutable selection records:
 
 ```text
@@ -258,9 +266,10 @@ AI_INPUT_SEMANTIC_INDEX_SHA=active
 AI_INPUT_SEMANTIC_SELECTION_POLICY=semantic-project-distill-v3
 ```
 
-The token `active` is resolved once per Planner invocation to one exact
-finalized Semantic Index SHA. Pending state, Selection, Context and jobs store
-that exact SHA rather than the token.
+For a new transaction, the token `active` is resolved once to one exact finalized
+Semantic Index SHA. Pending state, Selection, Context and jobs store that exact
+SHA. Recovery of an existing transaction uses its saved immutable identities
+before attempting any new resolution.
 
 The controlled rollout uses `semantic-project-distill-v3`, which retains v2's deterministic novelty-aware Project-anchor exploration and `semantic-retrieval-v1` (lexical 0.15 / vector 0.85). Support rows are admitted only when anchor cosine is at least 0.70, and after the first support, a candidate with cosine at least 0.88 to an already accepted support is rejected as redundant. The policy does not pad the Context to six sources when no additional support meets those gates. Historical `semantic-project-distill-v0`, v1 and v2 remain available with their original semantics.
 
@@ -268,7 +277,8 @@ The Semantic Index manifest identity remains exact and immutable for the cycle.
 There is no mutable `latest` manifest. The separate active binding can advance
 only after the Reader -> Embedder -> Reader refresh chain finalizes a new
 content-addressed index against the current mirror. A missing or stale binding
-fails before job submission.
+prevents a new Selection and job submission; it does not invalidate an already
+journaled immutable Context.
 
 Set `AI_INPUT_MODE=legacy` (and leave the index value disabled) to retain or
 restore the original catalog/coverage Planner.

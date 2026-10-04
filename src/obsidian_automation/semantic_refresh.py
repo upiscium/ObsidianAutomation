@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
+import hashlib
 import json
 import os
+import stat
 import sys
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Iterator, Mapping, Sequence
 
 from .artifact_lifecycle import (
     ArtifactLifecycleError,
@@ -28,6 +32,9 @@ from .semantic_index import (
     SemanticIndexError,
     embed_semantic_plan_incremental_with_ollama,
     finalize_semantic_index,
+    load_embedding_plan,
+    load_embedding_refresh_plan,
+    load_embedding_result_set,
     load_semantic_index_manifest,
     prepare_incremental_embedding_refresh_plan,
     prepare_semantic_embedding_plan,
@@ -39,6 +46,7 @@ ACTIVE_BINDING_FILE = "semantic-active-index.json"
 READER_CONTROL_DIR = "semantic-refresh-reader"
 EMBEDDER_CONTROL_DIR = "semantic-refresh-embedder"
 CONTROL_FILE = "current.json"
+READER_LOCK_FILE = "refresh.lock"
 RECORD_VERSION = 1
 PHASES = {"unchanged", "prepared"}
 
@@ -59,6 +67,30 @@ def _control_dir(ai_root: Path, name: str) -> Path:
     path = _index_root(ai_root) / name
     _require_safe_directory(path, create=True)
     return path
+
+
+@contextmanager
+def _reader_refresh_lock(ai_root: Path) -> Iterator[None]:
+    """Serialize Reader control/activation mutations without locking inference.
+
+    The lock lives in the Reader-owned handoff directory; Embedder cannot open
+    it for writing. Lock order is always Reader refresh, then mirror read-view.
+    Index helpers acquire their own mirror lock, so callers must not hold that
+    second lock across a call to one of those helpers.
+    """
+    path = _control_dir(ai_root, READER_CONTROL_DIR) / READER_LOCK_FILE
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o660)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise SemanticRefreshError("semantic refresh lock is not a safe regular file")
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
 
 def _atomic_store(path: Path, data: bytes) -> Path:
@@ -145,7 +177,7 @@ def _parse_active(data: bytes) -> dict[str, object]:
         raise SemanticRefreshError(
             "active semantic index binding properties do not match contract"
         )
-    if value["record_version"] != RECORD_VERSION:
+    if type(value["record_version"]) is not int or value["record_version"] != RECORD_VERSION:
         raise SemanticRefreshError(
             "active semantic index binding version is unsupported"
         )
@@ -188,27 +220,27 @@ def activate_semantic_index(
         semantic_index_sha256,
         label="semantic index SHA",
     )
-    index = load_semantic_index_manifest(ai_root, index_sha)
     try:
-        with mirror_read_lock(ai_root):
-            corpus = load_semantic_corpus_manifest(
-                ai_root,
-                index.corpus_manifest_sha256,
+        with _reader_refresh_lock(ai_root):
+            index = load_semantic_index_manifest(ai_root, index_sha)
+            payload = _active_payload(
+                semantic_index_sha256=index_sha,
+                corpus_manifest_sha256=index.corpus_manifest_sha256,
+                model_identifier=index.model_identifier,
+                model_revision=index.model_revision,
             )
-            verify_semantic_corpus_current(vault_root, corpus)
+            with mirror_read_lock(ai_root):
+                corpus = load_semantic_corpus_manifest(
+                    ai_root,
+                    index.corpus_manifest_sha256,
+                )
+                verify_semantic_corpus_current(vault_root, corpus)
+                _atomic_store(
+                    active_binding_path(ai_root),
+                    _canonical_json_bytes(payload),
+                )
     except (ProductionIOError, SemanticCorpusError) as exc:
         raise SemanticRefreshError(str(exc)) from exc
-
-    payload = _active_payload(
-        semantic_index_sha256=index_sha,
-        corpus_manifest_sha256=index.corpus_manifest_sha256,
-        model_identifier=index.model_identifier,
-        model_revision=index.model_revision,
-    )
-    _atomic_store(
-        active_binding_path(ai_root),
-        _canonical_json_bytes(payload),
-    )
     return payload
 
 
@@ -230,7 +262,7 @@ def _reader_payload(
     plan_sha256: str | None,
     refresh_plan_sha256: str | None,
 ) -> dict[str, object]:
-    if phase not in PHASES:
+    if not isinstance(phase, str) or phase not in PHASES:
         raise SemanticRefreshError("semantic refresh reader phase is invalid")
     previous = _require_sha256(
         previous_index_sha256,
@@ -291,7 +323,7 @@ def _parse_reader_control(data: bytes) -> dict[str, object]:
         raise SemanticRefreshError(
             "semantic refresh reader control properties do not match contract"
         )
-    if value["record_version"] != RECORD_VERSION:
+    if type(value["record_version"]) is not int or value["record_version"] != RECORD_VERSION:
         raise SemanticRefreshError(
             "semantic refresh reader control version is unsupported"
         )
@@ -307,18 +339,28 @@ def _parse_reader_control(data: bytes) -> dict[str, object]:
 
 
 def load_reader_refresh_control(ai_root: Path) -> dict[str, object]:
+    return _load_reader_control_identity(ai_root)[0]
+
+
+def _load_reader_control_identity(ai_root: Path) -> tuple[dict[str, object], str]:
     path = _reader_control_path(ai_root)
     if not os.path.lexists(path):
         raise SemanticRefreshError("semantic refresh reader control is missing")
     if path.is_symlink() or not path.is_file():
         raise SemanticRefreshError("semantic refresh reader control is unsafe")
-    return _parse_reader_control(_read_exact_file(path))
+    data = _read_exact_file(path)
+    return _parse_reader_control(data), hashlib.sha256(data).hexdigest()
 
 
 def prepare_refresh(
     ai_root: Path,
     vault_root: Path,
 ) -> dict[str, object]:
+    with _reader_refresh_lock(ai_root):
+        return _prepare_refresh_locked(ai_root, vault_root)
+
+
+def _prepare_refresh_locked(ai_root: Path, vault_root: Path) -> dict[str, object]:
     active = load_active_semantic_index_binding(ai_root)
     previous_sha = str(active["semantic_index_sha256"])
     previous = load_semantic_index_manifest(ai_root, previous_sha)
@@ -382,6 +424,7 @@ def prepare_refresh(
 def _embedder_payload(
     reader: Mapping[str, object],
     *,
+    reader_control_sha256: str,
     result_set_sha256: str | None,
     reused_count: int,
     embedded_count: int,
@@ -410,6 +453,9 @@ def _embedder_payload(
         )
     return {
         "record_version": RECORD_VERSION,
+        "reader_control_sha256": _require_sha256(
+            reader_control_sha256, label="Reader refresh control SHA"
+        ),
         "phase": phase,
         "previous_index_sha256": reader["previous_index_sha256"],
         "corpus_manifest_sha256": reader["corpus_manifest_sha256"],
@@ -426,6 +472,7 @@ def _parse_embedder_control(data: bytes) -> dict[str, object]:
     value = _decode_json_object(data, label="semantic refresh embedder control")
     if set(value) != {
         "record_version",
+        "reader_control_sha256",
         "phase",
         "previous_index_sha256",
         "corpus_manifest_sha256",
@@ -439,7 +486,7 @@ def _parse_embedder_control(data: bytes) -> dict[str, object]:
         raise SemanticRefreshError(
             "semantic refresh embedder control properties do not match contract"
         )
-    if value["record_version"] != RECORD_VERSION:
+    if type(value["record_version"]) is not int or value["record_version"] != RECORD_VERSION:
         raise SemanticRefreshError(
             "semantic refresh embedder control version is unsupported"
         )
@@ -469,6 +516,7 @@ def _parse_embedder_control(data: bytes) -> dict[str, object]:
         raise SemanticRefreshError("unchanged embedder control must not bind plans")
     return _embedder_payload(
         reader_like,
+        reader_control_sha256=value["reader_control_sha256"],
         result_set_sha256=value["result_set_sha256"],
         reused_count=value["reused_count"],
         embedded_count=value["embedded_count"],
@@ -490,16 +538,18 @@ def embed_refresh(
     *,
     base_url: str,
 ) -> dict[str, object]:
-    reader = load_reader_refresh_control(ai_root)
+    reader, reader_sha = _load_reader_control_identity(ai_root)
     if reader["phase"] == "unchanged":
         payload = _embedder_payload(
             reader,
+            reader_control_sha256=reader_sha,
             result_set_sha256=None,
             reused_count=0,
             embedded_count=0,
             removed_count=0,
         )
     else:
+        _validate_prepared_plan(ai_root, reader)
         result_sha, _path, _result_set, stats = (
             embed_semantic_plan_incremental_with_ollama(
                 ai_root,
@@ -511,6 +561,7 @@ def embed_refresh(
         )
         payload = _embedder_payload(
             reader,
+            reader_control_sha256=reader_sha,
             result_set_sha256=result_sha,
             reused_count=stats.reused_count,
             embedded_count=stats.embedded_count,
@@ -527,7 +578,11 @@ def embed_refresh(
 def _controls_match(
     reader: Mapping[str, object],
     embedder: Mapping[str, object],
+    *,
+    reader_control_sha256: str,
 ) -> None:
+    if embedder["reader_control_sha256"] != reader_control_sha256:
+        raise SemanticRefreshError("semantic refresh Reader control digest does not match result")
     for key in (
         "phase",
         "previous_index_sha256",
@@ -541,13 +596,32 @@ def _controls_match(
             )
 
 
+def _validate_prepared_plan(ai_root: Path, reader: Mapping[str, object]) -> None:
+    """Check the complete Reader handoff using only Embedder-readable inputs."""
+    plan = load_embedding_plan(ai_root, str(reader["plan_sha256"]))
+    refresh = load_embedding_refresh_plan(ai_root, str(reader["refresh_plan_sha256"]))
+    if (
+        plan.corpus_manifest_sha256 != reader["corpus_manifest_sha256"]
+        or plan.model_identifier != reader["model_identifier"]
+        or plan.model_revision != reader["model_revision"]
+        or refresh.plan_sha256 != reader["plan_sha256"]
+        or refresh.previous_index_sha256 != reader["previous_index_sha256"]
+    ):
+        raise SemanticRefreshError("embedding plans do not match Reader refresh control")
+
+
 def finalize_refresh(
     ai_root: Path,
     vault_root: Path,
 ) -> dict[str, object]:
-    reader = load_reader_refresh_control(ai_root)
+    with _reader_refresh_lock(ai_root):
+        return _finalize_refresh_locked(ai_root, vault_root)
+
+
+def _finalize_refresh_locked(ai_root: Path, vault_root: Path) -> dict[str, object]:
+    reader, reader_sha = _load_reader_control_identity(ai_root)
     embedder = load_embedder_refresh_control(ai_root)
-    _controls_match(reader, embedder)
+    _controls_match(reader, embedder, reader_control_sha256=reader_sha)
 
     active = load_active_semantic_index_binding(ai_root)
     if active["semantic_index_sha256"] != reader["previous_index_sha256"]:
@@ -555,13 +629,31 @@ def finalize_refresh(
             "active semantic index changed since refresh preparation"
         )
 
+    previous = load_semantic_index_manifest(ai_root, str(reader["previous_index_sha256"]))
+    if active != _active_payload(
+        semantic_index_sha256=str(reader["previous_index_sha256"]),
+        corpus_manifest_sha256=previous.corpus_manifest_sha256,
+        model_identifier=previous.model_identifier,
+        model_revision=previous.model_revision,
+    ):
+        raise SemanticRefreshError("active semantic index binding does not match finalized index")
+
     if reader["phase"] == "unchanged":
-        previous = load_semantic_index_manifest(
-            ai_root,
-            str(reader["previous_index_sha256"]),
-        )
         try:
             with mirror_read_lock(ai_root):
+                _revalidate_publication(ai_root, reader_sha, active)
+                if (
+                    reader["corpus_manifest_sha256"] != previous.corpus_manifest_sha256
+                    or reader["model_identifier"] != previous.model_identifier
+                    or reader["model_revision"] != previous.model_revision
+                    or active != _active_payload(
+                        semantic_index_sha256=str(reader["previous_index_sha256"]),
+                        corpus_manifest_sha256=previous.corpus_manifest_sha256,
+                        model_identifier=previous.model_identifier,
+                        model_revision=previous.model_revision,
+                    )
+                ):
+                    raise SemanticRefreshError("unchanged refresh binding does not match index")
                 corpus = load_semantic_corpus_manifest(
                     ai_root,
                     previous.corpus_manifest_sha256,
@@ -577,6 +669,22 @@ def finalize_refresh(
             "embedded_count": 0,
             "removed_count": 0,
         }
+
+    _validate_prepared_plan(ai_root, reader)
+    result_set = load_embedding_result_set(ai_root, str(embedder["result_set_sha256"]))
+    if (
+        result_set.plan_sha256 != reader["plan_sha256"]
+        or result_set.refresh_plan_sha256 != reader["refresh_plan_sha256"]
+    ):
+        raise SemanticRefreshError("embedding result set does not match Reader refresh plan")
+    refresh_plan = load_embedding_refresh_plan(ai_root, str(reader["refresh_plan_sha256"]))
+    reused_count = sum(item.reused_from_result_sha256 is not None for item in result_set.results)
+    if (
+        embedder["reused_count"] != reused_count
+        or embedder["embedded_count"] != len(result_set.results) - reused_count
+        or embedder["removed_count"] != refresh_plan.removed_count
+    ):
+        raise SemanticRefreshError("embedding refresh counts do not match result set")
 
     index_sha, _path, index = finalize_semantic_index(
         ai_root,
@@ -599,10 +707,19 @@ def finalize_refresh(
         model_identifier=index.model_identifier,
         model_revision=index.model_revision,
     )
-    _atomic_store(
-        active_binding_path(ai_root),
-        _canonical_json_bytes(binding),
-    )
+    # The immutable finalizer took and released its own mirror lock. Revalidate
+    # immediately before publishing, under a new lock held through the replace.
+    try:
+        with mirror_read_lock(ai_root):
+            _revalidate_publication(ai_root, reader_sha, active)
+            corpus = load_semantic_corpus_manifest(ai_root, index.corpus_manifest_sha256)
+            verify_semantic_corpus_current(vault_root, corpus)
+            _atomic_store(
+                active_binding_path(ai_root),
+                _canonical_json_bytes(binding),
+            )
+    except (ProductionIOError, SemanticCorpusError) as exc:
+        raise SemanticRefreshError(str(exc)) from exc
     return {
         "status": "activated",
         "semantic_index_sha256": index_sha,
@@ -612,6 +729,17 @@ def finalize_refresh(
         "embedded_count": embedder["embedded_count"],
         "removed_count": embedder["removed_count"],
     }
+
+
+def _revalidate_publication(
+    ai_root: Path,
+    reader_sha256: str,
+    expected_active: Mapping[str, object],
+) -> None:
+    if _load_reader_control_identity(ai_root)[1] != reader_sha256:
+        raise SemanticRefreshError("Reader refresh control changed during finalization")
+    if load_active_semantic_index_binding(ai_root) != expected_active:
+        raise SemanticRefreshError("active semantic index changed during finalization")
 
 
 def _print(payload: Mapping[str, object]) -> None:
