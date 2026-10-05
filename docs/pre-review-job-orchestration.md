@@ -105,8 +105,10 @@ plus `knowledge-note-evaluator-v6` /
 and `knowledge-note-evaluator-v7` /
 `1e3b5b820b9569dc99230abd3c352e7223c1b84a3b93b66667f4a7fc1da9dbac`,
 plus `knowledge-note-evaluator-v8` /
-`341d88c600e220361ed766118c3f2e362d8f5489ecc8094c330da60fd3ffa6b1`
-remain readable in recipes for audit. Runtime preflight requires the current v9
+`341d88c600e220361ed766118c3f2e362d8f5489ecc8094c330da60fd3ffa6b1`,
+and `knowledge-note-evaluator-v9` /
+`fd707fda8186aeb09422bd3f0241b6bc1c136a07e7e1ad3acd0967f29b01e7d1`
+remain readable in recipes for audit. Runtime preflight requires the current v10
 version/hash pair and blocks historical recipes before provider contact.
 Unknown prompt identities and cross-paired version/hash values are rejected;
 the same exact-pair rule applies to the Generator's supported v0/v1/v2 prompt
