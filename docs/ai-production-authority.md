@@ -234,8 +234,8 @@ Human reviewer / Review Intake
 Evaluator assesses groundedness, Knowledge quality, epistemic-status
 preservation, redundancy, and consistency using output contract
 `knowledge-note-evaluator-output-v7` and current prompt
-`knowledge-note-evaluator-v9` (SHA
-`fd707fda8186aeb09422bd3f0241b6bc1c136a07e7e1ad3acd0967f29b01e7d1`).
+`knowledge-note-evaluator-v10` (SHA
+`b50b9cdbb1a141da4d3cc61fbc2459a061fce1b8189467c5107864b8aff13ebc`).
 Groundedness, Knowledge quality, and epistemic status each compare the proposal
 with the exact Generation input. Redundancy and Consistency remain isolated
 pairwise passes against canonical Knowledge candidates. Recommendation is
