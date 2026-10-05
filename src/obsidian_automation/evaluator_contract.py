@@ -27,7 +27,7 @@ EVALUATOR_OUTPUT_CONTRACT_V6_VERSION = "knowledge-note-evaluator-output-v6"
 EVALUATOR_OUTPUT_CONTRACT_V5_VERSION = "knowledge-note-evaluator-output-v5"
 EVALUATOR_OUTPUT_CONTRACT_V4_VERSION = "knowledge-note-evaluator-output-v4"
 EVALUATOR_OUTPUT_CONTRACT_V3_VERSION = "knowledge-note-evaluator-output-v3"
-EVALUATOR_PROMPT_TEMPLATE_VERSION = "knowledge-note-evaluator-v9"
+EVALUATOR_PROMPT_TEMPLATE_VERSION = "knowledge-note-evaluator-v10"
 EVALUATOR_PROMPT_TEMPLATE_V3_VERSION = "knowledge-note-evaluator-v3"
 EVALUATOR_PROMPT_TEMPLATE_V3_SHA256 = (
     "bf6265294a4b346f12d1951f594760c80221380ccee9993c6ab866b6b1eca937"
@@ -51,6 +51,10 @@ EVALUATOR_PROMPT_TEMPLATE_V7_SHA256 = (
 EVALUATOR_PROMPT_TEMPLATE_V8_VERSION = "knowledge-note-evaluator-v8"
 EVALUATOR_PROMPT_TEMPLATE_V8_SHA256 = (
     "341d88c600e220361ed766118c3f2e362d8f5489ecc8094c330da60fd3ffa6b1"
+)
+EVALUATOR_PROMPT_TEMPLATE_V9_VERSION = "knowledge-note-evaluator-v9"
+EVALUATOR_PROMPT_TEMPLATE_V9_SHA256 = (
+    "fd707fda8186aeb09422bd3f0241b6bc1c136a07e7e1ad3acd0967f29b01e7d1"
 )
 # The shorter names mirror the generator contract's historical identity
 # constants and make the compatibility pair easy to consume.
@@ -124,6 +128,7 @@ Evaluate only the evidence supplied in this pass. Do not infer evidence that is 
 findings
 - Return at most four concise findings.
 - Each finding contains only a detail string; its dimension and candidate identity are fixed outside the model.
+- Each finding detail must be one concise single-line string. Do not include line feeds, carriage returns, tabs, or other control characters.
 - State observations, not workflow decisions or instructions to the user.
 """
 
@@ -288,7 +293,7 @@ The burden of proof is on contradiction. Absence, difference, unrelatedness, or
 insufficient evidence is never itself a contradiction. Use unknown only for a
 genuinely ambiguous same-context claim pair, not for unrelated or non-claim text.
 
-Return a concise bounded explanation for the verdict. Do not emit a candidate
+Return a concise bounded single-line explanation for the verdict. Do not include line feeds, carriage returns, tabs, or other control characters. Do not emit a candidate
 path, conflict identity, replacement quotes, assessment, recommendation, or
 any additional properties.
 """
@@ -637,25 +642,60 @@ def output_schema(dimension: str) -> dict[str, object]:
     return json.loads(json.dumps(_output_schema_for(dimension)))
 
 
-def _validate_finding_detail(value: object) -> str:
+def _canonical_model_inline_text(
+    value: object,
+    *,
+    label: str,
+    max_chars: int,
+) -> str:
     if not isinstance(value, str):
-        raise ArtifactLifecycleError("evaluator finding detail must be a string")
-    if (
-        not value
-        or value != value.strip()
-        or len(value) > MAX_EVALUATOR_FINDING_DETAIL_CHARS
-    ):
+        raise ArtifactLifecycleError(f"{label} must be a string")
+    if len(value) > max_chars:
         raise ArtifactLifecycleError(
-            "evaluator finding detail must be non-empty, trimmed, and at most "
-            f"{MAX_EVALUATOR_FINDING_DETAIL_CHARS} characters"
+            f"{label} must be at most {max_chars} characters"
         )
-    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
-        raise ArtifactLifecycleError("evaluator finding detail must not contain control characters")
     try:
         value.encode("utf-8")
     except UnicodeEncodeError as exc:
-        raise ArtifactLifecycleError("evaluator finding detail must be UTF-8 encodable") from exc
-    return value
+        raise ArtifactLifecycleError(f"{label} must be UTF-8 encodable") from exc
+
+    allowed_whitespace = {" ", "\t", "\r", "\n"}
+    if any(
+        unicodedata.category(ch) == "Cc" and ch not in {"\t", "\r", "\n"}
+        for ch in value
+    ):
+        raise ArtifactLifecycleError(
+            f"{label} must not contain unsupported control characters"
+        )
+
+    normalized: list[str] = []
+    pending_space = False
+    for ch in value:
+        if ch in allowed_whitespace:
+            if normalized:
+                pending_space = True
+            continue
+        if pending_space:
+            normalized.append(" ")
+            pending_space = False
+        normalized.append(ch)
+
+    result = "".join(normalized)
+    if not result:
+        raise ArtifactLifecycleError(f"{label} must be non-empty")
+    if len(result) > max_chars:
+        raise ArtifactLifecycleError(
+            f"{label} must be at most {max_chars} characters"
+        )
+    return result
+
+
+def _validate_finding_detail(value: object) -> str:
+    return _canonical_model_inline_text(
+        value,
+        label="evaluator finding detail",
+        max_chars=MAX_EVALUATOR_FINDING_DETAIL_CHARS,
+    )
 
 
 def _normalized_finding(dimension: str, detail: object) -> str:
@@ -1032,9 +1072,10 @@ def _validated_verification(value: object) -> ConsistencyVerification:
         raise ArtifactLifecycleError("consistency verification verdict is invalid")
     return ConsistencyVerification(
         verdict=value.verdict,
-        explanation=_validated_conflict_field(
+        explanation=_canonical_model_inline_text(
             value.explanation,
-            field="verifier explanation",
+            label="consistency verifier explanation",
+            max_chars=MAX_EVALUATOR_VERIFIER_EXPLANATION_CHARS,
         ),
     )
 
@@ -1569,6 +1610,7 @@ def supported_prompt_template_hashes() -> Mapping[str, str]:
         EVALUATOR_PROMPT_TEMPLATE_V6_VERSION: EVALUATOR_PROMPT_TEMPLATE_V6_SHA256,
         EVALUATOR_PROMPT_TEMPLATE_V7_VERSION: EVALUATOR_PROMPT_TEMPLATE_V7_SHA256,
         EVALUATOR_PROMPT_TEMPLATE_V8_VERSION: EVALUATOR_PROMPT_TEMPLATE_V8_SHA256,
+        EVALUATOR_PROMPT_TEMPLATE_V9_VERSION: EVALUATOR_PROMPT_TEMPLATE_V9_SHA256,
         EVALUATOR_PROMPT_TEMPLATE_VERSION: prompt_template_sha256(),
     }
 
