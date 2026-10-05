@@ -20,6 +20,8 @@ from obsidian_automation.evaluator_contract import (
     EVALUATOR_PROMPT_TEMPLATE_V7_VERSION,
     EVALUATOR_PROMPT_TEMPLATE_V8_SHA256,
     EVALUATOR_PROMPT_TEMPLATE_V8_VERSION,
+    EVALUATOR_PROMPT_TEMPLATE_V9_SHA256,
+    EVALUATOR_PROMPT_TEMPLATE_V9_VERSION,
     EVALUATOR_OUTPUT_CONTRACT_VERSION,
     EVALUATOR_PROMPT_TEMPLATE_VERSION,
     MAX_EVALUATOR_WALL_SECONDS,
@@ -130,6 +132,50 @@ def test_dimension_output_contract_scopes_findings_without_recommendation() -> N
         assessment="likely",
         findings=("redundancy: Same core procedure.",),
     )
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        "First line.\nSecond line.",
+        "First line.\r\nSecond line.",
+        "First line.\rSecond line.",
+        "First line.\tSecond line.",
+        "  First line. \n\t Second line.  ",
+    ],
+)
+def test_dimension_output_canonicalizes_supported_diagnostic_whitespace(
+    detail: str,
+) -> None:
+    parsed = parse_dimension_evaluator_output(
+        json.dumps(
+            {
+                "assessment": "concern",
+                "findings": [{"detail": detail}],
+            },
+            separators=(",", ":"),
+        ).encode(),
+        dimension="groundedness",
+    )
+
+    assert parsed.findings == ("groundedness: First line. Second line.",)
+
+
+@pytest.mark.parametrize("control", ["\x00", "\x0b", "\x0c", "\x1f", "\x7f", "\x85"])
+def test_dimension_output_rejects_unsupported_finding_controls(
+    control: str,
+) -> None:
+    with pytest.raises(ArtifactLifecycleError, match="unsupported control characters"):
+        parse_dimension_evaluator_output(
+            json.dumps(
+                {
+                    "assessment": "concern",
+                    "findings": [{"detail": f"before{control}after"}],
+                },
+                separators=(",", ":"),
+            ).encode(),
+            dimension="groundedness",
+        )
 
 
 
@@ -631,13 +677,33 @@ def test_consistency_excerpts_drop_nonsemantic_markdown_structure() -> None:
     )
 
 
-def test_consistency_verifier_explanation_remains_single_line() -> None:
-    with pytest.raises(ArtifactLifecycleError, match="control characters"):
+def test_consistency_verifier_explanation_is_canonicalized_single_line() -> None:
+    parsed = parse_consistency_verifier_output(
+        json.dumps(
+            {
+                "verdict": "contradiction",
+                "explanation": "  First line.\n\tSecond line.  ",
+            },
+            separators=(",", ":"),
+        ).encode()
+    )
+
+    assert parsed == ConsistencyVerification(
+        "contradiction",
+        "First line. Second line.",
+    )
+
+
+@pytest.mark.parametrize("control", ["\x00", "\x0b", "\x0c", "\x1f", "\x7f", "\x85"])
+def test_consistency_verifier_explanation_rejects_unsupported_controls(
+    control: str,
+) -> None:
+    with pytest.raises(ArtifactLifecycleError, match="unsupported control characters"):
         parse_consistency_verifier_output(
             json.dumps(
                 {
                     "verdict": "contradiction",
-                    "explanation": "First line.\nSecond line.",
+                    "explanation": f"before{control}after",
                 },
                 separators=(",", ":"),
             ).encode()
@@ -1077,13 +1143,14 @@ def test_prompt_template_hash_binds_pairwise_strategy_and_versions() -> None:
 
 def test_contract_versions_and_supported_prompt_identity_pairs_are_exact() -> None:
     assert EVALUATOR_OUTPUT_CONTRACT_VERSION == "knowledge-note-evaluator-output-v7"
-    assert EVALUATOR_PROMPT_TEMPLATE_VERSION == "knowledge-note-evaluator-v9"
+    assert EVALUATOR_PROMPT_TEMPLATE_VERSION == "knowledge-note-evaluator-v10"
     assert EVALUATOR_PROMPT_TEMPLATE_V3_VERSION == "knowledge-note-evaluator-v3"
     assert EVALUATOR_PROMPT_TEMPLATE_V4_VERSION == "knowledge-note-evaluator-v4"
     assert EVALUATOR_PROMPT_TEMPLATE_V5_VERSION == "knowledge-note-evaluator-v5"
     assert EVALUATOR_PROMPT_TEMPLATE_V6_VERSION == "knowledge-note-evaluator-v6"
     assert EVALUATOR_PROMPT_TEMPLATE_V7_VERSION == "knowledge-note-evaluator-v7"
     assert EVALUATOR_PROMPT_TEMPLATE_V8_VERSION == "knowledge-note-evaluator-v8"
+    assert EVALUATOR_PROMPT_TEMPLATE_V9_VERSION == "knowledge-note-evaluator-v9"
     assert EVALUATOR_PROMPT_TEMPLATE_V3_SHA256 == (
         "bf6265294a4b346f12d1951f594760c80221380ccee9993c6ab866b6b1eca937"
     )
@@ -1099,6 +1166,9 @@ def test_contract_versions_and_supported_prompt_identity_pairs_are_exact() -> No
     assert EVALUATOR_PROMPT_TEMPLATE_V8_SHA256 == (
         "341d88c600e220361ed766118c3f2e362d8f5489ecc8094c330da60fd3ffa6b1"
     )
+    assert EVALUATOR_PROMPT_TEMPLATE_V9_SHA256 == (
+        "fd707fda8186aeb09422bd3f0241b6bc1c136a07e7e1ad3acd0967f29b01e7d1"
+    )
     assert supported_prompt_template_hashes() == {
         EVALUATOR_PROMPT_TEMPLATE_V3_VERSION: EVALUATOR_PROMPT_TEMPLATE_V3_SHA256,
         EVALUATOR_PROMPT_TEMPLATE_V4_VERSION: EVALUATOR_PROMPT_TEMPLATE_V4_SHA256,
@@ -1106,11 +1176,10 @@ def test_contract_versions_and_supported_prompt_identity_pairs_are_exact() -> No
         EVALUATOR_PROMPT_TEMPLATE_V6_VERSION: EVALUATOR_PROMPT_TEMPLATE_V6_SHA256,
         EVALUATOR_PROMPT_TEMPLATE_V7_VERSION: EVALUATOR_PROMPT_TEMPLATE_V7_SHA256,
         EVALUATOR_PROMPT_TEMPLATE_V8_VERSION: EVALUATOR_PROMPT_TEMPLATE_V8_SHA256,
+        EVALUATOR_PROMPT_TEMPLATE_V9_VERSION: EVALUATOR_PROMPT_TEMPLATE_V9_SHA256,
         EVALUATOR_PROMPT_TEMPLATE_VERSION: prompt_template_sha256(),
     }
-    assert prompt_template_sha256() == (
-        "fd707fda8186aeb09422bd3f0241b6bc1c136a07e7e1ad3acd0967f29b01e7d1"
-    )
+    assert prompt_template_sha256() == "__V10_PROMPT_SHA__"
     assert RECOMMENDATION_POLICY_VERSION == "conservative-five-v0"
 
 
