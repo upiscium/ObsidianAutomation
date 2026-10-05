@@ -1,8 +1,8 @@
-# Evaluator Prompt / Output Contract (output v6, prompt v7)
+# Evaluator Prompt / Output Contract (output v7, prompt v10)
 
 ## Purpose
 
-The Evaluator is an advisory semantic assessment stage between deterministic Validation and Human Review. Its current model-facing output contract is v6 and its current prompt/input template is v7.
+The Evaluator is an advisory semantic assessment stage between deterministic Validation and Human Review. Its current model-facing output contract is v7 and its current prompt/input template is v10.
 
 Production testing showed two independent interference modes:
 
@@ -39,6 +39,17 @@ Human Review
 ```
 
 The LLM does not own workflow authority.
+
+Model-generated diagnostic prose has a narrower canonicalization boundary than
+authority-bearing fields. In v10, `findings[].detail` and Consistency verifier
+`explanation` are required to be concise single-line strings. Because the
+production Ollama structured-output implementation does not accept JSON Schema
+`pattern`, the parser deterministically folds only spaces, TAB, CR, and LF
+runs to one ordinary space before persistence. NUL, VT, FF, DEL, other control
+characters, invalid UTF-8, and over-limit text remain fail-closed. Assessment
+values, candidate paths, excerpt identifiers, exact excerpt text, model
+identity, recommendation, and other authority/provenance fields are never
+normalized this way.
 
 ## Model-facing output
 
@@ -91,6 +102,9 @@ b50b9cdbb1a141da4d3cc61fbc2459a061fce1b8189467c5107864b8aff13ebc
 Historical readable prompt identities remain exact version/hash pairs:
 
 ```text
+knowledge-note-evaluator-v9
+fd707fda8186aeb09422bd3f0241b6bc1c136a07e7e1ad3acd0967f29b01e7d1
+
 knowledge-note-evaluator-v8
 341d88c600e220361ed766118c3f2e362d8f5489ecc8094c330da60fd3ffa6b1
 
@@ -110,7 +124,7 @@ knowledge-note-evaluator-v3
 bf6265294a4b346f12d1951f594760c80221380ccee9993c6ab866b6b1eca937
 ```
 
-Recipe parsing accepts the historical v3, v4, v5, v6, v7, and v8 pairs for readability and audit, but current runtime preflight requires the v9 pair and blocks historical recipes before provider contact. Unknown prompt identities and cross-paired version/hash values are rejected. The dimension, candidate identity, and recommendation are fixed outside the model; the model cannot return `candidate_path` or `recommendation`.
+Recipe parsing accepts the historical v3, v4, v5, v6, v7, v8, and v9 pairs for readability and audit, but current runtime preflight requires the v10 pair and blocks historical recipes before provider contact. Unknown prompt identities and cross-paired version/hash values are rejected. The dimension, candidate identity, and recommendation are fixed outside the model; the model cannot return `candidate_path` or `recommendation`.
 
 ## Groundedness pass
 
