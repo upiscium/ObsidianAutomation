@@ -34,6 +34,7 @@ from .evaluator_contract import (
     EVALUATOR_PROMPT_TEMPLATE_V6_VERSION,
     EVALUATOR_PROMPT_TEMPLATE_V7_VERSION,
     EVALUATOR_PROMPT_TEMPLATE_V8_VERSION,
+    EVALUATOR_PROMPT_TEMPLATE_V9_VERSION,
     EVALUATOR_PROMPT_TEMPLATE_VERSION,
     supported_prompt_template_hashes as supported_evaluator_prompt_template_hashes,
 )
@@ -204,7 +205,10 @@ def _evaluator_recipe_identity(
                 V7_OLLAMA_EVALUATOR_ADAPTER_VERSION,
                 V7_OLLAMA_EVALUATION_STRATEGY,
             )
-    elif prompt_version == EVALUATOR_PROMPT_TEMPLATE_V8_VERSION:
+    elif prompt_version in {
+        EVALUATOR_PROMPT_TEMPLATE_V8_VERSION,
+        EVALUATOR_PROMPT_TEMPLATE_V9_VERSION,
+    }:
         if provider == OPENAI_PROVIDER_NAME:
             return OPENAI_EVALUATOR_ADAPTER_VERSION, EVALUATION_STRATEGY
         if provider == OLLAMA_PROVIDER_NAME:
