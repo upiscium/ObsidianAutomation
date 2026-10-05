@@ -1179,7 +1179,7 @@ def test_contract_versions_and_supported_prompt_identity_pairs_are_exact() -> No
         EVALUATOR_PROMPT_TEMPLATE_V9_VERSION: EVALUATOR_PROMPT_TEMPLATE_V9_SHA256,
         EVALUATOR_PROMPT_TEMPLATE_VERSION: prompt_template_sha256(),
     }
-    assert prompt_template_sha256() == "__V10_PROMPT_SHA__"
+    assert prompt_template_sha256() == "b50b9cdbb1a141da4d3cc61fbc2459a061fce1b8189467c5107864b8aff13ebc"
     assert RECOMMENDATION_POLICY_VERSION == "conservative-five-v0"
 
 
