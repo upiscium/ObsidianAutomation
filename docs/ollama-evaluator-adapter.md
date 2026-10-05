@@ -39,8 +39,8 @@ No partial Evaluation Record is written if any provider call or parser/binding s
 The current prompt identity is:
 
 ```text
-knowledge-note-evaluator-v9
-fd707fda8186aeb09422bd3f0241b6bc1c136a07e7e1ad3acd0967f29b01e7d1
+knowledge-note-evaluator-v10
+b50b9cdbb1a141da4d3cc61fbc2459a061fce1b8189467c5107864b8aff13ebc
 ```
 
 The historical identities `knowledge-note-evaluator-v3` /
