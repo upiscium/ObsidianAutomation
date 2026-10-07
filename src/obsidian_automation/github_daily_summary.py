@@ -1,0 +1,1373 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+import stat
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Iterable, Mapping, Sequence
+
+from .artifact_lifecycle import (
+    ArtifactLifecycleError,
+    _canonical_json_bytes,
+    _decode_json_object,
+    _read_exact_file,
+    _require_safe_directory,
+    _store_immutable,
+    _utc_now,
+    sha256_bytes,
+)
+from .generation_artifact import validate_model_config
+
+
+RECORD_VERSION = 1
+SUMMARY_ROOT = "github-daily-summary"
+CONTEXT_DIR = "context"
+OUTPUT_DIR = "output"
+PROVENANCE_DIR = "provenance"
+FINAL_DIR = "final"
+
+PARTIAL_STAGE = "partial"
+REDUCE_STAGE = "reduce"
+GROUND_STAGE = "ground"
+STAGES = frozenset({PARTIAL_STAGE, REDUCE_STAGE, GROUND_STAGE})
+
+CLAIM_KINDS = frozenset(
+    {"decision", "implementation", "bugfix", "issue_pr_progress"}
+)
+
+MAX_PARTIAL_CONTEXT_BYTES = 64 * 1024
+MAX_REDUCE_CONTEXT_BYTES = 64 * 1024
+MAX_GROUND_CONTEXT_BYTES = 256 * 1024
+MAX_CONTEXT_BATCHES = 999_999
+MAX_CLAIMS_PER_OUTPUT = 128
+MAX_CLAIM_SUMMARY_CHARS = 2048
+MAX_CLAIM_SUMMARY_BYTES = 8 * 1024
+MAX_CLAIM_EVIDENCE_IDS = 8
+MAX_GROUND_REASON_CHARS = 2048
+MAX_GROUND_REASON_BYTES = 8 * 1024
+MAX_OUTPUT_BYTES = 256 * 1024
+MAX_METADATA_CHARS = 512
+_IMPLEMENTATION_REVISION_RE = re.compile(r"^[0-9a-f]{40,64}$")
+_SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+_REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
+PARTIAL_PROMPT_VERSION = "github-daily-partial-v0"
+REDUCE_PROMPT_VERSION = "github-daily-reducer-v0"
+GROUND_PROMPT_VERSION = "github-daily-grounding-v0"
+
+PARTIAL_SYSTEM_PROMPT = """You summarize one bounded batch of GitHub evidence.
+Return only structured claims supported by the supplied events.
+Allowed kinds are decision, implementation, bugfix, and issue_pr_progress.
+Every claim must cite one or more supplied evidence_id values, and all cited
+events must belong to the same repository as the claim. Do not invent events,
+facts, issue numbers, pull requests, outcomes, causes, or decisions. Omit
+routine events that do not support a meaningful progress claim. Keep summary
+plain text on one line; do not emit Markdown."""
+
+REDUCE_SYSTEM_PROMPT = """You reduce a bounded set of already-grounded candidate
+progress claims. Merge duplicates or closely overlapping claims when useful.
+Return only structured claims. You may cite only evidence_id values already
+present in the input claims. Never invent or broaden facts. A merged claim must
+remain supported by the union of its cited evidence. Keep summary plain text on
+one line; do not emit Markdown."""
+
+GROUND_SYSTEM_PROMPT = """You are the final GitHub evidence grounding evaluator.
+For every supplied claim_id, return exactly one assessment. Mark supported only
+when the cited raw GitHub evidence directly supports the claim as written.
+Mark unsupported when the claim adds an unsupported decision, implementation,
+bug fix, causal relation, completion state, or other fact. Do not rewrite
+claims. The reason must be concise plain text."""
+
+
+class GitHubDailySummaryError(ArtifactLifecycleError):
+    """Raised when Daily Project Progress summarization violates its contract."""
+
+
+@dataclass(frozen=True)
+class EvidenceBundle:
+    sha256: str
+    date: str
+    timezone: str
+    window_start: str
+    window_end: str
+    projects: tuple[Mapping[str, object], ...]
+    repositories: tuple[str, ...]
+    events: tuple[Mapping[str, object], ...]
+
+    @property
+    def events_by_id(self) -> dict[str, Mapping[str, object]]:
+        return {str(item["evidence_id"]): item for item in self.events}
+
+
+@dataclass(frozen=True)
+class SummaryClaim:
+    claim_id: str
+    kind: str
+    repository: str
+    summary: str
+    evidence_ids: tuple[str, ...]
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "claim_id": self.claim_id,
+            "kind": self.kind,
+            "repository": self.repository,
+            "summary": self.summary,
+            "evidence_ids": list(self.evidence_ids),
+        }
+
+
+@dataclass(frozen=True)
+class SummaryContext:
+    stage: str
+    evidence_bundle_sha256: str
+    batch_index: int
+    batch_count: int
+    source_output_sha256s: tuple[str, ...]
+    events: tuple[Mapping[str, object], ...] = ()
+    claims: tuple[SummaryClaim, ...] = ()
+
+    def to_json_bytes(self) -> bytes:
+        payload: dict[str, object] = {
+            "record_version": RECORD_VERSION,
+            "stage": self.stage,
+            "evidence_bundle_sha256": self.evidence_bundle_sha256,
+            "batch_index": self.batch_index,
+            "batch_count": self.batch_count,
+            "source_output_sha256s": list(self.source_output_sha256s),
+            "events": [dict(item) for item in self.events],
+            "claims": [item.payload() for item in self.claims],
+        }
+        return _canonical_json_bytes(payload)
+
+
+@dataclass(frozen=True)
+class ClaimOutput:
+    stage: str
+    input_context_sha256: str
+    claims: tuple[SummaryClaim, ...]
+
+    def to_json_bytes(self) -> bytes:
+        return _canonical_json_bytes(
+            {
+                "record_version": RECORD_VERSION,
+                "stage": self.stage,
+                "input_context_sha256": self.input_context_sha256,
+                "claims": [item.payload() for item in self.claims],
+            }
+        )
+
+
+@dataclass(frozen=True)
+class StoredClaimOutput:
+    sha256: str
+    output: ClaimOutput
+
+
+@dataclass(frozen=True)
+class GroundAssessment:
+    claim_id: str
+    verdict: str
+    reason: str
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "claim_id": self.claim_id,
+            "verdict": self.verdict,
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True)
+class GroundOutput:
+    input_context_sha256: str
+    assessments: tuple[GroundAssessment, ...]
+
+    def to_json_bytes(self) -> bytes:
+        return _canonical_json_bytes(
+            {
+                "record_version": RECORD_VERSION,
+                "stage": GROUND_STAGE,
+                "input_context_sha256": self.input_context_sha256,
+                "assessments": [item.payload() for item in self.assessments],
+            }
+        )
+
+
+@dataclass(frozen=True)
+class StoredGroundOutput:
+    sha256: str
+    output: GroundOutput
+
+
+@dataclass(frozen=True)
+class PromptSpec:
+    stage: str
+    template_version: str
+    template_sha256: str
+    system: str
+    output_schema: Mapping[str, object]
+
+
+@dataclass(frozen=True)
+class InferenceResponse:
+    content: bytes
+    model_provider: str
+    model_identifier: str
+    model_revision: str
+    model_config: Mapping[str, object]
+
+
+@dataclass(frozen=True)
+class InferenceRecord:
+    stage: str
+    input_context_sha256: str
+    output_sha256: str
+    implementation_revision: str
+    prompt_template_version: str
+    prompt_template_sha256: str
+    model_provider: str
+    model_identifier: str
+    model_revision: str
+    model_config: Mapping[str, object]
+    generated_at: str
+
+    def to_json_bytes(self) -> bytes:
+        return _canonical_json_bytes(
+            {
+                "record_version": RECORD_VERSION,
+                "stage": self.stage,
+                "input_context_sha256": self.input_context_sha256,
+                "output_sha256": self.output_sha256,
+                "implementation_revision": self.implementation_revision,
+                "prompt_template_version": self.prompt_template_version,
+                "prompt_template_sha256": self.prompt_template_sha256,
+                "model": {
+                    "provider": self.model_provider,
+                    "identifier": self.model_identifier,
+                    "revision": self.model_revision,
+                },
+                "model_config": dict(self.model_config),
+                "generated_at": self.generated_at,
+            }
+        )
+
+
+@dataclass(frozen=True)
+class RejectedClaim:
+    claim_id: str
+    reason: str
+
+    def payload(self) -> dict[str, object]:
+        return {"claim_id": self.claim_id, "reason": self.reason}
+
+
+@dataclass(frozen=True)
+class GroundedSummary:
+    evidence_bundle_sha256: str
+    claims: tuple[SummaryClaim, ...]
+    rejected_claims: tuple[RejectedClaim, ...]
+    grounding_output_sha256s: tuple[str, ...]
+
+    def to_json_bytes(self) -> bytes:
+        return _canonical_json_bytes(
+            {
+                "record_version": RECORD_VERSION,
+                "stage": "grounded_summary",
+                "evidence_bundle_sha256": self.evidence_bundle_sha256,
+                "claims": [item.payload() for item in self.claims],
+                "rejected_claims": [
+                    item.payload() for item in self.rejected_claims
+                ],
+                "grounding_output_sha256s": list(
+                    self.grounding_output_sha256s
+                ),
+            }
+        )
+
+
+@dataclass(frozen=True)
+class PipelineResult:
+    evidence_bundle_sha256: str
+    partial_context_sha256s: tuple[str, ...]
+    partial_output_sha256s: tuple[str, ...]
+    reduce_context_sha256s: tuple[str, ...]
+    reduce_output_sha256s: tuple[str, ...]
+    ground_context_sha256s: tuple[str, ...]
+    ground_output_sha256s: tuple[str, ...]
+    provenance_sha256s: tuple[str, ...]
+    grounded_summary_sha256: str
+    grounded_summary_path: Path
+    claim_count: int
+    rejected_count: int
+
+
+Infer = Callable[[PromptSpec, SummaryContext], InferenceResponse]
+
+
+def _metadata(value: object, *, label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > MAX_METADATA_CHARS
+    ):
+        raise GitHubDailySummaryError(f"{label} is invalid")
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
+        raise GitHubDailySummaryError(f"{label} contains control characters")
+    return value
+
+
+def _require_sha(value: object, *, label: str) -> str:
+    if not isinstance(value, str) or _SHA_RE.fullmatch(value) is None:
+        raise GitHubDailySummaryError(f"{label} must be lowercase SHA-256")
+    return value
+
+
+def _plain_line(value: object, *, label: str, max_chars: int, max_bytes: int) -> str:
+    if not isinstance(value, str):
+        raise GitHubDailySummaryError(f"{label} must be a string")
+    if (
+        not value
+        or value != value.strip()
+        or "\n" in value
+        or "\r" in value
+        or len(value) > max_chars
+    ):
+        raise GitHubDailySummaryError(f"{label} must be one trimmed line")
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise GitHubDailySummaryError(f"{label} must be UTF-8") from exc
+    if len(encoded) > max_bytes:
+        raise GitHubDailySummaryError(f"{label} exceeds byte limit")
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
+        raise GitHubDailySummaryError(f"{label} contains control characters")
+    return value
+
+
+def _normalized_claim(
+    *,
+    kind: object,
+    repository: object,
+    summary: object,
+    evidence_ids: object,
+    allowed_evidence_ids: set[str],
+    events_by_id: Mapping[str, Mapping[str, object]],
+) -> SummaryClaim:
+    if kind not in CLAIM_KINDS:
+        raise GitHubDailySummaryError("claim kind is invalid")
+    if (
+        not isinstance(repository, str)
+        or _REPOSITORY_RE.fullmatch(repository) is None
+    ):
+        raise GitHubDailySummaryError("claim repository is invalid")
+    text = _plain_line(
+        summary,
+        label="claim summary",
+        max_chars=MAX_CLAIM_SUMMARY_CHARS,
+        max_bytes=MAX_CLAIM_SUMMARY_BYTES,
+    )
+    if (
+        not isinstance(evidence_ids, list)
+        or not 1 <= len(evidence_ids) <= MAX_CLAIM_EVIDENCE_IDS
+        or not all(isinstance(item, str) for item in evidence_ids)
+    ):
+        raise GitHubDailySummaryError("claim evidence_ids are invalid")
+    if len(set(evidence_ids)) != len(evidence_ids):
+        raise GitHubDailySummaryError("claim evidence_ids contain duplicates")
+    if any(item not in allowed_evidence_ids for item in evidence_ids):
+        raise GitHubDailySummaryError("claim cites evidence outside its context")
+    for evidence_id in evidence_ids:
+        event = events_by_id.get(evidence_id)
+        if event is None:
+            raise GitHubDailySummaryError("claim evidence does not exist")
+        if event.get("repository") != repository:
+            raise GitHubDailySummaryError(
+                "claim repository does not match cited evidence"
+            )
+    normalized_ids = tuple(evidence_ids)
+    identity = _canonical_json_bytes(
+        {
+            "kind": kind,
+            "repository": repository,
+            "summary": text,
+            "evidence_ids": list(normalized_ids),
+        }
+    )
+    return SummaryClaim(
+        claim_id=hashlib.sha256(identity).hexdigest(),
+        kind=str(kind),
+        repository=repository,
+        summary=text,
+        evidence_ids=normalized_ids,
+    )
+
+
+def _event_identity(event: object) -> tuple[str, Mapping[str, object]]:
+    if not isinstance(event, dict):
+        raise GitHubDailySummaryError("evidence event must be an object")
+    evidence_id = _require_sha(event.get("evidence_id"), label="evidence_id")
+    normalized = dict(event)
+    normalized.pop("evidence_id")
+    actual = sha256_bytes(_canonical_json_bytes(normalized))
+    if actual != evidence_id:
+        raise GitHubDailySummaryError("evidence event identity mismatch")
+    repository = event.get("repository")
+    if (
+        not isinstance(repository, str)
+        or _REPOSITORY_RE.fullmatch(repository) is None
+    ):
+        raise GitHubDailySummaryError("evidence event repository is invalid")
+    return evidence_id, event
+
+
+def parse_evidence_bundle(data: bytes) -> EvidenceBundle:
+    value = _decode_json_object(data, label="GitHub Daily evidence bundle")
+    required = {
+        "record_version",
+        "date",
+        "timezone",
+        "window_start",
+        "window_end",
+        "projects",
+        "repositories",
+        "events",
+    }
+    if set(value) != required or value.get("record_version") != RECORD_VERSION:
+        raise GitHubDailySummaryError(
+            "GitHub Daily evidence bundle properties do not match contract"
+        )
+    if value.get("timezone") != "Asia/Tokyo":
+        raise GitHubDailySummaryError("Daily evidence timezone is not canonical")
+    for key in ("date", "window_start", "window_end"):
+        if not isinstance(value.get(key), str) or not value[key]:
+            raise GitHubDailySummaryError(f"Daily evidence {key} is invalid")
+    raw_projects = value["projects"]
+    raw_repositories = value["repositories"]
+    raw_events = value["events"]
+    if not isinstance(raw_projects, list) or not isinstance(raw_repositories, list):
+        raise GitHubDailySummaryError("Daily evidence Project metadata is invalid")
+    if not isinstance(raw_events, list):
+        raise GitHubDailySummaryError("Daily evidence events are invalid")
+
+    projects: list[Mapping[str, object]] = []
+    for item in raw_projects:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"project_path", "repository"}
+            or not isinstance(item["project_path"], str)
+            or not item["project_path"].startswith("10-Project/")
+            or not item["project_path"].endswith(".md")
+            or not isinstance(item["repository"], str)
+            or _REPOSITORY_RE.fullmatch(item["repository"]) is None
+        ):
+            raise GitHubDailySummaryError("Daily evidence Project binding is invalid")
+        projects.append(dict(item))
+
+    repositories = tuple(raw_repositories)
+    if (
+        not all(
+            isinstance(item, str)
+            and _REPOSITORY_RE.fullmatch(item) is not None
+            for item in repositories
+        )
+        or len(set(repositories)) != len(repositories)
+        or list(repositories) != sorted(repositories, key=str.casefold)
+    ):
+        raise GitHubDailySummaryError("Daily evidence repositories are invalid")
+
+    events: list[Mapping[str, object]] = []
+    seen: set[str] = set()
+    for raw in raw_events:
+        evidence_id, event = _event_identity(raw)
+        if evidence_id in seen:
+            raise GitHubDailySummaryError("Daily evidence contains duplicate event")
+        seen.add(evidence_id)
+        if event.get("repository") not in repositories:
+            raise GitHubDailySummaryError(
+                "Daily evidence event repository is not declared"
+            )
+        events.append(dict(event))
+
+    return EvidenceBundle(
+        sha256=sha256_bytes(data),
+        date=str(value["date"]),
+        timezone=str(value["timezone"]),
+        window_start=str(value["window_start"]),
+        window_end=str(value["window_end"]),
+        projects=tuple(projects),
+        repositories=repositories,
+        events=tuple(events),
+    )
+
+
+def load_evidence_bundle(path: Path) -> EvidenceBundle:
+    data = _read_exact_file(path)
+    bundle = parse_evidence_bundle(data)
+    name = path.name
+    suffix = ".github-daily-evidence.json"
+    if not name.endswith(suffix):
+        raise GitHubDailySummaryError("evidence artifact filename is invalid")
+    expected = name[: -len(suffix)]
+    if expected != bundle.sha256:
+        raise GitHubDailySummaryError(
+            "evidence artifact filename does not match content SHA"
+        )
+    return bundle
+
+
+def _stage_directory(state_root: Path, child: str) -> Path:
+    root = state_root.absolute()
+    _require_safe_directory(root, create=False)
+    summary = root / SUMMARY_ROOT
+    _require_safe_directory(summary, create=True)
+    target = summary / child
+    _require_safe_directory(target, create=True)
+    return target
+
+
+def _store(
+    state_root: Path,
+    child: str,
+    suffix: str,
+    data: bytes,
+) -> tuple[str, Path]:
+    digest = sha256_bytes(data)
+    path = _stage_directory(state_root, child) / f"{digest}.{suffix}.json"
+    return digest, _store_immutable(path, data)
+
+
+def store_context(
+    state_root: Path,
+    context: SummaryContext,
+) -> tuple[str, Path]:
+    return _store(
+        state_root,
+        CONTEXT_DIR,
+        f"github-daily-{context.stage}-context",
+        context.to_json_bytes(),
+    )
+
+
+def store_claim_output(
+    state_root: Path,
+    output: ClaimOutput,
+) -> tuple[str, Path]:
+    return _store(
+        state_root,
+        OUTPUT_DIR,
+        f"github-daily-{output.stage}-output",
+        output.to_json_bytes(),
+    )
+
+
+def store_ground_output(
+    state_root: Path,
+    output: GroundOutput,
+) -> tuple[str, Path]:
+    return _store(
+        state_root,
+        OUTPUT_DIR,
+        "github-daily-ground-output",
+        output.to_json_bytes(),
+    )
+
+
+def store_inference_record(
+    state_root: Path,
+    record: InferenceRecord,
+) -> tuple[str, Path]:
+    return _store(
+        state_root,
+        PROVENANCE_DIR,
+        "github-daily-inference",
+        record.to_json_bytes(),
+    )
+
+
+def store_grounded_summary(
+    state_root: Path,
+    summary: GroundedSummary,
+) -> tuple[str, Path]:
+    return _store(
+        state_root,
+        FINAL_DIR,
+        "github-daily-grounded-summary",
+        summary.to_json_bytes(),
+    )
+
+
+def _partition_payloads(
+    items: Sequence[object],
+    *,
+    max_bytes: int,
+    envelope: Callable[[Sequence[object], int, int], bytes],
+) -> list[list[object]]:
+    if max_bytes < 1024:
+        raise GitHubDailySummaryError("context byte limit is too small")
+    groups: list[list[object]] = []
+    current: list[object] = []
+    for item in items:
+        candidate = [*current, item]
+        if len(envelope(candidate, MAX_CONTEXT_BATCHES, MAX_CONTEXT_BATCHES)) <= max_bytes:
+            current = candidate
+            continue
+        if not current:
+            raise GitHubDailySummaryError(
+                "one normalized item exceeds the context byte limit"
+            )
+        groups.append(current)
+        current = [item]
+        if len(envelope(current, MAX_CONTEXT_BATCHES, MAX_CONTEXT_BATCHES)) > max_bytes:
+            raise GitHubDailySummaryError(
+                "one normalized item exceeds the context byte limit"
+            )
+    if current:
+        groups.append(current)
+    if len(groups) > MAX_CONTEXT_BATCHES:
+        raise GitHubDailySummaryError("context batch count exceeds contract")
+    return groups
+
+
+def partition_evidence(
+    bundle: EvidenceBundle,
+    *,
+    max_bytes: int = MAX_PARTIAL_CONTEXT_BYTES,
+) -> tuple[SummaryContext, ...]:
+    if not bundle.events:
+        return ()
+    raw = list(bundle.events)
+
+    def envelope(
+        items: Sequence[object],
+        index: int,
+        count: int,
+    ) -> bytes:
+        context = SummaryContext(
+            stage=PARTIAL_STAGE,
+            evidence_bundle_sha256=bundle.sha256,
+            batch_index=index,
+            batch_count=count,
+            source_output_sha256s=(),
+            events=tuple(item for item in items if isinstance(item, dict)),
+        )
+        return context.to_json_bytes()
+
+    groups = _partition_payloads(raw, max_bytes=max_bytes, envelope=envelope)
+    contexts = tuple(
+        SummaryContext(
+            stage=PARTIAL_STAGE,
+            evidence_bundle_sha256=bundle.sha256,
+            batch_index=index,
+            batch_count=len(groups),
+            source_output_sha256s=(),
+            events=tuple(item for item in group if isinstance(item, dict)),
+        )
+        for index, group in enumerate(groups)
+    )
+    if any(len(item.to_json_bytes()) > max_bytes for item in contexts):
+        raise GitHubDailySummaryError("final partial context exceeds byte limit")
+    flattened = [
+        str(event["evidence_id"])
+        for context in contexts
+        for event in context.events
+    ]
+    original = [str(event["evidence_id"]) for event in bundle.events]
+    if flattened != original:
+        raise GitHubDailySummaryError("partial partition is not lossless")
+    return contexts
+
+
+def claim_output_schema() -> dict[str, object]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["claims"],
+        "properties": {
+            "claims": {
+                "type": "array",
+                "maxItems": MAX_CLAIMS_PER_OUTPUT,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "kind",
+                        "repository",
+                        "summary",
+                        "evidence_ids",
+                    ],
+                    "properties": {
+                        "kind": {"enum": sorted(CLAIM_KINDS)},
+                        "repository": {
+                            "type": "string",
+                            "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+                        },
+                        "summary": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": MAX_CLAIM_SUMMARY_CHARS,
+                        },
+                        "evidence_ids": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": MAX_CLAIM_EVIDENCE_IDS,
+                            "uniqueItems": True,
+                            "items": {
+                                "type": "string",
+                                "pattern": "^[0-9a-f]{64}$",
+                            },
+                        },
+                    },
+                },
+            }
+        },
+    }
+
+
+def grounding_output_schema() -> dict[str, object]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["assessments"],
+        "properties": {
+            "assessments": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["claim_id", "verdict", "reason"],
+                    "properties": {
+                        "claim_id": {
+                            "type": "string",
+                            "pattern": "^[0-9a-f]{64}$",
+                        },
+                        "verdict": {
+                            "enum": ["supported", "unsupported"]
+                        },
+                        "reason": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": MAX_GROUND_REASON_CHARS,
+                        },
+                    },
+                },
+            }
+        },
+    }
+
+
+def _prompt_spec(stage: str) -> PromptSpec:
+    if stage == PARTIAL_STAGE:
+        version = PARTIAL_PROMPT_VERSION
+        system = PARTIAL_SYSTEM_PROMPT
+        schema = claim_output_schema()
+    elif stage == REDUCE_STAGE:
+        version = REDUCE_PROMPT_VERSION
+        system = REDUCE_SYSTEM_PROMPT
+        schema = claim_output_schema()
+    elif stage == GROUND_STAGE:
+        version = GROUND_PROMPT_VERSION
+        system = GROUND_SYSTEM_PROMPT
+        schema = grounding_output_schema()
+    else:
+        raise GitHubDailySummaryError("unknown inference stage")
+    identity = _canonical_json_bytes(
+        {
+            "template_version": version,
+            "system": system,
+            "output_schema": schema,
+        }
+    )
+    return PromptSpec(
+        stage=stage,
+        template_version=version,
+        template_sha256=sha256_bytes(identity),
+        system=system,
+        output_schema=schema,
+    )
+
+
+def prompt_spec(stage: str) -> PromptSpec:
+    return _prompt_spec(stage)
+
+
+def parse_claim_output(
+    data: bytes,
+    *,
+    stage: str,
+    input_context_sha256: str,
+    allowed_evidence_ids: set[str],
+    events_by_id: Mapping[str, Mapping[str, object]],
+) -> ClaimOutput:
+    if stage not in {PARTIAL_STAGE, REDUCE_STAGE}:
+        raise GitHubDailySummaryError("claim output stage is invalid")
+    if len(data) > MAX_OUTPUT_BYTES:
+        raise GitHubDailySummaryError("claim provider output exceeds byte limit")
+    value = _decode_json_object(data, label=f"{stage} provider output")
+    if set(value) != {"claims"} or not isinstance(value["claims"], list):
+        raise GitHubDailySummaryError("claim provider output contract mismatch")
+    if len(value["claims"]) > MAX_CLAIMS_PER_OUTPUT:
+        raise GitHubDailySummaryError("claim provider output has too many claims")
+    claims: list[SummaryClaim] = []
+    seen: set[str] = set()
+    for raw in value["claims"]:
+        if not isinstance(raw, dict) or set(raw) != {
+            "kind",
+            "repository",
+            "summary",
+            "evidence_ids",
+        }:
+            raise GitHubDailySummaryError("claim properties do not match contract")
+        claim = _normalized_claim(
+            kind=raw["kind"],
+            repository=raw["repository"],
+            summary=raw["summary"],
+            evidence_ids=raw["evidence_ids"],
+            allowed_evidence_ids=allowed_evidence_ids,
+            events_by_id=events_by_id,
+        )
+        if claim.claim_id in seen:
+            continue
+        seen.add(claim.claim_id)
+        claims.append(claim)
+    return ClaimOutput(
+        stage=stage,
+        input_context_sha256=_require_sha(
+            input_context_sha256,
+            label="input context SHA",
+        ),
+        claims=tuple(claims),
+    )
+
+
+def build_reduce_contexts(
+    bundle: EvidenceBundle,
+    outputs: Sequence[StoredClaimOutput],
+    *,
+    max_bytes: int = MAX_REDUCE_CONTEXT_BYTES,
+) -> tuple[SummaryContext, ...]:
+    indexed: list[tuple[SummaryClaim, str]] = []
+    for stored in outputs:
+        if stored.output.stage != PARTIAL_STAGE:
+            raise GitHubDailySummaryError(
+                "reducer accepts only partial outputs"
+            )
+        for claim in stored.output.claims:
+            indexed.append((claim, stored.sha256))
+    if not indexed:
+        return ()
+
+    def envelope(
+        items: Sequence[object],
+        index: int,
+        count: int,
+    ) -> bytes:
+        pairs = [
+            item for item in items
+            if isinstance(item, tuple) and len(item) == 2
+        ]
+        hashes = tuple(dict.fromkeys(str(item[1]) for item in pairs))
+        claims = tuple(item[0] for item in pairs if isinstance(item[0], SummaryClaim))
+        return SummaryContext(
+            stage=REDUCE_STAGE,
+            evidence_bundle_sha256=bundle.sha256,
+            batch_index=index,
+            batch_count=count,
+            source_output_sha256s=hashes,
+            claims=claims,
+        ).to_json_bytes()
+
+    groups = _partition_payloads(
+        list(indexed),
+        max_bytes=max_bytes,
+        envelope=envelope,
+    )
+    contexts: list[SummaryContext] = []
+    for index, group in enumerate(groups):
+        pairs = [
+            item for item in group
+            if isinstance(item, tuple) and len(item) == 2
+        ]
+        context = SummaryContext(
+            stage=REDUCE_STAGE,
+            evidence_bundle_sha256=bundle.sha256,
+            batch_index=index,
+            batch_count=len(groups),
+            source_output_sha256s=tuple(
+                dict.fromkeys(str(item[1]) for item in pairs)
+            ),
+            claims=tuple(
+                item[0] for item in pairs if isinstance(item[0], SummaryClaim)
+            ),
+        )
+        if len(context.to_json_bytes()) > max_bytes:
+            raise GitHubDailySummaryError("final reducer context exceeds byte limit")
+        contexts.append(context)
+    return tuple(contexts)
+
+
+def _dedupe_claims(
+    outputs: Sequence[StoredClaimOutput],
+    *,
+    stage: str,
+) -> tuple[SummaryClaim, ...]:
+    result: list[SummaryClaim] = []
+    seen: set[str] = set()
+    for stored in outputs:
+        if stored.output.stage != stage:
+            raise GitHubDailySummaryError("claim output stage mismatch")
+        for claim in stored.output.claims:
+            if claim.claim_id in seen:
+                continue
+            seen.add(claim.claim_id)
+            result.append(claim)
+    return tuple(result)
+
+
+def build_ground_contexts(
+    bundle: EvidenceBundle,
+    outputs: Sequence[StoredClaimOutput],
+    *,
+    max_bytes: int = MAX_GROUND_CONTEXT_BYTES,
+) -> tuple[SummaryContext, ...]:
+    claims = _dedupe_claims(outputs, stage=REDUCE_STAGE)
+    if not claims:
+        return ()
+    events_by_id = bundle.events_by_id
+    source_by_claim: dict[str, str] = {}
+    for stored in outputs:
+        for claim in stored.output.claims:
+            source_by_claim.setdefault(claim.claim_id, stored.sha256)
+
+    groups: list[list[SummaryClaim]] = []
+    current: list[SummaryClaim] = []
+
+    def context_for(
+        selected: Sequence[SummaryClaim],
+        index: int,
+        count: int,
+    ) -> SummaryContext:
+        evidence_ids: set[str] = {
+            evidence_id
+            for claim in selected
+            for evidence_id in claim.evidence_ids
+        }
+        events = tuple(
+            event
+            for event in bundle.events
+            if str(event["evidence_id"]) in evidence_ids
+        )
+        sources = tuple(
+            dict.fromkeys(source_by_claim[claim.claim_id] for claim in selected)
+        )
+        return SummaryContext(
+            stage=GROUND_STAGE,
+            evidence_bundle_sha256=bundle.sha256,
+            batch_index=index,
+            batch_count=count,
+            source_output_sha256s=sources,
+            events=events,
+            claims=tuple(selected),
+        )
+
+    for claim in claims:
+        candidate = [*current, claim]
+        if (
+            len(
+                context_for(
+                    candidate,
+                    MAX_CONTEXT_BATCHES,
+                    MAX_CONTEXT_BATCHES,
+                ).to_json_bytes()
+            )
+            <= max_bytes
+        ):
+            current = candidate
+            continue
+        if not current:
+            raise GitHubDailySummaryError(
+                "one grounding claim exceeds context byte limit"
+            )
+        groups.append(current)
+        current = [claim]
+        if (
+            len(
+                context_for(
+                    current,
+                    MAX_CONTEXT_BATCHES,
+                    MAX_CONTEXT_BATCHES,
+                ).to_json_bytes()
+            )
+            > max_bytes
+        ):
+            raise GitHubDailySummaryError(
+                "one grounding claim exceeds context byte limit"
+            )
+    if current:
+        groups.append(current)
+    if len(groups) > MAX_CONTEXT_BATCHES:
+        raise GitHubDailySummaryError("ground context batch count exceeds contract")
+
+    contexts = tuple(
+        context_for(group, index, len(groups))
+        for index, group in enumerate(groups)
+    )
+    if any(len(item.to_json_bytes()) > max_bytes for item in contexts):
+        raise GitHubDailySummaryError("final grounding context exceeds byte limit")
+    return contexts
+
+
+def parse_ground_output(
+    data: bytes,
+    *,
+    input_context_sha256: str,
+    claims: Sequence[SummaryClaim],
+) -> GroundOutput:
+    if len(data) > MAX_OUTPUT_BYTES:
+        raise GitHubDailySummaryError("grounding output exceeds byte limit")
+    value = _decode_json_object(data, label="grounding provider output")
+    if set(value) != {"assessments"} or not isinstance(
+        value["assessments"], list
+    ):
+        raise GitHubDailySummaryError("grounding output contract mismatch")
+    expected = {claim.claim_id for claim in claims}
+    observed: set[str] = set()
+    assessments: list[GroundAssessment] = []
+    for raw in value["assessments"]:
+        if not isinstance(raw, dict) or set(raw) != {
+            "claim_id",
+            "verdict",
+            "reason",
+        }:
+            raise GitHubDailySummaryError(
+                "grounding assessment properties do not match contract"
+            )
+        claim_id = _require_sha(raw["claim_id"], label="grounding claim_id")
+        if claim_id not in expected or claim_id in observed:
+            raise GitHubDailySummaryError(
+                "grounding assessment claim set does not match context"
+            )
+        verdict = raw["verdict"]
+        if verdict not in {"supported", "unsupported"}:
+            raise GitHubDailySummaryError("grounding verdict is invalid")
+        reason = _plain_line(
+            raw["reason"],
+            label="grounding reason",
+            max_chars=MAX_GROUND_REASON_CHARS,
+            max_bytes=MAX_GROUND_REASON_BYTES,
+        )
+        observed.add(claim_id)
+        assessments.append(
+            GroundAssessment(
+                claim_id=claim_id,
+                verdict=str(verdict),
+                reason=reason,
+            )
+        )
+    if observed != expected:
+        raise GitHubDailySummaryError(
+            "grounding output must assess every input claim exactly once"
+        )
+    by_claim = {item.claim_id: item for item in assessments}
+    return GroundOutput(
+        input_context_sha256=_require_sha(
+            input_context_sha256,
+            label="input context SHA",
+        ),
+        assessments=tuple(by_claim[claim.claim_id] for claim in claims),
+    )
+
+
+def finalize_grounded_summary(
+    bundle: EvidenceBundle,
+    claims: Sequence[SummaryClaim],
+    grounding_outputs: Sequence[StoredGroundOutput],
+) -> GroundedSummary:
+    assessments: dict[str, GroundAssessment] = {}
+    for stored in grounding_outputs:
+        for assessment in stored.output.assessments:
+            if assessment.claim_id in assessments:
+                raise GitHubDailySummaryError(
+                    "claim was assessed by multiple grounding outputs"
+                )
+            assessments[assessment.claim_id] = assessment
+    expected = {claim.claim_id for claim in claims}
+    if set(assessments) != expected:
+        raise GitHubDailySummaryError(
+            "grounding outputs do not cover final claim set"
+        )
+    accepted: list[SummaryClaim] = []
+    rejected: list[RejectedClaim] = []
+    for claim in claims:
+        assessment = assessments[claim.claim_id]
+        if assessment.verdict == "supported":
+            accepted.append(claim)
+        else:
+            rejected.append(
+                RejectedClaim(
+                    claim_id=claim.claim_id,
+                    reason=assessment.reason,
+                )
+            )
+    return GroundedSummary(
+        evidence_bundle_sha256=bundle.sha256,
+        claims=tuple(accepted),
+        rejected_claims=tuple(rejected),
+        grounding_output_sha256s=tuple(
+            stored.sha256 for stored in grounding_outputs
+        ),
+    )
+
+
+def _inference_record(
+    *,
+    stage: str,
+    input_context_sha256: str,
+    output_sha256: str,
+    implementation_revision: str,
+    prompt: PromptSpec,
+    response: InferenceResponse,
+) -> InferenceRecord:
+    if stage not in STAGES:
+        raise GitHubDailySummaryError("inference record stage is invalid")
+    if (
+        not isinstance(implementation_revision, str)
+        or _IMPLEMENTATION_REVISION_RE.fullmatch(implementation_revision)
+        is None
+    ):
+        raise GitHubDailySummaryError(
+            "implementation revision must be lowercase 40..64 hex"
+        )
+    config = validate_model_config(dict(response.model_config))
+    return InferenceRecord(
+        stage=stage,
+        input_context_sha256=_require_sha(
+            input_context_sha256,
+            label="inference input SHA",
+        ),
+        output_sha256=_require_sha(
+            output_sha256,
+            label="inference output SHA",
+        ),
+        implementation_revision=implementation_revision,
+        prompt_template_version=_metadata(
+            prompt.template_version,
+            label="prompt template version",
+        ),
+        prompt_template_sha256=_require_sha(
+            prompt.template_sha256,
+            label="prompt template SHA",
+        ),
+        model_provider=_metadata(
+            response.model_provider,
+            label="model provider",
+        ),
+        model_identifier=_metadata(
+            response.model_identifier,
+            label="model identifier",
+        ),
+        model_revision=_metadata(
+            response.model_revision,
+            label="model revision",
+        ),
+        model_config=config,
+        generated_at=_utc_now(),
+    )
+
+
+def _run_claim_stage(
+    state_root: Path,
+    bundle: EvidenceBundle,
+    contexts: Sequence[SummaryContext],
+    *,
+    infer: Infer,
+    implementation_revision: str,
+) -> tuple[
+    tuple[StoredClaimOutput, ...],
+    tuple[str, ...],
+    tuple[str, ...],
+]:
+    stored: list[StoredClaimOutput] = []
+    context_shas: list[str] = []
+    provenance_shas: list[str] = []
+    events_by_id = bundle.events_by_id
+    for context in contexts:
+        context_sha, _ = store_context(state_root, context)
+        context_shas.append(context_sha)
+        prompt = _prompt_spec(context.stage)
+        response = infer(prompt, context)
+        if context.stage == PARTIAL_STAGE:
+            allowed = {str(item["evidence_id"]) for item in context.events}
+        elif context.stage == REDUCE_STAGE:
+            allowed = {
+                evidence_id
+                for claim in context.claims
+                for evidence_id in claim.evidence_ids
+            }
+        else:
+            raise GitHubDailySummaryError("claim stage context is invalid")
+        output = parse_claim_output(
+            response.content,
+            stage=context.stage,
+            input_context_sha256=context_sha,
+            allowed_evidence_ids=allowed,
+            events_by_id=events_by_id,
+        )
+        output_sha, _ = store_claim_output(state_root, output)
+        stored.append(StoredClaimOutput(output_sha, output))
+        record = _inference_record(
+            stage=context.stage,
+            input_context_sha256=context_sha,
+            output_sha256=output_sha,
+            implementation_revision=implementation_revision,
+            prompt=prompt,
+            response=response,
+        )
+        provenance_sha, _ = store_inference_record(state_root, record)
+        provenance_shas.append(provenance_sha)
+    return tuple(stored), tuple(context_shas), tuple(provenance_shas)
+
+
+def _run_ground_stage(
+    state_root: Path,
+    contexts: Sequence[SummaryContext],
+    *,
+    infer: Infer,
+    implementation_revision: str,
+) -> tuple[
+    tuple[StoredGroundOutput, ...],
+    tuple[str, ...],
+    tuple[str, ...],
+]:
+    stored: list[StoredGroundOutput] = []
+    context_shas: list[str] = []
+    provenance_shas: list[str] = []
+    for context in contexts:
+        if context.stage != GROUND_STAGE:
+            raise GitHubDailySummaryError("ground stage context is invalid")
+        context_sha, _ = store_context(state_root, context)
+        context_shas.append(context_sha)
+        prompt = _prompt_spec(GROUND_STAGE)
+        response = infer(prompt, context)
+        output = parse_ground_output(
+            response.content,
+            input_context_sha256=context_sha,
+            claims=context.claims,
+        )
+        output_sha, _ = store_ground_output(state_root, output)
+        stored.append(StoredGroundOutput(output_sha, output))
+        record = _inference_record(
+            stage=GROUND_STAGE,
+            input_context_sha256=context_sha,
+            output_sha256=output_sha,
+            implementation_revision=implementation_revision,
+            prompt=prompt,
+            response=response,
+        )
+        provenance_sha, _ = store_inference_record(state_root, record)
+        provenance_shas.append(provenance_sha)
+    return tuple(stored), tuple(context_shas), tuple(provenance_shas)
+
+
+def run_pipeline(
+    *,
+    evidence_path: Path,
+    state_root: Path,
+    infer: Infer,
+    implementation_revision: str,
+    partial_context_bytes: int = MAX_PARTIAL_CONTEXT_BYTES,
+    reduce_context_bytes: int = MAX_REDUCE_CONTEXT_BYTES,
+    ground_context_bytes: int = MAX_GROUND_CONTEXT_BYTES,
+) -> PipelineResult:
+    bundle = load_evidence_bundle(evidence_path)
+    partial_contexts = partition_evidence(
+        bundle,
+        max_bytes=partial_context_bytes,
+    )
+    partial_outputs, partial_context_shas, partial_provenance = (
+        _run_claim_stage(
+            state_root,
+            bundle,
+            partial_contexts,
+            infer=infer,
+            implementation_revision=implementation_revision,
+        )
+    )
+
+    reduce_contexts = build_reduce_contexts(
+        bundle,
+        partial_outputs,
+        max_bytes=reduce_context_bytes,
+    )
+    reduce_outputs, reduce_context_shas, reduce_provenance = (
+        _run_claim_stage(
+            state_root,
+            bundle,
+            reduce_contexts,
+            infer=infer,
+            implementation_revision=implementation_revision,
+        )
+    )
+    final_claims = _dedupe_claims(
+        reduce_outputs,
+        stage=REDUCE_STAGE,
+    )
+
+    ground_contexts = build_ground_contexts(
+        bundle,
+        reduce_outputs,
+        max_bytes=ground_context_bytes,
+    )
+    ground_outputs, ground_context_shas, ground_provenance = (
+        _run_ground_stage(
+            state_root,
+            ground_contexts,
+            infer=infer,
+            implementation_revision=implementation_revision,
+        )
+    )
+
+    if final_claims:
+        grounded = finalize_grounded_summary(
+            bundle,
+            final_claims,
+            ground_outputs,
+        )
+    else:
+        grounded = GroundedSummary(
+            evidence_bundle_sha256=bundle.sha256,
+            claims=(),
+            rejected_claims=(),
+            grounding_output_sha256s=(),
+        )
+    grounded_sha, grounded_path = store_grounded_summary(
+        state_root,
+        grounded,
+    )
+    return PipelineResult(
+        evidence_bundle_sha256=bundle.sha256,
+        partial_context_sha256s=partial_context_shas,
+        partial_output_sha256s=tuple(
+            item.sha256 for item in partial_outputs
+        ),
+        reduce_context_sha256s=reduce_context_shas,
+        reduce_output_sha256s=tuple(
+            item.sha256 for item in reduce_outputs
+        ),
+        ground_context_sha256s=ground_context_shas,
+        ground_output_sha256s=tuple(
+            item.sha256 for item in ground_outputs
+        ),
+        provenance_sha256s=(
+            *partial_provenance,
+            *reduce_provenance,
+            *ground_provenance,
+        ),
+        grounded_summary_sha256=grounded_sha,
+        grounded_summary_path=grounded_path,
+        claim_count=len(grounded.claims),
+        rejected_count=len(grounded.rejected_claims),
+    )

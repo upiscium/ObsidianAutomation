@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "github-daily-summary-grounding-v1.schema.json",
+  "title": "GitHub Daily Summary Grounding v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["assessments"],
+  "properties": {
+    "assessments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["claim_id", "verdict", "reason"],
+        "properties": {
+          "claim_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "verdict": {
+            "enum": ["supported", "unsupported"]
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        }
+      }
+    }
+  }
+}
