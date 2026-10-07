@@ -8,6 +8,7 @@ import pytest
 from obsidian_automation.artifact_lifecycle import sha256_bytes
 from obsidian_automation.semantic_corpus import (
     CHUNK_POLICY_VERSION,
+    DAILY_ALWAYS_EXCLUDED_H1,
     SemanticCorpusError,
     build_semantic_corpus,
     load_semantic_corpus_manifest,
@@ -15,6 +16,7 @@ from obsidian_automation.semantic_corpus import (
     parse_semantic_corpus_manifest,
     store_semantic_corpus_manifest,
     verify_semantic_corpus_current,
+    _remove_h1_subtrees,
 )
 
 
@@ -35,6 +37,8 @@ def _vault(tmp_path: Path) -> Path:
             "# Work\nSecret work boilerplate.\n"
             "# Note\nDaily semantic insight.\n"
             "## Observation\nA reusable observation.\n"
+            "# Project Progress\nAI-generated progress must never re-enter the corpus.\n"
+            "## ObsidianAutomation\nNested generated progress is excluded too.\n"
             "# Tasks\n- [ ] ignored task",
         ),
         encoding="utf-8",
@@ -195,12 +199,43 @@ def test_daily_and_project_anchor_chunking_excludes_unrelated_sections(tmp_path:
     )
 
 
+def test_daily_project_progress_subtrees_are_always_removed() -> None:
+    lines = [
+        (1, "# Note"),
+        (2, "Human note."),
+        (3, "# Project Progress"),
+        (4, "Generated progress."),
+        (5, "## Nested"),
+        (6, "Generated detail."),
+        (7, "# Related"),
+        (8, "Human related content."),
+        (9, "# Project Progress"),
+        (10, "Another generated block."),
+        (11, "# Tasks"),
+        (12, "- [ ] task"),
+    ]
+
+    filtered = _remove_h1_subtrees(
+        lines,
+        DAILY_ALWAYS_EXCLUDED_H1,
+    )
+
+    assert filtered == [
+        (1, "# Note"),
+        (2, "Human note."),
+        (7, "# Related"),
+        (8, "Human related content."),
+        (11, "# Tasks"),
+        (12, "- [ ] task"),
+    ]
+
+
 def test_chunk_identity_is_deterministic_and_bound_to_source_sha(tmp_path: Path) -> None:
     vault = _vault(tmp_path)
     first = build_semantic_corpus(vault)
     second = build_semantic_corpus(vault)
     assert first.to_json_bytes() == second.to_json_bytes()
-    assert CHUNK_POLICY_VERSION == "heading-section-lf-v1"
+    assert CHUNK_POLICY_VERSION == "heading-section-lf-v2"
 
     source = next(item for item in first.sources if item.source_kind == "knowledge")
     original_ids = [chunk.chunk_id for chunk in source.chunks]
