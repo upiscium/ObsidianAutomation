@@ -8,6 +8,7 @@ import pytest
 
 import obsidian_automation.pre_review_worker as worker
 from obsidian_automation.artifact_lifecycle import (
+    ArtifactLifecycleError,
     store_untrusted_proposal,
 )
 from obsidian_automation.context_bundle import ContextBundle, store_context_bundle
@@ -52,6 +53,7 @@ from obsidian_automation.ollama_generator import (
     ADAPTER_VERSION as OLLAMA_GENERATOR_ADAPTER_VERSION,
 )
 from obsidian_automation.pre_review_job import (
+    attempt_history,
     job_status,
     parse_recipe,
     stage_output,
@@ -634,6 +636,92 @@ def test_historical_generator_recipe_is_readable_but_not_executable(
     assert result["reason_code"] == "generator_recipe_runtime_mismatch"
     assert called is False
     assert job_status(state, job_id)["current_generation"]["state"] == "blocked"
+
+
+@pytest.mark.parametrize(
+    ("exception_type", "message", "expected_class", "expected_code"),
+    [
+        (
+            OpenAICompatibleProviderError,
+            "OpenAI-compatible HTTP request failed with status 503 secret-token",
+            "OpenAICompatibleProviderError",
+            "provider_transport",
+        ),
+        (
+            OpenAICompatibleProviderError,
+            "evaluator finding detail must not contain control characters secret-token",
+            "OpenAICompatibleProviderError",
+            "provider_response_contract",
+        ),
+        (
+            ArtifactLifecycleError,
+            "evaluation artifact binding failed secret-token",
+            "ArtifactLifecycleError",
+            "artifact_contract",
+        ),
+        (
+            OSError,
+            "local read failed /private/secret-token",
+            "OSError",
+            "local_io",
+        ),
+    ],
+)
+def test_evaluator_retry_persists_only_bounded_diagnostic(
+    monkeypatch,
+    tmp_path: Path,
+    exception_type,
+    message: str,
+    expected_class: str,
+    expected_code: str,
+) -> None:
+    state, vault, job_id, _ = _fixture(tmp_path)
+
+    monkeypatch.setattr(
+        worker,
+        "generate_knowledge_note_with_openai_compatible",
+        _fake_generator,
+    )
+    assert worker.run_generator_worker(
+        state,
+        base_url="https://openai.example.invalid/v1",
+        deployed_revision=REVISION,
+    )["status"] == "completed"
+    assert worker.run_validator_worker(state, vault)["status"] == "completed"
+    assert worker.run_reader_worker(state, vault)["status"] == "completed"
+
+    def fail(*_args, **_kwargs):
+        raise exception_type(message)
+
+    monkeypatch.setattr(
+        worker,
+        "evaluate_knowledge_note_with_openai_compatible",
+        fail,
+    )
+
+    result = worker.run_evaluator_worker(
+        state,
+        base_url="https://openai.example.invalid/v1",
+        deployed_revision=REVISION,
+    )
+
+    expected = {
+        "exception_class": expected_class,
+        "diagnostic_code": expected_code,
+    }
+    assert result["status"] == "retryable_failure"
+    assert result["reason_code"] == "evaluator_provider_or_output_error"
+    assert result["diagnostic"] == expected
+    assert "secret-token" not in json.dumps(result, sort_keys=True)
+
+    history = attempt_history(state, job_id)
+    last = history["attempts"][-1]
+    assert last["stage"] == "evaluation"
+    assert last["status"] == "retryable_failure"
+    assert last["reason_code"] == "evaluator_provider_or_output_error"
+    assert last["diagnostic"] == expected
+    assert "secret-token" not in json.dumps(history, sort_keys=True)
+    assert job_status(state, job_id)["current_generation"]["state"] == "retryable_failure"
 
 
 def test_generator_provider_failure_is_bounded_to_three_attempts(
