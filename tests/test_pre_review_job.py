@@ -54,6 +54,7 @@ from obsidian_automation.generator_contract import (
 )
 from obsidian_automation.pre_review_job import (
     PreReviewJobError,
+    attempt_history,
     claim_next_attempt,
     complete_attempt,
     job_status,
@@ -909,6 +910,88 @@ def test_status_on_uninitialized_root_is_non_mutating(tmp_path: Path) -> None:
         job_status(root, "e" * 64)
 
     assert not (root / "02-Orchestration").exists()
+
+
+def test_attempt_diagnostic_is_closed_bounded_metadata(tmp_path: Path) -> None:
+    root, context_sha = _state(tmp_path)
+    submitted = submit_job(
+        root,
+        context_sha256=context_sha,
+        recipe=_parsed_recipe(),
+    )
+    generation = str(submitted["generation_id"])
+    attempt = start_attempt(root, generation, "generation")
+
+    result = complete_attempt(
+        root,
+        str(attempt["attempt_id"]),
+        outcome="retryable_failure",
+        reason_code="generator_provider_or_output_error",
+        diagnostic_exception_class="OSError",
+        diagnostic_code="local_io",
+    )
+    assert result["diagnostic"] == {
+        "exception_class": "OSError",
+        "diagnostic_code": "local_io",
+    }
+
+    history = attempt_history(root, str(submitted["job_id"]))
+    assert history["authority"] == "orchestration_metadata_only"
+    assert history["attempts"][-1]["diagnostic"] == result["diagnostic"]
+
+    retry_generation(root, generation)
+    second = start_attempt(root, generation, "generation")
+    with pytest.raises(PreReviewJobError, match="exception_class"):
+        complete_attempt(
+            root,
+            str(second["attempt_id"]),
+            outcome="retryable_failure",
+            reason_code="generator_provider_or_output_error",
+            diagnostic_exception_class="SecretException",
+            diagnostic_code="local_io",
+        )
+
+
+def test_attempt_history_cli_is_content_free(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root, context_sha = _state(tmp_path)
+    submitted = submit_job(
+        root,
+        context_sha256=context_sha,
+        recipe=_parsed_recipe(),
+    )
+    generation = str(submitted["generation_id"])
+    attempt = start_attempt(root, generation, "generation")
+    complete_attempt(
+        root,
+        str(attempt["attempt_id"]),
+        outcome="retryable_failure",
+        reason_code="generator_provider_or_output_error",
+        diagnostic_exception_class="OSError",
+        diagnostic_code="local_io",
+    )
+
+    assert pre_review_job_main(
+        [
+            "attempts",
+            "--ai-root",
+            str(root),
+            "--job-id",
+            str(submitted["job_id"]),
+        ]
+    ) == 0
+
+    value = json.loads(capsys.readouterr().out)
+    assert value["authority"] == "orchestration_metadata_only"
+    assert value["attempts"][0]["diagnostic"] == {
+        "exception_class": "OSError",
+        "diagnostic_code": "local_io",
+    }
+    encoded = json.dumps(value, sort_keys=True)
+    assert "Create one Knowledge note" not in encoded
+    assert "gemma3:12b" not in encoded
 
 
 def test_completed_attempt_cannot_be_reused(tmp_path: Path) -> None:
