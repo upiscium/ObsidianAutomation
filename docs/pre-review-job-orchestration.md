@@ -186,6 +186,24 @@ Each successful stage stores only a selected bounded SHA binding in the
 re-validate the immutable artifact itself; they never scan artifact directories
 and guess which output to adopt.
 
+Retryable Evaluator failures keep their stable high-level reason
+`evaluator_provider_or_output_error`. Current runtimes may additionally store
+one bounded diagnostic row keyed by `attempt_id`:
+
+- `exception_class`: one closed class such as `OllamaProviderError`,
+  `OpenAICompatibleProviderError`, `ArtifactLifecycleError`,
+  `PreReviewJobError`, or `OSError`;
+- `diagnostic_code`: one closed operational category such as
+  `provider_transport`, `provider_response_contract`,
+  `provider_identity`, `provider_contract`, `artifact_contract`,
+  `orchestration_contract`, or `local_io`.
+
+The original exception text is never persisted. In particular, diagnostics do
+not contain provider response bodies, prompt/candidate text, endpoint URLs,
+credentials, authorization headers, arbitrary filesystem paths, or model
+output. The same bounded diagnostic appears in the worker's structured journal
+event so live and durable evidence agree.
+
 This metadata never writes a Human Review artifact. Both `proceed` and
 `do_not_proceed` Evaluation outcomes terminate orchestration at
 `awaiting_human_review`. Recommendation interpretation remains Human-owned.
@@ -219,6 +237,19 @@ obsidian-pre-review-job status \
   --job-id <job-id>
 ```
 
+Read bounded attempt history, including any persisted retry diagnostic:
+
+```bash
+obsidian-pre-review-job attempts \
+  --ai-root /var/lib/obsidian-ai/state \
+  --job-id <job-id>
+```
+
+The attempt-history surface is `orchestration_metadata_only`. It exposes
+attempt/generation IDs, stage/index, timestamps, status, stable reason code and
+the closed diagnostic pair only; it never exposes semantic content or private
+provider configuration.
+
 Explicitly retire one historical runtime-incompatible current generation:
 
 ```bash
@@ -251,6 +282,13 @@ Context text, proposal text, credentials, provider endpoints, or Review content.
 `synchronous=FULL`. The database file is mode 0660 so the narrow
 Generator/Validator/Reader/Evaluator operational ACL can share metadata without
 sharing semantic artifact authority.
+
+`attempt_diagnostics` is an additive table rather than a schema-version
+reinterpretation. Existing databases remain schema-version 1; an old runtime
+ignores the extra table, while a current writer creates it idempotently before
+recording a diagnostic. Read-only attempt history also tolerates a database
+that has not yet been opened by a current writer and reports `diagnostic=null`
+for historical attempts.
 
 Recipes remain immutable content-addressed JSON files so a job can always prove
 which fixed recipe it references even if future deployment defaults change.
