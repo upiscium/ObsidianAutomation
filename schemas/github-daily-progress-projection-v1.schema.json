@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "github-daily-progress-projection-v1.schema.json",
+  "title": "GitHub Daily Project Progress Projection v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "record_version",
+    "stage",
+    "date",
+    "target_path",
+    "evidence_bundle_sha256",
+    "grounded_summary_sha256",
+    "section_body_sha256",
+    "section_body"
+  ],
+  "properties": {
+    "record_version": {"const": 1},
+    "stage": {"const": "github_daily_progress_projection"},
+    "date": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "target_path": {
+      "type": "string",
+      "pattern": "^00-DailyNote/[0-9]{4}/[0-9]{2}/[0-9]{4}-[0-9]{2}-[0-9]{2}\\.md$"
+    },
+    "evidence_bundle_sha256": {"$ref": "#/$defs/sha256"},
+    "grounded_summary_sha256": {"$ref": "#/$defs/sha256"},
+    "section_body_sha256": {"$ref": "#/$defs/sha256"},
+    "section_body": {"type": "string"}
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}
