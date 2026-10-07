@@ -105,7 +105,7 @@ def _fixture_source(tmp_path: Path) -> Path:
 
 def test_managed_unit_set_is_complete_and_unique() -> None:
     names = set(stage.SOURCE_LAYOUT)
-    assert len(names) == 27
+    assert len(names) == 33
     assert names == set(
         (*stage.AI_UNITS, *stage.GITHUB_UNITS, *stage.PROMOTION_UNITS)
     )
@@ -113,6 +113,7 @@ def test_managed_unit_set_is_complete_and_unique() -> None:
         "obsidian-ai-vault-pull.timer",
         "obsidian-pre-review.timer",
         "obsidian-github-sync.timer",
+        "obsidian-github-daily-progress.timer",
         "obsidian-core-promotion.timer",
     }
 
@@ -143,6 +144,7 @@ def test_stage_installs_units_and_leaves_host_inert(tmp_path: Path) -> None:
 
     config_dir = tmp_path / "etc/obsidian-ai"
     config_dir.mkdir(parents=True)
+    (tmp_path / "etc/obsidian-github-summarizer").mkdir(parents=True)
     revision_env = config_dir / "pre-review-revision.env"
 
     runner = FakeRunner(source_root)
@@ -152,12 +154,15 @@ def test_stage_installs_units_and_leaves_host_inert(tmp_path: Path) -> None:
         source_root=source_root,
         systemd_dir=systemd_dir,
         revision_env=revision_env,
+        daily_revision_env=(
+            tmp_path / "etc/obsidian-github-summarizer/revision.env"
+        ),
         runner=runner,
         require_root=False,
     )
 
     assert result["result"] == "passed"
-    assert result["installed_unit_count"] == 27
+    assert result["installed_unit_count"] == 33
     assert result["timers_enabled"] is False
     assert result["timers_active"] is False
     assert result["services_active"] is False
@@ -190,6 +195,11 @@ def test_stage_installs_units_and_leaves_host_inert(tmp_path: Path) -> None:
         "obsidian-github-sync.service",
         "obsidian-github-writer.service",
         "obsidian-github-compactor.service",
+        "obsidian-github-daily-schedule.service",
+        "obsidian-github-daily-collect.service",
+        "obsidian-github-daily-summary.service",
+        "obsidian-github-daily-render.service",
+        "obsidian-github-daily-apply.service",
     ):
         installed = (systemd_dir / unit).read_text()
         assert (
@@ -236,6 +246,7 @@ def test_stage_refuses_enabled_or_active_existing_timer(tmp_path: Path) -> None:
     systemd_dir.mkdir()
     config_dir = tmp_path / "etc/obsidian-ai"
     config_dir.mkdir(parents=True)
+    (tmp_path / "etc/obsidian-github-summarizer").mkdir(parents=True)
 
     runner = ExistingActiveRunner(source_root)
 
@@ -245,6 +256,9 @@ def test_stage_refuses_enabled_or_active_existing_timer(tmp_path: Path) -> None:
             source_root=source_root,
             systemd_dir=systemd_dir,
             revision_env=config_dir / "pre-review-revision.env",
+            daily_revision_env=(
+                tmp_path / "etc/obsidian-github-summarizer/revision.env"
+            ),
             runner=runner,
             require_root=False,
         )
@@ -264,6 +278,7 @@ def test_stage_requires_exact_clean_target(tmp_path: Path) -> None:
             source_root=source_root,
             systemd_dir=tmp_path,
             revision_env=tmp_path / "revision.env",
+            daily_revision_env=tmp_path / "daily-revision.env",
             runner=runner,
             require_root=False,
         )
@@ -273,12 +288,17 @@ def test_stage_requires_exact_clean_target(tmp_path: Path) -> None:
         raise AssertionError("wrong target source was not rejected")
 
 
-def test_real_timer_sources_rearm_from_timer_activation() -> None:
+def test_real_timer_sources_use_reviewed_schedule_contracts() -> None:
     for timer in stage.TIMER_UNITS:
         source = Path(stage.SOURCE_LAYOUT[timer])
         text = source.read_text(encoding="utf-8")
-        assert "OnActiveSec=" in text, timer
         assert "OnBootSec=" not in text, timer
+        if timer == "obsidian-github-daily-progress.timer":
+            assert "OnCalendar=*-*-* 00:10:00 Asia/Tokyo" in text
+            assert "OnCalendar=*-*-* *:40:00 Asia/Tokyo" in text
+            assert "Persistent=true" in text
+        else:
+            assert "OnActiveSec=" in text, timer
 
 
 def test_vault_pull_success_chains_opt_in_semantic_refresh_units() -> None:
@@ -343,6 +363,11 @@ def test_real_unit_sources_render_to_consolidated_paths() -> None:
         "obsidian-github-sync.service",
         "obsidian-github-writer.service",
         "obsidian-github-compactor.service",
+        "obsidian-github-daily-schedule.service",
+        "obsidian-github-daily-collect.service",
+        "obsidian-github-daily-summary.service",
+        "obsidian-github-daily-render.service",
+        "obsidian-github-daily-apply.service",
     ):
         source = Path(stage.SOURCE_LAYOUT[unit])
         rendered = stage._render_unit(source.read_text(encoding="utf-8"))

@@ -1,0 +1,33 @@
+[Unit]
+Description=Collect pending GitHub Daily Project Progress evidence
+Requires=obsidian-github-daily-schedule.service obsidian-github-sync-vault-pull.service
+After=network-online.target obsidian-github-daily-schedule.service obsidian-github-sync-vault-pull.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=obsidian-github-sync
+Group=obsidian-github-sync
+SupplementaryGroups=obsidian-github-vault
+UMask=0027
+EnvironmentFile=-/etc/obsidian-github-sync/credentials.env
+ExecStart=/opt/obsidian-github-sync/venv/bin/obsidian-github-daily-production-collect \
+  --root /var/lib/obsidian-github-pipeline/daily-progress \
+  --config /etc/obsidian-github-sync/config.toml
+WorkingDirectory=/opt/obsidian-github-sync/app
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadOnlyPaths=/srv/obsidian-github-sync/vault /etc/obsidian-github-sync /var/lib/obsidian-github-pipeline/daily-progress/00-Schedule
+ReadWritePaths=/var/lib/obsidian-github-pipeline/daily-progress/10-Evidence
+InaccessiblePaths=/etc/obsidian-github-mirror /etc/obsidian-github-writer /etc/obsidian-github-summarizer /etc/obsidian-github-daily-writer
+
+[Install]
+WantedBy=multi-user.target

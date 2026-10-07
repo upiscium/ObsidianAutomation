@@ -117,6 +117,10 @@ def setup(tmp_path):
     systemd.mkdir()
     revision = tmp_path / "etc/pre-review-revision.env"
     revision.parent.mkdir()
+    daily_revision = (
+        tmp_path / "etc/obsidian-github-summarizer/revision.env"
+    )
+    daily_revision.parent.mkdir(parents=True)
     venv = tmp_path / "venv"
     (venv / "bin").mkdir(parents=True)
     (venv / "bin/pip").write_text("#!/bin/sh\n")
@@ -126,7 +130,9 @@ def setup(tmp_path):
     system.source, system.app = source, app
     kwargs = dict(source_root=source, target_sha=TARGET, venv_root=venv,
                   receipt_dir=tmp_path / "receipts", runner=system, require_root=False,
-                  systemd_dir=systemd, revision_env=revision, config_exists=lambda path: True,
+                  systemd_dir=systemd, revision_env=revision,
+                  daily_revision_env=daily_revision,
+                  config_exists=lambda path: True,
                   refresh_inhibit_path=tmp_path / "run/semantic-refresh-inhibited.json")
     return kwargs, system, app
 
@@ -151,11 +157,11 @@ def test_timer_state_matrix_and_no_unrequested_activation(setup, enabled, active
         assert system.states[name]["ActiveState"] == ("active" if active else "inactive")
         assert system.states[name]["UnitFileState"] == ("enabled" if enabled else "disabled")
     starts = [c for c in system.commands if c[:2] == ("systemctl", "start")]
-    assert len(starts) == (4 if active else 0)
+    assert len(starts) == (5 if active else 0)
     assert not (kwargs["receipt_dir"] / "pending-runtime.json").exists()
     assert len(list(kwargs["receipt_dir"].glob("*.runtime.json"))) == 1
     assert kwargs["revision_env"].read_text() == f"OBSIDIAN_AUTOMATION_REVISION={TARGET}\n"
-    assert len(list(kwargs["systemd_dir"].glob("*.service"))) == 23
+    assert len(list(kwargs["systemd_dir"].glob("*.service"))) == 28
     assert all("gitea-runner" not in " ".join(c) and "obsidian-snapshot" not in " ".join(c) for c in system.commands)
 
 
@@ -386,7 +392,9 @@ def test_update_lock_and_interrupted_body(setup):
 def test_full_bootstrap_orders_quiesce_package_smoke_restore(setup, monkeypatch):
     kwargs, system, app = setup
     factory = lambda **args: life.RuntimeTransaction(**{**args,
-        "systemd_dir": kwargs["systemd_dir"], "revision_env": kwargs["revision_env"],
+        "systemd_dir": kwargs["systemd_dir"],
+        "revision_env": kwargs["revision_env"],
+        "daily_revision_env": kwargs["daily_revision_env"],
         "config_exists": lambda path: True,
         "refresh_inhibit_path": kwargs["refresh_inhibit_path"]})
     monkeypatch.setattr(bootstrap, "_load_host_lifecycle", lambda _: factory)

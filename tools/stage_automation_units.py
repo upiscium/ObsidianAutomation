@@ -26,6 +26,9 @@ from typing import Callable, Iterable, Sequence
 DEFAULT_SOURCE_ROOT = Path("/opt/obsidian-automation/app")
 DEFAULT_SYSTEMD_DIR = Path("/etc/systemd/system")
 DEFAULT_REVISION_ENV = Path("/etc/obsidian-ai/pre-review-revision.env")
+DEFAULT_DAILY_REVISION_ENV = Path(
+    "/etc/obsidian-github-summarizer/revision.env"
+)
 DEFAULT_AI_FILTER = Path("/etc/obsidian-ai/vault-pull.filters")
 AI_FILTER_SOURCE = Path("examples/ai/vault-pull.filters")
 CONSOLIDATED_APP_ROOT = "/opt/obsidian-automation/app"
@@ -90,6 +93,12 @@ GITHUB_UNITS = (
     "obsidian-github-writer.service",
     "obsidian-github-compactor.service",
     "obsidian-github-sync.timer",
+    "obsidian-github-daily-schedule.service",
+    "obsidian-github-daily-collect.service",
+    "obsidian-github-daily-summary.service",
+    "obsidian-github-daily-render.service",
+    "obsidian-github-daily-apply.service",
+    "obsidian-github-daily-progress.timer",
 )
 
 PROMOTION_UNITS = (
@@ -101,6 +110,7 @@ TIMER_UNITS = (
     "obsidian-ai-vault-pull.timer",
     "obsidian-pre-review.timer",
     "obsidian-github-sync.timer",
+    "obsidian-github-daily-progress.timer",
     "obsidian-core-promotion.timer",
 )
 
@@ -347,11 +357,11 @@ def _install_units(
         if unit.endswith(".service"):
             if CONSOLIDATED_VENV_BIN not in rendered:
                 raise UnitStagingError(f"consolidated_venv_missing:{unit}")
-        if unit in {
-            "obsidian-github-sync.service",
-            "obsidian-github-writer.service",
-            "obsidian-github-compactor.service",
-        }:
+        if (
+            unit.startswith("obsidian-github-")
+            and unit.endswith(".service")
+            and unit != "obsidian-github-sync-vault-pull.service"
+        ):
             if f"WorkingDirectory={CONSOLIDATED_APP_ROOT}" not in rendered:
                 raise UnitStagingError(f"working_directory_not_consolidated:{unit}")
 
@@ -434,6 +444,7 @@ def stage_units(
     source_root: Path = DEFAULT_SOURCE_ROOT,
     systemd_dir: Path = DEFAULT_SYSTEMD_DIR,
     revision_env: Path = DEFAULT_REVISION_ENV,
+    daily_revision_env: Path = DEFAULT_DAILY_REVISION_ENV,
     ai_filter: Path | None = None,
     runner: Runner = _default_runner,
     require_root: bool = True,
@@ -459,6 +470,11 @@ def stage_units(
         target_sha,
         chown_root=require_root,
     )
+    _write_revision_env(
+        daily_revision_env,
+        target_sha,
+        chown_root=require_root,
+    )
 
     _run(
         runner,
@@ -474,6 +490,7 @@ def stage_units(
         "installed_unit_count": len(installed),
         "installed_units": list(installed),
         "revision_env": str(revision_env),
+        "daily_revision_env": str(daily_revision_env),
         "ai_vault_pull_filter": str(ai_filter_path),
         "ai_vault_pull_filter_sha256": ai_filter_sha256,
         "timers_enabled": False,
@@ -496,6 +513,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-root", type=Path, default=DEFAULT_SOURCE_ROOT)
     parser.add_argument("--systemd-dir", type=Path, default=DEFAULT_SYSTEMD_DIR)
     parser.add_argument("--revision-env", type=Path, default=DEFAULT_REVISION_ENV)
+    parser.add_argument(
+        "--daily-revision-env",
+        type=Path,
+        default=DEFAULT_DAILY_REVISION_ENV,
+    )
     parser.add_argument("--ai-filter", type=Path)
     return parser
 
@@ -508,6 +530,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             source_root=args.source_root,
             systemd_dir=args.systemd_dir,
             revision_env=args.revision_env,
+            daily_revision_env=args.daily_revision_env,
             ai_filter=args.ai_filter,
         )
     except UnitStagingError as exc:

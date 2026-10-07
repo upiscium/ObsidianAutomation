@@ -1,0 +1,36 @@
+[Unit]
+Description=Summarize pending GitHub Daily Project Progress evidence
+Requires=obsidian-github-daily-collect.service
+After=network-online.target obsidian-github-daily-collect.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=obsidian-github-summarizer
+Group=obsidian-github-summarizer
+UMask=0027
+EnvironmentFile=/etc/obsidian-github-summarizer/config.env
+EnvironmentFile=/etc/obsidian-github-summarizer/revision.env
+ExecStart=/opt/obsidian-github-sync/venv/bin/obsidian-github-daily-production-summary \
+  --root /var/lib/obsidian-github-pipeline/daily-progress \
+  --provider ${DAILY_SUMMARY_PROVIDER} \
+  --base-url ${DAILY_SUMMARY_BASE_URL} \
+  --model ${DAILY_SUMMARY_MODEL} \
+  --implementation-revision ${OBSIDIAN_AUTOMATION_REVISION}
+WorkingDirectory=/opt/obsidian-github-sync/app
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadOnlyPaths=/etc/obsidian-github-summarizer /var/lib/obsidian-github-pipeline/daily-progress/00-Schedule /var/lib/obsidian-github-pipeline/daily-progress/10-Evidence
+ReadWritePaths=/var/lib/obsidian-github-pipeline/daily-progress/20-Summary
+InaccessiblePaths=/etc/obsidian-github-sync /etc/obsidian-github-mirror /etc/obsidian-github-writer /etc/obsidian-github-daily-writer /srv/obsidian-github-sync/vault
+
+[Install]
+WantedBy=multi-user.target

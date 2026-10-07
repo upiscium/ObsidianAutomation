@@ -137,6 +137,10 @@ The initial manifest includes:
 /etc/obsidian-github-mirror/vault-pull.filters
 /etc/obsidian-github-writer/config.env
 /etc/obsidian-github-writer/webdav-password
+/etc/obsidian-github-summarizer/config.env        # optional Daily Progress
+/etc/obsidian-github-summarizer/revision.env      # derived
+/etc/obsidian-github-daily-writer/config.env      # optional Daily Progress
+/etc/obsidian-github-daily-writer/webdav-password # optional Daily Progress
 /var/lib/obsidian-github-sync
 /var/lib/obsidian-github-pipeline
 /var/lib/obsidian-github-mirror
@@ -146,6 +150,12 @@ The initial manifest includes:
 The writer `config.env` is required by the production writer unit and contains
 the non-secret Nextcloud base URL / username binding; it must migrate or be
 recreated alongside the writer password.
+
+Daily Progress configuration is a new boundary rather than old-host migration
+material. The summarizer receives its own provider configuration. The Daily
+writer receives a separate Nextcloud account shared only to `00-DailyNote`
+with Read + Update; it must not reuse the existing Project writer credential.
+Its revision env is derived from the reviewed deployed SHA.
 
 Rebuildable mirrors should normally be rebuilt on the new LXC. Durable queue /
 SQLite / request-result state requires a quiesced migration if continuity is
@@ -161,7 +171,9 @@ Provisioned identities include:
 - a dormant compatibility `gitea-runner` account (no runner binary, unit, registration or jobs);
 - `obsidian-core-promoter`;
 - `obsidian-ai-sync/reader/generator/validator/evaluator/status/reviewer/executor`;
-- `obsidian-github-mirror/sync/writer/compactor`.
+- `obsidian-github-mirror/sync/writer/compactor`;
+- `obsidian-github-summarizer/renderer/daily-writer` for the Daily Project
+  Progress evidence -> model -> projection -> canonical-Daily chain.
 
 GitHub handoff groups remain separate from credential groups:
 
@@ -270,10 +282,11 @@ After private config/credential migration passes, stage the production systemd
 units on the new consolidated LXC while it is still non-serving.
 
 The staging tool reads the reviewed canonical unit examples from the exact target
-checkout and installs 17 units:
+checkout and installs the complete current managed set. With Daily Project
+Progress this is 33 units:
 
-- AI Vault mirror + Input Planner + human projection + pre-review pipeline: 10 units;
-- GitHub Sync pipeline: 5 units;
+- AI / semantic / pre-review pipeline: 20 units;
+- GitHub Project status + Daily Project Progress pipeline: 11 units;
 - Core Promotion: 2 units.
 
 Runtime paths are rewritten only from the legacy per-LXC prefixes to:
@@ -288,6 +301,7 @@ policy:
 
 ```text
 /etc/obsidian-ai/pre-review-revision.env
+/etc/obsidian-github-summarizer/revision.env
 /etc/obsidian-ai/vault-pull.filters
 ```
 
@@ -297,12 +311,13 @@ The filter bytes come from the exact target's
 
 This command is deliberately **staging-only**. It refuses to operate if any
 managed production timer is enabled/active or any managed service is active.
-After installation it reloads systemd and requires all four recurring timers to
+After installation it reloads systemd and requires all five recurring timers to
 remain disabled/inactive:
 
 - `obsidian-ai-vault-pull.timer`;
 - `obsidian-pre-review.timer`;
 - `obsidian-github-sync.timer`;
+- `obsidian-github-daily-progress.timer`;
 - `obsidian-core-promotion.timer`.
 
 No production service is started. Gitea Runner is not part of this unit staging

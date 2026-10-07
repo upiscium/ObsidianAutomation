@@ -20,6 +20,12 @@ UNIT_NAMES = (
     "obsidian-github-sync.timer",
     "obsidian-github-writer.service",
     "obsidian-github-compactor.service",
+    "obsidian-github-daily-schedule.service",
+    "obsidian-github-daily-collect.service",
+    "obsidian-github-daily-summary.service",
+    "obsidian-github-daily-render.service",
+    "obsidian-github-daily-apply.service",
+    "obsidian-github-daily-progress.timer",
 )
 
 
@@ -35,9 +41,14 @@ def _layout(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     bin_dir.mkdir(parents=True)
     (bin_dir / "pip").write_text("#!/bin/sh\n", encoding="utf-8")
     (bin_dir / "obsidian-github-production-smoke").write_text("#!/bin/sh\n", encoding="utf-8")
+    (bin_dir / "obsidian-github-daily-production-smoke").write_text(
+        "#!/bin/sh\n",
+        encoding="utf-8",
+    )
 
     systemd_dir = tmp_path / "systemd"
     systemd_dir.mkdir()
+    (tmp_path / "etc/obsidian-github-summarizer").mkdir(parents=True)
     receipt_dir = tmp_path / "receipts"
     return app_root, venv_root, systemd_dir, receipt_dir
 
@@ -53,6 +64,9 @@ class FakeRunner:
         active: bool = True,
         fail_profile: str | None = None,
         fail_pip: bool = False,
+        daily_present: bool = False,
+        daily_enabled: bool = False,
+        daily_active: bool = False,
     ) -> None:
         self.app_root = app_root
         self.venv_root = venv_root
@@ -61,6 +75,9 @@ class FakeRunner:
         self.active = active
         self.fail_profile = fail_profile
         self.fail_pip = fail_pip
+        self.daily_present = daily_present
+        self.daily_enabled = daily_enabled
+        self.daily_active = daily_active
         self.current_sha = PREVIOUS
         self.calls: list[tuple[str, ...]] = []
 
@@ -87,21 +104,81 @@ class FakeRunner:
 
         if argv == ("systemctl", "is-enabled", "obsidian-github-sync.timer"):
             return CommandResult(0 if self.enabled else 1, "enabled\n" if self.enabled else "disabled\n", "")
+        if argv == (
+            "systemctl",
+            "is-enabled",
+            "obsidian-github-daily-progress.timer",
+        ):
+            if not self.daily_present:
+                return CommandResult(1, "not-found\n", "")
+            return CommandResult(
+                0 if self.daily_enabled else 1,
+                "enabled\n" if self.daily_enabled else "disabled\n",
+                "",
+            )
         if argv == ("systemctl", "is-active", "obsidian-github-sync.timer"):
             return CommandResult(0 if self.active else 3, "active\n" if self.active else "inactive\n", "")
+        if argv == (
+            "systemctl",
+            "is-active",
+            "obsidian-github-daily-progress.timer",
+        ):
+            if not self.daily_present:
+                return CommandResult(3, "inactive\n", "")
+            return CommandResult(
+                0 if self.daily_active else 3,
+                "active\n" if self.daily_active else "inactive\n",
+                "",
+            )
         if argv == ("systemctl", "disable", "--now", "obsidian-github-sync.timer"):
             self.enabled = False
             self.active = False
+            return CommandResult(0, "", "")
+        if argv == (
+            "systemctl",
+            "disable",
+            "--now",
+            "obsidian-github-daily-progress.timer",
+        ):
+            self.daily_present = True
+            self.daily_enabled = False
+            self.daily_active = False
             return CommandResult(0, "", "")
         if argv == ("systemctl", "enable", "--now", "obsidian-github-sync.timer"):
             self.enabled = True
             self.active = True
             return CommandResult(0, "", "")
+        if argv == (
+            "systemctl",
+            "enable",
+            "--now",
+            "obsidian-github-daily-progress.timer",
+        ):
+            self.daily_present = True
+            self.daily_enabled = True
+            self.daily_active = True
+            return CommandResult(0, "", "")
         if argv == ("systemctl", "enable", "obsidian-github-sync.timer"):
             self.enabled = True
             return CommandResult(0, "", "")
+        if argv == (
+            "systemctl",
+            "enable",
+            "obsidian-github-daily-progress.timer",
+        ):
+            self.daily_present = True
+            self.daily_enabled = True
+            return CommandResult(0, "", "")
         if argv == ("systemctl", "start", "obsidian-github-sync.timer"):
             self.active = True
+            return CommandResult(0, "", "")
+        if argv == (
+            "systemctl",
+            "start",
+            "obsidian-github-daily-progress.timer",
+        ):
+            self.daily_present = True
+            self.daily_active = True
             return CommandResult(0, "", "")
         if argv == ("systemctl", "daemon-reload"):
             return CommandResult(0, "", "")
@@ -119,6 +196,14 @@ class FakeRunner:
         if argv == (smoke, "--profile", "live"):
             if self.fail_profile == "live":
                 return CommandResult(1, "", "live failure")
+            return CommandResult(0, "", "")
+
+        daily_smoke = str(
+            self.venv_root / "bin" / "obsidian-github-daily-production-smoke"
+        )
+        if argv == (daily_smoke, "--profile", "safe"):
+            if self.fail_profile == "daily-safe":
+                return CommandResult(1, "", "daily safe failure")
             return CommandResult(0, "", "")
 
         raise AssertionError(argv)
@@ -140,6 +225,9 @@ def test_update_deploys_exact_target_runs_smokes_and_restores_timer(tmp_path: Pa
         venv_root=venv_root,
         systemd_dir=systemd_dir,
         receipt_dir=receipt_dir,
+        daily_revision_env=(
+            tmp_path / "etc/obsidian-github-summarizer/revision.env"
+        ),
         runner=runner,
         require_root=False,
     )
@@ -154,6 +242,17 @@ def test_update_deploys_exact_target_runs_smokes_and_restores_timer(tmp_path: Pa
     assert runner.current_sha == TARGET
     assert runner.enabled is True
     assert runner.active is True
+    assert runner.daily_present is True
+    assert runner.daily_enabled is False
+    assert runner.daily_active is False
+    assert receipt.daily_safe_smoke == "passed"
+    assert receipt.daily_live_canary == "not_attempted"
+    assert receipt.managed_timer_states[
+        "obsidian-github-daily-progress.timer"
+    ] == {"enabled": None, "active": None}
+    assert (
+        tmp_path / "etc/obsidian-github-summarizer/revision.env"
+    ).read_text() == f"OBSIDIAN_AUTOMATION_REVISION={TARGET}\n"
     assert (
         "git",
         "-C",
@@ -189,6 +288,9 @@ def test_bootstrap_pre_disabled_timer_restores_original_enabled_active_state(
         venv_root=venv_root,
         systemd_dir=systemd_dir,
         receipt_dir=receipt_dir,
+        daily_revision_env=(
+            tmp_path / "etc/obsidian-github-summarizer/revision.env"
+        ),
         runner=runner,
         require_root=False,
         bootstrap_pre_disabled_timer=True,
@@ -219,6 +321,9 @@ def test_bootstrap_pre_disabled_timer_rejects_nonstopped_timer(tmp_path: Path) -
             venv_root=venv_root,
             systemd_dir=systemd_dir,
             receipt_dir=receipt_dir,
+            daily_revision_env=(
+                tmp_path / "etc/obsidian-github-summarizer/revision.env"
+            ),
             runner=runner,
             require_root=False,
             bootstrap_pre_disabled_timer=True,
@@ -244,6 +349,9 @@ def test_success_preserves_disabled_inactive_timer_state(tmp_path: Path) -> None
         venv_root=venv_root,
         systemd_dir=systemd_dir,
         receipt_dir=receipt_dir,
+        daily_revision_env=(
+            tmp_path / "etc/obsidian-github-summarizer/revision.env"
+        ),
         runner=runner,
         require_root=False,
     )
@@ -258,6 +366,49 @@ def test_success_preserves_disabled_inactive_timer_state(tmp_path: Path) -> None
     assert ("systemctl", "start", "obsidian-github-sync.timer") not in runner.calls
 
 
+def test_existing_daily_timer_state_is_restored(tmp_path: Path) -> None:
+    app_root, venv_root, systemd_dir, receipt_dir = _layout(tmp_path)
+    runner = FakeRunner(
+        app_root,
+        venv_root,
+        daily_present=True,
+        daily_enabled=True,
+        daily_active=True,
+    )
+
+    receipt, _ = execute_update(
+        target_sha=TARGET,
+        app_root=app_root,
+        venv_root=venv_root,
+        systemd_dir=systemd_dir,
+        receipt_dir=receipt_dir,
+        daily_revision_env=(
+            tmp_path / "etc/obsidian-github-summarizer/revision.env"
+        ),
+        runner=runner,
+        require_root=False,
+    )
+
+    assert receipt.result == "success"
+    assert receipt.managed_timer_states[
+        "obsidian-github-daily-progress.timer"
+    ] == {"enabled": True, "active": True}
+    assert runner.daily_enabled is True
+    assert runner.daily_active is True
+    assert (
+        "systemctl",
+        "disable",
+        "--now",
+        "obsidian-github-daily-progress.timer",
+    ) in runner.calls
+    assert (
+        "systemctl",
+        "enable",
+        "--now",
+        "obsidian-github-daily-progress.timer",
+    ) in runner.calls
+
+
 def test_invalid_target_uses_safe_receipt_filename(tmp_path: Path) -> None:
     app_root, venv_root, systemd_dir, receipt_dir = _layout(tmp_path)
     runner = FakeRunner(app_root, venv_root)
@@ -269,6 +420,9 @@ def test_invalid_target_uses_safe_receipt_filename(tmp_path: Path) -> None:
             venv_root=venv_root,
             systemd_dir=systemd_dir,
             receipt_dir=receipt_dir,
+            daily_revision_env=(
+                tmp_path / "etc/obsidian-github-summarizer/revision.env"
+            ),
             runner=runner,
             require_root=False,
         )
@@ -290,6 +444,9 @@ def test_dirty_checkout_fails_before_timer_is_touched(tmp_path: Path) -> None:
             venv_root=venv_root,
             systemd_dir=systemd_dir,
             receipt_dir=receipt_dir,
+            daily_revision_env=(
+                tmp_path / "etc/obsidian-github-summarizer/revision.env"
+            ),
             runner=runner,
             require_root=False,
         )
@@ -314,6 +471,9 @@ def test_live_smoke_failure_leaves_timer_disabled_and_records_failure(tmp_path: 
             venv_root=venv_root,
             systemd_dir=systemd_dir,
             receipt_dir=receipt_dir,
+            daily_revision_env=(
+                tmp_path / "etc/obsidian-github-summarizer/revision.env"
+            ),
             runner=runner,
             require_root=False,
         )
@@ -343,6 +503,9 @@ def test_command_stderr_is_not_persisted_in_failure_receipt(tmp_path: Path) -> N
             venv_root=venv_root,
             systemd_dir=systemd_dir,
             receipt_dir=receipt_dir,
+            daily_revision_env=(
+                tmp_path / "etc/obsidian-github-summarizer/revision.env"
+            ),
             runner=runner,
             require_root=False,
         )

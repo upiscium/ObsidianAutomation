@@ -20,6 +20,11 @@ DEFAULT_VENV_ROOT = Path("/opt/obsidian-github-sync/venv")
 DEFAULT_SYSTEMD_DIR = Path("/etc/systemd/system")
 DEFAULT_RECEIPT_DIR = Path("/var/lib/obsidian-github-sync/deployments")
 TIMER_UNIT = "obsidian-github-sync.timer"
+DAILY_TIMER_UNIT = "obsidian-github-daily-progress.timer"
+MANAGED_TIMER_UNITS = (TIMER_UNIT, DAILY_TIMER_UNIT)
+DEFAULT_DAILY_REVISION_ENV = Path(
+    "/etc/obsidian-github-summarizer/revision.env"
+)
 _REQUIRED_UNITS = frozenset(
     {
         "obsidian-github-sync-vault-pull.service",
@@ -27,6 +32,12 @@ _REQUIRED_UNITS = frozenset(
         "obsidian-github-writer.service",
         "obsidian-github-compactor.service",
         "obsidian-github-sync.timer",
+        "obsidian-github-daily-schedule.service",
+        "obsidian-github-daily-collect.service",
+        "obsidian-github-daily-summary.service",
+        "obsidian-github-daily-render.service",
+        "obsidian-github-daily-apply.service",
+        "obsidian-github-daily-progress.timer",
     }
 )
 _SHA_RE = re.compile(r"^[0-9a-f]{40,64}$")
@@ -52,9 +63,12 @@ class DeploymentReceipt:
     target_sha: str
     timer_was_enabled: bool | None
     timer_was_active: bool | None
+    managed_timer_states: Mapping[str, Mapping[str, bool | None]]
     bootstrap_pre_disabled_timer: bool
     safe_smoke: str
+    daily_safe_smoke: str
     live_smoke: str
+    daily_live_canary: str
     result: str
     failed_stage: str | None
     completed_at: str
@@ -69,9 +83,15 @@ class DeploymentReceipt:
                     "target_sha": self.target_sha,
                     "timer_was_enabled": self.timer_was_enabled,
                     "timer_was_active": self.timer_was_active,
+                    "managed_timer_states": {
+                        unit: dict(state)
+                        for unit, state in sorted(self.managed_timer_states.items())
+                    },
                     "bootstrap_pre_disabled_timer": self.bootstrap_pre_disabled_timer,
                     "safe_smoke": self.safe_smoke,
+                    "daily_safe_smoke": self.daily_safe_smoke,
                     "live_smoke": self.live_smoke,
+                    "daily_live_canary": self.daily_live_canary,
                     "result": self.result,
                     "failed_stage": self.failed_stage,
                     "completed_at": self.completed_at,
@@ -145,24 +165,37 @@ def _git_output(
     return _git(runner, app_root, *args, label=label).stdout.strip()
 
 
-def _timer_state(runner: CommandRunner) -> tuple[bool, bool]:
-    enabled = runner(("systemctl", "is-enabled", TIMER_UNIT))
+def _timer_state(
+    runner: CommandRunner,
+    unit: str,
+    *,
+    allow_missing: bool = False,
+) -> tuple[bool | None, bool | None]:
+    enabled = runner(("systemctl", "is-enabled", unit))
     enabled_state = enabled.stdout.strip()
     if enabled_state == "enabled":
-        was_enabled = True
+        was_enabled: bool | None = True
     elif enabled_state == "disabled":
         was_enabled = False
+    elif allow_missing and enabled_state in {"", "not-found"}:
+        return None, None
     else:
-        raise ProductionUpdateError("timer enablement state is not enabled/disabled")
+        raise ProductionUpdateError(
+            f"{unit} enablement state is not enabled/disabled"
+        )
 
-    active = runner(("systemctl", "is-active", TIMER_UNIT))
+    active = runner(("systemctl", "is-active", unit))
     active_state = active.stdout.strip()
     if active_state == "active":
-        was_active = True
+        was_active: bool | None = True
     elif active_state == "inactive":
         was_active = False
+    elif allow_missing and active_state in {"", "unknown", "not-found"}:
+        return None, None
     else:
-        raise ProductionUpdateError("timer activity state is not active/inactive")
+        raise ProductionUpdateError(
+            f"{unit} activity state is not active/inactive"
+        )
     return was_enabled, was_active
 
 
@@ -275,20 +308,31 @@ def _install_managed_units(app_root: Path, systemd_dir: Path) -> tuple[str, ...]
 def _restore_timer(
     runner: CommandRunner,
     *,
-    was_enabled: bool,
-    was_active: bool,
+    unit: str,
+    was_enabled: bool | None,
+    was_active: bool | None,
 ) -> None:
+    if was_enabled is None and was_active is None:
+        return
     if was_enabled and was_active:
         _run(
             runner,
-            ("systemctl", "enable", "--now", TIMER_UNIT),
-            label="timer restore",
+            ("systemctl", "enable", "--now", unit),
+            label=f"timer restore {unit}",
         )
         return
     if was_enabled:
-        _run(runner, ("systemctl", "enable", TIMER_UNIT), label="timer enable restore")
+        _run(
+            runner,
+            ("systemctl", "enable", unit),
+            label=f"timer enable restore {unit}",
+        )
     if was_active:
-        _run(runner, ("systemctl", "start", TIMER_UNIT), label="timer active restore")
+        _run(
+            runner,
+            ("systemctl", "start", unit),
+            label=f"timer active restore {unit}",
+        )
 
 
 def _receipt_path(receipt_dir: Path, target_sha: str, *, completed_at: str) -> Path:
@@ -347,6 +391,7 @@ def execute_update(
     venv_root: Path = DEFAULT_VENV_ROOT,
     systemd_dir: Path = DEFAULT_SYSTEMD_DIR,
     receipt_dir: Path = DEFAULT_RECEIPT_DIR,
+    daily_revision_env: Path = DEFAULT_DAILY_REVISION_ENV,
     runner: CommandRunner = _default_runner,
     require_root: bool = True,
     bootstrap_pre_disabled_timer: bool = False,
@@ -356,8 +401,11 @@ def execute_update(
     timer_was_enabled: bool | None = None
     timer_was_active: bool | None = None
     safe_smoke = "not_run"
+    daily_safe_smoke = "not_run"
     live_smoke = "not_run"
-    timer_stopped = False
+    daily_live_canary = "not_attempted"
+    managed_timer_states: dict[str, dict[str, bool | None]] = {}
+    timers_stopped = False
 
     try:
         if require_root and os.geteuid() != 0:
@@ -398,25 +446,54 @@ def execute_update(
             raise ProductionUpdateError("current production HEAD is not a supported Git digest")
 
         _validate_target(target_sha, app_root=app_root, runner=runner)
-        observed_timer_enabled, observed_timer_active = _timer_state(runner)
+        observed_timer_enabled, observed_timer_active = _timer_state(
+            runner,
+            TIMER_UNIT,
+        )
+        daily_enabled, daily_active = _timer_state(
+            runner,
+            DAILY_TIMER_UNIT,
+            allow_missing=True,
+        )
+        managed_timer_states = {
+            TIMER_UNIT: {
+                "enabled": observed_timer_enabled,
+                "active": observed_timer_active,
+            },
+            DAILY_TIMER_UNIT: {
+                "enabled": daily_enabled,
+                "active": daily_active,
+            },
+        }
         if bootstrap_pre_disabled_timer:
             if observed_timer_enabled or observed_timer_active:
                 raise ProductionUpdateError(
                     "bootstrap pre-disabled timer mode requires the timer to be disabled and inactive"
                 )
+            if daily_enabled or daily_active:
+                raise ProductionUpdateError(
+                    "bootstrap pre-disabled timer mode requires Daily timer to be disabled/inactive when present"
+                )
             timer_was_enabled = True
             timer_was_active = True
+            managed_timer_states[TIMER_UNIT] = {
+                "enabled": True,
+                "active": True,
+            }
         else:
             timer_was_enabled = observed_timer_enabled
             timer_was_active = observed_timer_active
 
-        stage = "stop_timer"
-        _run(
-            runner,
-            ("systemctl", "disable", "--now", TIMER_UNIT),
-            label="timer stop",
-        )
-        timer_stopped = True
+        stage = "stop_timers"
+        for unit, state in managed_timer_states.items():
+            if state["enabled"] is None and state["active"] is None:
+                continue
+            _run(
+                runner,
+                ("systemctl", "disable", "--now", unit),
+                label=f"timer stop {unit}",
+            )
+        timers_stopped = True
 
         stage = "checkout_target"
         _git(
@@ -455,6 +532,44 @@ def execute_update(
 
         stage = "install_units"
         _install_managed_units(app_root, systemd_dir)
+        _require_directory(
+            daily_revision_env.parent,
+            label="Daily summarizer config directory",
+        )
+        fd, temporary = tempfile.mkstemp(
+            prefix=f".{daily_revision_env.name}.",
+            dir=daily_revision_env.parent,
+        )
+        temporary_path = Path(temporary)
+        try:
+            os.fchmod(fd, 0o644)
+            revision_data = (
+                f"OBSIDIAN_AUTOMATION_REVISION={target_sha}\n"
+            ).encode("utf-8")
+            view = memoryview(revision_data)
+            while view:
+                written = os.write(fd, view)
+                if written <= 0:
+                    raise ProductionUpdateError(
+                        "short write while installing Daily revision env"
+                    )
+                view = view[written:]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        try:
+            os.replace(temporary_path, daily_revision_env)
+            dir_fd = os.open(
+                daily_revision_env.parent,
+                os.O_RDONLY | os.O_DIRECTORY,
+            )
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        finally:
+            if temporary_path.exists():
+                temporary_path.unlink()
         _run(
             runner,
             ("systemctl", "daemon-reload"),
@@ -473,6 +588,21 @@ def execute_update(
         )
         safe_smoke = "passed"
 
+        daily_smoke = (
+            venv_root / "bin" / "obsidian-github-daily-production-smoke"
+        )
+        if not daily_smoke.is_file():
+            raise ProductionUpdateError(
+                "Daily production smoke entrypoint is missing after install"
+            )
+        stage = "daily_safe_smoke"
+        _run(
+            runner,
+            (str(daily_smoke), "--profile", "safe"),
+            label="Daily safe production smoke",
+        )
+        daily_safe_smoke = "passed"
+
         stage = "live_smoke"
         _run(
             runner,
@@ -481,12 +611,25 @@ def execute_update(
         )
         live_smoke = "passed"
 
-        stage = "restore_timer"
-        _restore_timer(
-            runner,
-            was_enabled=bool(timer_was_enabled),
-            was_active=bool(timer_was_active),
-        )
+        stage = "restore_timers"
+        for unit, state in managed_timer_states.items():
+            if (
+                unit == DAILY_TIMER_UNIT
+                and state["enabled"] is None
+                and state["active"] is None
+            ):
+                _run(
+                    runner,
+                    ("systemctl", "disable", "--now", unit),
+                    label="leave new Daily timer inert",
+                )
+                continue
+            _restore_timer(
+                runner,
+                unit=unit,
+                was_enabled=state["enabled"],
+                was_active=state["active"],
+            )
 
         stage = "persist_receipt"
         completed_at = _utc_now()
@@ -495,9 +638,12 @@ def execute_update(
             target_sha=target_sha,
             timer_was_enabled=timer_was_enabled,
             timer_was_active=timer_was_active,
+            managed_timer_states=managed_timer_states,
             bootstrap_pre_disabled_timer=bootstrap_pre_disabled_timer,
             safe_smoke=safe_smoke,
+            daily_safe_smoke=daily_safe_smoke,
             live_smoke=live_smoke,
+            daily_live_canary=daily_live_canary,
             result="success",
             failed_stage=None,
             completed_at=completed_at,
@@ -506,17 +652,21 @@ def execute_update(
         return receipt, path
 
     except Exception as exc:
-        if timer_stopped:
-            runner(("systemctl", "disable", "--now", TIMER_UNIT))
+        if timers_stopped:
+            for unit in MANAGED_TIMER_UNITS:
+                runner(("systemctl", "disable", "--now", unit))
         completed_at = _utc_now()
         receipt = DeploymentReceipt(
             previous_sha=previous_sha,
             target_sha=target_sha,
             timer_was_enabled=timer_was_enabled,
             timer_was_active=timer_was_active,
+            managed_timer_states=managed_timer_states,
             bootstrap_pre_disabled_timer=bootstrap_pre_disabled_timer,
             safe_smoke=safe_smoke,
+            daily_safe_smoke=daily_safe_smoke,
             live_smoke=live_smoke,
+            daily_live_canary=daily_live_canary,
             result="failed",
             failed_stage=stage,
             completed_at=completed_at,
@@ -544,6 +694,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--systemd-dir", type=Path, default=DEFAULT_SYSTEMD_DIR)
     parser.add_argument("--receipt-dir", type=Path, default=DEFAULT_RECEIPT_DIR)
     parser.add_argument(
+        "--daily-revision-env",
+        type=Path,
+        default=DEFAULT_DAILY_REVISION_ENV,
+    )
+    parser.add_argument(
         "--bootstrap-pre-disabled-timer",
         action="store_true",
         help=(
@@ -564,6 +719,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             venv_root=args.venv_root,
             systemd_dir=args.systemd_dir,
             receipt_dir=args.receipt_dir,
+            daily_revision_env=args.daily_revision_env,
             bootstrap_pre_disabled_timer=args.bootstrap_pre_disabled_timer,
         )
     except ProductionUpdateError as exc:

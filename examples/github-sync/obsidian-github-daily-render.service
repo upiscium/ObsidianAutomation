@@ -1,0 +1,30 @@
+[Unit]
+Description=Render pending GitHub Daily Project Progress projections
+Requires=obsidian-github-daily-summary.service
+After=obsidian-github-daily-summary.service
+
+[Service]
+Type=oneshot
+User=obsidian-github-renderer
+Group=obsidian-github-renderer
+UMask=0027
+ExecStart=/opt/obsidian-github-sync/venv/bin/obsidian-github-daily-production-render \
+  --root /var/lib/obsidian-github-pipeline/daily-progress
+WorkingDirectory=/opt/obsidian-github-sync/app
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateNetwork=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadOnlyPaths=/var/lib/obsidian-github-pipeline/daily-progress/00-Schedule /var/lib/obsidian-github-pipeline/daily-progress/10-Evidence /var/lib/obsidian-github-pipeline/daily-progress/20-Summary
+ReadWritePaths=/var/lib/obsidian-github-pipeline/daily-progress/30-Projection
+InaccessiblePaths=/etc/obsidian-github-sync /etc/obsidian-github-mirror /etc/obsidian-github-writer /etc/obsidian-github-summarizer /etc/obsidian-github-daily-writer /srv/obsidian-github-sync/vault
+
+[Install]
+WantedBy=multi-user.target

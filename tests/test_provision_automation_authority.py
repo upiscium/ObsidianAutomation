@@ -38,6 +38,9 @@ def test_consolidated_authority_contains_expected_identities() -> None:
         "obsidian-github-sync",
         "obsidian-github-writer",
         "obsidian-github-compactor",
+        "obsidian-github-summarizer",
+        "obsidian-github-renderer",
+        "obsidian-github-daily-writer",
     }
     assert set(authority.SHARED_GROUPS) == {
         "obsidian-github-vault",
@@ -89,6 +92,46 @@ def test_github_handoff_groups_preserve_role_separation() -> None:
         "obsidian-github-writer": ("obsidian-github-pipeline",),
         "obsidian-github-compactor": ("obsidian-github-pipeline",),
     }
+
+
+def test_daily_progress_authorities_are_stage_scoped() -> None:
+    acls = authority.DAILY_GITHUB_ACLS
+
+    assert acls[
+        "/var/lib/obsidian-github-pipeline/daily-progress/10-Evidence"
+    ] == (
+        "u:obsidian-github-sync:rwx",
+        "u:obsidian-github-summarizer:r-x",
+        "u:obsidian-github-renderer:r-x",
+    )
+    assert acls[
+        "/var/lib/obsidian-github-pipeline/daily-progress/20-Summary"
+    ] == (
+        "u:obsidian-github-summarizer:rwx",
+        "u:obsidian-github-renderer:r-x",
+    )
+    assert acls[
+        "/var/lib/obsidian-github-pipeline/daily-progress/30-Projection"
+    ] == (
+        "u:obsidian-github-renderer:rwx",
+        "u:obsidian-github-daily-writer:r-x",
+    )
+    assert acls[
+        "/var/lib/obsidian-github-pipeline/daily-progress/40-Transport"
+    ] == (
+        "u:obsidian-github-daily-writer:rwx",
+    )
+
+    directories = {
+        path: (owner, group, mode)
+        for path, owner, group, mode in authority.DIRECTORIES
+    }
+    assert directories[
+        "/etc/obsidian-github-summarizer"
+    ] == ("root", "obsidian-github-summarizer", 0o750)
+    assert directories[
+        "/etc/obsidian-github-daily-writer"
+    ] == ("root", "obsidian-github-daily-writer", 0o750)
 
 
 def test_ai_acl_matrix_keeps_semantic_authorities_distinct() -> None:
