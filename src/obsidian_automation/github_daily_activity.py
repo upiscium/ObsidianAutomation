@@ -659,7 +659,13 @@ def _collect_default_branch_commits(
     end: datetime,
 ) -> list[EvidenceEvent]:
     query = _query(since=_format_timestamp(start), until=_format_timestamp(end))
-    rows = client._paged(f"/repos/{repo_path}/commits?{query}")
+    try:
+        rows = client._paged(f"/repos/{repo_path}/commits?{query}")
+    except watcher.GitHubAPIHTTPError as exc:
+        if watcher._is_empty_repository_response(exc):
+            rows = []
+        else:
+            raise
     events: list[EvidenceEvent] = []
     for row in rows:
         committed_at = watcher.GitHubClient._timestamp_from_commit_payload(row)

@@ -27,6 +27,39 @@ class GitHubProjectWatcherError(RuntimeError):
     """Raised when watcher input or remote state cannot be processed safely."""
 
 
+class GitHubAPIHTTPError(GitHubProjectWatcherError):
+    """Structured GitHub HTTP failure for endpoint-specific handling."""
+
+    def __init__(
+        self,
+        *,
+        status: int,
+        path: str,
+        detail: str,
+        tls12_retry: bool = False,
+    ) -> None:
+        self.status = status
+        self.path = path
+        self.detail = detail
+        suffix = " after TLS 1.2 compatibility retry" if tls12_retry else ""
+        super().__init__(
+            f"GitHub API returned HTTP {status} for {path}{suffix}: {detail}"
+        )
+
+
+def _is_empty_repository_response(exc: GitHubAPIHTTPError) -> bool:
+    if exc.status != 409:
+        return False
+    try:
+        payload = json.loads(exc.detail)
+    except json.JSONDecodeError:
+        return False
+    return (
+        isinstance(payload, dict)
+        and payload.get("message") == "Git Repository is empty."
+    )
+
+
 @dataclass(frozen=True)
 class WatcherConfig:
     vault_root: Path
@@ -243,8 +276,10 @@ class GitHubClient:
             data = self._urlopen_bytes(request)
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:400]
-            raise GitHubProjectWatcherError(
-                f"GitHub API returned HTTP {exc.code} for {path}: {detail}"
+            raise GitHubAPIHTTPError(
+                status=exc.code,
+                path=path,
+                detail=detail,
             ) from exc
         except urllib.error.URLError as exc:
             if not isinstance(exc.reason, ssl.SSLEOFError):
@@ -258,10 +293,11 @@ class GitHubClient:
                 )
             except urllib.error.HTTPError as fallback_exc:
                 detail = fallback_exc.read().decode("utf-8", errors="replace")[:400]
-                raise GitHubProjectWatcherError(
-                    f"GitHub API returned HTTP {fallback_exc.code} for {path} "
-                    "after TLS 1.2 compatibility retry: "
-                    f"{detail}"
+                raise GitHubAPIHTTPError(
+                    status=fallback_exc.code,
+                    path=path,
+                    detail=detail,
+                    tls12_retry=True,
                 ) from fallback_exc
             except urllib.error.URLError as fallback_exc:
                 raise GitHubProjectWatcherError(
@@ -314,7 +350,13 @@ class GitHubClient:
         self,
         repo_path: str,
     ) -> tuple[str | None, datetime | None]:
-        value = self._request_json(f"/repos/{repo_path}/commits?per_page=1")
+        path = f"/repos/{repo_path}/commits?per_page=1"
+        try:
+            value = self._request_json(path)
+        except GitHubAPIHTTPError as exc:
+            if _is_empty_repository_response(exc):
+                return None, None
+            raise
         if not isinstance(value, list):
             raise GitHubProjectWatcherError(
                 f"invalid latest commit payload for {repo_path}"
