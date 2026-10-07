@@ -724,6 +724,74 @@ def test_evaluator_retry_persists_only_bounded_diagnostic(
     assert job_status(state, job_id)["current_generation"]["state"] == "retryable_failure"
 
 
+def test_evaluator_diagnostics_preserve_three_attempt_exhaustion(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    state, vault, job_id, _ = _fixture(tmp_path)
+
+    monkeypatch.setattr(
+        worker,
+        "generate_knowledge_note_with_openai_compatible",
+        _fake_generator,
+    )
+    assert worker.run_generator_worker(
+        state,
+        base_url="https://openai.example.invalid/v1",
+        deployed_revision=REVISION,
+    )["status"] == "completed"
+    assert worker.run_validator_worker(state, vault)["status"] == "completed"
+    assert worker.run_reader_worker(state, vault)["status"] == "completed"
+
+    def fail(*_args, **_kwargs):
+        raise OpenAICompatibleProviderError(
+            "evaluator structured output is invalid secret-payload"
+        )
+
+    monkeypatch.setattr(
+        worker,
+        "evaluate_knowledge_note_with_openai_compatible",
+        fail,
+    )
+
+    for attempt_index in range(1, 4):
+        result = worker.run_evaluator_worker(
+            state,
+            base_url="https://openai.example.invalid/v1",
+            deployed_revision=REVISION,
+            max_attempts=3,
+        )
+        assert result["status"] == "retryable_failure"
+        assert result["diagnostic"] == {
+            "exception_class": "OpenAICompatibleProviderError",
+            "diagnostic_code": "provider_response_contract",
+        }
+
+    idle = worker.run_evaluator_worker(
+        state,
+        base_url="https://openai.example.invalid/v1",
+        deployed_revision=REVISION,
+        max_attempts=3,
+    )
+    assert idle["status"] == "idle"
+    assert job_status(state, job_id)["current_generation"]["state"] == "retry_exhausted"
+
+    history = attempt_history(state, job_id)
+    evaluation_attempts = [
+        item for item in history["attempts"]
+        if item["stage"] == "evaluation"
+    ]
+    assert len(evaluation_attempts) == 3
+    assert all(
+        item["diagnostic"] == {
+            "exception_class": "OpenAICompatibleProviderError",
+            "diagnostic_code": "provider_response_contract",
+        }
+        for item in evaluation_attempts
+    )
+    assert "secret-payload" not in json.dumps(history, sort_keys=True)
+
+
 def test_generator_provider_failure_is_bounded_to_three_attempts(
     monkeypatch,
     tmp_path: Path,
