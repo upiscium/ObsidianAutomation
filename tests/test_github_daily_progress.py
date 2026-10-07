@@ -201,6 +201,29 @@ def test_projection_binds_date_path_and_exact_section() -> None:
     )
 
 
+def test_grounded_summary_requires_grounding_identity_for_claims() -> None:
+    bundle, issue, commit = _bundle()
+    value = json.loads(_summary_bytes(bundle, issue, commit))
+    value["grounding_output_sha256s"] = []
+
+    with pytest.raises(
+        DailyProgressError,
+        match="requires grounding output",
+    ):
+        parse_grounded_summary(
+            (
+                json.dumps(
+                    value,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n"
+            ).encode(),
+            bundle=bundle,
+        )
+
+
 def test_grounded_summary_rejects_wrong_evidence_binding() -> None:
     bundle, issue, commit = _bundle()
     value = json.loads(_summary_bytes(bundle, issue, commit))

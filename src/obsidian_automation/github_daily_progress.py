@@ -416,6 +416,11 @@ def parse_grounded_summary(
         seen_rejected.add(claim_id)
         rejected_ids.append(claim_id)
 
+    if (raw_claims or raw_rejected) and not raw_grounding:
+        raise DailyProgressError(
+            "grounded summary with claims requires grounding output identity"
+        )
+
     grounding: list[str] = []
     seen_grounding: set[str] = set()
     for item in raw_grounding:
