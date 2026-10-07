@@ -31,7 +31,10 @@ from obsidian_automation.github_daily_progress import (
     prepare_daily_update,
     render_section_body,
 )
-from obsidian_automation.github_daily_summary import SummaryClaim
+from obsidian_automation.github_daily_summary import (
+    SummaryClaim,
+    parse_evidence_bundle,
+)
 
 
 def _bundle():
@@ -74,7 +77,7 @@ def _bundle():
         sha="a" * 40,
         message=commit_message,
     )
-    bundle = make_daily_evidence_bundle(
+    collected = make_daily_evidence_bundle(
         target_date=date(2026, 10, 5),
         projects=[
             ProjectBinding(
@@ -84,6 +87,7 @@ def _bundle():
         ],
         events=[issue, commit],
     )
+    bundle = parse_evidence_bundle(collected.canonical_bytes)
     return bundle, issue, commit
 
 
