@@ -1274,15 +1274,16 @@ def emit_evaluation_and_review_projections(
                 "",
                 "## Decision",
                 "",
-                "**Review request:** `INPUT[inlineSelect(option(approve, '✅ Approve'), option(reject, '❌ Reject'), option(null, '▫️ Pending')):review_request]`",
+                "Use the reviewed Core actions below to persist exactly one Human decision.",
                 "",
                 "```meta-bind-embed",
                 "[[98-System/02-embed/01-button/ai-review-buttons|ai-review-buttons]]",
                 "```",
                 "",
+                "Approve and Reject persist only the `review_request` frontmatter field through the Core-owned Review writer.",
                 "Keep as Idea first creates/adopts a context-bound `05-Idea` note in the Human client and only then requests the terminal `keep_as_idea` disposition.",
                 "",
-                "This field is a Human request only. Authoritative Review is created separately after exact binding verification.",
+                "The resulting `review_request` value is a Human request only. Authoritative Review is created separately after exact binding verification.",
             ]
         ),
         extra_frontmatter={
