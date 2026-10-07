@@ -120,11 +120,14 @@ The projection itself never creates those canonical effects.
 - Evaluator groundedness / redundancy / consistency / recommendation;
 - bounded findings;
 - the proposed Knowledge Note as inert code;
-- a Meta Bind `review_request` control for `approve` / `reject`;
+- Core-owned `Approve` and `Reject` actions that persist only `review_request` through Obsidian's frontmatter writer;
 - a Core-owned `Keep as Idea` action that first saves the candidate under `05-Idea` and then requests `keep_as_idea`.
 
-The control updates only the Human-facing note. It does not write
-`20-Review` and therefore is not approval authority.
+Automation deliberately does not emit a model-bound or Meta Bind `inlineSelect`
+for `review_request`. All three Human decisions use explicit Core-owned actions,
+so UI selection state cannot diverge from the underlying Review note. These
+actions update only the Human-facing note. They do not write `20-Review` and
+therefore are not approval authority.
 
 `obsidian-ai-review-intake.service` runs as `obsidian-ai-reviewer`. It uses
 a dedicated read-only Nextcloud credential to fetch the exact

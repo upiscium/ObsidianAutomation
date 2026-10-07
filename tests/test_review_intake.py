@@ -147,6 +147,22 @@ def _edited(content: str, decision: str, *, crlf: bool = False) -> bytes:
     return text.encode("utf-8")
 
 
+def test_review_projection_uses_core_durable_decision_actions(
+    tmp_path: Path,
+) -> None:
+    _state_root, _validated, _evaluation_sha, request = _setup(tmp_path)
+
+    assert "review_request: " in request.content
+    assert "inlineSelect" not in request.content
+    assert "INPUT[" not in request.content
+    assert (
+        "[[98-System/02-embed/01-button/ai-review-buttons|ai-review-buttons]]"
+        in request.content
+    )
+    assert "Approve and Reject persist only the `review_request` frontmatter field" in request.content
+    assert "Core-owned Review writer" in request.content
+
+
 def test_extract_review_decision_accepts_only_review_request_change() -> None:
     expected = "---\nreview_request: \n---\n\nBody\n"
 

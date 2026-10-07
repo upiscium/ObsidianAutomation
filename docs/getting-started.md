@@ -119,14 +119,16 @@ The recommendation is advisory. It is not approval authority.
 
 This is the Human decision surface.
 
-The projection contains a `review_request` control with:
+The projection starts with a blank `review_request` and renders Core-owned
+decision actions:
 
-- `approve`;
-- `reject`;
-- `keep_as_idea`, set by the Core-owned Keep as Idea action after the Idea is saved;
-- pending/blank.
+- `Approve` persists `review_request: approve`;
+- `Reject` persists `review_request: reject`;
+- `Keep as Idea` saves/adopts the Idea first, then persists `review_request: keep_as_idea`.
 
-Changing this field is a Human request only.
+Automation does not emit an inline Meta Bind selector for this field. A decision
+is considered made in the Human client only when the Core action has written the
+underlying Review-note frontmatter. Changing this field is a Human request only.
 
 Review Intake fetches the published projection, compares it against the original immutable projection, and requires that no semantic field other than `review_request` changed.
 
