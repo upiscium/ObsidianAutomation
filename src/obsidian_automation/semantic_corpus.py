@@ -27,15 +27,19 @@ INDEX_STAGE = "04-Index"
 SEMANTIC_CORPUS_DIR = "semantic-corpus"
 MANIFEST_VERSION = 1
 LEGACY_CHUNK_POLICY_VERSION = "heading-section-lf-v0"
-CHUNK_POLICY_VERSION = "heading-section-lf-v1"
+LEGACY_CHUNK_POLICY_VERSIONS = frozenset(
+    {LEGACY_CHUNK_POLICY_VERSION, "heading-section-lf-v1"}
+)
+CHUNK_POLICY_VERSION = "heading-section-lf-v2"
 SUPPORTED_CHUNK_POLICY_VERSIONS = frozenset(
-    {LEGACY_CHUNK_POLICY_VERSION, CHUNK_POLICY_VERSION}
+    {*LEGACY_CHUNK_POLICY_VERSIONS, CHUNK_POLICY_VERSION}
 )
 DAILY_ROOT = "00-DailyNote"
 IDEA_ROOT = "05-Idea"
 PROJECT_ROOT = "10-Project"
 KNOWLEDGE_ROOT = "11-Knowledge"
 SOURCE_ROOTS = (DAILY_ROOT, IDEA_ROOT, PROJECT_ROOT, KNOWLEDGE_ROOT)
+DAILY_ALWAYS_EXCLUDED_H1 = frozenset({"Project Progress"})
 MAX_DOCUMENTS = 8192
 MAX_SOURCE_BYTES = 128 * 1024
 MAX_CHUNK_BYTES = 16 * 1024
@@ -323,6 +327,23 @@ def _select_h1_body(
     return list(lines[start:]) if start is not None else []
 
 
+def _remove_h1_subtrees(
+    lines: Sequence[tuple[int, str]],
+    excluded_headings: frozenset[str],
+) -> list[tuple[int, str]]:
+    result: list[tuple[int, str]] = []
+    excluded = False
+    for item in lines:
+        match = _H1_RE.match(item[1])
+        if match is not None:
+            excluded = match.group(1).strip() in excluded_headings
+            if excluded:
+                continue
+        if not excluded:
+            result.append(item)
+    return result
+
+
 def _semantic_line_is_substantive(line: str) -> bool:
     stripped = line.strip()
     if not stripped:
@@ -515,8 +536,12 @@ def build_semantic_corpus(vault_root: Path) -> SemanticCorpusManifest:
                 continue
             source_kind = "daily"
             metadata = {"date": Path(path).stem}
-            semantic_lines = _select_h1_body(
+            daily_lines = _remove_h1_subtrees(
                 _body_lines(text, body_start_line=body_start),
+                DAILY_ALWAYS_EXCLUDED_H1,
+            )
+            semantic_lines = _select_h1_body(
+                daily_lines,
                 "Note",
             )
             base_heading = ("Note",)

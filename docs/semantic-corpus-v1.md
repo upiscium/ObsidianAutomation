@@ -39,7 +39,11 @@ Eligible source:
 type: daily-review
 ```
 
-Only the body of the H1 `# Note` section participates in v1 semantic chunking. Work, Tasks, Finance, Condition, Meta Bind boilerplate, and all other H1 sections are excluded by default.
+Only the body of the H1 `# Note` section participates in the current semantic chunking policy. Work, Tasks, Finance, Condition, Meta Bind boilerplate, and all other H1 sections are excluded by default.
+
+The exact H1 `# Project Progress` is additionally a permanent recursion-prevention boundary. Reader removes that H1 and its entire subtree before applying any Daily semantic selection. This invariant is independent from the current `# Note`-only policy, so a future Daily policy must not re-admit AI-generated Project Progress content.
+
+All occurrences of the exact H1 are excluded through the next H1 or EOF. H2/H3 headings inside the generated section remain part of the excluded subtree.
 
 An empty `# Note` section produces no semantic source.
 
@@ -78,7 +82,7 @@ The source path and exact source SHA remain compatible with the existing BM25 Kn
 Chunk policy:
 
 ```text
-heading-section-lf-v1
+heading-section-lf-v2
 ```
 
 Each chunk is bound to:
@@ -96,7 +100,7 @@ The manifest does not persist chunk text. A later Embedder must reconstruct boun
 
 Meta Bind fenced blocks are excluded from semantic chunks. A section is eligible only when it contains substantive non-structural content after Meta Bind removal. Headings, blank lines, bare list/task markers, empty fenced-block delimiters and horizontal rules do not make a section semantic by themselves. When substantive body content exists, headings remain in the exact chunk bytes so embeddings retain section context.
 
-`heading-section-lf-v0` artifacts remain parseable as historical derived state, but current-corpus verification requires `heading-section-lf-v1`; an old policy is never silently reinterpreted as current.
+`heading-section-lf-v0` and `heading-section-lf-v1` artifacts remain parseable as historical derived state, but current-corpus verification requires `heading-section-lf-v2`; an old policy is never silently reinterpreted as current.
 
 One chunk is bounded to 16 KiB. One source is bounded to 128 KiB.
 
