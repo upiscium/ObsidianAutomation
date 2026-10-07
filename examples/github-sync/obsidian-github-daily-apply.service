@@ -1,0 +1,35 @@
+[Unit]
+Description=Apply pending GitHub Daily Project Progress projections
+Requires=obsidian-github-daily-render.service
+After=network-online.target obsidian-github-daily-render.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=obsidian-github-daily-writer
+Group=obsidian-github-daily-writer
+UMask=0027
+EnvironmentFile=/etc/obsidian-github-daily-writer/config.env
+ExecStart=/opt/obsidian-github-sync/venv/bin/obsidian-github-daily-production-apply \
+  --root /var/lib/obsidian-github-pipeline/daily-progress \
+  --pipeline-root /var/lib/obsidian-github-pipeline \
+  --base-url ${NEXTCLOUD_BASE_URL} \
+  --username ${NEXTCLOUD_USERNAME} \
+  --password-file /etc/obsidian-github-daily-writer/webdav-password
+WorkingDirectory=/opt/obsidian-github-sync/app
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadOnlyPaths=/etc/obsidian-github-daily-writer /var/lib/obsidian-github-pipeline/daily-progress/00-Schedule /var/lib/obsidian-github-pipeline/daily-progress/30-Projection
+ReadWritePaths=/var/lib/obsidian-github-pipeline/24-Locks /var/lib/obsidian-github-pipeline/daily-progress/40-Transport
+InaccessiblePaths=/etc/obsidian-github-sync /etc/obsidian-github-mirror /etc/obsidian-github-writer /etc/obsidian-github-summarizer /srv/obsidian-github-sync/vault /var/lib/obsidian-github-pipeline/daily-progress/10-Evidence /var/lib/obsidian-github-pipeline/daily-progress/20-Summary
+
+[Install]
+WantedBy=multi-user.target

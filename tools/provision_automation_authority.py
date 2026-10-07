@@ -61,6 +61,9 @@ PRIMARY_USERS: tuple[tuple[str, str, str], ...] = (
     ("obsidian-github-sync", "obsidian-github-sync", "/nonexistent"),
     ("obsidian-github-writer", "obsidian-github-writer", "/nonexistent"),
     ("obsidian-github-compactor", "obsidian-github-compactor", "/nonexistent"),
+    ("obsidian-github-summarizer", "obsidian-github-summarizer", "/nonexistent"),
+    ("obsidian-github-renderer", "obsidian-github-renderer", "/nonexistent"),
+    ("obsidian-github-daily-writer", "obsidian-github-daily-writer", "/nonexistent"),
 )
 
 SHARED_GROUPS = (
@@ -125,11 +128,19 @@ DIRECTORIES: tuple[tuple[str, str, str, int], ...] = (
     ("/etc/obsidian-github-sync", "root", "obsidian-github-sync", 0o750),
     ("/etc/obsidian-github-mirror", "root", "obsidian-github-mirror", 0o750),
     ("/etc/obsidian-github-writer", "root", "obsidian-github-writer", 0o750),
+    ("/etc/obsidian-github-summarizer", "root", "obsidian-github-summarizer", 0o750),
+    ("/etc/obsidian-github-daily-writer", "root", "obsidian-github-daily-writer", 0o750),
     ("/var/lib/obsidian-github-sync", "obsidian-github-sync", "obsidian-github-sync", 0o750),
     ("/var/lib/obsidian-github-pipeline", "root", "obsidian-github-pipeline", 0o750),
     ("/var/lib/obsidian-github-pipeline/24-Locks", "obsidian-github-writer", "obsidian-github-writer", 0o750),
     ("/var/lib/obsidian-github-pipeline/25-Execution", "obsidian-github-sync", "obsidian-github-pipeline", 0o2750),
     ("/var/lib/obsidian-github-pipeline/27-Transport", "obsidian-github-writer", "obsidian-github-pipeline", 0o2750),
+    ("/var/lib/obsidian-github-pipeline/daily-progress", "root", "root", 0o700),
+    ("/var/lib/obsidian-github-pipeline/daily-progress/00-Schedule", "obsidian-github-sync", "obsidian-github-sync", 0o700),
+    ("/var/lib/obsidian-github-pipeline/daily-progress/10-Evidence", "obsidian-github-sync", "obsidian-github-sync", 0o700),
+    ("/var/lib/obsidian-github-pipeline/daily-progress/20-Summary", "obsidian-github-summarizer", "obsidian-github-summarizer", 0o700),
+    ("/var/lib/obsidian-github-pipeline/daily-progress/30-Projection", "obsidian-github-renderer", "obsidian-github-renderer", 0o700),
+    ("/var/lib/obsidian-github-pipeline/daily-progress/40-Transport", "obsidian-github-daily-writer", "obsidian-github-daily-writer", 0o700),
     ("/var/lib/obsidian-github-mirror", "obsidian-github-mirror", "obsidian-github-mirror", 0o700),
     ("/var/lib/obsidian-github-mirror/state", "obsidian-github-mirror", "obsidian-github-mirror", 0o700),
     ("/var/lib/obsidian-github-mirror/state/24-Locks", "obsidian-github-mirror", "obsidian-github-mirror", 0o700),
@@ -786,7 +797,85 @@ def _apply_ai_acls(runner: Runner) -> None:
     )
 
 
+DAILY_GITHUB_ACLS: dict[str, tuple[str, ...]] = {
+    "/var/lib/obsidian-github-pipeline/daily-progress": (
+        "u:obsidian-github-sync:--x",
+        "u:obsidian-github-summarizer:--x",
+        "u:obsidian-github-renderer:--x",
+        "u:obsidian-github-daily-writer:--x",
+    ),
+    "/var/lib/obsidian-github-pipeline/daily-progress/00-Schedule": (
+        "u:obsidian-github-sync:rwx",
+        "u:obsidian-github-summarizer:r-x",
+        "u:obsidian-github-renderer:r-x",
+        "u:obsidian-github-daily-writer:r-x",
+    ),
+    "/var/lib/obsidian-github-pipeline/daily-progress/10-Evidence": (
+        "u:obsidian-github-sync:rwx",
+        "u:obsidian-github-summarizer:r-x",
+        "u:obsidian-github-renderer:r-x",
+    ),
+    "/var/lib/obsidian-github-pipeline/daily-progress/20-Summary": (
+        "u:obsidian-github-summarizer:rwx",
+        "u:obsidian-github-renderer:r-x",
+    ),
+    "/var/lib/obsidian-github-pipeline/daily-progress/30-Projection": (
+        "u:obsidian-github-renderer:rwx",
+        "u:obsidian-github-daily-writer:r-x",
+    ),
+    "/var/lib/obsidian-github-pipeline/daily-progress/40-Transport": (
+        "u:obsidian-github-daily-writer:rwx",
+    ),
+}
+
+
 def _apply_github_acl(runner: Runner) -> None:
+    for user in (
+        "obsidian-github-summarizer",
+        "obsidian-github-renderer",
+        "obsidian-github-daily-writer",
+    ):
+        _run(
+            runner,
+            (
+                "setfacl",
+                "-m",
+                f"u:{user}:--x",
+                "/var/lib/obsidian-github-pipeline",
+            ),
+            label=f"grant {user} pipeline traversal",
+        )
+
+    for path, entries in DAILY_GITHUB_ACLS.items():
+        _reset_acl_dir(
+            runner,
+            path,
+            entries,
+            defaults=not path.endswith("/daily-progress"),
+        )
+
+    _run(
+        runner,
+        (
+            "setfacl",
+            "-R",
+            "-m",
+            "u:obsidian-github-daily-writer:rwX",
+            "/var/lib/obsidian-github-pipeline/24-Locks",
+        ),
+        label="grant Daily writer canonical lock access",
+    )
+    _run(
+        runner,
+        (
+            "setfacl",
+            "-m",
+            "d:u:obsidian-github-daily-writer:rwX",
+            "/var/lib/obsidian-github-pipeline/24-Locks",
+        ),
+        label="grant Daily writer future canonical lock access",
+    )
+
     _run(
         runner,
         (
@@ -869,6 +958,110 @@ def _apply_github_acl(runner: Runner) -> None:
         path="/var/lib/obsidian-github-pipeline",
         expected=False,
         label="mirror cannot read pipeline state",
+    )
+    _require_access(
+        runner,
+        user="obsidian-github-summarizer",
+        flag="-r",
+        path="/var/lib/obsidian-github-pipeline/daily-progress/10-Evidence",
+        expected=True,
+        label="Daily summarizer reads evidence",
+    )
+    _require_access(
+        runner,
+        user="obsidian-github-summarizer",
+        flag="-w",
+        path="/var/lib/obsidian-github-pipeline/daily-progress/20-Summary",
+        expected=True,
+        label="Daily summarizer writes summary state",
+    )
+    _require_access(
+        runner,
+        user="obsidian-github-summarizer",
+        flag="-r",
+        path="/etc/obsidian-github-sync",
+        expected=False,
+        label="Daily summarizer cannot read GitHub token config",
+    )
+    _require_access(
+        runner,
+        user="obsidian-github-renderer",
+        flag="-r",
+        path="/var/lib/obsidian-github-pipeline/daily-progress/20-Summary",
+        expected=True,
+        label="Daily renderer reads summary",
+    )
+    _require_access(
+        runner,
+        user="obsidian-github-renderer",
+        flag="-w",
+        path="/var/lib/obsidian-github-pipeline/daily-progress/30-Projection",
+        expected=True,
+        label="Daily renderer writes projection",
+    )
+    _require_access(
+        runner,
+        user="obsidian-github-renderer",
+        flag="-r",
+        path="/etc/obsidian-github-summarizer",
+        expected=False,
+        label="Daily renderer cannot read provider config",
+    )
+    _require_access(
+        runner,
+        user="obsidian-github-daily-writer",
+        flag="-r",
+        path="/var/lib/obsidian-github-pipeline/daily-progress/30-Projection",
+        expected=True,
+        label="Daily writer reads projection",
+    )
+    _require_access(
+        runner,
+        user="obsidian-github-daily-writer",
+        flag="-w",
+        path="/var/lib/obsidian-github-pipeline/daily-progress/40-Transport",
+        expected=True,
+        label="Daily writer writes transport state",
+    )
+    _require_access(
+        runner,
+        user="obsidian-github-daily-writer",
+        flag="-r",
+        path="/var/lib/obsidian-github-pipeline/daily-progress/10-Evidence",
+        expected=False,
+        label="Daily writer cannot read raw evidence",
+    )
+    _require_access(
+        runner,
+        user="obsidian-github-daily-writer",
+        flag="-r",
+        path="/var/lib/obsidian-github-pipeline/daily-progress/20-Summary",
+        expected=False,
+        label="Daily writer cannot read model summary state",
+    )
+    _require_access(
+        runner,
+        user="obsidian-github-daily-writer",
+        flag="-r",
+        path="/etc/obsidian-github-writer",
+        expected=False,
+        label="Daily writer cannot read Project writer credential config",
+    )
+    _require_access(
+        runner,
+        user="obsidian-github-sync",
+        flag="-r",
+        path="/etc/obsidian-github-summarizer",
+        expected=False,
+        label="GitHub collector cannot read provider config",
+    )
+    _require_access(
+        runner,
+        user="obsidian-github-sync",
+        flag="-r",
+        path="/etc/obsidian-github-daily-writer",
+        expected=False,
+        label="GitHub collector cannot read Daily writer config",
     )
 
 

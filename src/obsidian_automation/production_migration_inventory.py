@@ -211,6 +211,38 @@ ROLE_MANIFESTS: dict[str, tuple[ManifestEntry, ...]] = {
             required=True,
         ),
         ManifestEntry(
+            "github_daily_summarizer_config",
+            "/etc/obsidian-github-summarizer/config.env",
+            "credential_config",
+            "create_new_for_daily_progress_if_deployed",
+            (
+                "DAILY_SUMMARY_PROVIDER",
+                "DAILY_SUMMARY_BASE_URL",
+                "DAILY_SUMMARY_MODEL",
+                "OPENAI_API_KEY",
+            ),
+        ),
+        ManifestEntry(
+            "github_daily_summarizer_revision",
+            "/etc/obsidian-github-summarizer/revision.env",
+            "derived_config",
+            "recreate_from_target_revision",
+            ("OBSIDIAN_AUTOMATION_REVISION",),
+        ),
+        ManifestEntry(
+            "github_daily_writer_config",
+            "/etc/obsidian-github-daily-writer/config.env",
+            "deployment_config",
+            "create_new_for_daily_progress_if_deployed",
+            ("NEXTCLOUD_BASE_URL", "NEXTCLOUD_USERNAME"),
+        ),
+        ManifestEntry(
+            "github_daily_writer_password",
+            "/etc/obsidian-github-daily-writer/webdav-password",
+            "credential",
+            "create_new_narrow_credential_if_deployed",
+        ),
+        ManifestEntry(
             "github_sync_state",
             "/var/lib/obsidian-github-sync",
             "durable_state",

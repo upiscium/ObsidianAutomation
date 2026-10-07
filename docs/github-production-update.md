@@ -25,10 +25,10 @@ preflight
   checkout is main + clean
   current SHA recorded
   target SHA fetched and validated
-  timer enabled/active state recorded
+  GitHub sync + Daily Progress timer state recorded
         |
         v
-disable --now obsidian-github-sync.timer
+disable --now every existing managed GitHub timer
         |
         v
 git reset --hard <target-sha>
@@ -38,16 +38,19 @@ force-reinstall production package
         |
         v
 install repository-managed obsidian-github-*.service/.timer units
+install exact Daily summarizer revision binding
 systemctl daemon-reload
         |
         v
 production-smoke --profile safe
+Daily production smoke --profile safe
         |
         v
 production-smoke --profile live
         |
         v
-restore the original timer enabled/active state
+restore each timer's original state
+(new Daily timer stays disabled when it did not exist before)
         |
         v
 persist deployment receipt
@@ -107,13 +110,20 @@ examples/github-sync/obsidian-github-*.timer
 
 into `/etc/systemd/system`, then runs `systemctl daemon-reload`.
 
-The five current core units are required to exist:
+The current required unit set includes the existing five-unit Project status
+pipeline plus the Daily Progress chain:
 
 - `obsidian-github-sync-vault-pull.service`
 - `obsidian-github-sync.service`
 - `obsidian-github-writer.service`
 - `obsidian-github-compactor.service`
 - `obsidian-github-sync.timer`
+- `obsidian-github-daily-schedule.service`
+- `obsidian-github-daily-collect.service`
+- `obsidian-github-daily-summary.service`
+- `obsidian-github-daily-render.service`
+- `obsidian-github-daily-apply.service`
+- `obsidian-github-daily-progress.timer`
 
 This dynamic source selection lets a reviewed future revision add another
 GitHub integration unit without requiring the previously-installed updater code
@@ -151,8 +161,10 @@ Every completed transaction stores a secret-free JSON record containing:
 
 - previous production SHA;
 - explicit target SHA;
-- pre-deployment timer enabled/active state;
-- safe/live smoke status;
+- pre-deployment enabled/active state for every managed GitHub timer;
+- existing GitHub safe/live smoke status;
+- Daily Progress safe-smoke status and explicit `daily_live_canary:
+  not_attempted` until a controlled canary is run;
 - success/failure;
 - failed stage when applicable;
 - completion timestamp.
@@ -170,6 +182,7 @@ Therefore only its first rollout uses the previous manual procedure:
 
 ```bash
 systemctl disable --now obsidian-github-sync.timer
+systemctl disable --now obsidian-github-daily-progress.timer 2>/dev/null || true
 
 cd /opt/obsidian-github-sync/app
 git fetch origin
@@ -224,3 +237,42 @@ review PR
 ```
 
 Do not replace the target SHA with `origin/main` or another moving ref.
+
+
+## Daily Project Progress production activation
+
+The updater installs the Daily Progress units but does not grant credentials or
+enable a newly-introduced Daily timer automatically.
+
+Before the first live Daily canary:
+
+1. merge/promote the ObsidianCore companion that places exactly one visible
+   `# Project Progress` H1 in newly-created Daily Notes;
+2. run the reviewed authority provisioner so
+   `obsidian-github-summarizer`, `obsidian-github-renderer`, and
+   `obsidian-github-daily-writer` plus their stage ACLs exist;
+3. create `/etc/obsidian-github-summarizer/config.env` from the reviewed
+   example, readable only through the summarizer config boundary;
+4. create a dedicated Nextcloud account shared only to `00-DailyNote` with
+   Read + Update permissions, then install its config/password below
+   `/etc/obsidian-github-daily-writer`;
+5. keep `obsidian-github-daily-progress.timer` disabled;
+6. enqueue an explicit canary date and start the dependency chain manually;
+7. verify the full artifact chain with:
+
+```bash
+obsidian-github-daily-production-smoke \
+  --profile live \
+  --date YYYY-MM-DD
+```
+
+The live smoke is read-only with respect to pipeline control: it re-reads the
+Evidence, grounded-summary, Projection, transport ref, and exact transport-result
+artifact and requires all SHA bindings plus a successful
+`applied|recovered|already_desired` outcome.
+
+Only after that explicit canary passes should the Daily timer be enabled.
+
+The timer schedules a new previous-day job at approximately 00:10 Asia/Tokyo and
+also wakes at every `:40` to retry any historical pending dates. Stage refs are
+immutable, so successful stages are not rerun during retries.

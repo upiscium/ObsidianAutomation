@@ -1,0 +1,12 @@
+[Unit]
+Description=Finalize and retry GitHub Daily Project Progress
+
+[Timer]
+OnCalendar=*-*-* 00:10:00 Asia/Tokyo
+OnCalendar=*-*-* *:40:00 Asia/Tokyo
+Persistent=true
+AccuracySec=1min
+Unit=obsidian-github-daily-apply.service
+
+[Install]
+WantedBy=timers.target

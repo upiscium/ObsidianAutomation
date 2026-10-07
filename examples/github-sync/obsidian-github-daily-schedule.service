@@ -1,0 +1,27 @@
+[Unit]
+Description=Schedule previous-day GitHub Project Progress processing
+
+[Service]
+Type=oneshot
+User=obsidian-github-sync
+Group=obsidian-github-sync
+UMask=0027
+ExecStart=/opt/obsidian-github-sync/venv/bin/obsidian-github-daily-production-schedule \
+  --root /var/lib/obsidian-github-pipeline/daily-progress
+WorkingDirectory=/opt/obsidian-github-sync/app
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateNetwork=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadWritePaths=/var/lib/obsidian-github-pipeline/daily-progress/00-Schedule
+InaccessiblePaths=/etc/obsidian-github-summarizer /etc/obsidian-github-daily-writer
+
+[Install]
+WantedBy=multi-user.target

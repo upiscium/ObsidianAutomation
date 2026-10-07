@@ -2,7 +2,7 @@
 
 An intent journal is fsynced before any timer is changed. Same-target retries
 retain original enable/active states. Unknown/masked unit states are refused
-before mutation, not guessed. Only the four automation timers are owned here.
+before mutation, not guessed. Only the five automation timers are owned here.
 """
 from __future__ import annotations
 
@@ -20,7 +20,8 @@ from typing import Callable, Sequence
 
 TIMERS = (
     "obsidian-ai-vault-pull.timer", "obsidian-pre-review.timer",
-    "obsidian-github-sync.timer", "obsidian-core-promotion.timer",
+    "obsidian-github-sync.timer", "obsidian-github-daily-progress.timer",
+    "obsidian-core-promotion.timer",
 )
 SERVICES = (
     "obsidian-ai-vault-pull.service",
@@ -41,10 +42,23 @@ SERVICES = (
     "obsidian-pre-review-evaluator.service", "obsidian-pre-review-status.service",
     "obsidian-github-sync-vault-pull.service", "obsidian-github-sync.service",
     "obsidian-github-writer.service", "obsidian-github-compactor.service",
+    "obsidian-github-daily-schedule.service",
+    "obsidian-github-daily-collect.service",
+    "obsidian-github-daily-summary.service",
+    "obsidian-github-daily-render.service",
+    "obsidian-github-daily-apply.service",
     "obsidian-core-promotion.service",
 )
 ROLE_TIMERS = {
-    "ai": TIMERS[:2], "github-sync": (TIMERS[2],), "publisher": (TIMERS[3],),
+    "ai": (
+        "obsidian-ai-vault-pull.timer",
+        "obsidian-pre-review.timer",
+    ),
+    "github-sync": (
+        "obsidian-github-sync.timer",
+        "obsidian-github-daily-progress.timer",
+    ),
+    "publisher": ("obsidian-core-promotion.timer",),
 }
 ROLE_CONFIGS = {
     "ai": (
@@ -57,8 +71,15 @@ ROLE_CONFIGS = {
         "/etc/obsidian-ai/projection-cleanup.env",
         "/etc/obsidian-ai/projection-cleanup-password",
     ),
-    "github-sync": ("/etc/obsidian-github-sync/config.toml", "/etc/obsidian-github-mirror/rclone.conf",
-                    "/etc/obsidian-github-writer/config.env", "/etc/obsidian-github-writer/webdav-password"),
+    "github-sync": (
+        "/etc/obsidian-github-sync/config.toml",
+        "/etc/obsidian-github-mirror/rclone.conf",
+        "/etc/obsidian-github-writer/config.env",
+        "/etc/obsidian-github-writer/webdav-password",
+        "/etc/obsidian-github-summarizer/config.env",
+        "/etc/obsidian-github-daily-writer/config.env",
+        "/etc/obsidian-github-daily-writer/webdav-password",
+    ),
     "publisher": ("/etc/obsidian-core-promotion/promotion.env", "/etc/obsidian-core-promotion/public-export.toml",
                   "/etc/obsidian-core-promotion/nextcloud.password"),
 }
@@ -121,6 +142,9 @@ class RuntimeTransaction:
         receipt_dir: Path, runner: Callable, require_root: bool = True,
         systemd_dir: Path = Path("/etc/systemd/system"),
         revision_env: Path = Path("/etc/obsidian-ai/pre-review-revision.env"),
+        daily_revision_env: Path = Path(
+            "/etc/obsidian-github-summarizer/revision.env"
+        ),
         drain_timeout: float = 300.0, clock: Callable = time.monotonic,
         sleep: Callable = time.sleep, config_exists: Callable = os.path.lexists,
         refresh_inhibit_path: Path = DEFAULT_REFRESH_INHIBIT,
@@ -129,7 +153,9 @@ class RuntimeTransaction:
             raise LifecycleError("invalid_target_sha")
         self.source_root, self.target_sha, self.venv_root = source_root, target_sha, venv_root
         self.receipt_dir, self.runner, self.require_root = receipt_dir, runner, require_root
-        self.systemd_dir, self.revision_env = systemd_dir, revision_env
+        self.systemd_dir = systemd_dir
+        self.revision_env = revision_env
+        self.daily_revision_env = daily_revision_env
         self.drain_timeout, self.clock, self.sleep = drain_timeout, clock, sleep
         self.config_exists = config_exists
         self.intent_path = receipt_dir / "pending-runtime.json"
@@ -319,22 +345,68 @@ class RuntimeTransaction:
             if state["LoadState"] == "loaded" and state["ActiveState"] == "failed":
                 self._run(("systemctl", "reset-failed", name), "reset_failed_unit_failed")
         stager = _load_source_module(self.source_root / "tools/stage_automation_units.py", "_target_unit_stager")
-        stager.stage_units(target_sha=self.target_sha, source_root=self.source_root,
-                           systemd_dir=self.systemd_dir, revision_env=self.revision_env,
-                           runner=self.runner, require_root=self.require_root)
+        stager.stage_units(
+            target_sha=self.target_sha,
+            source_root=self.source_root,
+            systemd_dir=self.systemd_dir,
+            revision_env=self.revision_env,
+            daily_revision_env=self.daily_revision_env,
+            runner=self.runner,
+            require_root=self.require_root,
+        )
         self._save("units_staged")
         python = str(self.venv_root / "bin/python")
-        self._run((python, "-c", "import obsidian_automation.managed_promotion_deployment; import obsidian_automation.github_project_status_worker; import obsidian_automation.pre_review_worker"), "package_import_smoke_failed")
+        self._run(
+            (
+                python,
+                "-c",
+                "import obsidian_automation.managed_promotion_deployment; "
+                "import obsidian_automation.github_project_status_worker; "
+                "import obsidian_automation.github_daily_production; "
+                "import obsidian_automation.github_daily_progress; "
+                "import obsidian_automation.pre_review_worker",
+            ),
+            "package_import_smoke_failed",
+        )
         self._run((str(self.venv_root / "bin/obsidian-pre-review-production-smoke"), "--profile", "safe",
                    "--expected-revision", self.target_sha, "--revision-env", str(self.revision_env),
                    "--systemd-dir", str(self.systemd_dir)), "pre_review_safe_smoke_failed")
         self._run((str(self.venv_root / "bin/obsidian-github-production-smoke"), "--profile", "safe"), "github_safe_smoke_failed")
+        self._run(
+            (
+                str(
+                    self.venv_root
+                    / "bin/obsidian-github-daily-production-smoke"
+                ),
+                "--profile",
+                "safe",
+            ),
+            "github_daily_safe_smoke_failed",
+        )
         # Reapply file-level ACLs on existing orchestration and immutable stage
         # artifacts after the package-stage directory ACLs. This reads no payload.
         self._run(("sh", str(self.source_root / "examples/ai/bootstrap-pre-review-authority.sh")), "pre_review_authority_failed")
+        daily_before = self.intent["timers"][
+            "obsidian-github-daily-progress.timer"
+        ]
+        if daily_before["enabled"] or daily_before["active"]:
+            for path in (
+                "/etc/obsidian-github-summarizer/config.env",
+                "/etc/obsidian-github-daily-writer/config.env",
+                "/etc/obsidian-github-daily-writer/webdav-password",
+            ):
+                if not self.config_exists(path):
+                    raise LifecycleError(
+                        "serving_daily_configuration_missing"
+                    )
+
         for role, paths in ROLE_CONFIGS.items():
             configured = any(self.config_exists(path) for path in paths)
-            previously_serving = any(self.intent["timers"][name]["enabled"] or self.intent["timers"][name]["active"] for name in ROLE_TIMERS[role])
+            previously_serving = any(
+                self.intent["timers"][name]["enabled"]
+                or self.intent["timers"][name]["active"]
+                for name in ROLE_TIMERS[role]
+            )
             if configured:
                 self._run((sys.executable, str(self.source_root / "tools/private_config_transfer.py"), "verify", "--role", role), "private_authority_smoke_failed")
             elif previously_serving:
