@@ -92,6 +92,27 @@ MAX_METADATA_CHARS = 512
 _IMPLEMENTATION_REVISION_RE = re.compile(r"^[0-9a-f]{40,64}$")
 HISTORICAL_RUNTIME_SUPERSESSION_REASON = "operator_historical_runtime_retire"
 
+ATTEMPT_DIAGNOSTIC_EXCEPTION_CLASSES = frozenset(
+    {
+        "OpenAICompatibleProviderError",
+        "OllamaProviderError",
+        "ArtifactLifecycleError",
+        "PreReviewJobError",
+        "OSError",
+    }
+)
+ATTEMPT_DIAGNOSTIC_CODES = frozenset(
+    {
+        "provider_transport",
+        "provider_response_contract",
+        "provider_identity",
+        "provider_contract",
+        "artifact_contract",
+        "orchestration_contract",
+        "local_io",
+    }
+)
+
 
 def _supported_generator_prompt_hashes() -> dict[str, str]:
     from .semantic_objective import (
@@ -615,6 +636,11 @@ def _connect_rw(ai_root: Path) -> sqlite3.Connection:
             completed_at TEXT,
             reason_code TEXT,
             UNIQUE(generation_id, stage, attempt_index)
+        );
+        CREATE TABLE IF NOT EXISTS attempt_diagnostics (
+            attempt_id TEXT PRIMARY KEY REFERENCES attempts(attempt_id),
+            exception_class TEXT NOT NULL,
+            diagnostic_code TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS stage_outputs (
             generation_id TEXT NOT NULL REFERENCES generations(generation_id),
@@ -1312,6 +1338,26 @@ def start_attempt(ai_root: Path, generation_id: str, stage: str) -> dict[str, ob
     }
 
 
+def _validated_attempt_diagnostic(
+    exception_class: object,
+    diagnostic_code: object,
+) -> dict[str, str]:
+    if (
+        not isinstance(exception_class, str)
+        or exception_class not in ATTEMPT_DIAGNOSTIC_EXCEPTION_CLASSES
+    ):
+        raise PreReviewJobError("attempt diagnostic exception_class is invalid")
+    if (
+        not isinstance(diagnostic_code, str)
+        or diagnostic_code not in ATTEMPT_DIAGNOSTIC_CODES
+    ):
+        raise PreReviewJobError("attempt diagnostic code is invalid")
+    return {
+        "exception_class": exception_class,
+        "diagnostic_code": diagnostic_code,
+    }
+
+
 def complete_attempt(
     ai_root: Path,
     attempt_id: str,
@@ -1319,6 +1365,8 @@ def complete_attempt(
     outcome: str,
     reason_code: str | None = None,
     output: Mapping[str, object] | None = None,
+    diagnostic_exception_class: str | None = None,
+    diagnostic_code: str | None = None,
 ) -> dict[str, object]:
     digest = _require_sha256(attempt_id, label="attempt_id")
     if outcome not in {
@@ -1338,6 +1386,21 @@ def complete_attempt(
         if output is not None:
             raise PreReviewJobError("failed attempt must not select stage output")
         normalized_reason = _metadata(reason_code, label="reason_code")
+
+    if (diagnostic_exception_class is None) != (diagnostic_code is None):
+        raise PreReviewJobError(
+            "attempt diagnostic class and code must be supplied together"
+        )
+    normalized_diagnostic: dict[str, str] | None = None
+    if diagnostic_exception_class is not None:
+        if outcome != "retryable_failure":
+            raise PreReviewJobError(
+                "attempt diagnostics are allowed only for retryable failures"
+            )
+        normalized_diagnostic = _validated_attempt_diagnostic(
+            diagnostic_exception_class,
+            diagnostic_code,
+        )
     now = _utc_now()
 
     conn = _connect_rw(ai_root)
@@ -1382,6 +1445,17 @@ def complete_attempt(
             "WHERE attempt_id = ?",
             (outcome, now, normalized_reason, digest),
         )
+        if normalized_diagnostic is not None:
+            conn.execute(
+                "INSERT INTO attempt_diagnostics("
+                "attempt_id, exception_class, diagnostic_code"
+                ") VALUES(?, ?, ?)",
+                (
+                    digest,
+                    normalized_diagnostic["exception_class"],
+                    normalized_diagnostic["diagnostic_code"],
+                ),
+            )
         if normalized_output is not None:
             output_json = _canonical_json_bytes(normalized_output).decode("utf-8")
             conn.execute(
@@ -1400,7 +1474,7 @@ def complete_attempt(
     finally:
         conn.close()
 
-    return {
+    result = {
         "record_version": RECORD_VERSION,
         "job_id": row["job_id"],
         "generation_id": row["generation_id"],
@@ -1411,6 +1485,103 @@ def complete_attempt(
         "state": target_state,
         "reason_code": normalized_reason,
         "output": normalized_output,
+    }
+    if normalized_diagnostic is not None:
+        result["diagnostic"] = normalized_diagnostic
+    return result
+
+
+def attempt_history(ai_root: Path, job_id: str) -> dict[str, object]:
+    digest = _require_sha256(job_id, label="job_id")
+    conn = _connect_ro(ai_root)
+    try:
+        job = conn.execute(
+            "SELECT job_id FROM jobs WHERE job_id = ?",
+            (digest,),
+        ).fetchone()
+        if job is None:
+            raise PreReviewJobError("job does not exist")
+
+        diagnostics_available = conn.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'attempt_diagnostics'"
+        ).fetchone() is not None
+
+        if diagnostics_available:
+            rows = conn.execute(
+                """
+                SELECT
+                    a.attempt_id,
+                    a.generation_id,
+                    g.generation_index,
+                    a.stage,
+                    a.attempt_index,
+                    a.status,
+                    a.started_at,
+                    a.completed_at,
+                    a.reason_code,
+                    d.exception_class,
+                    d.diagnostic_code
+                FROM attempts a
+                JOIN generations g ON g.generation_id = a.generation_id
+                LEFT JOIN attempt_diagnostics d
+                    ON d.attempt_id = a.attempt_id
+                WHERE g.job_id = ?
+                ORDER BY g.generation_index, a.rowid
+                """,
+                (digest,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT
+                    a.attempt_id,
+                    a.generation_id,
+                    g.generation_index,
+                    a.stage,
+                    a.attempt_index,
+                    a.status,
+                    a.started_at,
+                    a.completed_at,
+                    a.reason_code
+                FROM attempts a
+                JOIN generations g ON g.generation_id = a.generation_id
+                WHERE g.job_id = ?
+                ORDER BY g.generation_index, a.rowid
+                """,
+                (digest,),
+            ).fetchall()
+    finally:
+        conn.close()
+
+    attempts: list[dict[str, object]] = []
+    for row in rows:
+        diagnostic = None
+        if diagnostics_available and row["exception_class"] is not None:
+            diagnostic = _validated_attempt_diagnostic(
+                row["exception_class"],
+                row["diagnostic_code"],
+            )
+        attempts.append(
+            {
+                "attempt_id": row["attempt_id"],
+                "generation_id": row["generation_id"],
+                "generation_index": row["generation_index"],
+                "stage": row["stage"],
+                "attempt_index": row["attempt_index"],
+                "status": row["status"],
+                "started_at": row["started_at"],
+                "completed_at": row["completed_at"],
+                "reason_code": row["reason_code"],
+                "diagnostic": diagnostic,
+            }
+        )
+
+    return {
+        "record_version": RECORD_VERSION,
+        "authority": "orchestration_metadata_only",
+        "job_id": digest,
+        "attempts": attempts,
     }
 
 
@@ -1757,6 +1928,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     status.add_argument("--ai-root", type=Path, required=True)
     status.add_argument("--job-id", required=True)
 
+    attempts = sub.add_parser("attempts")
+    attempts.add_argument("--ai-root", type=Path, required=True)
+    attempts.add_argument("--job-id", required=True)
+
     supersede = sub.add_parser("supersede")
     supersede.add_argument("--ai-root", type=Path, required=True)
     supersede.add_argument("--generation-id", required=True)
@@ -1777,6 +1952,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         elif args.command == "regenerate":
             result = regenerate_job(args.ai_root, args.job_id)
+        elif args.command == "attempts":
+            result = attempt_history(args.ai_root, args.job_id)
         elif args.command == "supersede":
             result = supersede_unstarted_generation(
                 args.ai_root,

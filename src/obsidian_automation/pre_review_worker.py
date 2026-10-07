@@ -146,14 +146,18 @@ def _retry(
     work: StageWorkItem,
     *,
     reason_code: str,
+    diagnostic_exception_class: str | None = None,
+    diagnostic_code: str | None = None,
 ) -> dict[str, object]:
     result = complete_attempt(
         ai_root,
         work.attempt_id,
         outcome="retryable_failure",
         reason_code=reason_code,
+        diagnostic_exception_class=diagnostic_exception_class,
+        diagnostic_code=diagnostic_code,
     )
-    return _json_result(
+    payload = _json_result(
         "pre-review-worker",
         stage=work.stage,
         status="retryable_failure",
@@ -163,6 +167,66 @@ def _retry(
         reason_code=reason_code,
         state=result["state"],
     )
+    if "diagnostic" in result:
+        payload["diagnostic"] = result["diagnostic"]
+    return payload
+
+
+def _evaluator_failure_diagnostic(exc: Exception) -> tuple[str, str]:
+    if isinstance(exc, OpenAICompatibleProviderError):
+        exception_class = "OpenAICompatibleProviderError"
+        provider_error = True
+    elif isinstance(exc, OllamaProviderError):
+        exception_class = "OllamaProviderError"
+        provider_error = True
+    elif isinstance(exc, ArtifactLifecycleError):
+        return "ArtifactLifecycleError", "artifact_contract"
+    elif isinstance(exc, PreReviewJobError):
+        return "PreReviewJobError", "orchestration_contract"
+    elif isinstance(exc, OSError):
+        return "OSError", "local_io"
+    else:
+        raise PreReviewJobError("unsupported Evaluator diagnostic exception")
+
+    message = str(exc)
+    if any(
+        marker in message
+        for marker in (
+            "HTTP request failed",
+            "response read failed",
+            "response read exceeded",
+            "request timeout",
+            "response exceeds",
+        )
+    ):
+        return exception_class, "provider_transport"
+
+    if any(
+        marker in message
+        for marker in (
+            "model is not installed",
+            "model list",
+            "model does not match",
+            "response model does not match",
+        )
+    ):
+        return exception_class, "provider_identity"
+
+    if provider_error and any(
+        marker in message
+        for marker in (
+            "evaluator ",
+            "consistency verifier ",
+            "response ",
+            "output ",
+            "content ",
+            "choice ",
+            "message ",
+        )
+    ):
+        return exception_class, "provider_response_contract"
+
+    return exception_class, "provider_contract"
 
 
 def _idle(stage: str) -> dict[str, object]:
@@ -652,8 +716,15 @@ def run_evaluator_worker(
         ArtifactLifecycleError,
         PreReviewJobError,
         OSError,
-    ):
-        return _retry(ai_root, work, reason_code="evaluator_provider_or_output_error")
+    ) as exc:
+        exception_class, diagnostic_code = _evaluator_failure_diagnostic(exc)
+        return _retry(
+            ai_root,
+            work,
+            reason_code="evaluator_provider_or_output_error",
+            diagnostic_exception_class=exception_class,
+            diagnostic_code=diagnostic_code,
+        )
 
     try:
         record = load_evaluation_record(ai_root, evaluated.evaluation_sha256)
