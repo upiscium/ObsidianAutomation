@@ -18,7 +18,10 @@ from obsidian_automation.github_daily_activity import (
     make_daily_evidence_bundle,
     persist_daily_evidence,
 )
-from obsidian_automation.github_project_watcher import WatcherConfig
+from obsidian_automation.github_project_watcher import (
+    GitHubAPIHTTPError,
+    WatcherConfig,
+)
 
 
 class _FakeClient:
@@ -166,6 +169,17 @@ class _FakeClient:
         raise AssertionError(path)
 
 
+class _EmptyRepositoryClient(_FakeClient):
+    def _paged(self, path: str) -> list[dict[str, object]]:
+        if "/commits?" in path:
+            raise GitHubAPIHTTPError(
+                status=409,
+                path=path,
+                detail='{"message":"Git Repository is empty."}',
+            )
+        return super()._paged(path)
+
+
 def _write_project(vault: Path) -> None:
     path = vault / "10-Project" / "Test" / "Test.md"
     path.parent.mkdir(parents=True)
@@ -251,6 +265,29 @@ def test_collects_daily_github_activity_without_daily_event_cap(
 
     assert all(
         event.occurred_at < "2026-10-05T15:00:00Z"
+        for event in bundle.events
+    )
+
+
+def test_empty_repository_contributes_binding_without_commit_evidence(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    _write_project(vault)
+    config = WatcherConfig(
+        vault_root=vault,
+        state_db=tmp_path / "state.sqlite3",
+    )
+
+    bundle = collect_daily_evidence(
+        config,
+        target_date=date(2026, 10, 5),
+        client=_EmptyRepositoryClient(),
+    )
+
+    assert bundle.repositories == ("upiscium/Test",)
+    assert all(
+        event.kind != "default_branch_commit"
         for event in bundle.events
     )
 

@@ -353,6 +353,48 @@ def test_github_client_retries_ssl_eof_once_with_tls12(monkeypatch) -> None:
     assert len(calls) == 2
 
 
+def test_latest_commit_treats_exact_empty_repository_409_as_empty(
+    monkeypatch,
+) -> None:
+    def fake_urlopen(request, **kwargs):
+        raise urllib.error.HTTPError(
+            request.full_url,
+            409,
+            "Conflict",
+            None,
+            io.BytesIO(
+                b'{"message":"Git Repository is empty.","status":"409"}'
+            ),
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    client = GitHubClient()
+    assert client._latest_push("upiscium/Empty") == (None, None)
+
+
+def test_latest_commit_preserves_other_409_as_failure(monkeypatch) -> None:
+    def fake_urlopen(request, **kwargs):
+        raise urllib.error.HTTPError(
+            request.full_url,
+            409,
+            "Conflict",
+            None,
+            io.BytesIO(b'{"message":"Repository unavailable."}'),
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    client = GitHubClient()
+    try:
+        client._latest_push("upiscium/Test")
+    except GitHubProjectWatcherError as exc:
+        assert "HTTP 409" in str(exc)
+        assert "Repository unavailable." in str(exc)
+    else:
+        raise AssertionError("unrelated HTTP 409 was hidden")
+
+
 def test_github_client_does_not_downgrade_non_tls_eof_error(monkeypatch) -> None:
     calls = 0
 
