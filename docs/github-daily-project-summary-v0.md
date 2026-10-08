@@ -121,8 +121,9 @@ The model never returns Markdown and never chooses renderer structure.
 All partial claims enter the reducer. Before byte partitioning, the claims
 are grouped by repository and greedily separated so that **the union of
 distinct original evidence IDs across every claim in any reducer batch is at
-most 8**. The existing 64 KiB context limit is then applied to each such
-evidence-bounded group. This preserves all source claims, their original
+most 8**, and every batch also contains **at most 8 input claims**, matching
+the model's `source_refs` limit. The existing 64 KiB context limit is then
+applied to each such bounded group. This preserves all source claims, their original
 evidence and source-output SHA identities, and their repository-local order.
 The global batch-count cap remains in force. A single malformed source claim
 already exceeding the evidence limit is rejected, not silently truncated.
