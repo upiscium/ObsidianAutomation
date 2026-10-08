@@ -93,31 +93,21 @@ def _fake_infer(prompt, context):
     elif prompt.stage == REDUCE_STAGE:
         raise AssertionError("deterministic reducer must not call the model")
     elif prompt.stage == GROUND_STAGE:
-        refs = prompt.output_schema["properties"]["assessments"]
-        assert refs["minItems"] == refs["maxItems"] == len(context.claims)
-        assert refs["items"]["properties"]["claim_ref"]["enum"] == list(
-            range(len(context.claims))
-        )
-        content = json.dumps(
-            {
-                "assessments": [
-                    {
-                        "claim_ref": claim_ref,
-                        "verdict": (
-                            "unsupported"
-                            if claim.summary.startswith("reject ")
-                            else "supported"
-                        ),
-                        "reason": (
-                            "claim overstates the cited event"
-                            if claim.summary.startswith("reject ")
-                            else "claim is directly supported"
-                        ),
-                    }
-                    for claim_ref, claim in enumerate(context.claims)
-                ]
-            }
-        ).encode()
+        assert len(context.claims) == 1
+        assert prompt.output_schema["required"] == ["verdict", "reason"]
+        assert "claim_ref" not in prompt.output_schema["properties"]
+        claim = context.claims[0]
+        content = json.dumps({
+            "verdict": (
+                "unsupported" if claim.summary.startswith("reject ")
+                else "supported"
+            ),
+            "reason": (
+                "claim overstates the cited event"
+                if claim.summary.startswith("reject ")
+                else "claim is directly supported"
+            ),
+        }).encode()
     else:
         raise AssertionError(prompt.stage)
     return InferenceResponse(
@@ -491,56 +481,125 @@ def test_model_reducer_inherits_union_of_exact_source_claim_evidence(
     assert output.claims[0].evidence_ids == tuple(event_ids)
 
 
-def test_model_ground_short_refs_require_exact_claim_set(
+def test_singleton_grounding_binds_exact_claim_without_model_ids(
     tmp_path: Path,
 ) -> None:
-    path, bundle = _evidence(tmp_path, 2)
+    path, _ = _evidence(tmp_path, 2)
     bundle = parse_evidence_bundle(path.read_bytes())
-    event_ids = [str(e["evidence_id"]) for e in bundle.events]
-    claims = (
-        SummaryClaim(
-            claim_id="a" * 64, kind="implementation",
-            repository="upiscium/Test", summary="first",
-            evidence_ids=(event_ids[0],),
-        ),
-        SummaryClaim(
-            claim_id="b" * 64, kind="implementation",
-            repository="upiscium/Test", summary="second",
-            evidence_ids=(event_ids[1],),
-        ),
+    event_ids = [str(event["evidence_id"]) for event in bundle.events]
+    claim = SummaryClaim(
+        claim_id="a" * 64,
+        kind="implementation",
+        repository="upiscium/Test",
+        summary="verified implementation",
+        evidence_ids=(event_ids[0],),
     )
     context = SummaryContext(
         stage=GROUND_STAGE,
         evidence_bundle_sha256=bundle.sha256,
-        batch_index=0, batch_count=1,
-        source_output_sha256s=(),
-        claims=claims,
+        batch_index=0,
+        batch_count=1,
+        source_output_sha256s=("c" * 64,),
+        events=(bundle.events[0],),
+        claims=(claim,),
     )
-    valid = _parse_model_ground_output(
+    result = _parse_model_ground_output(
         json.dumps({
-            "assessments": [
-                {"claim_ref": 1, "verdict": "unsupported", "reason": "overstated"},
-                {"claim_ref": 0, "verdict": "supported", "reason": "grounded"},
-            ]
+            "verdict": "supported",
+            "reason": "Cited commit directly describes implementation",
         }).encode(),
         context=context,
-        input_context_sha256="c" * 64,
+        input_context_sha256="d" * 64,
     )
-    assert [a.claim_id for a in valid.assessments] == [
-        claims[0].claim_id, claims[1].claim_id,
-    ]
-    for refs in ([0, 0], [1], [0, True], [0, 4]):
-        with pytest.raises(GitHubDailySummaryError):
-            _parse_model_ground_output(
-                json.dumps({
-                    "assessments": [
-                        {"claim_ref": r, "verdict": "supported", "reason": "test"}
-                        for r in refs
-                    ]
-                }).encode(),
-                context=context,
-                input_context_sha256="c" * 64,
-            )
+    assert result.input_context_sha256 == "d" * 64
+    assert len(result.assessments) == 1
+    assert result.assessments[0].claim_id == claim.claim_id
+    assert result.assessments[0].verdict == "supported"
+
+    rejected = _parse_model_ground_output(
+        json.dumps({
+            "verdict": "unsupported",
+            "reason": "Change is not proven by this event",
+        }).encode(),
+        context=context,
+        input_context_sha256="d" * 64,
+    )
+    assert rejected.assessments[0].claim_id == claim.claim_id
+    assert rejected.assessments[0].verdict == "unsupported"
+
+
+@pytest.mark.parametrize("invalid", [
+    {"verdict": "supported", "reason": "ok", "claim_ref": 0},
+    {"verdict": "supported", "reason": "ok", "claim_id": "a" * 64},
+    {"assessments": [{"claim_ref": 0, "verdict": "supported", "reason": "ok"}]},
+    {"verdict": "maybe", "reason": "ok"},
+    {"verdict": True, "reason": "ok"},
+    {"verdict": "supported", "reason": ""},
+    {"verdict": "supported"},
+    {},
+])
+def test_singleton_grounding_rejects_extra_identity_or_invalid_verdict(
+    tmp_path: Path,
+    invalid: dict[str, object],
+) -> None:
+    path, _ = _evidence(tmp_path, 1)
+    bundle = parse_evidence_bundle(path.read_bytes())
+    claim = SummaryClaim(
+        claim_id="a" * 64,
+        kind="implementation",
+        repository="upiscium/Test",
+        summary="verified implementation",
+        evidence_ids=(str(bundle.events[0]["evidence_id"]),),
+    )
+    context = SummaryContext(
+        stage=GROUND_STAGE,
+        evidence_bundle_sha256=bundle.sha256,
+        batch_index=0,
+        batch_count=1,
+        source_output_sha256s=("b" * 64,),
+        events=bundle.events,
+        claims=(claim,),
+    )
+    with pytest.raises(GitHubDailySummaryError):
+        _parse_model_ground_output(
+            json.dumps(invalid).encode(),
+            context=context,
+            input_context_sha256="c" * 64,
+        )
+
+
+def test_grounding_rejects_multiple_input_claims(
+    tmp_path: Path,
+) -> None:
+    path, _ = _evidence(tmp_path, 2)
+    bundle = parse_evidence_bundle(path.read_bytes())
+    claims = tuple(
+        SummaryClaim(
+            claim_id=f"{index + 1:064x}",
+            kind="implementation",
+            repository="upiscium/Test",
+            summary=f"claim {index}",
+            evidence_ids=(str(event["evidence_id"]),),
+        )
+        for index, event in enumerate(bundle.events)
+    )
+    invalid_context = SummaryContext(
+        stage=GROUND_STAGE,
+        evidence_bundle_sha256=bundle.sha256,
+        batch_index=0,
+        batch_count=1,
+        source_output_sha256s=("c" * 64,),
+        events=bundle.events,
+        claims=claims,
+    )
+    with pytest.raises(
+        GitHubDailySummaryError, match="exactly one input claim"
+    ):
+        _parse_model_ground_output(
+            b'{"verdict":"supported","reason":"ok"}',
+            context=invalid_context,
+            input_context_sha256="d" * 64,
+        )
 
 
 def _multi_repo_evidence(tmp_path: Path, count: int = 16) -> Path:
@@ -1165,7 +1224,7 @@ def test_pipeline_without_reducer_inference_preserves_all_supported_claims(
 
 
 
-def test_grounding_context_count_and_dynamic_ref_schema(
+def test_grounding_contexts_are_single_claim_and_exact_evidence(
     tmp_path: Path,
 ) -> None:
     from obsidian_automation.github_daily_summary import (
@@ -1198,24 +1257,52 @@ def test_grounding_context_count_and_dynamic_ref_schema(
     contexts = build_ground_contexts(
         bundle, [reduced], max_bytes=256 * 1024,
     )
-    assert [len(context.claims) for context in contexts] == [8, 8, 4]
-    assert all(context.batch_count == 3 for context in contexts)
-    assert [
-        claim.claim_id for context in contexts for claim in context.claims
-    ] == [claim.claim_id for claim in claims]
-
+    assert len(contexts) == len(claims) == 20
+    assert all(len(context.claims) == 1 for context in contexts)
+    assert all(context.batch_count == 20 for context in contexts)
+    assert [c.batch_index for c in contexts] == list(range(20))
+    assert [c.claims[0].claim_id for c in contexts] == [
+        claim.claim_id for claim in claims
+    ]
     for context in contexts:
-        prompt = _prompt_spec(
-            GROUND_STAGE, ground_claim_count=len(context.claims),
+        assert context.source_output_sha256s == ("a" * 64,)
+        assert {str(event["evidence_id"]) for event in context.events} == set(
+            context.claims[0].evidence_ids
         )
-        schema = prompt.output_schema["properties"]["assessments"]
-        assert schema["minItems"] == len(context.claims)
-        assert schema["maxItems"] == len(context.claims)
-        assert schema["items"]["properties"]["claim_ref"]["enum"] == list(
-            range(len(context.claims))
-        )
+        assert len(context.to_json_bytes()) <= 256 * 1024
 
-    with pytest.raises(GitHubDailySummaryError, match="claim_count"):
-        grounding_output_schema(claim_count=9)
-    with pytest.raises(GitHubDailySummaryError, match="claim_count"):
-        grounding_output_schema(claim_count=True)
+    spec = _prompt_spec(GROUND_STAGE)
+    schema = grounding_output_schema()
+    assert spec.output_schema == schema
+    assert schema["required"] == ["verdict", "reason"]
+    assert set(schema["properties"]) == {"verdict", "reason"}
+    assert schema["additionalProperties"] is False
+
+
+def test_grounding_context_rejects_invalid_original_evidence(
+    tmp_path: Path,
+) -> None:
+    path, _ = _evidence(tmp_path, 1)
+    bundle = parse_evidence_bundle(path.read_bytes())
+    bad_claim = SummaryClaim(
+        claim_id="a" * 64,
+        kind="implementation",
+        repository="upiscium/Test",
+        summary="invented source",
+        evidence_ids=("e" * 64,),
+    )
+    reduced = StoredClaimOutput(
+        sha256="b" * 64,
+        output=ClaimOutput(
+            stage=REDUCE_STAGE,
+            input_context_sha256="c" * 64,
+            claims=(bad_claim,),
+        ),
+    )
+    with pytest.raises(
+        GitHubDailySummaryError,
+        match="evidence/repository closure mismatch",
+    ):
+        build_ground_contexts(
+            bundle, [reduced], max_bytes=256 * 1024,
+        )
