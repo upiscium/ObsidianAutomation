@@ -798,3 +798,195 @@ def test_model_claim_schema_does_not_request_repository_name() -> None:
         assert claim["required"] == ["kind", "summary", "source_refs"]
         assert "repository" not in claim["properties"]
         assert claim["properties"]["source_refs"]["items"]["type"] == "integer"
+
+
+def _partial_claims_for_events(
+    bundle,
+    evidence_positions: list[tuple[int, ...]],
+) -> list[StoredClaimOutput]:
+    claims = tuple(
+        SummaryClaim(
+            claim_id=f"{index + 1:064x}",
+            kind="implementation",
+            repository="upiscium/Test",
+            summary=f"source claim {index}",
+            evidence_ids=tuple(
+                str(bundle.events[position]["evidence_id"])
+                for position in positions
+            ),
+        )
+        for index, positions in enumerate(evidence_positions)
+    )
+    return [
+        StoredClaimOutput(
+            "b" * 64,
+            ClaimOutput(
+                stage=PARTIAL_STAGE,
+                input_context_sha256="a" * 64,
+                claims=claims,
+            ),
+        )
+    ]
+
+
+def test_reducer_batch_evidence_union_is_bounded_and_lossless(
+    tmp_path: Path,
+) -> None:
+    path, _ = _evidence(tmp_path, 20)
+    bundle = parse_evidence_bundle(path.read_bytes())
+    outputs = _partial_claims_for_events(
+        bundle, [(index,) for index in range(20)]
+    )
+    contexts = build_reduce_contexts(
+        bundle,
+        outputs,
+        max_bytes=64 * 1024,
+    )
+
+    assert len(contexts) == 3
+    assert [len(context.claims) for context in contexts] == [8, 8, 4]
+    assert [context.batch_index for context in contexts] == [0, 1, 2]
+    assert all(context.batch_count == 3 for context in contexts)
+    assert all(context.source_output_sha256s == ("b" * 64,) for context in contexts)
+    assert all(len(context.to_json_bytes()) <= 64 * 1024 for context in contexts)
+    assert all(
+        len({
+            eid for claim in context.claims for eid in claim.evidence_ids
+        }) <= 8
+        for context in contexts
+    )
+    assert [
+        claim.claim_id for context in contexts for claim in context.claims
+    ] == [
+        claim.claim_id for claim in outputs[0].output.claims
+    ]
+
+
+def test_reducer_evidence_budget_counts_unique_overlap_not_claims(
+    tmp_path: Path,
+) -> None:
+    path, _ = _evidence(tmp_path, 9)
+    bundle = parse_evidence_bundle(path.read_bytes())
+    outputs = _partial_claims_for_events(
+        bundle,
+        [(0, 1), (1, 2), (2, 3), (4, 5), (6, 7), (7, 8)],
+    )
+    contexts = build_reduce_contexts(
+        bundle, outputs, max_bytes=64 * 1024,
+    )
+    assert [len(context.claims) for context in contexts] == [5, 1]
+    assert [
+        len({
+            eid for claim in context.claims for eid in claim.evidence_ids
+        })
+        for context in contexts
+    ] == [8, 2]
+
+
+def test_reducer_handles_max_sized_source_and_rejects_oversized_source(
+    tmp_path: Path,
+) -> None:
+    path, _ = _evidence(tmp_path, 9)
+    bundle = parse_evidence_bundle(path.read_bytes())
+    valid = _partial_claims_for_events(
+        bundle, [tuple(range(8)), (8,)]
+    )
+    contexts = build_reduce_contexts(
+        bundle, valid, max_bytes=64 * 1024,
+    )
+    assert [len(context.claims) for context in contexts] == [1, 1]
+    assert [
+        len({
+            eid for claim in context.claims for eid in claim.evidence_ids
+        })
+        for context in contexts
+    ] == [8, 1]
+
+    oversized = _partial_claims_for_events(
+        bundle, [tuple(range(9))]
+    )
+    with pytest.raises(
+        GitHubDailySummaryError,
+        match="reducer source claim evidence count is invalid",
+    ):
+        build_reduce_contexts(
+            bundle, oversized, max_bytes=64 * 1024,
+        )
+
+
+def test_reducer_eager_model_merge_stays_inside_original_evidence_budget(
+    tmp_path: Path,
+) -> None:
+    evidence_path, _ = _evidence(tmp_path, 20)
+    bundle = parse_evidence_bundle(evidence_path.read_bytes())
+    state = tmp_path / "bounded-reducer-state"
+    state.mkdir()
+
+    def eager_model(prompt, context):
+        if prompt.stage != REDUCE_STAGE:
+            return _fake_infer(prompt, context)
+        return InferenceResponse(
+            content=json.dumps({
+                "claims": [{
+                    "kind": "implementation",
+                    "summary": "combined source-supported changes",
+                    "source_refs": list(range(len(context.claims))),
+                }],
+            }).encode(),
+            model_provider="test-provider",
+            model_identifier="test-model",
+            model_revision="test-revision",
+            model_config={"temperature": 0},
+        )
+
+    result = run_pipeline(
+        evidence_path=evidence_path,
+        state_root=state,
+        infer=eager_model,
+        implementation_revision="4" * 40,
+        partial_context_bytes=64 * 1024,
+        reduce_context_bytes=64 * 1024,
+        ground_context_bytes=256 * 1024,
+    )
+    assert len(result.reduce_context_sha256s) == 3
+    assert result.claim_count == 3
+    assert result.rejected_count == 0
+    final = json.loads(result.grounded_summary_path.read_bytes())
+    assert len(final["claims"]) == 3
+    observed = [
+        evidence_id
+        for claim in final["claims"]
+        for evidence_id in claim["evidence_ids"]
+    ]
+    assert len(observed) == 20
+    assert set(observed) == {
+        str(event["evidence_id"]) for event in bundle.events
+    }
+    assert all(len(claim["evidence_ids"]) <= 8 for claim in final["claims"])
+
+
+
+def test_reducer_limits_source_count_with_reused_evidence(
+    tmp_path: Path,
+) -> None:
+    path, _ = _evidence(tmp_path, 1)
+    bundle = parse_evidence_bundle(path.read_bytes())
+    outputs = _partial_claims_for_events(
+        bundle, [(0,)] * 20,
+    )
+    contexts = build_reduce_contexts(
+        bundle, outputs, max_bytes=64 * 1024,
+    )
+
+    assert [len(context.claims) for context in contexts] == [8, 8, 4]
+    assert all(
+        len({
+            eid for claim in context.claims for eid in claim.evidence_ids
+        }) == 1
+        for context in contexts
+    )
+    assert [
+        claim.claim_id for context in contexts for claim in context.claims
+    ] == [
+        claim.claim_id for claim in outputs[0].output.claims
+    ]

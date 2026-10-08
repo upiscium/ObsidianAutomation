@@ -1080,13 +1080,44 @@ def build_reduce_contexts(
         )
     groups: list[list[object]] = []
     for repository_claims in grouped.values():
-        groups.extend(
-            _partition_payloads(
-                repository_claims,
-                max_bytes=max_bytes,
-                envelope=envelope,
+        # Byte-bounding alone is insufficient: eight input claims may each
+        # carry up to eight different original evidence IDs. Bound their
+        # entire union before invoking the model, then apply the byte cap.
+        evidence_bounded: list[list[object]] = []
+        current: list[object] = []
+        current_evidence: set[str] = set()
+        for pair in repository_claims:
+            claim = pair[0]
+            evidence_ids = set(claim.evidence_ids)
+            if (
+                not evidence_ids
+                or len(evidence_ids) != len(claim.evidence_ids)
+                or len(evidence_ids) > MAX_CLAIM_EVIDENCE_IDS
+            ):
+                raise GitHubDailySummaryError(
+                    "reducer source claim evidence count is invalid"
+                )
+            if current and (
+                len(current) >= MAX_CLAIM_EVIDENCE_IDS
+                or len(current_evidence | evidence_ids)
+                > MAX_CLAIM_EVIDENCE_IDS
+            ):
+                evidence_bounded.append(current)
+                current = []
+                current_evidence = set()
+            current.append(pair)
+            current_evidence.update(evidence_ids)
+        if current:
+            evidence_bounded.append(current)
+
+        for group in evidence_bounded:
+            groups.extend(
+                _partition_payloads(
+                    group,
+                    max_bytes=max_bytes,
+                    envelope=envelope,
+                )
             )
-        )
     if len(groups) > MAX_CONTEXT_BATCHES:
         raise GitHubDailySummaryError(
             "context batch count exceeds contract"
@@ -1114,6 +1145,18 @@ def build_reduce_contexts(
         if len({claim.repository for claim in context.claims}) != 1:
             raise GitHubDailySummaryError(
                 "reducer context mixes repositories"
+            )
+        if len({
+            evidence_id
+            for claim in context.claims
+            for evidence_id in claim.evidence_ids
+        }) > MAX_CLAIM_EVIDENCE_IDS:
+            raise GitHubDailySummaryError(
+                "reducer context exceeds original evidence budget"
+            )
+        if len(context.claims) > MAX_CLAIM_EVIDENCE_IDS:
+            raise GitHubDailySummaryError(
+                "reducer context exceeds model source reference budget"
             )
         contexts.append(context)
     return tuple(contexts)

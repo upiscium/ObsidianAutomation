@@ -118,14 +118,22 @@ The model never returns Markdown and never chooses renderer structure.
 
 ## Reducer boundary
 
-All partial claims enter the reducer. Reducer input is itself partitioned into
-bounded 64 KiB contexts, so a high-activity day does not move the overflow
-problem from raw events into the reduction step.
+All partial claims enter the reducer. Before byte partitioning, the claims
+are grouped by repository and greedily separated so that **the union of
+distinct original evidence IDs across every claim in any reducer batch is at
+most 8**, and every batch also contains **at most 8 input claims**, matching
+the model's `source_refs` limit. The existing 64 KiB context limit is then
+applied to each such bounded group. This preserves all source claims, their original
+evidence and source-output SHA identities, and their repository-local order.
+The global batch-count cap remains in force. A single malformed source claim
+already exceeding the evidence limit is rejected, not silently truncated.
 
 The reducer may merge duplicate or overlapping claims from its same-repository
-batch. Its model-visible source_refs select input claims; normalized outputs
-inherit only original evidence IDs already present in the selected input
-claims. It cannot introduce a new evidence root.
+batch. Its model-visible source_refs select up to 8 input claims; normalized
+outputs inherit only original evidence IDs already present in the selected
+input claims. Even a model selecting **every claim in its batch** can no
+longer exceed the original evidence cap. The separate fail-closed validation
+remains authoritative for malformed refs and unsupported citations.
 
 Each reducer context binds the exact content-addressed partial output artifacts
 that supplied its claims.
