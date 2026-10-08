@@ -65,7 +65,7 @@ and claim IDs.
 
 ## Structured partial claims
 
-The model returns JSON only. A claim has:
+The model returns JSON only, citing source_refs. After deterministic resolution, a normalized stored claim has:
 
 \`\`\`text
 kind
@@ -83,7 +83,7 @@ bugfix
 issue_pr_progress
 \`\`\`
 
-A claim must cite 1..8 original \`evidence_id\` values. Runtime validation rejects:
+A normalized claim must retain 1..8 original evidence IDs. Runtime validation rejects:
 
 - unknown evidence IDs;
 - evidence outside the current partial context;
@@ -121,7 +121,7 @@ contains:
 
 Default grounding context bound is 256 KiB.
 
-The Grounding Evaluator must return exactly one assessment for every \`claim_id\`:
+The model returns one assessment per integer claim_ref; normalized GroundOutput must cover every exact claim_id once:
 
 \`\`\`text
 supported
