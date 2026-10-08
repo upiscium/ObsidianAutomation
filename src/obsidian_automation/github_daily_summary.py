@@ -1097,9 +1097,9 @@ def build_reduce_contexts(
                 raise GitHubDailySummaryError(
                     "reducer source claim evidence count is invalid"
                 )
-            if (
-                current
-                and len(current_evidence | evidence_ids)
+            if current and (
+                len(current) >= MAX_CLAIM_EVIDENCE_IDS
+                or len(current_evidence | evidence_ids)
                 > MAX_CLAIM_EVIDENCE_IDS
             ):
                 evidence_bounded.append(current)
@@ -1153,6 +1153,10 @@ def build_reduce_contexts(
         }) > MAX_CLAIM_EVIDENCE_IDS:
             raise GitHubDailySummaryError(
                 "reducer context exceeds original evidence budget"
+            )
+        if len(context.claims) > MAX_CLAIM_EVIDENCE_IDS:
+            raise GitHubDailySummaryError(
+                "reducer context exceeds model source reference budget"
             )
         contexts.append(context)
     return tuple(contexts)
