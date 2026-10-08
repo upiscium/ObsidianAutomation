@@ -963,3 +963,30 @@ def test_reducer_eager_model_merge_stays_inside_original_evidence_budget(
         str(event["evidence_id"]) for event in bundle.events
     }
     assert all(len(claim["evidence_ids"]) <= 8 for claim in final["claims"])
+
+
+
+def test_reducer_limits_source_count_with_reused_evidence(
+    tmp_path: Path,
+) -> None:
+    path, _ = _evidence(tmp_path, 1)
+    bundle = parse_evidence_bundle(path.read_bytes())
+    outputs = _partial_claims_for_events(
+        bundle, [(0,)] * 20,
+    )
+    contexts = build_reduce_contexts(
+        bundle, outputs, max_bytes=64 * 1024,
+    )
+
+    assert [len(context.claims) for context in contexts] == [8, 8, 4]
+    assert all(
+        len({
+            eid for claim in context.claims for eid in claim.evidence_ids
+        }) == 1
+        for context in contexts
+    )
+    assert [
+        claim.claim_id for context in contexts for claim in context.claims
+    ] == [
+        claim.claim_id for claim in outputs[0].output.claims
+    ]
