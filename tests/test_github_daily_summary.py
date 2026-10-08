@@ -93,6 +93,11 @@ def _fake_infer(prompt, context):
     elif prompt.stage == REDUCE_STAGE:
         raise AssertionError("deterministic reducer must not call the model")
     elif prompt.stage == GROUND_STAGE:
+        refs = prompt.output_schema["properties"]["assessments"]
+        assert refs["minItems"] == refs["maxItems"] == len(context.claims)
+        assert refs["items"]["properties"]["claim_ref"]["enum"] == list(
+            range(len(context.claims))
+        )
         content = json.dumps(
             {
                 "assessments": [
@@ -1157,3 +1162,60 @@ def test_pipeline_without_reducer_inference_preserves_all_supported_claims(
             bundle.events_by_id[eid]["repository"]
             for eid in claim["evidence_ids"]
         } == {claim["repository"]}
+
+
+
+def test_grounding_context_count_and_dynamic_ref_schema(
+    tmp_path: Path,
+) -> None:
+    from obsidian_automation.github_daily_summary import (
+        _normalized_claim,
+        _prompt_spec,
+        grounding_output_schema,
+    )
+
+    evidence_path, _ = _evidence(tmp_path, 20)
+    bundle = parse_evidence_bundle(evidence_path.read_bytes())
+    claims = tuple(
+        _normalized_claim(
+            kind="implementation",
+            repository="upiscium/Test",
+            summary=f"source {index}",
+            evidence_ids=[str(event["evidence_id"])],
+            allowed_evidence_ids=set(bundle.events_by_id),
+            events_by_id=bundle.events_by_id,
+        )
+        for index, event in enumerate(bundle.events)
+    )
+    reduced = StoredClaimOutput(
+        sha256="a" * 64,
+        output=ClaimOutput(
+            stage=REDUCE_STAGE,
+            input_context_sha256="b" * 64,
+            claims=claims,
+        ),
+    )
+    contexts = build_ground_contexts(
+        bundle, [reduced], max_bytes=256 * 1024,
+    )
+    assert [len(context.claims) for context in contexts] == [8, 8, 4]
+    assert all(context.batch_count == 3 for context in contexts)
+    assert [
+        claim.claim_id for context in contexts for claim in context.claims
+    ] == [claim.claim_id for claim in claims]
+
+    for context in contexts:
+        prompt = _prompt_spec(
+            GROUND_STAGE, ground_claim_count=len(context.claims),
+        )
+        schema = prompt.output_schema["properties"]["assessments"]
+        assert schema["minItems"] == len(context.claims)
+        assert schema["maxItems"] == len(context.claims)
+        assert schema["items"]["properties"]["claim_ref"]["enum"] == list(
+            range(len(context.claims))
+        )
+
+    with pytest.raises(GitHubDailySummaryError, match="claim_count"):
+        grounding_output_schema(claim_count=9)
+    with pytest.raises(GitHubDailySummaryError, match="claim_count"):
+        grounding_output_schema(claim_count=True)
