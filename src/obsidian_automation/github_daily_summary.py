@@ -40,6 +40,7 @@ CLAIM_KINDS = frozenset(
 MAX_PARTIAL_CONTEXT_BYTES = 64 * 1024
 MAX_REDUCE_CONTEXT_BYTES = 64 * 1024
 MAX_GROUND_CONTEXT_BYTES = 256 * 1024
+MAX_GROUND_CLAIMS_PER_CONTEXT = 8
 MAX_CONTEXT_BATCHES = 999_999
 MAX_CLAIMS_PER_OUTPUT = 128
 MAX_CLAIM_SUMMARY_CHARS = 2048
@@ -55,7 +56,7 @@ _REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 PARTIAL_PROMPT_VERSION = "github-daily-partial-v2"
 REDUCE_PROMPT_VERSION = "github-daily-reducer-v2"
-GROUND_PROMPT_VERSION = "github-daily-grounding-v1"
+GROUND_PROMPT_VERSION = "github-daily-grounding-v2"
 
 PARTIAL_SYSTEM_PROMPT = """You summarize one bounded batch of GitHub evidence.
 All events in this batch belong to one repository; their repository field
@@ -82,8 +83,9 @@ do not emit Markdown."""
 
 GROUND_SYSTEM_PROMPT = """You are the final GitHub evidence grounding evaluator.
 For every supplied input claim, return exactly one assessment using its
-integer claim_ref (not its SHA-256 claim_id). Mark supported only when the
-cited raw GitHub evidence directly supports the claim as written.
+integer claim_ref (not its SHA-256 claim_id). Use exactly the claim_ref values
+given in the input batch, each once, with no additional entries. Mark supported
+only when the cited raw GitHub evidence directly supports the claim as written.
 Mark unsupported when the claim adds an unsupported decision, implementation,
 bug fix, causal relation, completion state, or other fact. Do not rewrite
 claims. The reason must be concise plain text."""
@@ -761,33 +763,57 @@ def claim_output_schema() -> dict[str, object]:
     }
 
 
-def grounding_output_schema() -> dict[str, object]:
+def grounding_output_schema(
+    *,
+    claim_count: int | None = None,
+) -> dict[str, object]:
+    """Provide exact per-batch claim references when context count is known."""
+    if claim_count is not None and (
+        type(claim_count) is not int
+        or claim_count < 1
+        or claim_count > MAX_GROUND_CLAIMS_PER_CONTEXT
+    ):
+        raise GitHubDailySummaryError(
+            "grounding claim_count exceeds context contract"
+        )
+    assessments: dict[str, object] = {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["claim_ref", "verdict", "reason"],
+            "properties": {
+                "claim_ref": (
+                    {"type": "integer", "enum": list(range(claim_count))}
+                    if claim_count is not None
+                    else {"type": "integer", "minimum": 0}
+                ),
+                "verdict": {"enum": ["supported", "unsupported"]},
+                "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": MAX_GROUND_REASON_CHARS,
+                },
+            },
+        },
+    }
+    if claim_count is not None:
+        assessments["minItems"] = claim_count
+        assessments["maxItems"] = claim_count
     return {
         "type": "object",
         "additionalProperties": False,
         "required": ["assessments"],
-        "properties": {
-            "assessments": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["claim_ref", "verdict", "reason"],
-                    "properties": {
-                        "claim_ref": {"type": "integer", "minimum": 0},
-                        "verdict": {"enum": ["supported", "unsupported"]},
-                        "reason": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": MAX_GROUND_REASON_CHARS,
-                        },
-                    },
-                },
-            }
-        },
+        "properties": {"assessments": assessments},
     }
 
-def _prompt_spec(stage: str) -> PromptSpec:
+
+
+def _prompt_spec(
+    stage: str,
+    *,
+    ground_claim_count: int | None = None,
+) -> PromptSpec:
     if stage == PARTIAL_STAGE:
         version = PARTIAL_PROMPT_VERSION
         system = PARTIAL_SYSTEM_PROMPT
@@ -799,7 +825,9 @@ def _prompt_spec(stage: str) -> PromptSpec:
     elif stage == GROUND_STAGE:
         version = GROUND_PROMPT_VERSION
         system = GROUND_SYSTEM_PROMPT
-        schema = grounding_output_schema()
+        schema = grounding_output_schema(
+            claim_count=ground_claim_count,
+        )
     else:
         raise GitHubDailySummaryError("unknown inference stage")
     identity = _canonical_json_bytes(
@@ -1229,7 +1257,8 @@ def build_ground_contexts(
     for claim in claims:
         candidate = [*current, claim]
         if (
-            len(
+            len(candidate) <= MAX_GROUND_CLAIMS_PER_CONTEXT
+            and len(
                 context_for(
                     candidate,
                     MAX_CONTEXT_BATCHES,
@@ -1270,6 +1299,13 @@ def build_ground_contexts(
     )
     if any(len(item.to_json_bytes()) > max_bytes for item in contexts):
         raise GitHubDailySummaryError("final grounding context exceeds byte limit")
+    if any(
+        not 1 <= len(item.claims) <= MAX_GROUND_CLAIMS_PER_CONTEXT
+        for item in contexts
+    ):
+        raise GitHubDailySummaryError(
+            "grounding context claim count exceeds contract"
+        )
     return contexts
 
 
@@ -1479,6 +1515,65 @@ def _run_claim_stage(
     return tuple(stored), tuple(context_shas), tuple(provenance_shas)
 
 
+def _run_deterministic_reduce_stage(
+    state_root: Path,
+    bundle: EvidenceBundle,
+    contexts: Sequence[SummaryContext],
+) -> tuple[
+    tuple[StoredClaimOutput, ...],
+    tuple[str, ...],
+]:
+    """Carry forward validated Partial claims without an LLM citation step.
+
+    Reduction is intentionally evidence-preserving rather than semantic
+    rewriting. Every copied claim is revalidated against the original raw
+    evidence and its canonical claim identity before storage. Later
+    _dedupe_claims() removes only exact claim-ID duplicates.
+    """
+    stored: list[StoredClaimOutput] = []
+    context_shas: list[str] = []
+    events_by_id = bundle.events_by_id
+    allowed_evidence_ids = set(events_by_id)
+
+    for context in contexts:
+        if context.stage != REDUCE_STAGE:
+            raise GitHubDailySummaryError(
+                "deterministic reducer requires reduce context"
+            )
+        if context.evidence_bundle_sha256 != bundle.sha256:
+            raise GitHubDailySummaryError(
+                "deterministic reducer context evidence binding mismatch"
+            )
+
+        # Recompute every claimed identity and citation closure from the
+        # original immutable Evidence before creating a reducer output.
+        for claim in context.claims:
+            normalized = _normalized_claim(
+                kind=claim.kind,
+                repository=claim.repository,
+                summary=claim.summary,
+                evidence_ids=list(claim.evidence_ids),
+                allowed_evidence_ids=allowed_evidence_ids,
+                events_by_id=events_by_id,
+            )
+            if normalized != claim:
+                raise GitHubDailySummaryError(
+                    "deterministic reducer source claim identity mismatch"
+                )
+
+        context_sha, _ = store_context(state_root, context)
+        context_shas.append(context_sha)
+        output = ClaimOutput(
+            stage=REDUCE_STAGE,
+            input_context_sha256=context_sha,
+            claims=context.claims,
+        )
+        output_sha, _ = store_claim_output(state_root, output)
+        stored.append(StoredClaimOutput(output_sha, output))
+
+    return tuple(stored), tuple(context_shas)
+
+
 def _run_ground_stage(
     state_root: Path,
     contexts: Sequence[SummaryContext],
@@ -1498,7 +1593,10 @@ def _run_ground_stage(
             raise GitHubDailySummaryError("ground stage context is invalid")
         context_sha, _ = store_context(state_root, context)
         context_shas.append(context_sha)
-        prompt = _prompt_spec(GROUND_STAGE)
+        prompt = _prompt_spec(
+            GROUND_STAGE,
+            ground_claim_count=len(context.claims),
+        )
         response = infer(prompt, context)
         try:
             output = _parse_model_ground_output(
@@ -1556,13 +1654,11 @@ def run_pipeline(
         partial_outputs,
         max_bytes=reduce_context_bytes,
     )
-    reduce_outputs, reduce_context_shas, reduce_provenance = (
-        _run_claim_stage(
+    reduce_outputs, reduce_context_shas = (
+        _run_deterministic_reduce_stage(
             state_root,
             bundle,
             reduce_contexts,
-            infer=infer,
-            implementation_revision=implementation_revision,
         )
     )
     final_claims = _dedupe_claims(
@@ -1617,7 +1713,6 @@ def run_pipeline(
         ),
         provenance_sha256s=(
             *partial_provenance,
-            *reduce_provenance,
             *ground_provenance,
         ),
         grounded_summary_sha256=grounded_sha,

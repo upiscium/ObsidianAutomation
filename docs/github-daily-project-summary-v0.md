@@ -23,7 +23,7 @@ Partial Summarizer
 bounded claim contexts
         |
         v
-Reducer
+Deterministic Reducer
         |
         v
 bounded claim + cited-event contexts
@@ -54,35 +54,24 @@ is intentionally not the partial-context iteration order.
 A single event that cannot fit the configured context bound fails closed. It is
 never silently dropped.
 
-## Model-facing bounded source references (v1)
+## Model-facing bounded source references
 
-The model-facing protocol uses per-batch integer `source_refs` instead of
-requiring the model to copy 64-character SHA-256 evidence identifiers. Partial
-source references select events in the exact partial batch. Reducer source
-references select input claims in the exact reducer batch and deterministically
-inherit their original evidence IDs. Grounding uses a per-batch integer
-`claim_ref`. Unknown, duplicate, boolean or out-of-range references fail
-closed; no guessing or fuzzy identity repair is performed. All normalized
-intermediate and final artifacts still bind the original exact evidence IDs
-and claim IDs.
+The Partial model returns per-batch integer `source_refs`, rather than having
+to copy 64-character SHA-256 evidence identifiers. Partial source references
+select events in an exact repository-scoped context. Deterministic code resolves
+them to original evidence IDs and derives the repository from the cited source.
+Unknown, duplicate, boolean, or out-of-range source refs fail closed.
 
-### Repository-scoped inference (v2)
+The Grounding model returns integer `claim_ref` assessments. Normalization
+binds these to the exact claim IDs, rejecting missing or duplicate assessments.
 
-Partial contexts are now partitioned by repository before the byte-bounded
-batch split. Within each repository the original GitHub Evidence event order
-is preserved, and all event identities must appear exactly once across the
-resulting contexts. Reducer claim contexts are also partitioned by repository,
-retaining the original source-output SHA provenance for every selected claim.
-The total batch count and per-context byte bounds remain enforced.
+### Repository-scoped contexts
 
-The model-facing partial/reduce output contains only `kind`, `summary`, and
-`source_refs`. It does not contain a free-form `repository` property.
-Deterministic code derives repository from the **cited original evidence**
-after resolving source refs. If the cited evidence spans multiple repositories,
-or a reducer source claim's repository differs from its inherited evidence, the
-model output is rejected. It is never quietly relabeled. The normalized
-`ClaimOutput` and final `GroundedSummary` retain repository and exact SHA
-evidence IDs, with the existing closure and grounding checks unchanged.
+Partial contexts are partitioned by repository before byte-bounded splitting.
+All original evidence IDs appear exactly once, with order preserved within each
+repository. Reducer contexts remain repository-scoped and include exact
+source-output SHA bindings. The reducer no longer asks an LLM to select or
+rewrite references; original normalized claims pass through deterministically.
 
 ## Structured partial claims
 
@@ -116,29 +105,25 @@ A normalized claim must retain 1..8 original evidence IDs. Runtime validation re
 
 The model never returns Markdown and never chooses renderer structure.
 
-## Reducer boundary
+## Deterministic reducer boundary
 
-All partial claims enter the reducer. Before byte partitioning, the claims
-are grouped by repository and greedily separated so that **the union of
-distinct original evidence IDs across every claim in any reducer batch is at
-most 8**, and every batch also contains **at most 8 input claims**, matching
-the model's `source_refs` limit. The existing 64 KiB context limit is then
-applied to each such bounded group. This preserves all source claims, their original
-evidence and source-output SHA identities, and their repository-local order.
-The global batch-count cap remains in force. A single malformed source claim
-already exceeding the evidence limit is rejected, not silently truncated.
+All normalized Partial claims pass through the reducer without an LLM call.
+Its repository-specific contexts retain exact partial-output provenance,
+bounded per-context bytes, up to 8 distinct original evidence IDs and up to
+8 input claims. No source claim is dropped or silently rewritten.
 
-The reducer may merge duplicate or overlapping claims from its same-repository
-batch. Its model-visible source_refs select up to 8 input claims; normalized
-outputs inherit only original evidence IDs already present in the selected
-input claims. Even a model selecting **every claim in its batch** can no
-longer exceed the original evidence cap. The separate fail-closed validation
-remains authoritative for malformed refs and unsupported citations.
+For each source claim, the reducer recomputes its claim ID from the normalized
+kind, repository, summary, and original evidence IDs, and checks the original
+immutable GitHub events for repository/evidence closure. Any mismatch is fatal.
+The corresponding reducer ClaimOutput carries the **same claim text, kind,
+repository, claim ID, and evidence IDs** as its input. Identical claim IDs
+are deduplicated exactly before grounding. Semantic near-duplicate merging
+has been disabled pending a separately validated design.
 
-Each reducer context binds the exact content-addressed partial output artifacts
-that supplied its claims.
-
-Reducer outputs remain structured claims and retain original GitHub evidence IDs.
+Reducer contexts and ClaimOutputs remain SHA-256 content-addressed; they are
+not falsely recorded as model inference. The inference provenance set
+therefore contains only actual Partial and Ground model calls. Downstream
+GroundedSummary and Daily projection/transport formats are unchanged.
 
 ## Grounding boundary
 
@@ -149,7 +134,11 @@ contains:
 - only the raw GitHub events cited by those claims;
 - exact reducer-output SHA identities.
 
-Default grounding context bound is 256 KiB.
+Grounding contexts are bounded by both 256 KiB and eight input claims.
+Each model call receives an exact JSON Schema enum of the valid per-batch
+integer `claim_ref` values (0 through batch size minus one), with exactly
+that many assessments required. This reduces copy/range errors but never
+weakens the original exact-ID and per-claim support validation.
 
 The model returns one assessment per integer claim_ref; normalized GroundOutput must cover every exact claim_id once:
 
@@ -205,7 +194,7 @@ Markdown renderer.
 
 Every model call stores a separate immutable inference record binding:
 
-- stage: partial / reduce / ground;
+- stage: partial / ground (actual inference only);
 - exact input Context SHA-256;
 - exact normalized output SHA-256;
 - implementation revision;
@@ -233,9 +222,10 @@ Ollama uses native \`/api/chat\` structured output with \`think=false\`.
 
 OpenAI-compatible providers use strict JSON Schema response format.
 
-Provider options keep the existing validation and provenance rules. Generator,
-Reducer, and Grounding use the same configured model in v0; separate per-role
-models can be introduced later without changing artifact semantics.
+Provider options keep the existing validation and provenance rules. Partial generation and Grounding use the configured model. The reducer is a
+deterministic evidence-preserving transform, not a model call. A future
+model-driven semantic compaction stage would require a separate validation
+contract and explicit provenance.
 
 ## CLI
 

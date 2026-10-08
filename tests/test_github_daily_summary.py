@@ -91,16 +91,13 @@ def _fake_infer(prompt, context):
             )
         content = json.dumps({"claims": claims}).encode()
     elif prompt.stage == REDUCE_STAGE:
-        claims = [
-            {
-                "kind": claim.kind,
-                "summary": claim.summary,
-                "source_refs": [source_ref],
-            }
-            for source_ref, claim in enumerate(context.claims)
-        ]
-        content = json.dumps({"claims": claims}).encode()
+        raise AssertionError("deterministic reducer must not call the model")
     elif prompt.stage == GROUND_STAGE:
+        refs = prompt.output_schema["properties"]["assessments"]
+        assert refs["minItems"] == refs["maxItems"] == len(context.claims)
+        assert refs["items"]["properties"]["claim_ref"]["enum"] == list(
+            range(len(context.claims))
+        )
         content = json.dumps(
             {
                 "assessments": [
@@ -328,9 +325,10 @@ def test_full_pipeline_multibatch_preserves_evidence_and_filters_unsupported(
     assert len(result.ground_context_sha256s) > 1
     assert result.claim_count == 23
     assert result.rejected_count == 1
+    # Deterministic reducer emits content-addressed outputs but no fake
+    # model inference provenance. Only real Partial + Ground calls are counted.
     assert len(result.provenance_sha256s) == (
         len(result.partial_context_sha256s)
-        + len(result.reduce_context_sha256s)
         + len(result.ground_context_sha256s)
     )
 
@@ -914,7 +912,7 @@ def test_reducer_handles_max_sized_source_and_rejects_oversized_source(
         )
 
 
-def test_reducer_eager_model_merge_stays_inside_original_evidence_budget(
+def test_deterministic_reducer_preserves_source_evidence_budget(
     tmp_path: Path,
 ) -> None:
     evidence_path, _ = _evidence(tmp_path, 20)
@@ -922,48 +920,42 @@ def test_reducer_eager_model_merge_stays_inside_original_evidence_budget(
     state = tmp_path / "bounded-reducer-state"
     state.mkdir()
 
-    def eager_model(prompt, context):
-        if prompt.stage != REDUCE_STAGE:
-            return _fake_infer(prompt, context)
-        return InferenceResponse(
-            content=json.dumps({
-                "claims": [{
-                    "kind": "implementation",
-                    "summary": "combined source-supported changes",
-                    "source_refs": list(range(len(context.claims))),
-                }],
-            }).encode(),
-            model_provider="test-provider",
-            model_identifier="test-model",
-            model_revision="test-revision",
-            model_config={"temperature": 0},
-        )
+    def source_only_model(prompt, context):
+        assert prompt.stage != REDUCE_STAGE
+        return _fake_infer(prompt, context)
 
     result = run_pipeline(
         evidence_path=evidence_path,
         state_root=state,
-        infer=eager_model,
+        infer=source_only_model,
         implementation_revision="4" * 40,
         partial_context_bytes=64 * 1024,
         reduce_context_bytes=64 * 1024,
         ground_context_bytes=256 * 1024,
     )
     assert len(result.reduce_context_sha256s) == 3
-    assert result.claim_count == 3
-    assert result.rejected_count == 0
+    assert result.claim_count == 19
+    assert result.rejected_count == 1
     final = json.loads(result.grounded_summary_path.read_bytes())
-    assert len(final["claims"]) == 3
+    assert len(final["claims"]) == 19
     observed = [
         evidence_id
         for claim in final["claims"]
         for evidence_id in claim["evidence_ids"]
     ]
-    assert len(observed) == 20
-    assert set(observed) == {
+    rejected = [
+        claim for claim in final["rejected_claims"]
+    ]
+    assert len(observed) == 19
+    assert len(rejected) == 1
+    assert set(observed) <= {
         str(event["evidence_id"]) for event in bundle.events
     }
     assert all(len(claim["evidence_ids"]) <= 8 for claim in final["claims"])
-
+    assert len(result.provenance_sha256s) == (
+        len(result.partial_context_sha256s)
+        + len(result.ground_context_sha256s)
+    )
 
 
 def test_reducer_limits_source_count_with_reused_evidence(
@@ -990,3 +982,240 @@ def test_reducer_limits_source_count_with_reused_evidence(
     ] == [
         claim.claim_id for claim in outputs[0].output.claims
     ]
+
+
+def test_deterministic_reduce_preserves_claim_id_and_evidence(
+    tmp_path: Path,
+) -> None:
+    from obsidian_automation.github_daily_summary import (
+        _run_deterministic_reduce_stage,
+    )
+
+    evidence_path, _ = _evidence(tmp_path, 3)
+    bundle = parse_evidence_bundle(evidence_path.read_bytes())
+    events = bundle.events
+    source = SummaryClaim(
+        claim_id="0" * 64,
+        kind="implementation",
+        repository="upiscium/Test",
+        summary="implementation verified",
+        evidence_ids=(str(events[0]["evidence_id"]),),
+    )
+    # The SHA binding is not optional: an invented claim_id cannot be copied.
+    context = SummaryContext(
+        stage=REDUCE_STAGE,
+        evidence_bundle_sha256=bundle.sha256,
+        batch_index=0,
+        batch_count=1,
+        source_output_sha256s=("b" * 64,),
+        claims=(source,),
+    )
+    state = tmp_path / "deterministic-reduce"
+    state.mkdir()
+    with pytest.raises(
+        GitHubDailySummaryError, match="source claim identity mismatch"
+    ):
+        _run_deterministic_reduce_stage(state, bundle, (context,))
+
+    from obsidian_automation.github_daily_summary import (
+        _normalized_claim,
+    )
+    canonical = _normalized_claim(
+        kind=source.kind,
+        repository=source.repository,
+        summary=source.summary,
+        evidence_ids=list(source.evidence_ids),
+        allowed_evidence_ids=set(bundle.events_by_id),
+        events_by_id=bundle.events_by_id,
+    )
+    valid_context = SummaryContext(
+        stage=REDUCE_STAGE,
+        evidence_bundle_sha256=bundle.sha256,
+        batch_index=0,
+        batch_count=1,
+        source_output_sha256s=("b" * 64,),
+        claims=(canonical,),
+    )
+    stored, context_shas = _run_deterministic_reduce_stage(
+        state, bundle, (valid_context,)
+    )
+    assert len(stored) == len(context_shas) == 1
+    assert stored[0].output.claims == (canonical,)
+    assert stored[0].output.claims[0].evidence_ids == source.evidence_ids
+    assert stored[0].output.input_context_sha256 == context_shas[0]
+    assert stored[0].output.stage == REDUCE_STAGE
+    output_path = (
+        state / "github-daily-summary" / "output"
+        / f"{stored[0].sha256}.github-daily-reduce-output.json"
+    )
+    assert output_path.is_file()
+    assert json.loads(output_path.read_bytes())["claims"][0][
+        "claim_id"
+    ] == canonical.claim_id
+
+    # Re-execution with identical inputs must not manufacture different
+    # output identities or inference provenance.
+    again, repeat_shas = _run_deterministic_reduce_stage(
+        state, bundle, (valid_context,)
+    )
+    assert again == stored
+    assert repeat_shas == context_shas
+
+
+def test_deterministic_reduce_rejects_wrong_bundle_binding(
+    tmp_path: Path,
+) -> None:
+    from obsidian_automation.github_daily_summary import (
+        _run_deterministic_reduce_stage,
+    )
+    evidence_path, _ = _evidence(tmp_path, 1)
+    bundle = parse_evidence_bundle(evidence_path.read_bytes())
+    context = SummaryContext(
+        stage=REDUCE_STAGE,
+        evidence_bundle_sha256="f" * 64,
+        batch_index=0,
+        batch_count=1,
+        source_output_sha256s=(),
+        claims=(),
+    )
+    state = tmp_path / "deterministic-boundary"
+    state.mkdir()
+    with pytest.raises(
+        GitHubDailySummaryError, match="evidence binding mismatch"
+    ):
+        _run_deterministic_reduce_stage(state, bundle, (context,))
+
+
+def test_deterministic_reduce_rejects_cross_repository_source_claim(
+    tmp_path: Path,
+) -> None:
+    from obsidian_automation.github_daily_summary import (
+        _run_deterministic_reduce_stage,
+    )
+    evidence_path = _multi_repo_evidence(tmp_path, 2)
+    bundle = parse_evidence_bundle(evidence_path.read_bytes())
+    alpha = next(
+        row for row in bundle.events
+        if row["repository"] == "upiscium/Alpha"
+    )
+    source = SummaryClaim(
+        claim_id="a" * 64,
+        kind="implementation",
+        repository="upiscium/Beta",
+        summary="invalid repo",
+        evidence_ids=(str(alpha["evidence_id"]),),
+    )
+    context = SummaryContext(
+        stage=REDUCE_STAGE,
+        evidence_bundle_sha256=bundle.sha256,
+        batch_index=0,
+        batch_count=1,
+        source_output_sha256s=("b" * 64,),
+        claims=(source,),
+    )
+    state = tmp_path / "deterministic-repository"
+    state.mkdir()
+    with pytest.raises(
+        GitHubDailySummaryError, match="repository does not match cited evidence"
+    ):
+        _run_deterministic_reduce_stage(state, bundle, (context,))
+
+
+def test_pipeline_without_reducer_inference_preserves_all_supported_claims(
+    tmp_path: Path,
+) -> None:
+    evidence_path = _multi_repo_evidence(tmp_path, 16)
+    bundle = parse_evidence_bundle(evidence_path.read_bytes())
+    state = tmp_path / "deterministic-pipeline"
+    state.mkdir()
+
+    def no_reducer_model(prompt, context):
+        assert prompt.stage != REDUCE_STAGE
+        return _fake_infer(prompt, context)
+
+    result = run_pipeline(
+        evidence_path=evidence_path,
+        state_root=state,
+        infer=no_reducer_model,
+        implementation_revision="5" * 40,
+        partial_context_bytes=3200,
+        reduce_context_bytes=3200,
+        ground_context_bytes=6000,
+    )
+    assert result.reduce_context_sha256s
+    assert len(result.reduce_output_sha256s) == len(
+        result.reduce_context_sha256s
+    )
+    assert len(result.provenance_sha256s) == (
+        len(result.partial_context_sha256s)
+        + len(result.ground_context_sha256s)
+    )
+    final = json.loads(result.grounded_summary_path.read_bytes())
+    assert len(final["claims"]) == 15
+    assert len(final["rejected_claims"]) == 1
+    assert all(
+        claim["claim_id"]
+        for claim in final["claims"]
+    )
+    for claim in final["claims"]:
+        assert {
+            bundle.events_by_id[eid]["repository"]
+            for eid in claim["evidence_ids"]
+        } == {claim["repository"]}
+
+
+
+def test_grounding_context_count_and_dynamic_ref_schema(
+    tmp_path: Path,
+) -> None:
+    from obsidian_automation.github_daily_summary import (
+        _normalized_claim,
+        _prompt_spec,
+        grounding_output_schema,
+    )
+
+    evidence_path, _ = _evidence(tmp_path, 20)
+    bundle = parse_evidence_bundle(evidence_path.read_bytes())
+    claims = tuple(
+        _normalized_claim(
+            kind="implementation",
+            repository="upiscium/Test",
+            summary=f"source {index}",
+            evidence_ids=[str(event["evidence_id"])],
+            allowed_evidence_ids=set(bundle.events_by_id),
+            events_by_id=bundle.events_by_id,
+        )
+        for index, event in enumerate(bundle.events)
+    )
+    reduced = StoredClaimOutput(
+        sha256="a" * 64,
+        output=ClaimOutput(
+            stage=REDUCE_STAGE,
+            input_context_sha256="b" * 64,
+            claims=claims,
+        ),
+    )
+    contexts = build_ground_contexts(
+        bundle, [reduced], max_bytes=256 * 1024,
+    )
+    assert [len(context.claims) for context in contexts] == [8, 8, 4]
+    assert all(context.batch_count == 3 for context in contexts)
+    assert [
+        claim.claim_id for context in contexts for claim in context.claims
+    ] == [claim.claim_id for claim in claims]
+
+    for context in contexts:
+        prompt = _prompt_spec(
+            GROUND_STAGE, ground_claim_count=len(context.claims),
+        )
+        schema = prompt.output_schema["properties"]["assessments"]
+        assert schema["minItems"] == len(context.claims)
+        assert schema["maxItems"] == len(context.claims)
+        assert schema["items"]["properties"]["claim_ref"]["enum"] == list(
+            range(len(context.claims))
+        )
+
+    with pytest.raises(GitHubDailySummaryError, match="claim_count"):
+        grounding_output_schema(claim_count=9)
+    with pytest.raises(GitHubDailySummaryError, match="claim_count"):
+        grounding_output_schema(claim_count=True)
