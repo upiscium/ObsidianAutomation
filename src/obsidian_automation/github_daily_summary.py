@@ -40,7 +40,7 @@ CLAIM_KINDS = frozenset(
 MAX_PARTIAL_CONTEXT_BYTES = 64 * 1024
 MAX_REDUCE_CONTEXT_BYTES = 64 * 1024
 MAX_GROUND_CONTEXT_BYTES = 256 * 1024
-MAX_GROUND_CLAIMS_PER_CONTEXT = 8
+MAX_GROUND_CLAIMS_PER_CONTEXT = 1
 MAX_CONTEXT_BATCHES = 999_999
 MAX_CLAIMS_PER_OUTPUT = 128
 MAX_CLAIM_SUMMARY_CHARS = 2048
@@ -56,7 +56,7 @@ _REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 PARTIAL_PROMPT_VERSION = "github-daily-partial-v2"
 REDUCE_PROMPT_VERSION = "github-daily-reducer-v2"
-GROUND_PROMPT_VERSION = "github-daily-grounding-v2"
+GROUND_PROMPT_VERSION = "github-daily-grounding-v3"
 
 PARTIAL_SYSTEM_PROMPT = """You summarize one bounded batch of GitHub evidence.
 All events in this batch belong to one repository; their repository field
@@ -82,13 +82,14 @@ Never invent or broaden facts. Keep summary plain text on one line;
 do not emit Markdown."""
 
 GROUND_SYSTEM_PROMPT = """You are the final GitHub evidence grounding evaluator.
-For every supplied input claim, return exactly one assessment using its
-integer claim_ref (not its SHA-256 claim_id). Use exactly the claim_ref values
-given in the input batch, each once, with no additional entries. Mark supported
-only when the cited raw GitHub evidence directly supports the claim as written.
-Mark unsupported when the claim adds an unsupported decision, implementation,
-bug fix, causal relation, completion state, or other fact. Do not rewrite
-claims. The reason must be concise plain text."""
+You receive exactly one progress claim and only the original GitHub events
+cited by that claim. Decide whether the cited events directly support the
+entire claim as written. Mark unsupported if the claim adds an unsupported
+decision, implementation, bug fix, causal relation, completion state, or
+other fact; do not rewrite or repair claims. Return exactly one JSON object
+with only verdict (supported or unsupported) and a concise one-line reason.
+Do not output any claim IDs, claim references, evidence IDs, repository
+identifiers, lists, or additional properties. Be conservative about support."""
 
 
 class GitHubDailySummaryError(ArtifactLifecycleError):
@@ -763,57 +764,25 @@ def claim_output_schema() -> dict[str, object]:
     }
 
 
-def grounding_output_schema(
-    *,
-    claim_count: int | None = None,
-) -> dict[str, object]:
-    """Provide exact per-batch claim references when context count is known."""
-    if claim_count is not None and (
-        type(claim_count) is not int
-        or claim_count < 1
-        or claim_count > MAX_GROUND_CLAIMS_PER_CONTEXT
-    ):
-        raise GitHubDailySummaryError(
-            "grounding claim_count exceeds context contract"
-        )
-    assessments: dict[str, object] = {
-        "type": "array",
-        "items": {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["claim_ref", "verdict", "reason"],
-            "properties": {
-                "claim_ref": (
-                    {"type": "integer", "enum": list(range(claim_count))}
-                    if claim_count is not None
-                    else {"type": "integer", "minimum": 0}
-                ),
-                "verdict": {"enum": ["supported", "unsupported"]},
-                "reason": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": MAX_GROUND_REASON_CHARS,
-                },
-            },
-        },
-    }
-    if claim_count is not None:
-        assessments["minItems"] = claim_count
-        assessments["maxItems"] = claim_count
+def grounding_output_schema() -> dict[str, object]:
+    """One-claim verdict schema: no model-generated identity fields."""
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["assessments"],
-        "properties": {"assessments": assessments},
+        "required": ["verdict", "reason"],
+        "properties": {
+            "verdict": {"enum": ["supported", "unsupported"]},
+            "reason": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": MAX_GROUND_REASON_CHARS,
+            },
+        },
     }
 
 
 
-def _prompt_spec(
-    stage: str,
-    *,
-    ground_claim_count: int | None = None,
-) -> PromptSpec:
+def _prompt_spec(stage: str) -> PromptSpec:
     if stage == PARTIAL_STAGE:
         version = PARTIAL_PROMPT_VERSION
         system = PARTIAL_SYSTEM_PROMPT
@@ -825,9 +794,7 @@ def _prompt_spec(
     elif stage == GROUND_STAGE:
         version = GROUND_PROMPT_VERSION
         system = GROUND_SYSTEM_PROMPT
-        schema = grounding_output_schema(
-            claim_count=ground_claim_count,
-        )
+        schema = grounding_output_schema()
     else:
         raise GitHubDailySummaryError("unknown inference stage")
     identity = _canonical_json_bytes(
@@ -977,41 +944,39 @@ def _parse_model_ground_output(
     context: SummaryContext,
     input_context_sha256: str,
 ) -> GroundOutput:
-    """Resolve short claim refs, then enforce exact per-claim coverage."""
+    """Bind one verdict to the sole source claim, never a model-chosen ID."""
+    if (
+        context.stage != GROUND_STAGE
+        or len(context.claims) != MAX_GROUND_CLAIMS_PER_CONTEXT
+    ):
+        raise GitHubDailySummaryError(
+            "model grounding requires exactly one input claim"
+        )
     if len(data) > MAX_OUTPUT_BYTES:
         raise GitHubDailySummaryError("grounding output exceeds byte limit")
     value = _decode_json_object(data, label="grounding provider output")
-    if (
-        context.stage != GROUND_STAGE
-        or set(value) != {"assessments"}
-        or not isinstance(value["assessments"], list)
-    ):
-        raise GitHubDailySummaryError("model grounding contract mismatch")
+    if set(value) != {"verdict", "reason"}:
+        raise GitHubDailySummaryError(
+            "model grounding verdict properties do not match contract"
+        )
 
-    normalized: list[dict[str, object]] = []
-    for raw in value["assessments"]:
-        if not isinstance(raw, dict) or set(raw) != {
-            "claim_ref", "verdict", "reason",
-        }:
-            raise GitHubDailySummaryError(
-                "model grounding assessment properties do not match contract"
-            )
-        ref = raw["claim_ref"]
-        if type(ref) is not int or ref < 0 or ref >= len(context.claims):
-            raise GitHubDailySummaryError(
-                "model claim_ref is invalid or outside the context"
-            )
-        normalized.append({
-            "claim_id": context.claims[ref].claim_id,
-            "verdict": raw["verdict"],
-            "reason": raw["reason"],
-        })
-
+    # The model does not identify a target. Normalized GroundOutput retains
+    # exactly the content-addressed claim identity from this input context.
+    normalized = _canonical_json_bytes(
+        {
+            "assessments": [{
+                "claim_id": context.claims[0].claim_id,
+                "verdict": value["verdict"],
+                "reason": value["reason"],
+            }],
+        }
+    )
     return parse_ground_output(
-        _canonical_json_bytes({"assessments": normalized}),
+        normalized,
         input_context_sha256=input_context_sha256,
         claims=context.claims,
     )
+
 
 
 def parse_claim_output(
@@ -1214,99 +1179,62 @@ def build_ground_contexts(
     *,
     max_bytes: int = MAX_GROUND_CONTEXT_BYTES,
 ) -> tuple[SummaryContext, ...]:
+    """Exactly one claim and its exact cited raw events per Grounding call."""
     claims = _dedupe_claims(outputs, stage=REDUCE_STAGE)
     if not claims:
         return ()
+    if len(claims) > MAX_CONTEXT_BATCHES:
+        raise GitHubDailySummaryError(
+            "ground context batch count exceeds contract"
+        )
+
     events_by_id = bundle.events_by_id
     source_by_claim: dict[str, str] = {}
     for stored in outputs:
         for claim in stored.output.claims:
             source_by_claim.setdefault(claim.claim_id, stored.sha256)
 
-    groups: list[list[SummaryClaim]] = []
-    current: list[SummaryClaim] = []
-
-    def context_for(
-        selected: Sequence[SummaryClaim],
-        index: int,
-        count: int,
-    ) -> SummaryContext:
-        evidence_ids: set[str] = {
-            evidence_id
-            for claim in selected
-            for evidence_id in claim.evidence_ids
-        }
+    contexts: list[SummaryContext] = []
+    for index, claim in enumerate(claims):
+        cited_ids = set(claim.evidence_ids)
+        if not cited_ids or len(cited_ids) != len(claim.evidence_ids):
+            raise GitHubDailySummaryError(
+                "grounding claim evidence citations are invalid"
+            )
+        if any(
+            evidence_id not in events_by_id
+            or events_by_id[evidence_id].get("repository")
+            != claim.repository
+            for evidence_id in cited_ids
+        ):
+            raise GitHubDailySummaryError(
+                "grounding claim evidence/repository closure mismatch"
+            )
         events = tuple(
-            event
-            for event in bundle.events
-            if str(event["evidence_id"]) in evidence_ids
+            event for event in bundle.events
+            if str(event["evidence_id"]) in cited_ids
         )
-        sources = tuple(
-            dict.fromkeys(source_by_claim[claim.claim_id] for claim in selected)
-        )
-        return SummaryContext(
+        if len(events) != len(cited_ids):
+            raise GitHubDailySummaryError(
+                "grounding cited event coverage is incomplete"
+            )
+        context = SummaryContext(
             stage=GROUND_STAGE,
             evidence_bundle_sha256=bundle.sha256,
             batch_index=index,
-            batch_count=count,
-            source_output_sha256s=sources,
+            batch_count=len(claims),
+            source_output_sha256s=(source_by_claim[claim.claim_id],),
             events=events,
-            claims=tuple(selected),
+            claims=(claim,),
         )
-
-    for claim in claims:
-        candidate = [*current, claim]
-        if (
-            len(candidate) <= MAX_GROUND_CLAIMS_PER_CONTEXT
-            and len(
-                context_for(
-                    candidate,
-                    MAX_CONTEXT_BATCHES,
-                    MAX_CONTEXT_BATCHES,
-                ).to_json_bytes()
-            )
-            <= max_bytes
-        ):
-            current = candidate
-            continue
-        if not current:
+        if len(context.to_json_bytes()) > max_bytes:
             raise GitHubDailySummaryError(
                 "one grounding claim exceeds context byte limit"
             )
-        groups.append(current)
-        current = [claim]
-        if (
-            len(
-                context_for(
-                    current,
-                    MAX_CONTEXT_BATCHES,
-                    MAX_CONTEXT_BATCHES,
-                ).to_json_bytes()
-            )
-            > max_bytes
-        ):
-            raise GitHubDailySummaryError(
-                "one grounding claim exceeds context byte limit"
-            )
-    if current:
-        groups.append(current)
-    if len(groups) > MAX_CONTEXT_BATCHES:
-        raise GitHubDailySummaryError("ground context batch count exceeds contract")
+        contexts.append(context)
 
-    contexts = tuple(
-        context_for(group, index, len(groups))
-        for index, group in enumerate(groups)
-    )
-    if any(len(item.to_json_bytes()) > max_bytes for item in contexts):
-        raise GitHubDailySummaryError("final grounding context exceeds byte limit")
-    if any(
-        not 1 <= len(item.claims) <= MAX_GROUND_CLAIMS_PER_CONTEXT
-        for item in contexts
-    ):
-        raise GitHubDailySummaryError(
-            "grounding context claim count exceeds contract"
-        )
-    return contexts
+    return tuple(contexts)
+
 
 
 def parse_ground_output(
@@ -1593,10 +1521,7 @@ def _run_ground_stage(
             raise GitHubDailySummaryError("ground stage context is invalid")
         context_sha, _ = store_context(state_root, context)
         context_shas.append(context_sha)
-        prompt = _prompt_spec(
-            GROUND_STAGE,
-            ground_claim_count=len(context.claims),
-        )
+        prompt = _prompt_spec(GROUND_STAGE)
         response = infer(prompt, context)
         try:
             output = _parse_model_ground_output(

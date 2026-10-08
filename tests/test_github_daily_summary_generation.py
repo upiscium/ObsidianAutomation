@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from obsidian_automation.github_daily_summary import (
+    GROUND_STAGE,
     PARTIAL_STAGE,
+    GitHubDailySummaryError,
+    SummaryClaim,
     SummaryContext,
     prompt_spec,
 )
 from obsidian_automation.github_daily_summary_generation import (
+    _context_user_prompt,
     ollama_infer,
     openai_compatible_infer,
 )
@@ -150,3 +156,175 @@ def test_openai_adapter_uses_strict_json_schema() -> None:
     assert response.model_provider == "openai-compatible"
     assert response.model_identifier == "test-model"
     assert response.model_revision == "identifier:test-model"
+
+
+
+def test_grounding_model_input_contains_semantics_not_identity_hashes() -> None:
+    evidence = _context().events[0]
+    claim = SummaryClaim(
+        claim_id="e" * 64,
+        kind="implementation",
+        repository="upiscium/Test",
+        summary="Implemented the reported feature",
+        evidence_ids=("c" * 64,),
+    )
+    context = SummaryContext(
+        stage=GROUND_STAGE,
+        evidence_bundle_sha256="a" * 64,
+        batch_index=0,
+        batch_count=1,
+        source_output_sha256s=("b" * 64,),
+        events=(evidence,),
+        claims=(claim,),
+    )
+    original = json.loads(context.to_json_bytes())
+    assert original["claims"][0]["claim_id"] == "e" * 64
+    assert original["events"][0]["evidence_id"] == "c" * 64
+
+    model_prompt = json.loads(_context_user_prompt(context))
+    assert set(model_prompt) == {"claim", "cited_events"}
+    assert model_prompt["claim"] == {
+        "kind": "implementation",
+        "repository": "upiscium/Test",
+        "summary": "Implemented the reported feature",
+    }
+    assert len(model_prompt["cited_events"]) == 1
+    assert model_prompt["cited_events"][0]["repository"] == "upiscium/Test"
+    assert "claim_id" not in json.dumps(model_prompt)
+    assert "claim_ref" not in json.dumps(model_prompt)
+    assert "evidence_id" not in json.dumps(model_prompt)
+    assert model_prompt["cited_events"][0]["source_id"] == "d" * 40
+    schema = prompt_spec(GROUND_STAGE).output_schema
+    assert set(schema["properties"]) == {"verdict", "reason"}
+
+
+def test_grounding_model_input_refuses_multiple_claims() -> None:
+    claim = SummaryClaim(
+        claim_id="e" * 64,
+        kind="implementation",
+        repository="upiscium/Test",
+        summary="One claim",
+        evidence_ids=("c" * 64,),
+    )
+    mixed = SummaryContext(
+        stage=GROUND_STAGE,
+        evidence_bundle_sha256="a" * 64,
+        batch_index=0,
+        batch_count=1,
+        source_output_sha256s=("b" * 64,),
+        events=_context().events,
+        claims=(claim, claim),
+    )
+    with pytest.raises(
+        GitHubDailySummaryError, match="exactly one input claim"
+    ):
+        _context_user_prompt(mixed)
+
+
+
+def _singleton_grounding_context() -> SummaryContext:
+    claim = SummaryClaim(
+        claim_id="e" * 64,
+        kind="implementation",
+        repository="upiscium/Test",
+        summary="Implemented the reported feature",
+        evidence_ids=("c" * 64,),
+    )
+    return SummaryContext(
+        stage=GROUND_STAGE,
+        evidence_bundle_sha256="a" * 64,
+        batch_index=0,
+        batch_count=1,
+        source_output_sha256s=("b" * 64,),
+        events=_context().events,
+        claims=(claim,),
+    )
+
+
+def test_ollama_singleton_grounding_contract_in_actual_adapter() -> None:
+    calls = []
+
+    def transport(base_url, *, method, path, payload, timeout):
+        calls.append(path)
+        if path == "/api/tags":
+            return {
+                "models": [
+                    {
+                        "name": "gemma3:latest",
+                        "model": "gemma3:latest",
+                        "digest": MODEL_DIGEST,
+                    },
+                ],
+            }
+        assert path == "/api/chat"
+        assert payload["format"]["required"] == ["verdict", "reason"]
+        assert set(payload["format"]["properties"]) == {"verdict", "reason"}
+        assert payload["format"]["additionalProperties"] is False
+        assert payload["think"] is False
+        user = json.loads(payload["messages"][1]["content"])
+        assert set(user) == {"claim", "cited_events"}
+        assert user["claim"]["summary"] == "Implemented the reported feature"
+        return {
+            "model": "gemma3:latest",
+            "done": True,
+            "message": {
+                "role": "assistant",
+                "content": '{"verdict":"supported","reason":"Evidence supports it"}',
+            },
+        }
+
+    infer = ollama_infer(
+        base_url="https://ollama.example.test",
+        model="gemma3",
+        timeout=30.0,
+        transport=transport,
+    )
+    response = infer(
+        prompt_spec(GROUND_STAGE), _singleton_grounding_context(),
+    )
+    assert calls == ["/api/tags", "/api/chat"]
+    assert json.loads(response.content) == {
+        "verdict": "supported",
+        "reason": "Evidence supports it",
+    }
+
+
+def test_openai_singleton_grounding_contract_in_actual_adapter() -> None:
+    def transport(
+        base_url, *, method, path, payload, timeout, api_key=None,
+    ):
+        assert method == "POST"
+        assert path == "/chat/completions"
+        assert payload["response_format"]["type"] == "json_schema"
+        assert payload["response_format"]["json_schema"]["strict"] is True
+        schema = payload["response_format"]["json_schema"]["schema"]
+        assert schema["required"] == ["verdict", "reason"]
+        assert set(schema["properties"]) == {"verdict", "reason"}
+        assert schema["additionalProperties"] is False
+        assert set(json.loads(payload["messages"][1]["content"])) == {
+            "claim", "cited_events",
+        }
+        return {
+            "model": "test-model",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": '{"verdict":"unsupported","reason":"Not proven"}',
+                },
+            }],
+        }
+
+    infer = openai_compatible_infer(
+        base_url="https://provider.example.test/v1",
+        model="test-model",
+        api_key="secret",
+        timeout=30.0,
+        transport=transport,
+    )
+    response = infer(
+        prompt_spec(GROUND_STAGE), _singleton_grounding_context(),
+    )
+    assert json.loads(response.content) == {
+        "verdict": "unsupported",
+        "reason": "Not proven",
+    }

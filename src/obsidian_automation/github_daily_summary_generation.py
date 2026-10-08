@@ -64,8 +64,28 @@ def _context_user_prompt(context: SummaryContext) -> str:
         for index, claim in enumerate(payload["claims"]):
             claim["source_ref"] = index
     elif context.stage == GROUND_STAGE:
-        for index, claim in enumerate(payload["claims"]):
-            claim["claim_ref"] = index
+        if len(payload["claims"]) != 1:
+            raise GitHubDailySummaryError(
+                "Grounding model requires exactly one input claim"
+            )
+        claim = payload["claims"][0]
+        # Model-facing semantics only. Immutable SummaryContext and its SHA
+        # still hold exact claim/evidence identifiers for normalized output.
+        payload = {
+            "claim": {
+                "kind": claim["kind"],
+                "repository": claim["repository"],
+                "summary": claim["summary"],
+            },
+            "cited_events": [
+                {
+                    key: value
+                    for key, value in event.items()
+                    if key != "evidence_id"
+                }
+                for event in payload["events"]
+            ],
+        }
     else:
         raise GitHubDailySummaryError("unknown model context stage")
     return json.dumps(
