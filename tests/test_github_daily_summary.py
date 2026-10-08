@@ -907,7 +907,7 @@ def test_reducer_handles_max_sized_source_and_rejects_oversized_source(
         )
 
 
-def test_reducer_eager_model_merge_stays_inside_original_evidence_budget(
+def test_deterministic_reducer_preserves_source_evidence_budget(
     tmp_path: Path,
 ) -> None:
     evidence_path, _ = _evidence(tmp_path, 20)
@@ -915,48 +915,42 @@ def test_reducer_eager_model_merge_stays_inside_original_evidence_budget(
     state = tmp_path / "bounded-reducer-state"
     state.mkdir()
 
-    def eager_model(prompt, context):
-        if prompt.stage != REDUCE_STAGE:
-            return _fake_infer(prompt, context)
-        return InferenceResponse(
-            content=json.dumps({
-                "claims": [{
-                    "kind": "implementation",
-                    "summary": "combined source-supported changes",
-                    "source_refs": list(range(len(context.claims))),
-                }],
-            }).encode(),
-            model_provider="test-provider",
-            model_identifier="test-model",
-            model_revision="test-revision",
-            model_config={"temperature": 0},
-        )
+    def source_only_model(prompt, context):
+        assert prompt.stage != REDUCE_STAGE
+        return _fake_infer(prompt, context)
 
     result = run_pipeline(
         evidence_path=evidence_path,
         state_root=state,
-        infer=eager_model,
+        infer=source_only_model,
         implementation_revision="4" * 40,
         partial_context_bytes=64 * 1024,
         reduce_context_bytes=64 * 1024,
         ground_context_bytes=256 * 1024,
     )
     assert len(result.reduce_context_sha256s) == 3
-    assert result.claim_count == 3
-    assert result.rejected_count == 0
+    assert result.claim_count == 19
+    assert result.rejected_count == 1
     final = json.loads(result.grounded_summary_path.read_bytes())
-    assert len(final["claims"]) == 3
+    assert len(final["claims"]) == 19
     observed = [
         evidence_id
         for claim in final["claims"]
         for evidence_id in claim["evidence_ids"]
     ]
-    assert len(observed) == 20
-    assert set(observed) == {
+    rejected = [
+        claim for claim in final["rejected_claims"]
+    ]
+    assert len(observed) == 19
+    assert len(rejected) == 1
+    assert set(observed) <= {
         str(event["evidence_id"]) for event in bundle.events
     }
     assert all(len(claim["evidence_ids"]) <= 8 for claim in final["claims"])
-
+    assert len(result.provenance_sha256s) == (
+        len(result.partial_context_sha256s)
+        + len(result.ground_context_sha256s)
+    )
 
 
 def test_reducer_limits_source_count_with_reused_evidence(
