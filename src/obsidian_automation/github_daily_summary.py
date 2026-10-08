@@ -945,7 +945,10 @@ def _parse_model_ground_output(
     input_context_sha256: str,
 ) -> GroundOutput:
     """Bind one verdict to the sole source claim, never a model-chosen ID."""
-    if context.stage != GROUND_STAGE or len(context.claims) != 1:
+    if (
+        context.stage != GROUND_STAGE
+        or len(context.claims) != MAX_GROUND_CLAIMS_PER_CONTEXT
+    ):
         raise GitHubDailySummaryError(
             "model grounding requires exactly one input claim"
         )
