@@ -134,7 +134,11 @@ contains:
 - only the raw GitHub events cited by those claims;
 - exact reducer-output SHA identities.
 
-Default grounding context bound is 256 KiB.
+Grounding contexts are bounded by both 256 KiB and eight input claims.
+Each model call receives an exact JSON Schema enum of the valid per-batch
+integer `claim_ref` values (0 through batch size minus one), with exactly
+that many assessments required. This reduces copy/range errors but never
+weakens the original exact-ID and per-claim support validation.
 
 The model returns one assessment per integer claim_ref; normalized GroundOutput must cover every exact claim_id once:
 
