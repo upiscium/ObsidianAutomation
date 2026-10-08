@@ -62,8 +62,9 @@ select events in an exact repository-scoped context. Deterministic code resolves
 them to original evidence IDs and derives the repository from the cited source.
 Unknown, duplicate, boolean, or out-of-range source refs fail closed.
 
-The Grounding model returns integer `claim_ref` assessments. Normalization
-binds these to the exact claim IDs, rejecting missing or duplicate assessments.
+The Grounding model receives one claim at a time and returns only the
+`verdict` and `reason`; it does not produce a claim reference or claim ID.
+Deterministic code binds that verdict to the sole immutable input claim's SHA.
 
 ### Repository-scoped contexts
 
@@ -127,33 +128,37 @@ GroundedSummary and Daily projection/transport formats are unchanged.
 
 ## Grounding boundary
 
-Reducer claims are grouped into grounding contexts. Each grounding context
-contains:
+Each original reducer claim is evaluated in its own Grounding context, bounded
+by 256 KiB and exactly one claim. The context retains its exact claim SHA,
+the cited raw GitHub events, and exact content-addressed reducer-output SHA.
+Before dispatch, code verifies that every cited event exists and belongs to
+the declared repository.
 
-- the exact structured claims;
-- only the raw GitHub events cited by those claims;
-- exact reducer-output SHA identities.
+The model-facing prompt contains only the claim's kind, repository, summary,
+and the original cited event content. The model is not asked to repeat
+claim_id, evidence_id or claim_ref identifiers. Its structured output is:
 
-Grounding contexts are bounded by both 256 KiB and eight input claims.
-Each model call receives an exact JSON Schema enum of the valid per-batch
-integer `claim_ref` values (0 through batch size minus one), with exactly
-that many assessments required. This reduces copy/range errors but never
-weakens the original exact-ID and per-claim support validation.
+```json
+{"verdict":"supported","reason":"Cited event directly supports the claim"}
+```
 
-The model returns one assessment per integer claim_ref; normalized GroundOutput must cover every exact claim_id once:
+The model may instead return `unsupported` with its reason. The normalized
+GroundOutput retains an assessment for the **sole exact claim_id obtained from
+the input context**, never a model-supplied identity. Unexpected model
+properties, invalid verdicts, empty/multiline reasons, non-singleton contexts,
+or absent/mismatched cited Evidence fail closed.
 
-\`\`\`text
-supported
-unsupported
-\`\`\`
+Unsupported claims are deterministically excluded from the GroundedSummary;
+the model does not rewrite them. Exact Grounding coverage across all claims,
+immutable output artifacts, prompt identity and inference provenance remain
+required. The resulting Final Summary, Markdown projection and Nextcloud
+CAS transport formats are unchanged.
 
-Missing assessments, duplicate assessments, or unknown claim IDs fail closed.
+This choice increases model invocations from one per multi-claim batch to one
+per claim. It intentionally trades throughput for simpler identity binding
+and fewer attribution failures. The semantic verdict remains model-based;
+a structurally valid verdict is not a guarantee of perfect factual judgement.
 
-Unsupported claims are deterministically removed from the final grounded summary.
-The evaluator does not rewrite them.
-
-Therefore the final artifact contains only claims that survived both provenance
-closure and raw-evidence grounding.
 
 ## Evidence closure
 
