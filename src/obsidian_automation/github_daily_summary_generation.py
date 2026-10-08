@@ -55,7 +55,25 @@ _SCHEMA_NAMES = {
 
 
 def _context_user_prompt(context: SummaryContext) -> str:
-    return context.to_json_bytes().decode("utf-8")
+    """Label model-visible sources without changing immutable contexts."""
+    payload = json.loads(context.to_json_bytes())
+    if context.stage == PARTIAL_STAGE:
+        for index, event in enumerate(payload["events"]):
+            event["source_ref"] = index
+    elif context.stage == REDUCE_STAGE:
+        for index, claim in enumerate(payload["claims"]):
+            claim["source_ref"] = index
+    elif context.stage == GROUND_STAGE:
+        for index, claim in enumerate(payload["claims"]):
+            claim["claim_ref"] = index
+    else:
+        raise GitHubDailySummaryError("unknown model context stage")
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def _ollama_content(
