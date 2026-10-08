@@ -51,6 +51,18 @@ appears in exactly one partial context, in original deterministic evidence order
 A single event that cannot fit the configured context bound fails closed. It is
 never silently dropped.
 
+## Model-facing bounded source references (v1)
+
+The model-facing protocol uses per-batch integer `source_refs` instead of
+requiring the model to copy 64-character SHA-256 evidence identifiers. Partial
+source references select events in the exact partial batch. Reducer source
+references select input claims in the exact reducer batch and deterministically
+inherit their original evidence IDs. Grounding uses a per-batch integer
+`claim_ref`. Unknown, duplicate, boolean or out-of-range references fail
+closed; no guessing or fuzzy identity repair is performed. All normalized
+intermediate and final artifacts still bind the original exact evidence IDs
+and claim IDs.
+
 ## Structured partial claims
 
 The model returns JSON only. A claim has:
