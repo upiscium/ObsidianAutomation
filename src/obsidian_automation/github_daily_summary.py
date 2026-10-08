@@ -788,6 +788,145 @@ def prompt_spec(stage: str) -> PromptSpec:
     return _prompt_spec(stage)
 
 
+def _model_source_indices(
+    refs: object,
+    *,
+    source_count: int,
+) -> tuple[int, ...]:
+    """Accept only explicit in-batch integer citations, never fuzzy IDs."""
+    if (
+        not isinstance(refs, list)
+        or not 1 <= len(refs) <= MAX_CLAIM_EVIDENCE_IDS
+        or any(type(ref) is not int for ref in refs)
+        or len(set(refs)) != len(refs)
+        or any(ref < 0 or ref >= source_count for ref in refs)
+    ):
+        raise GitHubDailySummaryError(
+            "model source_refs are invalid or outside the context"
+        )
+    return tuple(refs)
+
+
+def _parse_model_claim_output(
+    data: bytes,
+    *,
+    context: SummaryContext,
+    input_context_sha256: str,
+    events_by_id: Mapping[str, Mapping[str, object]],
+) -> ClaimOutput:
+    """Resolve short refs to original IDs before invoking the exact closure gate."""
+    if len(data) > MAX_OUTPUT_BYTES:
+        raise GitHubDailySummaryError("claim provider output exceeds byte limit")
+    value = _decode_json_object(data, label=f"{context.stage} provider output")
+    if (
+        context.stage not in {PARTIAL_STAGE, REDUCE_STAGE}
+        or set(value) != {"claims"}
+        or not isinstance(value["claims"], list)
+        or len(value["claims"]) > MAX_CLAIMS_PER_OUTPUT
+    ):
+        raise GitHubDailySummaryError("model claim output contract mismatch")
+
+    source_count = (
+        len(context.events)
+        if context.stage == PARTIAL_STAGE
+        else len(context.claims)
+    )
+    allowed = (
+        {str(event["evidence_id"]) for event in context.events}
+        if context.stage == PARTIAL_STAGE
+        else {
+            evidence_id
+            for claim in context.claims
+            for evidence_id in claim.evidence_ids
+        }
+    )
+
+    normalized: list[dict[str, object]] = []
+    for raw in value["claims"]:
+        if not isinstance(raw, dict) or set(raw) != {
+            "kind", "repository", "summary", "source_refs",
+        }:
+            raise GitHubDailySummaryError(
+                "model claim properties do not match contract"
+            )
+        refs = _model_source_indices(
+            raw["source_refs"],
+            source_count=source_count,
+        )
+        if context.stage == PARTIAL_STAGE:
+            evidence_ids = [
+                str(context.events[index]["evidence_id"])
+                for index in refs
+            ]
+        else:
+            evidence_ids = list(dict.fromkeys(
+                evidence_id
+                for index in refs
+                for evidence_id in context.claims[index].evidence_ids
+            ))
+            if len(evidence_ids) > MAX_CLAIM_EVIDENCE_IDS:
+                raise GitHubDailySummaryError(
+                    "model-selected sources exceed original evidence limit"
+                )
+        normalized.append({
+            "kind": raw["kind"],
+            "repository": raw["repository"],
+            "summary": raw["summary"],
+            "evidence_ids": evidence_ids,
+        })
+
+    return parse_claim_output(
+        _canonical_json_bytes({"claims": normalized}),
+        stage=context.stage,
+        input_context_sha256=input_context_sha256,
+        allowed_evidence_ids=allowed,
+        events_by_id=events_by_id,
+    )
+
+
+def _parse_model_ground_output(
+    data: bytes,
+    *,
+    context: SummaryContext,
+    input_context_sha256: str,
+) -> GroundOutput:
+    """Resolve short claim refs, then enforce exact per-claim coverage."""
+    if len(data) > MAX_OUTPUT_BYTES:
+        raise GitHubDailySummaryError("grounding output exceeds byte limit")
+    value = _decode_json_object(data, label="grounding provider output")
+    if (
+        context.stage != GROUND_STAGE
+        or set(value) != {"assessments"}
+        or not isinstance(value["assessments"], list)
+    ):
+        raise GitHubDailySummaryError("model grounding contract mismatch")
+
+    normalized: list[dict[str, object]] = []
+    for raw in value["assessments"]:
+        if not isinstance(raw, dict) or set(raw) != {
+            "claim_ref", "verdict", "reason",
+        }:
+            raise GitHubDailySummaryError(
+                "model grounding assessment properties do not match contract"
+            )
+        ref = raw["claim_ref"]
+        if type(ref) is not int or ref < 0 or ref >= len(context.claims):
+            raise GitHubDailySummaryError(
+                "model claim_ref is invalid or outside the context"
+            )
+        normalized.append({
+            "claim_id": context.claims[ref].claim_id,
+            "verdict": raw["verdict"],
+            "reason": raw["reason"],
+        })
+
+    return parse_ground_output(
+        _canonical_json_bytes({"assessments": normalized}),
+        input_context_sha256=input_context_sha256,
+        claims=context.claims,
+    )
+
+
 def parse_claim_output(
     data: bytes,
     *,
@@ -1193,23 +1332,18 @@ def _run_claim_stage(
         context_shas.append(context_sha)
         prompt = _prompt_spec(context.stage)
         response = infer(prompt, context)
-        if context.stage == PARTIAL_STAGE:
-            allowed = {str(item["evidence_id"]) for item in context.events}
-        elif context.stage == REDUCE_STAGE:
-            allowed = {
-                evidence_id
-                for claim in context.claims
-                for evidence_id in claim.evidence_ids
-            }
-        else:
-            raise GitHubDailySummaryError("claim stage context is invalid")
-        output = parse_claim_output(
-            response.content,
-            stage=context.stage,
-            input_context_sha256=context_sha,
-            allowed_evidence_ids=allowed,
-            events_by_id=events_by_id,
-        )
+        try:
+            output = _parse_model_claim_output(
+                response.content,
+                context=context,
+                input_context_sha256=context_sha,
+                events_by_id=events_by_id,
+            )
+        except GitHubDailySummaryError as exc:
+            raise GitHubDailySummaryError(
+                f"{context.stage} batch {context.batch_index + 1}/"
+                f"{context.batch_count}: {exc}"
+            ) from exc
         output_sha, _ = store_claim_output(state_root, output)
         stored.append(StoredClaimOutput(output_sha, output))
         record = _inference_record(
@@ -1246,11 +1380,17 @@ def _run_ground_stage(
         context_shas.append(context_sha)
         prompt = _prompt_spec(GROUND_STAGE)
         response = infer(prompt, context)
-        output = parse_ground_output(
-            response.content,
-            input_context_sha256=context_sha,
-            claims=context.claims,
-        )
+        try:
+            output = _parse_model_ground_output(
+                response.content,
+                context=context,
+                input_context_sha256=context_sha,
+            )
+        except GitHubDailySummaryError as exc:
+            raise GitHubDailySummaryError(
+                f"ground batch {context.batch_index + 1}/"
+                f"{context.batch_count}: {exc}"
+            ) from exc
         output_sha, _ = store_ground_output(state_root, output)
         stored.append(StoredGroundOutput(output_sha, output))
         record = _inference_record(
