@@ -1479,6 +1479,65 @@ def _run_claim_stage(
     return tuple(stored), tuple(context_shas), tuple(provenance_shas)
 
 
+def _run_deterministic_reduce_stage(
+    state_root: Path,
+    bundle: EvidenceBundle,
+    contexts: Sequence[SummaryContext],
+) -> tuple[
+    tuple[StoredClaimOutput, ...],
+    tuple[str, ...],
+]:
+    """Carry forward validated Partial claims without an LLM citation step.
+
+    Reduction is intentionally evidence-preserving rather than semantic
+    rewriting. Every copied claim is revalidated against the original raw
+    evidence and its canonical claim identity before storage. Later
+    _dedupe_claims() removes only exact claim-ID duplicates.
+    """
+    stored: list[StoredClaimOutput] = []
+    context_shas: list[str] = []
+    events_by_id = bundle.events_by_id
+    allowed_evidence_ids = set(events_by_id)
+
+    for context in contexts:
+        if context.stage != REDUCE_STAGE:
+            raise GitHubDailySummaryError(
+                "deterministic reducer requires reduce context"
+            )
+        if context.evidence_bundle_sha256 != bundle.sha256:
+            raise GitHubDailySummaryError(
+                "deterministic reducer context evidence binding mismatch"
+            )
+
+        # Recompute every claimed identity and citation closure from the
+        # original immutable Evidence before creating a reducer output.
+        for claim in context.claims:
+            normalized = _normalized_claim(
+                kind=claim.kind,
+                repository=claim.repository,
+                summary=claim.summary,
+                evidence_ids=list(claim.evidence_ids),
+                allowed_evidence_ids=allowed_evidence_ids,
+                events_by_id=events_by_id,
+            )
+            if normalized != claim:
+                raise GitHubDailySummaryError(
+                    "deterministic reducer source claim identity mismatch"
+                )
+
+        context_sha, _ = store_context(state_root, context)
+        context_shas.append(context_sha)
+        output = ClaimOutput(
+            stage=REDUCE_STAGE,
+            input_context_sha256=context_sha,
+            claims=context.claims,
+        )
+        output_sha, _ = store_claim_output(state_root, output)
+        stored.append(StoredClaimOutput(output_sha, output))
+
+    return tuple(stored), tuple(context_shas)
+
+
 def _run_ground_stage(
     state_root: Path,
     contexts: Sequence[SummaryContext],
@@ -1556,13 +1615,11 @@ def run_pipeline(
         partial_outputs,
         max_bytes=reduce_context_bytes,
     )
-    reduce_outputs, reduce_context_shas, reduce_provenance = (
-        _run_claim_stage(
+    reduce_outputs, reduce_context_shas = (
+        _run_deterministic_reduce_stage(
             state_root,
             bundle,
             reduce_contexts,
-            infer=infer,
-            implementation_revision=implementation_revision,
         )
     )
     final_claims = _dedupe_claims(
@@ -1617,7 +1674,6 @@ def run_pipeline(
         ),
         provenance_sha256s=(
             *partial_provenance,
-            *reduce_provenance,
             *ground_provenance,
         ),
         grounded_summary_sha256=grounded_sha,
