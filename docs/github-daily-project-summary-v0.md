@@ -51,9 +51,21 @@ appears in exactly one partial context, in original deterministic evidence order
 A single event that cannot fit the configured context bound fails closed. It is
 never silently dropped.
 
+## Model-facing bounded source references (v1)
+
+The model-facing protocol uses per-batch integer `source_refs` instead of
+requiring the model to copy 64-character SHA-256 evidence identifiers. Partial
+source references select events in the exact partial batch. Reducer source
+references select input claims in the exact reducer batch and deterministically
+inherit their original evidence IDs. Grounding uses a per-batch integer
+`claim_ref`. Unknown, duplicate, boolean or out-of-range references fail
+closed; no guessing or fuzzy identity repair is performed. All normalized
+intermediate and final artifacts still bind the original exact evidence IDs
+and claim IDs.
+
 ## Structured partial claims
 
-The model returns JSON only. A claim has:
+The model returns JSON only, citing source_refs. After deterministic resolution, a normalized stored claim has:
 
 \`\`\`text
 kind
@@ -71,7 +83,7 @@ bugfix
 issue_pr_progress
 \`\`\`
 
-A claim must cite 1..8 original \`evidence_id\` values. Runtime validation rejects:
+A normalized claim must retain 1..8 original evidence IDs. Runtime validation rejects:
 
 - unknown evidence IDs;
 - evidence outside the current partial context;
@@ -109,7 +121,7 @@ contains:
 
 Default grounding context bound is 256 KiB.
 
-The Grounding Evaluator must return exactly one assessment for every \`claim_id\`:
+The model returns one assessment per integer claim_ref; normalized GroundOutput must cover every exact claim_id once:
 
 \`\`\`text
 supported
