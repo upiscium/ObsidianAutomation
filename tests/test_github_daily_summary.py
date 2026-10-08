@@ -746,3 +746,55 @@ def test_full_pipeline_multi_repo_keeps_exact_repository_evidence(
             bundle.events_by_id[evidence_id]["repository"]
             for evidence_id in claim["evidence_ids"]
         } == {claim["repository"]}
+
+
+def test_reducer_rejects_source_claim_repository_provenance_mismatch(
+    tmp_path: Path,
+) -> None:
+    bundle = parse_evidence_bundle(
+        _multi_repo_evidence(tmp_path, 2).read_bytes()
+    )
+    alpha = next(
+        event for event in bundle.events
+        if event["repository"] == "upiscium/Alpha"
+    )
+    invalid_claim = SummaryClaim(
+        claim_id="a" * 64,
+        kind="implementation",
+        repository="upiscium/Beta",
+        summary="inconsistent source claim",
+        evidence_ids=(str(alpha["evidence_id"]),),
+    )
+    context = SummaryContext(
+        stage=REDUCE_STAGE,
+        evidence_bundle_sha256=bundle.sha256,
+        batch_index=0,
+        batch_count=1,
+        source_output_sha256s=("b" * 64,),
+        claims=(invalid_claim,),
+    )
+    with pytest.raises(
+        GitHubDailySummaryError,
+        match="reducer source repository does not match cited evidence",
+    ):
+        _parse_model_claim_output(
+            json.dumps({
+                "claims": [{
+                    "kind": "implementation",
+                    "summary": "inconsistent source claim",
+                    "source_refs": [0],
+                }]
+            }).encode(),
+            context=context,
+            input_context_sha256="c" * 64,
+            events_by_id=bundle.events_by_id,
+        )
+
+
+def test_model_claim_schema_does_not_request_repository_name() -> None:
+    for stage in (PARTIAL_STAGE, REDUCE_STAGE):
+        schema = prompt_spec(stage).output_schema
+        claim = schema["properties"]["claims"]["items"]
+        assert claim["required"] == ["kind", "summary", "source_refs"]
+        assert "repository" not in claim["properties"]
+        assert claim["properties"]["source_refs"]["items"]["type"] == "integer"
