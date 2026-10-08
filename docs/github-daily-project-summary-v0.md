@@ -63,6 +63,24 @@ closed; no guessing or fuzzy identity repair is performed. All normalized
 intermediate and final artifacts still bind the original exact evidence IDs
 and claim IDs.
 
+### Repository-scoped inference (v2)
+
+Partial contexts are now partitioned by repository before the byte-bounded
+batch split. Within each repository the original GitHub Evidence event order
+is preserved, and all event identities must appear exactly once across the
+resulting contexts. Reducer claim contexts are also partitioned by repository,
+retaining the original source-output SHA provenance for every selected claim.
+The total batch count and per-context byte bounds remain enforced.
+
+The model-facing partial/reduce output contains only `kind`, `summary`, and
+`source_refs`. It does not contain a free-form `repository` property.
+Deterministic code derives repository from the **cited original evidence**
+after resolving source refs. If the cited evidence spans multiple repositories,
+or a reducer source claim's repository differs from its inherited evidence, the
+model output is rejected. It is never quietly relabeled. The normalized
+`ClaimOutput` and final `GroundedSummary` retain repository and exact SHA
+evidence IDs, with the existing closure and grounding checks unchanged.
+
 ## Structured partial claims
 
 The model returns JSON only, citing source_refs. After deterministic resolution, a normalized stored claim has:
