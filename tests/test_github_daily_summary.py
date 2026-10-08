@@ -408,6 +408,7 @@ def test_model_partial_source_refs_normalize_to_exact_evidence_ids(
     tmp_path: Path,
 ) -> None:
     path, bundle = _evidence(tmp_path, 3)
+    bundle = parse_evidence_bundle(path.read_bytes())
     context = partition_evidence(bundle, max_bytes=50_000)[0]
     events_by_id = bundle.events_by_id
     output = _parse_model_claim_output(
@@ -437,6 +438,7 @@ def test_model_partial_invalid_source_refs_fail_closed(
     bad_refs: list[object],
 ) -> None:
     path, bundle = _evidence(tmp_path, 2)
+    bundle = parse_evidence_bundle(path.read_bytes())
     context = partition_evidence(bundle, max_bytes=50_000)[0]
     with pytest.raises(GitHubDailySummaryError, match="source_refs"):
         _parse_model_claim_output(
@@ -458,6 +460,7 @@ def test_model_reducer_inherits_union_of_exact_source_claim_evidence(
     tmp_path: Path,
 ) -> None:
     path, bundle = _evidence(tmp_path, 3)
+    bundle = parse_evidence_bundle(path.read_bytes())
     event_ids = [str(e["evidence_id"]) for e in bundle.events]
     source_a = SummaryClaim(
         claim_id="a" * 64, kind="implementation",
@@ -496,6 +499,7 @@ def test_model_ground_short_refs_require_exact_claim_set(
     tmp_path: Path,
 ) -> None:
     path, bundle = _evidence(tmp_path, 2)
+    bundle = parse_evidence_bundle(path.read_bytes())
     event_ids = [str(e["evidence_id"]) for e in bundle.events]
     claims = (
         SummaryClaim(
