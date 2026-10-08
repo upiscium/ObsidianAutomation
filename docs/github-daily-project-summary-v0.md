@@ -44,9 +44,12 @@ evaluation.
 The collector in #259 does not impose a Daily-wide event limit. This pipeline
 preserves that property.
 
-Raw normalized events are greedily partitioned into content-addressed partial
-contexts with a default maximum canonical context size of 64 KiB. Every event
-appears in exactly one partial context, in original deterministic evidence order.
+Raw normalized events are grouped by repository in deterministic
+first-appearance order, then greedily partitioned into content-addressed
+partial contexts with a default maximum canonical context size of 64 KiB.
+Every event appears exactly once. Its original deterministic evidence order
+is preserved within its repository; the global cross-repository event order
+is intentionally not the partial-context iteration order.
 
 A single event that cannot fit the configured context bound fails closed. It is
 never silently dropped.
@@ -62,6 +65,24 @@ inherit their original evidence IDs. Grounding uses a per-batch integer
 closed; no guessing or fuzzy identity repair is performed. All normalized
 intermediate and final artifacts still bind the original exact evidence IDs
 and claim IDs.
+
+### Repository-scoped inference (v2)
+
+Partial contexts are now partitioned by repository before the byte-bounded
+batch split. Within each repository the original GitHub Evidence event order
+is preserved, and all event identities must appear exactly once across the
+resulting contexts. Reducer claim contexts are also partitioned by repository,
+retaining the original source-output SHA provenance for every selected claim.
+The total batch count and per-context byte bounds remain enforced.
+
+The model-facing partial/reduce output contains only `kind`, `summary`, and
+`source_refs`. It does not contain a free-form `repository` property.
+Deterministic code derives repository from the **cited original evidence**
+after resolving source refs. If the cited evidence spans multiple repositories,
+or a reducer source claim's repository differs from its inherited evidence, the
+model output is rejected. It is never quietly relabeled. The normalized
+`ClaimOutput` and final `GroundedSummary` retain repository and exact SHA
+evidence IDs, with the existing closure and grounding checks unchanged.
 
 ## Structured partial claims
 
@@ -101,9 +122,10 @@ All partial claims enter the reducer. Reducer input is itself partitioned into
 bounded 64 KiB contexts, so a high-activity day does not move the overflow
 problem from raw events into the reduction step.
 
-The reducer may merge duplicate or overlapping claims, but it may cite only
-original evidence IDs already present in its input claims. It cannot introduce a
-new evidence root.
+The reducer may merge duplicate or overlapping claims from its same-repository
+batch. Its model-visible source_refs select input claims; normalized outputs
+inherit only original evidence IDs already present in the selected input
+claims. It cannot introduce a new evidence root.
 
 Each reducer context binds the exact content-addressed partial output artifacts
 that supplied its claims.

@@ -19,6 +19,7 @@ from obsidian_automation.github_daily_summary import (
     REDUCE_STAGE,
     GitHubDailySummaryError,
     InferenceResponse,
+    ClaimOutput,
     StoredClaimOutput,
     SummaryClaim,
     SummaryContext,
@@ -80,7 +81,6 @@ def _fake_infer(prompt, context):
             claims.append(
                 {
                     "kind": "implementation",
-                    "repository": str(event["repository"]),
                     "summary": (
                         "reject event-1"
                         if source == "event-1"
@@ -94,7 +94,6 @@ def _fake_infer(prompt, context):
         claims = [
             {
                 "kind": claim.kind,
-                "repository": claim.repository,
                 "summary": claim.summary,
                 "source_refs": [source_ref],
             }
@@ -415,7 +414,6 @@ def test_model_partial_source_refs_normalize_to_exact_evidence_ids(
         json.dumps({
             "claims": [{
                 "kind": "implementation",
-                "repository": "upiscium/Test",
                 "summary": "implemented changes",
                 "source_refs": [2, 0],
             }]
@@ -424,6 +422,7 @@ def test_model_partial_source_refs_normalize_to_exact_evidence_ids(
         input_context_sha256="a" * 64,
         events_by_id=events_by_id,
     )
+    assert output.claims[0].repository == "upiscium/Test"
     assert output.claims[0].evidence_ids == (
         str(context.events[2]["evidence_id"]),
         str(context.events[0]["evidence_id"]),
@@ -445,8 +444,7 @@ def test_model_partial_invalid_source_refs_fail_closed(
             json.dumps({
                 "claims": [{
                     "kind": "implementation",
-                    "repository": "upiscium/Test",
-                    "summary": "bad citation",
+                        "summary": "bad citation",
                     "source_refs": bad_refs,
                 }]
             }).encode(),
@@ -483,7 +481,6 @@ def test_model_reducer_inherits_union_of_exact_source_claim_evidence(
         json.dumps({
             "claims": [{
                 "kind": "implementation",
-                "repository": "upiscium/Test",
                 "summary": "combined",
                 "source_refs": [0, 1],
             }]
@@ -492,6 +489,7 @@ def test_model_reducer_inherits_union_of_exact_source_claim_evidence(
         input_context_sha256="c" * 64,
         events_by_id=bundle.events_by_id,
     )
+    assert output.claims[0].repository == "upiscium/Test"
     assert output.claims[0].evidence_ids == tuple(event_ids)
 
 
@@ -545,3 +543,258 @@ def test_model_ground_short_refs_require_exact_claim_set(
                 context=context,
                 input_context_sha256="c" * 64,
             )
+
+
+def _multi_repo_evidence(tmp_path: Path, count: int = 16) -> Path:
+    start, _ = _date_window(date(2026, 10, 5))
+    message = _bounded_text("implemented change", limit=4096, label="message")
+    assert message is not None
+    events = []
+    for index in range(count):
+        repository = (
+            "upiscium/Alpha" if index % 2 == 0 else "upiscium/Beta"
+        )
+        events.append(
+            _make_event(
+                kind="default_branch_commit",
+                repository=repository,
+                occurred_at=start + timedelta(seconds=index),
+                url=(
+                    f"https://github.com/{repository}/commit/"
+                    f"{index + 1:040x}"
+                ),
+                actor="upiscium",
+                entity_type="commit",
+                number=None,
+                source_id=f"event-{index}",
+                sha=f"{index + 1:040x}",
+                message=message,
+            )
+        )
+    projects = [
+        ProjectBinding(
+            project_path=f"10-Project/{name}/{name}.md",
+            repository=f"upiscium/{name}",
+        )
+        for name in ("Alpha", "Beta")
+    ]
+    bundle = make_daily_evidence_bundle(
+        target_date=date(2026, 10, 5),
+        projects=projects,
+        events=events,
+    )
+    path = tmp_path / f"{bundle.sha256}.github-daily-evidence.json"
+    path.write_bytes(bundle.canonical_bytes)
+    return path
+
+
+def test_interleaved_repositories_make_isolated_bounded_lossless_partials(
+    tmp_path: Path,
+) -> None:
+    bundle = parse_evidence_bundle(
+        _multi_repo_evidence(tmp_path).read_bytes()
+    )
+    contexts = partition_evidence(bundle, max_bytes=2400)
+    assert len(contexts) >= 2
+    assert all(len(c.to_json_bytes()) <= 2400 for c in contexts)
+    assert all(
+        len({event["repository"] for event in c.events}) == 1
+        for c in contexts
+    )
+    observed = [
+        event["evidence_id"]
+        for context in contexts
+        for event in context.events
+    ]
+    expected = [event["evidence_id"] for event in bundle.events]
+    assert len(observed) == len(expected)
+    assert set(observed) == set(expected)
+    for repository in bundle.repositories:
+        assert [
+            event["evidence_id"]
+            for context in contexts
+            for event in context.events
+            if event["repository"] == repository
+        ] == [
+            event["evidence_id"]
+            for event in bundle.events
+            if event["repository"] == repository
+        ]
+
+
+def test_reducer_contexts_are_single_repository_and_lossless(
+    tmp_path: Path,
+) -> None:
+    bundle = parse_evidence_bundle(
+        _multi_repo_evidence(tmp_path).read_bytes()
+    )
+    claims = tuple(
+        SummaryClaim(
+            claim_id=f"{i + 1:064x}",
+            kind="implementation",
+            repository=str(event["repository"]),
+            summary=f"implemented event {i}",
+            evidence_ids=(str(event["evidence_id"]),),
+        )
+        for i, event in enumerate(bundle.events)
+    )
+    outputs = [
+        StoredClaimOutput(
+            "c" * 64,
+            ClaimOutput(
+                stage=PARTIAL_STAGE,
+                input_context_sha256="a" * 64,
+                claims=claims,
+            ),
+        )
+    ]
+    contexts = build_reduce_contexts(
+        bundle,
+        outputs,
+        max_bytes=2200,
+    )
+    assert len(contexts) >= 2
+    assert all(len(c.to_json_bytes()) <= 2200 for c in contexts)
+    assert all(
+        len({claim.repository for claim in c.claims}) == 1
+        for c in contexts
+    )
+    observed = [
+        claim.claim_id for context in contexts for claim in context.claims
+    ]
+    assert set(observed) == {claim.claim_id for claim in claims}
+    assert len(observed) == len(claims)
+
+
+def test_model_source_rejects_cross_repository_citations(
+    tmp_path: Path,
+) -> None:
+    bundle = parse_evidence_bundle(
+        _multi_repo_evidence(tmp_path, 2).read_bytes()
+    )
+    # Malicious/invalid fabricated context: the real partitioner never emits it.
+    mixed = SummaryContext(
+        stage=PARTIAL_STAGE,
+        evidence_bundle_sha256=bundle.sha256,
+        batch_index=0,
+        batch_count=1,
+        source_output_sha256s=(),
+        events=bundle.events,
+    )
+    with pytest.raises(GitHubDailySummaryError, match="span repositories"):
+        _parse_model_claim_output(
+            json.dumps({
+                "claims": [{
+                    "kind": "implementation",
+                    "summary": "unrelated projects merged",
+                    "source_refs": [0, 1],
+                }]
+            }).encode(),
+            context=mixed,
+            input_context_sha256="a" * 64,
+            events_by_id=bundle.events_by_id,
+        )
+
+
+def test_model_rejects_unrequested_repository_property(
+    tmp_path: Path,
+) -> None:
+    path, _ = _evidence(tmp_path, 2)
+    bundle = parse_evidence_bundle(path.read_bytes())
+    context = partition_evidence(bundle)[0]
+    with pytest.raises(
+        GitHubDailySummaryError,
+        match="properties do not match contract",
+    ):
+        _parse_model_claim_output(
+            json.dumps({
+                "claims": [{
+                    "kind": "implementation",
+                    "repository": "upiscium/Other",
+                    "summary": "invalid repo override",
+                    "source_refs": [0],
+                }]
+            }).encode(),
+            context=context,
+            input_context_sha256="a" * 64,
+            events_by_id=bundle.events_by_id,
+        )
+
+
+def test_full_pipeline_multi_repo_keeps_exact_repository_evidence(
+    tmp_path: Path,
+) -> None:
+    evidence_path = _multi_repo_evidence(tmp_path, 12)
+    bundle = parse_evidence_bundle(evidence_path.read_bytes())
+    state = tmp_path / "multi-summary-state"
+    state.mkdir()
+    result = run_pipeline(
+        evidence_path=evidence_path,
+        state_root=state,
+        infer=_fake_infer,
+        implementation_revision="3" * 40,
+        partial_context_bytes=3200,
+        reduce_context_bytes=3200,
+        ground_context_bytes=5000,
+    )
+    assert len(result.partial_context_sha256s) >= 2
+    assert result.claim_count == 11
+    assert result.rejected_count == 1
+    final = json.loads(result.grounded_summary_path.read_bytes())
+    for claim in final["claims"]:
+        assert {
+            bundle.events_by_id[evidence_id]["repository"]
+            for evidence_id in claim["evidence_ids"]
+        } == {claim["repository"]}
+
+
+def test_reducer_rejects_source_claim_repository_provenance_mismatch(
+    tmp_path: Path,
+) -> None:
+    bundle = parse_evidence_bundle(
+        _multi_repo_evidence(tmp_path, 2).read_bytes()
+    )
+    alpha = next(
+        event for event in bundle.events
+        if event["repository"] == "upiscium/Alpha"
+    )
+    invalid_claim = SummaryClaim(
+        claim_id="a" * 64,
+        kind="implementation",
+        repository="upiscium/Beta",
+        summary="inconsistent source claim",
+        evidence_ids=(str(alpha["evidence_id"]),),
+    )
+    context = SummaryContext(
+        stage=REDUCE_STAGE,
+        evidence_bundle_sha256=bundle.sha256,
+        batch_index=0,
+        batch_count=1,
+        source_output_sha256s=("b" * 64,),
+        claims=(invalid_claim,),
+    )
+    with pytest.raises(
+        GitHubDailySummaryError,
+        match="reducer source repository does not match cited evidence",
+    ):
+        _parse_model_claim_output(
+            json.dumps({
+                "claims": [{
+                    "kind": "implementation",
+                    "summary": "inconsistent source claim",
+                    "source_refs": [0],
+                }]
+            }).encode(),
+            context=context,
+            input_context_sha256="c" * 64,
+            events_by_id=bundle.events_by_id,
+        )
+
+
+def test_model_claim_schema_does_not_request_repository_name() -> None:
+    for stage in (PARTIAL_STAGE, REDUCE_STAGE):
+        schema = prompt_spec(stage).output_schema
+        claim = schema["properties"]["claims"]["items"]
+        assert claim["required"] == ["kind", "summary", "source_refs"]
+        assert "repository" not in claim["properties"]
+        assert claim["properties"]["source_refs"]["items"]["type"] == "integer"

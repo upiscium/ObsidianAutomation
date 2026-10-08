@@ -53,29 +53,32 @@ _IMPLEMENTATION_REVISION_RE = re.compile(r"^[0-9a-f]{40,64}$")
 _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 _REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
-PARTIAL_PROMPT_VERSION = "github-daily-partial-v1"
-REDUCE_PROMPT_VERSION = "github-daily-reducer-v1"
+PARTIAL_PROMPT_VERSION = "github-daily-partial-v2"
+REDUCE_PROMPT_VERSION = "github-daily-reducer-v2"
 GROUND_PROMPT_VERSION = "github-daily-grounding-v1"
 
 PARTIAL_SYSTEM_PROMPT = """You summarize one bounded batch of GitHub evidence.
-Return only structured claims supported by the supplied events.
+All events in this batch belong to one repository; their repository field
+identifies the project. Return only claims supported by the supplied events.
 Allowed kinds are decision, implementation, bugfix, and issue_pr_progress.
-For each claim output source_refs as a list of 1..8 integer source_ref values
-shown on events in this batch. Never output evidence_id hashes. Cite only
-events belonging to the same repository as the claim. Do not invent events,
-facts, issue numbers, pull requests, outcomes, causes, or decisions. Omit
-routine events that do not support a meaningful progress claim. Keep summary
-plain text on one line; do not emit Markdown."""
+For each claim output kind, summary, and source_refs containing 1..8 integer
+source_ref values explicitly shown on events in this batch. Do not output
+repository names or evidence_id hashes; deterministic code derives the claim
+repository from the selected original evidence. Do not invent events, facts,
+issue numbers, pull requests, outcomes, causes, or decisions. Omit routine
+events that do not support a meaningful progress claim. Keep summary plain
+text on one line; do not emit Markdown."""
 
-REDUCE_SYSTEM_PROMPT = """You reduce one bounded batch of candidate
-progress claims. Merge duplicates or closely overlapping claims when useful.
-For each output claim, cite 1..8 integer source_ref values shown on input
-claims in this batch. Cite no input claim outside the supplied batch. Evidence
-from selected source claims is inherited exactly by deterministic code, not
-copied by you. Never output evidence_id hashes. A merged claim must remain
-supported by the union of cited evidence and cannot carry more than eight
-distinct original evidence items. If exceeding that limit, keep claims separate.
-Never invent or broaden facts. Keep summary plain text on one line; no Markdown."""
+REDUCE_SYSTEM_PROMPT = """You reduce one bounded batch of candidate claims.
+All input claims in this batch belong to one repository. Merge duplicates
+or closely overlapping claims when useful. Output only kind, summary, and
+source_refs: a list of 1..8 integer source_ref values shown on input claims.
+Do not output repository names or evidence_id hashes. Evidence and repository
+are inherited exclusively from the selected input claims by deterministic
+code, which rejects mixed repositories or more than eight original evidence
+items. If a merge would violate these limits, keep claims separate.
+Never invent or broaden facts. Keep summary plain text on one line;
+do not emit Markdown."""
 
 GROUND_SYSTEM_PROMPT = """You are the final GitHub evidence grounding evaluator.
 For every supplied input claim, return exactly one assessment using its
@@ -661,7 +664,23 @@ def partition_evidence(
         )
         return context.to_json_bytes()
 
-    groups = _partition_payloads(raw, max_bytes=max_bytes, envelope=envelope)
+    # One repository per model context: preserve order within each repo.
+    grouped: dict[str, list[object]] = {}
+    for event in raw:
+        grouped.setdefault(str(event["repository"]), []).append(event)
+    groups: list[list[object]] = []
+    for repository_events in grouped.values():
+        groups.extend(
+            _partition_payloads(
+                repository_events,
+                max_bytes=max_bytes,
+                envelope=envelope,
+            )
+        )
+    if len(groups) > MAX_CONTEXT_BATCHES:
+        raise GitHubDailySummaryError(
+            "context batch count exceeds contract"
+        )
     contexts = tuple(
         SummaryContext(
             stage=PARTIAL_STAGE,
@@ -681,8 +700,27 @@ def partition_evidence(
         for event in context.events
     ]
     original = [str(event["evidence_id"]) for event in bundle.events]
-    if flattened != original:
+    if len(flattened) != len(original) or set(flattened) != set(original):
         raise GitHubDailySummaryError("partial partition is not lossless")
+    for repository, events in grouped.items():
+        original_repo_ids = [str(event["evidence_id"]) for event in events]
+        observed_repo_ids = [
+            str(event["evidence_id"])
+            for context in contexts
+            for event in context.events
+            if event["repository"] == repository
+        ]
+        if observed_repo_ids != original_repo_ids:
+            raise GitHubDailySummaryError(
+                "partial partition changed repository event order"
+            )
+    if any(
+        len({str(event["repository"]) for event in context.events}) != 1
+        for context in contexts
+    ):
+        raise GitHubDailySummaryError(
+            "partial context mixes repositories"
+        )
     return contexts
 
 
@@ -700,14 +738,10 @@ def claim_output_schema() -> dict[str, object]:
                     "type": "object",
                     "additionalProperties": False,
                     "required": [
-                        "kind", "repository", "summary", "source_refs",
+                        "kind", "summary", "source_refs",
                     ],
                     "properties": {
                         "kind": {"enum": sorted(CLAIM_KINDS)},
-                        "repository": {
-                            "type": "string",
-                            "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
-                        },
                         "summary": {
                             "type": "string",
                             "minLength": 1,
@@ -844,7 +878,7 @@ def _parse_model_claim_output(
     normalized: list[dict[str, object]] = []
     for raw in value["claims"]:
         if not isinstance(raw, dict) or set(raw) != {
-            "kind", "repository", "summary", "source_refs",
+            "kind", "summary", "source_refs",
         }:
             raise GitHubDailySummaryError(
                 "model claim properties do not match contract"
@@ -868,9 +902,34 @@ def _parse_model_claim_output(
                 raise GitHubDailySummaryError(
                     "model-selected sources exceed original evidence limit"
                 )
+        repositories: list[str] = []
+        for evidence_id in evidence_ids:
+            event = events_by_id.get(evidence_id)
+            if event is None:
+                raise GitHubDailySummaryError(
+                    "model source evidence does not exist"
+                )
+            repository = event.get("repository")
+            if not isinstance(repository, str):
+                raise GitHubDailySummaryError(
+                    "model source evidence repository is invalid"
+                )
+            repositories.append(repository)
+        if len(set(repositories)) != 1:
+            raise GitHubDailySummaryError(
+                "model source_refs span repositories"
+            )
+        repository = repositories[0]
+        if context.stage == REDUCE_STAGE and any(
+            context.claims[index].repository != repository
+            for index in refs
+        ):
+            raise GitHubDailySummaryError(
+                "reducer source repository does not match cited evidence"
+            )
         normalized.append({
             "kind": raw["kind"],
-            "repository": raw["repository"],
+            "repository": repository,
             "summary": raw["summary"],
             "evidence_ids": evidence_ids,
         })
@@ -1013,11 +1072,25 @@ def build_reduce_contexts(
             claims=claims,
         ).to_json_bytes()
 
-    groups = _partition_payloads(
-        list(indexed),
-        max_bytes=max_bytes,
-        envelope=envelope,
-    )
+    # The reducer must not have cross-project citation choices.
+    grouped: dict[str, list[object]] = {}
+    for claim, source_sha in indexed:
+        grouped.setdefault(claim.repository, []).append(
+            (claim, source_sha)
+        )
+    groups: list[list[object]] = []
+    for repository_claims in grouped.values():
+        groups.extend(
+            _partition_payloads(
+                repository_claims,
+                max_bytes=max_bytes,
+                envelope=envelope,
+            )
+        )
+    if len(groups) > MAX_CONTEXT_BATCHES:
+        raise GitHubDailySummaryError(
+            "context batch count exceeds contract"
+        )
     contexts: list[SummaryContext] = []
     for index, group in enumerate(groups):
         pairs = [
@@ -1038,6 +1111,10 @@ def build_reduce_contexts(
         )
         if len(context.to_json_bytes()) > max_bytes:
             raise GitHubDailySummaryError("final reducer context exceeds byte limit")
+        if len({claim.repository for claim in context.claims}) != 1:
+            raise GitHubDailySummaryError(
+                "reducer context mixes repositories"
+            )
         contexts.append(context)
     return tuple(contexts)
 
