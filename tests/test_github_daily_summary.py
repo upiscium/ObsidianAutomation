@@ -20,6 +20,10 @@ from obsidian_automation.github_daily_summary import (
     GitHubDailySummaryError,
     InferenceResponse,
     StoredClaimOutput,
+    SummaryClaim,
+    SummaryContext,
+    _parse_model_claim_output,
+    _parse_model_ground_output,
     build_ground_contexts,
     build_reduce_contexts,
     parse_claim_output,
@@ -71,7 +75,7 @@ def _evidence(tmp_path: Path, count: int = 24) -> tuple[Path, object]:
 def _fake_infer(prompt, context):
     if prompt.stage == PARTIAL_STAGE:
         claims = []
-        for event in context.events:
+        for source_ref, event in enumerate(context.events):
             source = str(event["source_id"])
             claims.append(
                 {
@@ -82,7 +86,7 @@ def _fake_infer(prompt, context):
                         if source == "event-1"
                         else f"implemented {source}"
                     ),
-                    "evidence_ids": [str(event["evidence_id"])],
+                    "source_refs": [source_ref],
                 }
             )
         content = json.dumps({"claims": claims}).encode()
@@ -92,9 +96,9 @@ def _fake_infer(prompt, context):
                 "kind": claim.kind,
                 "repository": claim.repository,
                 "summary": claim.summary,
-                "evidence_ids": list(claim.evidence_ids),
+                "source_refs": [source_ref],
             }
-            for claim in context.claims
+            for source_ref, claim in enumerate(context.claims)
         ]
         content = json.dumps({"claims": claims}).encode()
     elif prompt.stage == GROUND_STAGE:
@@ -102,7 +106,7 @@ def _fake_infer(prompt, context):
             {
                 "assessments": [
                     {
-                        "claim_id": claim.claim_id,
+                        "claim_ref": claim_ref,
                         "verdict": (
                             "unsupported"
                             if claim.summary.startswith("reject ")
@@ -114,7 +118,7 @@ def _fake_infer(prompt, context):
                             else "claim is directly supported"
                         ),
                     }
-                    for claim in context.claims
+                    for claim_ref, claim in enumerate(context.claims)
                 ]
             }
         ).encode()
@@ -397,3 +401,143 @@ def test_prompt_identity_is_stable_and_stage_specific() -> None:
             ground.template_sha256,
         }
     ) == 3
+
+
+
+def test_model_partial_source_refs_normalize_to_exact_evidence_ids(
+    tmp_path: Path,
+) -> None:
+    path, bundle = _evidence(tmp_path, 3)
+    context = partition_evidence(bundle, max_bytes=50_000)[0]
+    events_by_id = bundle.events_by_id
+    output = _parse_model_claim_output(
+        json.dumps({
+            "claims": [{
+                "kind": "implementation",
+                "repository": "upiscium/Test",
+                "summary": "implemented changes",
+                "source_refs": [2, 0],
+            }]
+        }).encode(),
+        context=context,
+        input_context_sha256="a" * 64,
+        events_by_id=events_by_id,
+    )
+    assert output.claims[0].evidence_ids == (
+        str(context.events[2]["evidence_id"]),
+        str(context.events[0]["evidence_id"]),
+    )
+
+
+@pytest.mark.parametrize("bad_refs", [
+    [-1], [99], [True], [0, 0], ["0"], [], [0] * 9,
+])
+def test_model_partial_invalid_source_refs_fail_closed(
+    tmp_path: Path,
+    bad_refs: list[object],
+) -> None:
+    path, bundle = _evidence(tmp_path, 2)
+    context = partition_evidence(bundle, max_bytes=50_000)[0]
+    with pytest.raises(GitHubDailySummaryError, match="source_refs"):
+        _parse_model_claim_output(
+            json.dumps({
+                "claims": [{
+                    "kind": "implementation",
+                    "repository": "upiscium/Test",
+                    "summary": "bad citation",
+                    "source_refs": bad_refs,
+                }]
+            }).encode(),
+            context=context,
+            input_context_sha256="a" * 64,
+            events_by_id=bundle.events_by_id,
+        )
+
+
+def test_model_reducer_inherits_union_of_exact_source_claim_evidence(
+    tmp_path: Path,
+) -> None:
+    path, bundle = _evidence(tmp_path, 3)
+    event_ids = [str(e["evidence_id"]) for e in bundle.events]
+    source_a = SummaryClaim(
+        claim_id="a" * 64, kind="implementation",
+        repository="upiscium/Test", summary="first",
+        evidence_ids=(event_ids[0], event_ids[1]),
+    )
+    source_b = SummaryClaim(
+        claim_id="b" * 64, kind="implementation",
+        repository="upiscium/Test", summary="second",
+        evidence_ids=(event_ids[1], event_ids[2]),
+    )
+    context = SummaryContext(
+        stage=REDUCE_STAGE,
+        evidence_bundle_sha256=bundle.sha256,
+        batch_index=0, batch_count=1,
+        source_output_sha256s=(),
+        claims=(source_a, source_b),
+    )
+    output = _parse_model_claim_output(
+        json.dumps({
+            "claims": [{
+                "kind": "implementation",
+                "repository": "upiscium/Test",
+                "summary": "combined",
+                "source_refs": [0, 1],
+            }]
+        }).encode(),
+        context=context,
+        input_context_sha256="c" * 64,
+        events_by_id=bundle.events_by_id,
+    )
+    assert output.claims[0].evidence_ids == tuple(event_ids)
+
+
+def test_model_ground_short_refs_require_exact_claim_set(
+    tmp_path: Path,
+) -> None:
+    path, bundle = _evidence(tmp_path, 2)
+    event_ids = [str(e["evidence_id"]) for e in bundle.events]
+    claims = (
+        SummaryClaim(
+            claim_id="a" * 64, kind="implementation",
+            repository="upiscium/Test", summary="first",
+            evidence_ids=(event_ids[0],),
+        ),
+        SummaryClaim(
+            claim_id="b" * 64, kind="implementation",
+            repository="upiscium/Test", summary="second",
+            evidence_ids=(event_ids[1],),
+        ),
+    )
+    context = SummaryContext(
+        stage=GROUND_STAGE,
+        evidence_bundle_sha256=bundle.sha256,
+        batch_index=0, batch_count=1,
+        source_output_sha256s=(),
+        claims=claims,
+    )
+    valid = _parse_model_ground_output(
+        json.dumps({
+            "assessments": [
+                {"claim_ref": 1, "verdict": "unsupported", "reason": "overstated"},
+                {"claim_ref": 0, "verdict": "supported", "reason": "grounded"},
+            ]
+        }).encode(),
+        context=context,
+        input_context_sha256="c" * 64,
+    )
+    assert [a.claim_id for a in valid.assessments] == [
+        claims[0].claim_id, claims[1].claim_id,
+    ]
+    for refs in ([0, 0], [1], [0, True], [0, 4]):
+        with pytest.raises(GitHubDailySummaryError):
+            _parse_model_ground_output(
+                json.dumps({
+                    "assessments": [
+                        {"claim_ref": r, "verdict": "supported", "reason": "test"}
+                        for r in refs
+                    ]
+                }).encode(),
+                context=context,
+                input_context_sha256="c" * 64,
+            )
