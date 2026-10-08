@@ -71,6 +71,11 @@ def test_ollama_adapter_uses_structured_non_thinking_chat() -> None:
         assert payload["format"]["additionalProperties"] is False
         assert payload["messages"][0]["role"] == "system"
         assert payload["messages"][1]["role"] == "user"
+        user = json.loads(payload["messages"][1]["content"])
+        assert user["events"][0]["source_ref"] == 0
+        assert payload["format"]["properties"]["claims"]["items"]["properties"][
+            "source_refs"
+        ]["items"]["type"] == "integer"
         return {
             "model": "gemma3:latest",
             "done": True,
@@ -117,6 +122,8 @@ def test_openai_adapter_uses_strict_json_schema() -> None:
         assert response_format["json_schema"]["schema"][
             "additionalProperties"
         ] is False
+        user = json.loads(payload["messages"][1]["content"])
+        assert user["events"][0]["source_ref"] == 0
         return {
             "model": "test-model",
             "choices": [
