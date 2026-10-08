@@ -44,9 +44,12 @@ evaluation.
 The collector in #259 does not impose a Daily-wide event limit. This pipeline
 preserves that property.
 
-Raw normalized events are greedily partitioned into content-addressed partial
-contexts with a default maximum canonical context size of 64 KiB. Every event
-appears in exactly one partial context, in original deterministic evidence order.
+Raw normalized events are grouped by repository in deterministic
+first-appearance order, then greedily partitioned into content-addressed
+partial contexts with a default maximum canonical context size of 64 KiB.
+Every event appears exactly once. Its original deterministic evidence order
+is preserved within its repository; the global cross-repository event order
+is intentionally not the partial-context iteration order.
 
 A single event that cannot fit the configured context bound fails closed. It is
 never silently dropped.
@@ -119,9 +122,10 @@ All partial claims enter the reducer. Reducer input is itself partitioned into
 bounded 64 KiB contexts, so a high-activity day does not move the overflow
 problem from raw events into the reduction step.
 
-The reducer may merge duplicate or overlapping claims, but it may cite only
-original evidence IDs already present in its input claims. It cannot introduce a
-new evidence root.
+The reducer may merge duplicate or overlapping claims from its same-repository
+batch. Its model-visible source_refs select input claims; normalized outputs
+inherit only original evidence IDs already present in the selected input
+claims. It cannot introduce a new evidence root.
 
 Each reducer context binds the exact content-addressed partial output artifacts
 that supplied its claims.
