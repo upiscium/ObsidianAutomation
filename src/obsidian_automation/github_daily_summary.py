@@ -53,29 +53,34 @@ _IMPLEMENTATION_REVISION_RE = re.compile(r"^[0-9a-f]{40,64}$")
 _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 _REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
-PARTIAL_PROMPT_VERSION = "github-daily-partial-v0"
-REDUCE_PROMPT_VERSION = "github-daily-reducer-v0"
-GROUND_PROMPT_VERSION = "github-daily-grounding-v0"
+PARTIAL_PROMPT_VERSION = "github-daily-partial-v1"
+REDUCE_PROMPT_VERSION = "github-daily-reducer-v1"
+GROUND_PROMPT_VERSION = "github-daily-grounding-v1"
 
 PARTIAL_SYSTEM_PROMPT = """You summarize one bounded batch of GitHub evidence.
 Return only structured claims supported by the supplied events.
 Allowed kinds are decision, implementation, bugfix, and issue_pr_progress.
-Every claim must cite one or more supplied evidence_id values, and all cited
-events must belong to the same repository as the claim. Do not invent events,
+For each claim output source_refs as a list of 1..8 integer source_ref values
+shown on events in this batch. Never output evidence_id hashes. Cite only
+events belonging to the same repository as the claim. Do not invent events,
 facts, issue numbers, pull requests, outcomes, causes, or decisions. Omit
 routine events that do not support a meaningful progress claim. Keep summary
 plain text on one line; do not emit Markdown."""
 
-REDUCE_SYSTEM_PROMPT = """You reduce a bounded set of already-grounded candidate
+REDUCE_SYSTEM_PROMPT = """You reduce one bounded batch of candidate
 progress claims. Merge duplicates or closely overlapping claims when useful.
-Return only structured claims. You may cite only evidence_id values already
-present in the input claims. Never invent or broaden facts. A merged claim must
-remain supported by the union of its cited evidence. Keep summary plain text on
-one line; do not emit Markdown."""
+For each output claim, cite 1..8 integer source_ref values shown on input
+claims in this batch. Cite no input claim outside the supplied batch. Evidence
+from selected source claims is inherited exactly by deterministic code, not
+copied by you. Never output evidence_id hashes. A merged claim must remain
+supported by the union of cited evidence and cannot carry more than eight
+distinct original evidence items. If exceeding that limit, keep claims separate.
+Never invent or broaden facts. Keep summary plain text on one line; no Markdown."""
 
 GROUND_SYSTEM_PROMPT = """You are the final GitHub evidence grounding evaluator.
-For every supplied claim_id, return exactly one assessment. Mark supported only
-when the cited raw GitHub evidence directly supports the claim as written.
+For every supplied input claim, return exactly one assessment using its
+integer claim_ref (not its SHA-256 claim_id). Mark supported only when the
+cited raw GitHub evidence directly supports the claim as written.
 Mark unsupported when the claim adds an unsupported decision, implementation,
 bug fix, causal relation, completion state, or other fact. Do not rewrite
 claims. The reason must be concise plain text."""
@@ -682,6 +687,7 @@ def partition_evidence(
 
 
 def claim_output_schema() -> dict[str, object]:
+    """Model-facing references; stored claims retain exact SHA evidence IDs."""
     return {
         "type": "object",
         "additionalProperties": False,
@@ -694,10 +700,7 @@ def claim_output_schema() -> dict[str, object]:
                     "type": "object",
                     "additionalProperties": False,
                     "required": [
-                        "kind",
-                        "repository",
-                        "summary",
-                        "evidence_ids",
+                        "kind", "repository", "summary", "source_refs",
                     ],
                     "properties": {
                         "kind": {"enum": sorted(CLAIM_KINDS)},
@@ -710,15 +713,12 @@ def claim_output_schema() -> dict[str, object]:
                             "minLength": 1,
                             "maxLength": MAX_CLAIM_SUMMARY_CHARS,
                         },
-                        "evidence_ids": {
+                        "source_refs": {
                             "type": "array",
                             "minItems": 1,
                             "maxItems": MAX_CLAIM_EVIDENCE_IDS,
                             "uniqueItems": True,
-                            "items": {
-                                "type": "string",
-                                "pattern": "^[0-9a-f]{64}$",
-                            },
+                            "items": {"type": "integer", "minimum": 0},
                         },
                     },
                 },
@@ -738,15 +738,10 @@ def grounding_output_schema() -> dict[str, object]:
                 "items": {
                     "type": "object",
                     "additionalProperties": False,
-                    "required": ["claim_id", "verdict", "reason"],
+                    "required": ["claim_ref", "verdict", "reason"],
                     "properties": {
-                        "claim_id": {
-                            "type": "string",
-                            "pattern": "^[0-9a-f]{64}$",
-                        },
-                        "verdict": {
-                            "enum": ["supported", "unsupported"]
-                        },
+                        "claim_ref": {"type": "integer", "minimum": 0},
+                        "verdict": {"enum": ["supported", "unsupported"]},
                         "reason": {
                             "type": "string",
                             "minLength": 1,
@@ -757,7 +752,6 @@ def grounding_output_schema() -> dict[str, object]:
             }
         },
     }
-
 
 def _prompt_spec(stage: str) -> PromptSpec:
     if stage == PARTIAL_STAGE:
