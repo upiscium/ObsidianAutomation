@@ -230,6 +230,25 @@ def _store_immutable(path: Path, data: bytes) -> Path:
     temp_exists = False
     fd: int | None = None
     try:
+        # A CAS object commonly already exists on replay. Verify the completed
+        # canonical inode before allocating/writing a redundant temporary copy.
+        # This is only an optimization: a missing pathname still uses atomic
+        # RENAME_NOREPLACE, and a mismatched existing object fails closed.
+        try:
+            os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise ArtifactLifecycleError("cannot inspect immutable artifact") from exc
+        else:
+            if not _same_immutable_bytes(parent_fd, path.name, data):
+                raise ArtifactLifecycleError(
+                    "immutable artifact already exists with different bytes"
+                )
+            # Another producer might have renamed this inode but crashed
+            # before syncing the parent. Re-establish directory durability.
+            os.fsync(parent_fd)
+            return path
         create_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
         create_flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
         try:
