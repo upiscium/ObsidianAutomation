@@ -356,3 +356,15 @@ def test_missing_required_environment_file_blocks_stage(tmp_path):
     assert _control(opts)["status"] == "failed"
     assert not runner.enabled and not runner.active
     assert not _called(runner, ("--profile", "live"))
+
+
+def test_new_managed_unit_after_stage_blocks_activation(tmp_path):
+    runner, opts = setup(tmp_path)
+    receipt = stage(runner, opts)
+    (opts["systemd_dir"] / "obsidian-github-unexpected.service").write_text(
+        "[Service]\nExecStart=/bin/true\n"
+    )
+    with pytest.raises(ProductionUpdateError, match="installed unit set drift"):
+        activate(receipt, opts)
+    assert _control(opts)["status"] == "staged"
+    assert not _called(runner, ("--profile", "live"))
