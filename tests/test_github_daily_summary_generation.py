@@ -79,9 +79,17 @@ def test_ollama_adapter_uses_structured_non_thinking_chat() -> None:
         assert payload["messages"][1]["role"] == "user"
         user = json.loads(payload["messages"][1]["content"])
         assert user["events"][0]["source_ref"] == 0
-        assert payload["format"]["properties"]["claims"]["items"]["properties"][
-            "source_refs"
-        ]["items"]["type"] == "integer"
+        assert user["valid_source_ref_range"] == {"minimum": 0, "maximum": 0}
+        ref_schema = payload["format"]["properties"]["claims"]["items"][
+            "properties"
+        ]["source_refs"]
+        assert ref_schema["items"] == {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 0,
+            "enum": [0],
+        }
+        assert ref_schema["maxItems"] == 1
         return {
             "model": "gemma3:latest",
             "done": True,
@@ -97,7 +105,7 @@ def test_ollama_adapter_uses_structured_non_thinking_chat() -> None:
         timeout=30.0,
         transport=transport,
     )
-    response = infer(prompt_spec(PARTIAL_STAGE), _context())
+    response = infer(prompt_spec(PARTIAL_STAGE, source_count=1), _context())
 
     assert [call[1] for call in calls] == ["/api/tags", "/api/chat"]
     assert response.content == b'{"claims": []}'
@@ -130,6 +138,12 @@ def test_openai_adapter_uses_strict_json_schema() -> None:
         ] is False
         user = json.loads(payload["messages"][1]["content"])
         assert user["events"][0]["source_ref"] == 0
+        assert user["valid_source_ref_range"] == {"minimum": 0, "maximum": 0}
+        refs = response_format["json_schema"]["schema"]["properties"][
+            "claims"
+        ]["items"]["properties"]["source_refs"]
+        assert refs["items"]["enum"] == [0]
+        assert refs["items"]["maximum"] == 0
         return {
             "model": "test-model",
             "choices": [
@@ -149,7 +163,7 @@ def test_openai_adapter_uses_strict_json_schema() -> None:
         timeout=30.0,
         transport=transport,
     )
-    response = infer(prompt_spec(PARTIAL_STAGE), _context())
+    response = infer(prompt_spec(PARTIAL_STAGE, source_count=1), _context())
 
     assert len(calls) == 1
     assert response.content == b'{"claims": []}'
