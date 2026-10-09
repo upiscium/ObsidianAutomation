@@ -25,7 +25,10 @@ This is **documentation, not a command to run before approval**.
 - Refuses an existing staging transaction unless its prior status is activated.
   A failed, preparing, or activating state requires explicit reconciliation.
 - Validates a clean main checkout, exact target commit reachable from
-  origin/main, idle effect-capable services and both existing managed timers.
+  origin/main, and current production HEAD as an ancestor of the target.
+  Non-fast-forward updates and rollbacks require a separate recovery contract;
+  this normal Stage intentionally refuses them. Effect-capable services must
+  be idle before and during staging, and both managed timers must exist.
 - Fingerprints the exact authorized config files (SHA-256 only, not content).
   By default the summarizer config is required; additional security-relevant
   service config paths may be supplied explicitly. The installed managed
