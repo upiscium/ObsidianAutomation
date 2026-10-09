@@ -54,7 +54,7 @@ _IMPLEMENTATION_REVISION_RE = re.compile(r"^[0-9a-f]{40,64}$")
 _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 _REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
-PARTIAL_PROMPT_VERSION = "github-daily-partial-v2"
+PARTIAL_PROMPT_VERSION = "github-daily-partial-v3"
 REDUCE_PROMPT_VERSION = "github-daily-reducer-v2"
 GROUND_PROMPT_VERSION = "github-daily-grounding-v3"
 
@@ -68,7 +68,9 @@ repository names or evidence_id hashes; deterministic code derives the claim
 repository from the selected original evidence. Do not invent events, facts,
 issue numbers, pull requests, outcomes, causes, or decisions. Omit routine
 events that do not support a meaningful progress claim. Keep summary plain
-text on one line; do not emit Markdown."""
+text on one line; do not emit Markdown. Cite only source_ref numbers
+listed in this batch, never continue past its last event or borrow indexes
+from another batch. Omit claims without a real cited event."""
 
 REDUCE_SYSTEM_PROMPT = """You reduce one bounded batch of candidate claims.
 All input claims in this batch belong to one repository. Merge duplicates
@@ -727,8 +729,22 @@ def partition_evidence(
     return contexts
 
 
-def claim_output_schema() -> dict[str, object]:
-    """Model-facing references; stored claims retain exact SHA evidence IDs."""
+def claim_output_schema(*, source_count: int | None = None) -> dict[str, object]:
+    """Bound model-facing source IDs to this context; never change evidence IDs."""
+    if source_count is not None and (
+        type(source_count) is not int
+        or not 1 <= source_count <= MAX_PARTIAL_CONTEXT_BYTES
+    ):
+        raise GitHubDailySummaryError(
+            "model source count must be a bounded positive integer"
+        )
+    source_items: dict[str, object] = {"type": "integer", "minimum": 0}
+    if source_count is not None:
+        # An explicit integer enum is understood by structured-output
+        # providers and constrains generation more reliably than maximum alone.
+        # Runtime validation below remains independently authoritative.
+        source_items["maximum"] = source_count - 1
+        source_items["enum"] = list(range(source_count))
     return {
         "type": "object",
         "additionalProperties": False,
@@ -753,9 +769,13 @@ def claim_output_schema() -> dict[str, object]:
                         "source_refs": {
                             "type": "array",
                             "minItems": 1,
-                            "maxItems": MAX_CLAIM_EVIDENCE_IDS,
+                            "maxItems": min(
+                                MAX_CLAIM_EVIDENCE_IDS,
+                                source_count if source_count is not None
+                                else MAX_CLAIM_EVIDENCE_IDS,
+                            ),
                             "uniqueItems": True,
-                            "items": {"type": "integer", "minimum": 0},
+                            "items": source_items,
                         },
                     },
                 },
@@ -782,11 +802,17 @@ def grounding_output_schema() -> dict[str, object]:
 
 
 
-def _prompt_spec(stage: str) -> PromptSpec:
+def _prompt_spec(
+    stage: str, *, source_count: int | None = None,
+) -> PromptSpec:
     if stage == PARTIAL_STAGE:
+        if source_count is None:
+            raise GitHubDailySummaryError(
+                "Partial prompt requires the exact source count"
+            )
         version = PARTIAL_PROMPT_VERSION
         system = PARTIAL_SYSTEM_PROMPT
-        schema = claim_output_schema()
+        schema = claim_output_schema(source_count=source_count)
     elif stage == REDUCE_STAGE:
         version = REDUCE_PROMPT_VERSION
         system = REDUCE_SYSTEM_PROMPT
@@ -797,6 +823,10 @@ def _prompt_spec(stage: str) -> PromptSpec:
         schema = grounding_output_schema()
     else:
         raise GitHubDailySummaryError("unknown inference stage")
+    if stage != PARTIAL_STAGE and source_count is not None:
+        raise GitHubDailySummaryError(
+            "non-Partial prompt cannot accept a source count"
+        )
     identity = _canonical_json_bytes(
         {
             "template_version": version,
@@ -813,8 +843,10 @@ def _prompt_spec(stage: str) -> PromptSpec:
     )
 
 
-def prompt_spec(stage: str) -> PromptSpec:
-    return _prompt_spec(stage)
+def prompt_spec(
+    stage: str, *, source_count: int | None = None,
+) -> PromptSpec:
+    return _prompt_spec(stage, source_count=source_count)
 
 
 def _model_source_indices(
@@ -1414,7 +1446,9 @@ def _run_claim_stage(
     for context in contexts:
         context_sha, _ = store_context(state_root, context)
         context_shas.append(context_sha)
-        prompt = _prompt_spec(context.stage)
+        prompt = _prompt_spec(
+            context.stage, source_count=len(context.events)
+        )
         response = infer(prompt, context)
         try:
             output = _parse_model_claim_output(

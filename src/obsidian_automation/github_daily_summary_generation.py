@@ -58,8 +58,18 @@ def _context_user_prompt(context: SummaryContext) -> str:
     """Label model-visible sources without changing immutable contexts."""
     payload = json.loads(context.to_json_bytes())
     if context.stage == PARTIAL_STAGE:
+        if not payload["events"]:
+            raise GitHubDailySummaryError(
+                "Partial model context requires at least one event"
+            )
         for index, event in enumerate(payload["events"]):
             event["source_ref"] = index
+        # Explicitly restate the valid range in addition to the bounded
+        # structured-output enum. Do not change the immutable source context.
+        payload["valid_source_ref_range"] = {
+            "minimum": 0,
+            "maximum": len(payload["events"]) - 1,
+        }
     elif context.stage == REDUCE_STAGE:
         for index, claim in enumerate(payload["claims"]):
             claim["source_ref"] = index

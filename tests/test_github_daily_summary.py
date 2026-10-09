@@ -75,6 +75,11 @@ def _evidence(tmp_path: Path, count: int = 24) -> tuple[Path, object]:
 
 def _fake_infer(prompt, context):
     if prompt.stage == PARTIAL_STAGE:
+        refs_schema = prompt.output_schema["properties"]["claims"]["items"][
+            "properties"
+        ]["source_refs"]
+        assert refs_schema["items"]["enum"] == list(range(len(context.events)))
+        assert refs_schema["items"]["maximum"] == len(context.events) - 1
         claims = []
         for source_ref, event in enumerate(context.events):
             source = str(event["source_id"])
@@ -342,6 +347,29 @@ def test_full_pipeline_multibatch_preserves_evidence_and_filters_unsupported(
         if context["stage"] == PARTIAL_STAGE:
             assert context["events"]
 
+    # Each actual Partial inference receipt hashes the concrete, batch-bound
+    # structured-output schema, rather than the unbounded template schema.
+    for digest in result.provenance_sha256s:
+        path = state / "github-daily-summary/provenance" / (
+            f"{digest}.github-daily-inference.json"
+        )
+        record = json.loads(path.read_bytes())
+        if record["stage"] != PARTIAL_STAGE:
+            continue
+        input_path = state / "github-daily-summary/context" / (
+            f"{record['input_context_sha256']}.github-daily-partial-context.json"
+        )
+        batch = json.loads(input_path.read_bytes())
+        expected_prompt = prompt_spec(
+            PARTIAL_STAGE, source_count=len(batch["events"])
+        )
+        assert record["prompt_template_sha256"] == (
+            expected_prompt.template_sha256
+        )
+        assert record["prompt_template_version"] == (
+            expected_prompt.template_version
+        )
+
 
 def test_empty_evidence_produces_empty_grounded_summary(
     tmp_path: Path,
@@ -374,13 +402,17 @@ def test_empty_evidence_produces_empty_grounded_summary(
 
 
 def test_prompt_identity_is_stable_and_stage_specific() -> None:
-    partial = prompt_spec(PARTIAL_STAGE)
+    partial = prompt_spec(PARTIAL_STAGE, source_count=66)
     reduce = prompt_spec(REDUCE_STAGE)
     ground = prompt_spec(GROUND_STAGE)
 
     assert partial.template_sha256 == prompt_spec(
-        PARTIAL_STAGE
+        PARTIAL_STAGE, source_count=66
     ).template_sha256
+    assert partial.template_sha256 != prompt_spec(
+        PARTIAL_STAGE, source_count=65
+    ).template_sha256
+    assert partial.template_version == "github-daily-partial-v3"
     assert len(
         {
             partial.template_sha256,
@@ -388,6 +420,66 @@ def test_prompt_identity_is_stable_and_stage_specific() -> None:
             ground.template_sha256,
         }
     ) == 3
+
+
+@pytest.mark.parametrize(
+    "bad_count", [None, 0, -1, True, 1.5, "66", 65_537],
+)
+def test_partial_prompt_rejects_missing_or_invalid_source_count(
+    bad_count: object,
+) -> None:
+    with pytest.raises(GitHubDailySummaryError, match="source count"):
+        prompt_spec(PARTIAL_STAGE, source_count=bad_count)
+
+
+def test_partial_model_schema_binds_66_evidence_refs_and_preserves_ids(
+    tmp_path: Path,
+) -> None:
+    path, _ = _evidence(tmp_path, 66)
+    bundle = parse_evidence_bundle(path.read_bytes())
+    contexts = partition_evidence(bundle)
+    assert len(contexts) == 1
+    context = contexts[0]
+    assert len(context.events) == 66
+
+    spec = prompt_spec(PARTIAL_STAGE, source_count=len(context.events))
+    refs_schema = spec.output_schema["properties"]["claims"]["items"][
+        "properties"
+    ]["source_refs"]
+    assert refs_schema["items"] == {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 65,
+        "enum": list(range(66)),
+    }
+    assert refs_schema["maxItems"] == 8
+
+    with pytest.raises(GitHubDailySummaryError, match="source_refs"):
+        _parse_model_claim_output(
+            json.dumps({"claims": [{
+                "kind": "implementation",
+                "summary": "hallucinated continuation",
+                "source_refs": [65, 66, 67, 68],
+            }]}).encode(),
+            context=context,
+            input_context_sha256="a" * 64,
+            events_by_id=bundle.events_by_id,
+        )
+
+    valid = _parse_model_claim_output(
+        json.dumps({"claims": [{
+            "kind": "implementation",
+            "summary": "cites two real events",
+            "source_refs": [65, 0],
+        }]}).encode(),
+        context=context,
+        input_context_sha256="a" * 64,
+        events_by_id=bundle.events_by_id,
+    )
+    assert valid.claims[0].evidence_ids == (
+        context.events[65]["evidence_id"],
+        context.events[0]["evidence_id"],
+    )
 
 
 
@@ -850,7 +942,10 @@ def test_reducer_rejects_source_claim_repository_provenance_mismatch(
 
 def test_model_claim_schema_does_not_request_repository_name() -> None:
     for stage in (PARTIAL_STAGE, REDUCE_STAGE):
-        schema = prompt_spec(stage).output_schema
+        schema = (
+            prompt_spec(stage, source_count=4).output_schema
+            if stage == PARTIAL_STAGE else prompt_spec(stage).output_schema
+        )
         claim = schema["properties"]["claims"]["items"]
         assert claim["required"] == ["kind", "summary", "source_refs"]
         assert "repository" not in claim["properties"]

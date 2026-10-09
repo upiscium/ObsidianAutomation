@@ -62,6 +62,21 @@ select events in an exact repository-scoped context. Deterministic code resolves
 them to original evidence IDs and derives the repository from the cited source.
 Unknown, duplicate, boolean, or out-of-range source refs fail closed.
 
+For Partial, the model-facing schema is derived for **each batch**: the
+`source_refs.items.enum` contains exactly `0..N-1` for that batch's `N`
+events (plus the integer min/max); `maxItems` is bounded by both eight and
+the batch's available source count. The model-facing user message also
+announces that range. The Partial prompt contract is version `v3`. The
+original SHA-256 Evidence IDs, repository membership and immutable context
+do not change. Neither the model nor the schema can legalize an invented
+reference: the runtime resolver still rejects nonexistent, duplicate, boolean
+and out-of-batch values without aliasing, clamping or discarding claims.
+
+The enum constrains structured generation on supported providers but is not
+a substitute for checking model output after inference. A provider that
+ignores some JSON Schema constraints still fails closed at the deterministic
+citation and Grounding boundaries.
+
 The Grounding model receives one claim at a time and returns only the
 `verdict` and `reason`; it does not produce a claim reference or claim ID.
 Deterministic code binds that verdict to the sole immutable input claim's SHA.
@@ -210,8 +225,14 @@ Every model call stores a separate immutable inference record binding:
 - validated model configuration;
 - generation timestamp.
 
-The prompt digest covers the stage's fixed system prompt and structured-output
-schema. The variable user input is bound by the Context SHA.
+The prompt digest covers the stage's fixed system prompt and the **exact
+structured-output schema used for that invocation**. For Partial `v3`, its
+allowed `source_ref` enum varies by the number of events in the batch, so
+its prompt SHA varies deterministically with the batch's source count.
+The variable original evidence user input remains bound by the Context SHA.
+A stored inference record therefore binds both the actual constrained
+schema and the immutable source context; the template version remains stable
+across batches of the same implementation.
 
 ## Providers
 
