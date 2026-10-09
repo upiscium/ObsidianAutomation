@@ -135,3 +135,21 @@ def test_missing_atomic_rename_fails_closed_before_publication(tmp_path: Path, m
     assert not target.exists()
     assert not list(tmp_path.glob(".obsidian-cas-*.tmp"))
     assert cas._store_immutable(target, b"new") == target
+
+
+def _write_with_production_umask(final: str):
+    os.umask(0o027)
+    cas._store_immutable(Path(final), b"production-mode-sample")
+
+
+def test_production_umask_027_preserves_group_read_mode(tmp_path: Path):
+    """Production summarizer uses UMask=0027; publication must preserve mode 0640."""
+    target = tmp_path / "cas.json"
+    proc = multiprocessing.get_context("fork").Process(
+        target=_write_with_production_umask, args=(str(target),)
+    )
+    proc.start()
+    proc.join(timeout=5)
+    assert proc.exitcode == 0
+    assert (target.stat().st_mode & 0o777) == 0o640
+    assert target.read_bytes() == b"production-mode-sample"
