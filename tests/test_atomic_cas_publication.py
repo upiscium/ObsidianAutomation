@@ -329,9 +329,57 @@ def test_default_acl_reader_masked_while_staged_then_restored(
     assert len(snapshots) == 1
     mode, acl_during_write = snapshots[0]
     assert mode == 0o600
-    assert "user:1001:r-x" in acl_during_write
-    assert "#effective:---" in acl_during_write
+    # libacl prints a name (runner) when uid=1001 resolves on CI, but the
+    # numeric UID on minimal systems. Compare the effective ACL, not spelling.
+    def named_user_effective(text):
+        rows = [line for line in text.splitlines()
+                if line.startswith("user:") and not line.startswith("user::")]
+        assert len(rows) == 1
+        assert ":r-x" in rows[0]
+        return rows[0].split("#effective:", 1)[1].strip()
+
+    assert named_user_effective(acl_during_write) == "---"
     assert stat.S_IMODE(target.stat().st_mode) == 0o640
     acl_final = access_acl_text(target)
-    assert "user:1001:r-x" in acl_final
-    assert "#effective:r--" in acl_final
+    assert named_user_effective(acl_final) == "r--"
+
+
+def test_permission_narrowing_failure_aborts_before_payload_write(
+    tmp_path: Path, monkeypatch
+):
+    target = tmp_path / "new.json"
+    original = cas.os.fchmod
+    def reject_owner_only(fd, mode):
+        if mode & 0o077 == 0:
+            raise PermissionError("simulated owner-only chmod denied")
+        return original(fd, mode)
+    def unexpected_writer(fd, data):
+        raise AssertionError("attempted payload write after chmod failure")
+    with monkeypatch.context() as m:
+        m.setattr(cas.os, "fchmod", reject_owner_only)
+        m.setattr(cas, "_write_all", unexpected_writer)
+        with pytest.raises(PermissionError, match="owner-only"):
+            cas._store_immutable(target, b"do not expose me")
+    assert not target.exists()
+    assert not list(tmp_path.glob(".obsidian-cas-*.tmp"))
+
+
+def test_permission_restore_failure_leaves_no_final_file(
+    tmp_path: Path, monkeypatch
+):
+    target = tmp_path / "new.json"
+    original = cas.os.fchmod
+    counter = [0]
+    def reject_restore(fd, mode):
+        counter[0] += 1
+        if counter[0] == 2:
+            raise PermissionError("simulated restore failure")
+        return original(fd, mode)
+    with monkeypatch.context() as m:
+        m.setattr(cas.os, "fchmod", reject_restore)
+        with pytest.raises(PermissionError, match="restore"):
+            cas._store_immutable(target, b"fully synced but unpublished")
+    assert counter[0] == 2
+    assert not target.exists()
+    assert not list(tmp_path.glob(".obsidian-cas-*.tmp"))
+    assert cas._store_immutable(target, b"fully synced but unpublished") == target
