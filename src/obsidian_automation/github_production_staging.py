@@ -182,8 +182,12 @@ def _require_inert(runner: legacy.CommandRunner) -> None:
         if legacy._timer_state(runner, unit) != (False, False):
             raise legacy.ProductionUpdateError(f"staged timer is not inert: {unit}")
 
-def _require_idle_services(runner: legacy.CommandRunner) -> None:
-    for unit in EFFECT_SERVICES:
+def _require_idle_services(runner: legacy.CommandRunner, systemd_dir: Path) -> None:
+    """Check every installed managed service, not only today\'s Writer chain."""
+    units = set(EFFECT_SERVICES)
+    units.update(name for name in _all_installed_unit_names(systemd_dir)
+                 if name.endswith(".service"))
+    for unit in sorted(units):
         observed = runner(("systemctl", "is-active", unit))
         if observed.returncode != 3 or observed.stdout.strip() != "inactive":
             raise legacy.ProductionUpdateError(f"effect-capable service not confirmed idle: {unit}")
@@ -265,6 +269,52 @@ def _environment_manifest(systemd_dir: Path, names: Sequence[str]) -> dict[str, 
     return manifest
 
 
+def _deployed_code_manifest(app_root: Path, venv_root: Path) -> dict[str, str]:
+    """Verify installed package bytes against pinned source and bind entrypoints.
+
+    A clean Git checkout is not sufficient: pip-installed code may drift after
+    the staging safe smoke. Do not execute imported application code to attest
+    it; compare bounded package files on disk.
+    """
+    source = app_root / "src" / "obsidian_automation"
+    legacy._require_directory(source, label="pinned Python source directory")
+    candidates = tuple(sorted((venv_root / "lib").glob(
+        "python*/site-packages/obsidian_automation"
+    )))
+    if len(candidates) != 1:
+        raise legacy.ProductionUpdateError("exactly one installed Python package directory required")
+    installed = candidates[0]
+    legacy._require_directory(installed, label="installed Python package directory")
+
+    source_files = {
+        f.relative_to(source).as_posix(): f for f in source.rglob("*.py")
+    }
+    installed_files = {
+        f.relative_to(installed).as_posix(): f for f in installed.rglob("*.py")
+    }
+    if (not source_files or len(source_files) > 256
+            or set(source_files) != set(installed_files)):
+        raise legacy.ProductionUpdateError("installed module inventory differs from pinned source")
+
+    result: dict[str, str] = {}
+    for name in sorted(source_files):
+        source_sha = _digest(_read_file(source_files[name], max_bytes=2*1024*1024))
+        installed_sha = _digest(_read_file(installed_files[name], max_bytes=2*1024*1024))
+        if source_sha != installed_sha:
+            raise legacy.ProductionUpdateError("installed package bytes differ from pinned source")
+        result["python:" + name] = installed_sha
+
+    scripts_dir = venv_root / "bin"
+    legacy._require_directory(scripts_dir, label="installed console script directory")
+    scripts = sorted(scripts_dir.glob("obsidian-github-*"))
+    expected = {"obsidian-github-production-smoke", "obsidian-github-daily-production-smoke"}
+    if len(scripts) < 2 or len(scripts) > 128 or not expected.issubset({p.name for p in scripts}):
+        raise legacy.ProductionUpdateError("installed GitHub console script set is invalid")
+    for entry in scripts:
+        result["entrypoint:" + entry.name] = _digest(_read_file(entry, max_bytes=256*1024))
+    return result
+
+
 def _install_revision(path: Path, revision: str) -> None:
     legacy._require_directory(path.parent, label="summarizer revision directory")
     fd, name = tempfile.mkstemp(prefix=".daily-stage-", dir=path.parent)
@@ -296,7 +346,7 @@ def _receipt_read(state: Path, sha: str) -> dict[str, object]:
     expected = {
         "record_version", "stage", "target_sha", "previous_sha",
         "app_root", "venv_root", "systemd_dir", "revision_env",
-        "timer_states", "config_manifest", "unit_manifest", "env_manifest",
+        "timer_states", "config_manifest", "unit_manifest", "env_manifest", "code_manifest",
         "safe_smoke", "daily_safe_smoke", "created_at",
     }
     if set(obj) != expected or obj["record_version"] != VERSION or obj["stage"] != "staged":
@@ -307,7 +357,7 @@ def _receipt_read(state: Path, sha: str) -> dict[str, object]:
     if obj["safe_smoke"] != "passed" or obj["daily_safe_smoke"] != "passed":
         raise legacy.ProductionUpdateError("stage safe-smoke receipts incomplete")
     if any(not isinstance(obj[item], dict)
-           for item in ("config_manifest", "unit_manifest", "env_manifest")):
+           for item in ("config_manifest", "unit_manifest", "env_manifest", "code_manifest")):
         raise legacy.ProductionUpdateError("stage manifest types invalid")
     timers = obj["timer_states"]
     if not isinstance(timers, dict) or set(timers) != set(legacy.MANAGED_TIMER_UNITS):
@@ -342,7 +392,7 @@ def stage_update(*, target_sha: str, app_root: Path, venv_root: Path,
                 raise legacy.ProductionUpdateError(
                     "normal Stage rejects non-fast-forward or rollback targets"
                 )
-        _require_idle_services(runner)
+        _require_idle_services(runner, systemd_dir)
         timers = _snapshot_timers(runner)
         configs = _config_manifest(config_files)
         _control_write(state, "preparing", target_sha, None)
@@ -350,7 +400,7 @@ def stage_update(*, target_sha: str, app_root: Path, venv_root: Path,
             for unit in legacy.MANAGED_TIMER_UNITS:
                 legacy._run(runner, ("systemctl", "disable", "--now", unit), label="stage stop managed timer")
             _require_inert(runner)
-            _require_idle_services(runner)
+            _require_idle_services(runner, systemd_dir)
             legacy._git(runner, app_root, "reset", "--hard", target_sha, label="stage exact checkout")
             _checkout(app_root, runner, expected=target_sha)
             pip = venv_root / "bin" / "pip"
@@ -358,6 +408,7 @@ def stage_update(*, target_sha: str, app_root: Path, venv_root: Path,
                 raise legacy.ProductionUpdateError("stage pip not installed")
             legacy._run(runner, (str(pip), "install", "--no-deps", "--force-reinstall", str(app_root)),
                         label="stage install reviewed package")
+            code_manifest = _deployed_code_manifest(app_root, venv_root)
             installed = legacy._install_managed_units(app_root, systemd_dir)
             managed_names = _all_installed_unit_names(systemd_dir)
             if not set(installed).issubset(managed_names):
@@ -372,7 +423,9 @@ def stage_update(*, target_sha: str, app_root: Path, venv_root: Path,
             legacy._run(runner, (str(smoke), "--profile", "safe"), label="stage safe smoke")
             legacy._run(runner, (str(daily), "--profile", "safe"), label="stage Daily safe smoke")
             _require_inert(runner)
-            _require_idle_services(runner)
+            _require_idle_services(runner, systemd_dir)
+            if _deployed_code_manifest(app_root, venv_root) != code_manifest:
+                raise legacy.ProductionUpdateError("installed package changed during safe Stage")
             if _config_manifest(config_files) != configs:
                 raise legacy.ProductionUpdateError("configuration drift during stage")
             if _all_installed_unit_names(systemd_dir) != managed_names:
@@ -387,6 +440,7 @@ def stage_update(*, target_sha: str, app_root: Path, venv_root: Path,
                 "revision_env": str(daily_revision_env.absolute()),
                 "config_manifest": configs, "unit_manifest": _unit_manifest(systemd_dir, managed_names),
                 "env_manifest": environment_files,
+                "code_manifest": code_manifest,
                 "timer_states": timers, "safe_smoke": "passed",
                 "daily_safe_smoke": "passed", "created_at": legacy._utc_now(),
             }
@@ -447,7 +501,9 @@ def activate_update(*, stage_sha256: str, approve_live_github_writer: bool,
                 raise legacy.ProductionUpdateError("staged runtime path drift")
         _checkout(app_root, runner, expected=receipt["target_sha"])
         _require_inert(runner)
-        _require_idle_services(runner)
+        _require_idle_services(runner, systemd_dir)
+        if _deployed_code_manifest(app_root, venv_root) != receipt["code_manifest"]:
+            raise legacy.ProductionUpdateError("installed package drift after stage")
         if _config_manifest(config_files) != receipt["config_manifest"]:
             raise legacy.ProductionUpdateError("configuration drift after stage")
         if _all_installed_unit_names(systemd_dir) != tuple(sorted(receipt["unit_manifest"])):
@@ -476,7 +532,7 @@ def activate_update(*, stage_sha256: str, approve_live_github_writer: bool,
                 raise legacy.ProductionUpdateError("live smoke executable missing")
             legacy._run(runner, (str(smoke), "--profile", "live"),
                         label="explicitly approved GitHub Writer live smoke")
-            _require_idle_services(runner)
+            _require_idle_services(runner, systemd_dir)
             for unit, restore in (
                 (legacy.TIMER_UNIT, restore_sync_timer),
                 (legacy.DAILY_TIMER_UNIT, restore_daily_timer),
