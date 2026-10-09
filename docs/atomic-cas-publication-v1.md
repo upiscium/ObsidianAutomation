@@ -23,9 +23,13 @@ publication.
 1. Require the existing final parent directory to be nonsymlinked.
 2. Open that directory with `O_DIRECTORY|O_NOFOLLOW` where available.
 3. Create a random `.obsidian-cas-<token>.tmp` inode in that directory using
-   `O_CREAT|O_EXCL|O_NOFOLLOW` and the normal caller umask. The final canonical
-   pathname does not yet exist.
-4. Write the entire content and `fsync` the staged file.
+   `O_CREAT|O_EXCL|O_NOFOLLOW` and the normal caller umask. Capture its initial
+   permissions (including inherited ACL mask), then immediately restrict
+   effective file permissions to owner-only **before writing any content**.
+   The final canonical pathname does not yet exist.
+4. Write the entire content and `fsync` the staged file. After all content is
+   synced, restore the original creation-time file mode, including the
+   inherited named-user ACL mask, and `fsync` again before publication.
 5. On Linux, publish by `renameat2(..., RENAME_NOREPLACE)` in the *same
    directory*. A missing libc symbol or unsupported kernel/filesystem fails
    closed; never implement check-then-rename as a fallback.
@@ -64,12 +68,14 @@ violate Linux sync/rename durability semantics.
   directory ACL. On the production summarizer's `UMask=0027`, existing and
   newly created file mode is 0640; regression coverage checks this parity.
   Other services retain their own umask/group/default-ACL contract.
-- The random staging name does **not** make staged bytes confidential by
-  itself. Staging is created with the same requested mode and process umask
-  as the final artifact; an observer already authorized to list/read this
-  directory may see uncommitted bytes. Directory ownership, ACL and umask
-  are therefore explicit confidentiality prerequisites. Do not assume that
-  an unexpected orphan temporary file has safe-to-disclose contents.
+- A random temporary filename alone is **not** a confidentiality
+  boundary. The temporary file's owner-only mode and inherited ACL mask
+  prevent group/Renderer reads of partially written payloads. Once fully
+  synced and permissions restored, authorized readers can still see the
+  complete *unpublished* temporary bytes before rename. A same-UID actor
+  may read any staged content; directory ownership, ACL, process isolation
+  and umask therefore remain mandatory security prerequisites. Orphan
+  temporary file contents must never be treated as safe to disclose.
 
 ## Orphan staging maintenance
 
