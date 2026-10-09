@@ -314,11 +314,14 @@ def test_default_acl_reader_masked_while_staged_then_restored(
         original_write(fd, data)
 
     staging = []
+    at_creation = []
     original_open = cas.os.open
     def observe_new_open(file, flags, *args, **kwargs):
         result = original_open(file, flags, *args, **kwargs)
         if isinstance(file, str) and file.startswith(".obsidian-cas-"):
             staging.append(file)
+            at_creation.append((stat.S_IMODE(os.fstat(result).st_mode),
+                                access_acl_text(target.parent / file)))
         return result
 
     with monkeypatch.context() as m:
@@ -338,6 +341,9 @@ def test_default_acl_reader_masked_while_staged_then_restored(
         assert ":r-x" in rows[0]
         return rows[0].split("#effective:", 1)[1].strip()
 
+    assert len(at_creation) == 1
+    assert at_creation[0][0] == 0o600
+    assert named_user_effective(at_creation[0][1]) == "---"
     assert named_user_effective(acl_during_write) == "---"
     assert stat.S_IMODE(target.stat().st_mode) == 0o640
     acl_final = access_acl_text(target)
@@ -383,3 +389,27 @@ def test_permission_restore_failure_leaves_no_final_file(
     assert not target.exists()
     assert not list(tmp_path.glob(".obsidian-cas-*.tmp"))
     assert cas._store_immutable(target, b"fully synced but unpublished") == target
+
+
+def test_data_staging_starts_owner_only_at_inode_creation(tmp_path: Path, monkeypatch):
+    """chmod after O_CREAT cannot revoke an already-open observer FD."""
+    import stat
+
+    target = tmp_path / "cas.json"
+    original_open = cas.os.open
+    observed = []
+
+    def inspect_create(file, flags, *args, **kwargs):
+        fd = original_open(file, flags, *args, **kwargs)
+        if (isinstance(file, str) and file.startswith(".obsidian-cas-")
+                and flags & os.O_CREAT):
+            observed.append(stat.S_IMODE(os.fstat(fd).st_mode))
+        return fd
+
+    with monkeypatch.context() as m:
+        m.setattr(cas.os, "open", inspect_create)
+        cas._store_immutable(target, b"private bytes must start owner-only")
+    assert observed == [0o600]
+    assert target.read_bytes() == b"private bytes must start owner-only"
+    assert not list(tmp_path.glob(".obsidian-mode-probe-*.tmp"))
+    assert not list(tmp_path.glob(".obsidian-cas-*.tmp"))
