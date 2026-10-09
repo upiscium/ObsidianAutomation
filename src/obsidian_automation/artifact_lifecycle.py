@@ -187,7 +187,10 @@ def _rename_noreplace(parent_fd: int, staged_name: str, target_name: str) -> Non
 
 def _same_immutable_bytes(parent_fd: int, name: str, data: bytes) -> bool:
     """Read a colliding final inode without following symlinks or external links."""
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    flags = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+             | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0))
+    # A hostile FIFO at the final name must not block before fstat verifies
+    # a regular inode. O_NONBLOCK has no effect on regular-file reads.
     try:
         fd = os.open(name, flags, dir_fd=parent_fd)
     except OSError as exc:
