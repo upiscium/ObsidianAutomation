@@ -12,14 +12,19 @@ from test_github_production_update import FakeRunner, PREVIOUS, TARGET, _layout
 
 
 class Runner(FakeRunner):
-    def __init__(self, app: Path, venv: Path, **kwargs):
+    def __init__(self, app: Path, venv: Path, *, allow_fast_forward=True, **kwargs):
         super().__init__(
             app, venv, daily_present=True,
             daily_enabled=True, daily_active=False, **kwargs,
         )
+        self.allow_fast_forward = allow_fast_forward
 
     def __call__(self, argv):
         argv = tuple(str(x) for x in argv)
+        if argv == ("git", "-C", str(self.app_root), "merge-base",
+                    "--is-ancestor", PREVIOUS, TARGET):
+            self.calls.append(argv)
+            return CommandResult(0 if self.allow_fast_forward else 1, "", "")
         if argv[:2] == ("systemctl", "is-active") and argv[2] in staged.EFFECT_SERVICES:
             self.calls.append(argv)
             return CommandResult(3, "inactive\n", "")
@@ -368,3 +373,12 @@ def test_new_managed_unit_after_stage_blocks_activation(tmp_path):
         activate(receipt, opts)
     assert _control(opts)["status"] == "staged"
     assert not _called(runner, ("--profile", "live"))
+
+
+def test_refuse_non_fast_forward(tmp_path):
+    runner, opts = setup(tmp_path, allow_fast_forward=False)
+    with pytest.raises(ProductionUpdateError, match="non-fast-forward"):
+        stage(runner, opts)
+    assert runner.current_sha == PREVIOUS
+    assert runner.enabled and runner.active
+    assert _control(opts) == {"status": "none"}
