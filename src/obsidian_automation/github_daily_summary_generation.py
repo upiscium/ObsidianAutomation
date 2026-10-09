@@ -13,8 +13,10 @@ from .github_daily_summary import (
     MAX_OUTPUT_BYTES,
     PARTIAL_STAGE,
     REDUCE_STAGE,
+    BoundInfer,
     GitHubDailySummaryError,
     InferenceResponse,
+    PreboundInferenceIdentity,
     PromptSpec,
     SummaryContext,
     run_pipeline,
@@ -201,7 +203,15 @@ def ollama_infer(
             model_config=config,
         )
 
-    return infer
+    return BoundInfer(
+        identity=PreboundInferenceIdentity(
+            model_provider=OLLAMA_PROVIDER_NAME,
+            model_identifier=identity.identifier,
+            model_revision=identity.digest,
+            model_config=config,
+        ),
+        invoke=infer,
+    )
 
 
 def openai_compatible_infer(

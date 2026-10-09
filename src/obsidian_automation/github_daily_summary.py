@@ -4,7 +4,9 @@ import hashlib
 import json
 import re
 import stat
-from dataclasses import dataclass
+from types import MappingProxyType
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
@@ -318,6 +320,55 @@ class PipelineResult:
 
 
 Infer = Callable[[PromptSpec, SummaryContext], InferenceResponse]
+
+
+@dataclass(frozen=True)
+class PreboundInferenceIdentity:
+    """Trusted before any inference, unlike response-derived metadata."""
+
+    model_provider: str
+    model_identifier: str
+    model_revision: str
+    model_config: Mapping[str, object]
+    _config_sha256: str = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        for value in (self.model_provider, self.model_identifier):
+            if not isinstance(value, str) or not value or len(value) > MAX_METADATA_CHARS:
+                raise GitHubDailySummaryError("prebound model identity is invalid")
+        if not isinstance(self.model_revision, str) or _SHA_RE.fullmatch(self.model_revision) is None:
+            raise GitHubDailySummaryError("prebound model digest must be SHA-256")
+        config = validate_model_config(dict(self.model_config))
+        object.__setattr__(self, "model_config", MappingProxyType(config))
+        object.__setattr__(self, "_config_sha256", sha256_bytes(_canonical_json_bytes(config)))
+
+    def validated_config(self) -> dict[str, object]:
+        """Reject post-resolution mutation of nested configuration objects."""
+        config = validate_model_config(dict(self.model_config))
+        if sha256_bytes(_canonical_json_bytes(config)) != self._config_sha256:
+            raise GitHubDailySummaryError("prebound model configuration mutated")
+        return config
+
+
+@dataclass(frozen=True)
+class BoundInfer:
+    """Explicit model binding; unbound test/OpenAI callbacks cannot resume."""
+
+    identity: PreboundInferenceIdentity
+    invoke: Infer
+
+    def __call__(self, prompt: PromptSpec, context: SummaryContext) -> InferenceResponse:
+        result = self.invoke(prompt, context)
+        expected = self.identity
+        if (
+            result.model_provider != expected.model_provider
+            or result.model_identifier != expected.model_identifier
+            or result.model_revision != expected.model_revision
+            or _canonical_json_bytes(validate_model_config(dict(result.model_config)))
+            != _canonical_json_bytes(expected.validated_config())
+        ):
+            raise GitHubDailySummaryError("inference response differs from prebound model")
+        return result
 
 
 def _metadata(value: object, *, label: str) -> str:
@@ -1427,6 +1478,204 @@ def _inference_record(
     )
 
 
+def _resume_request(
+    *,
+    stage: str,
+    input_sha: str,
+    prompt: PromptSpec,
+    implementation_revision: str,
+    infer: Infer,
+) -> dict[str, object] | None:
+    if not isinstance(infer, BoundInfer):
+        # Legacy mocks and OpenAI-compatible callbacks have no trusted
+        # pre-response identity, so never adopt pre-existing model outputs.
+        return None
+    identity = infer.identity
+    return {
+        "stage": stage,
+        "input_context_sha256": input_sha,
+        "prompt_template_sha256": prompt.template_sha256,
+        "implementation_revision": implementation_revision,
+        "model_provider": identity.model_provider,
+        "model_identifier": identity.model_identifier,
+        "model_revision": identity.model_revision,
+        "model_config": identity.validated_config(),
+    }
+
+
+def _verified_resume_provenance(
+    data: bytes,
+    *,
+    request: Mapping[str, object],
+    output_sha: str,
+    prompt: PromptSpec,
+) -> None:
+    value = _decode_json_object(data, label="Daily resumed inference provenance")
+    required = {
+        "record_version", "stage", "input_context_sha256", "output_sha256",
+        "implementation_revision", "prompt_template_version",
+        "prompt_template_sha256", "model", "model_config", "generated_at",
+    }
+    if set(value) != required or value["record_version"] != RECORD_VERSION:
+        raise GitHubDailySummaryError("resumed provenance record properties differ")
+    expected = {
+        "stage": request["stage"],
+        "input_context_sha256": request["input_context_sha256"],
+        "output_sha256": output_sha,
+        "implementation_revision": request["implementation_revision"],
+        "prompt_template_version": prompt.template_version,
+        "prompt_template_sha256": request["prompt_template_sha256"],
+        "model": {
+            "provider": request["model_provider"],
+            "identifier": request["model_identifier"],
+            "revision": request["model_revision"],
+        },
+        "model_config": request["model_config"],
+    }
+    if any(
+        _canonical_json_bytes({"value": value[name]})
+        != _canonical_json_bytes({"value": expected[name]})
+        for name in expected
+    ):
+        raise GitHubDailySummaryError("resumed provenance model or context binding mismatch")
+    timestamp = value["generated_at"]
+    if not isinstance(timestamp, str) or not timestamp.endswith("Z") or len(timestamp) > 80:
+        raise GitHubDailySummaryError("resumed provenance timestamp invalid")
+    try:
+        parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise GitHubDailySummaryError("resumed provenance timestamp invalid") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise GitHubDailySummaryError("resumed provenance timestamp is not UTC")
+    if _canonical_json_bytes(value) != data:
+        raise GitHubDailySummaryError("resumed provenance is not canonical")
+
+
+def _resume_claim_output(
+    data: bytes,
+    *,
+    context: SummaryContext,
+    context_sha: str,
+    events_by_id: Mapping[str, Mapping[str, object]],
+) -> ClaimOutput:
+    obj = _decode_json_object(data, label="resumed Partial output")
+    if (
+        set(obj) != {"record_version", "stage", "input_context_sha256", "claims"}
+        or obj["record_version"] != RECORD_VERSION
+        or obj["stage"] != PARTIAL_STAGE
+        or obj["input_context_sha256"] != context_sha
+        or not isinstance(obj["claims"], list)
+    ):
+        raise GitHubDailySummaryError("resumed Partial output binding mismatch")
+    claims = []
+    required = {"claim_id", "kind", "repository", "summary", "evidence_ids"}
+    for item in obj["claims"]:
+        if not isinstance(item, dict) or set(item) != required:
+            raise GitHubDailySummaryError("resumed Partial claim shape is invalid")
+        claims.append({key: item[key] for key in required if key != "claim_id"})
+    normalized = parse_claim_output(
+        _canonical_json_bytes({"claims": claims}),
+        stage=PARTIAL_STAGE,
+        input_context_sha256=context_sha,
+        allowed_evidence_ids={str(e["evidence_id"]) for e in context.events},
+        events_by_id=events_by_id,
+    )
+    if normalized.to_json_bytes() != data:
+        raise GitHubDailySummaryError("resumed Partial normalized claim identity mismatch")
+    return normalized
+
+
+def _resume_ground_output(
+    data: bytes, *, context: SummaryContext, context_sha: str,
+) -> GroundOutput:
+    obj = _decode_json_object(data, label="resumed Ground output")
+    if (
+        set(obj) != {"record_version", "stage", "input_context_sha256", "assessments"}
+        or obj["record_version"] != RECORD_VERSION
+        or obj["stage"] != GROUND_STAGE
+        or obj["input_context_sha256"] != context_sha
+        or not isinstance(obj["assessments"], list)
+    ):
+        raise GitHubDailySummaryError("resumed Ground output binding mismatch")
+    if len(context.claims) != 1 or {
+        str(event["evidence_id"]) for event in context.events
+    } != set(context.claims[0].evidence_ids):
+        raise GitHubDailySummaryError("resumed Ground cited context does not match claim")
+    claim = context.claims[0]
+    original = _normalized_claim(
+        kind=claim.kind, repository=claim.repository,
+        summary=claim.summary, evidence_ids=list(claim.evidence_ids),
+        allowed_evidence_ids={str(e["evidence_id"]) for e in context.events},
+        events_by_id={str(e["evidence_id"]): e for e in context.events},
+    )
+    if original != claim:
+        raise GitHubDailySummaryError("resumed Ground source claim identity mismatch")
+    normalized = parse_ground_output(
+        _canonical_json_bytes({"assessments": obj["assessments"]}),
+        input_context_sha256=context_sha,
+        claims=context.claims,
+    )
+    if normalized.to_json_bytes() != data:
+        raise GitHubDailySummaryError("resumed Ground normalized assessment mismatch")
+    return normalized
+
+
+def _load_verified_resume(
+    state_root: Path,
+    *,
+    request: Mapping[str, object] | None,
+    prompt: PromptSpec,
+    context: SummaryContext,
+    context_sha: str,
+    events_by_id: Mapping[str, Mapping[str, object]],
+) -> tuple[ClaimOutput | GroundOutput, str, str] | None:
+    if request is None:
+        return None
+    from .github_daily_resume import load_resume
+
+    existing = load_resume(state_root, request=request)
+    if existing is None:
+        return None
+    output_sha, output_bytes, provenance_sha, provenance_bytes = existing
+    _verified_resume_provenance(
+        provenance_bytes, request=request, output_sha=output_sha, prompt=prompt,
+    )
+    if context.stage == PARTIAL_STAGE:
+        output = _resume_claim_output(
+            output_bytes, context=context, context_sha=context_sha,
+            events_by_id=events_by_id,
+        )
+    elif context.stage == GROUND_STAGE:
+        output = _resume_ground_output(
+            output_bytes, context=context, context_sha=context_sha,
+        )
+    else:
+        raise GitHubDailySummaryError("unsupported cached model stage")
+    return output, output_sha, provenance_sha
+
+
+def _invoke_model_stage(
+    infer: Infer, prompt: PromptSpec, context: SummaryContext,
+) -> InferenceResponse:
+    """Expose bounded stage/timing metadata, never exception text or sources."""
+    from time import monotonic
+
+    from .ollama_generator import OllamaProviderError
+    from .openai_compatible import OpenAICompatibleProviderError
+
+    started = monotonic()
+    try:
+        return infer(prompt, context)
+    except (OllamaProviderError, OpenAICompatibleProviderError, TimeoutError) as exc:
+        elapsed = monotonic() - started
+        cause = type(exc.__cause__).__name__ if exc.__cause__ is not None else "none"
+        raise GitHubDailySummaryError(
+            f"{context.stage} batch {context.batch_index + 1}/"
+            f"{context.batch_count}: provider={type(exc).__name__}, "
+            f"cause={cause}, elapsed_seconds={elapsed:.3f}"
+        ) from exc
+
+
 def _run_claim_stage(
     state_root: Path,
     bundle: EvidenceBundle,
@@ -1449,7 +1698,30 @@ def _run_claim_stage(
         prompt = _prompt_spec(
             context.stage, source_count=len(context.events)
         )
-        response = infer(prompt, context)
+        request = _resume_request(
+            stage=context.stage, input_sha=context_sha,
+            prompt=prompt, implementation_revision=implementation_revision,
+            infer=infer,
+        )
+        try:
+            cached = _load_verified_resume(
+                state_root, request=request, prompt=prompt, context=context,
+                context_sha=context_sha, events_by_id=events_by_id,
+            )
+        except (ArtifactLifecycleError, GitHubDailySummaryError) as exc:
+            raise GitHubDailySummaryError(
+                f"partial batch {context.batch_index + 1}/{context.batch_count}: "
+                f"untrusted resume artifact: {type(exc).__name__}"
+            ) from exc
+        if cached is not None:
+            previous, output_sha, provenance_sha = cached
+            if not isinstance(previous, ClaimOutput):
+                raise GitHubDailySummaryError("resumed Partial output type mismatch")
+            stored.append(StoredClaimOutput(output_sha, previous))
+            provenance_shas.append(provenance_sha)
+            continue
+
+        response = _invoke_model_stage(infer, prompt, context)
         try:
             output = _parse_model_claim_output(
                 response.content,
@@ -1474,6 +1746,12 @@ def _run_claim_stage(
         )
         provenance_sha, _ = store_inference_record(state_root, record)
         provenance_shas.append(provenance_sha)
+        if request is not None:
+            from .github_daily_resume import store_resume
+            store_resume(
+                state_root, request=request, output_sha256=output_sha,
+                provenance_sha256=provenance_sha,
+            )
     return tuple(stored), tuple(context_shas), tuple(provenance_shas)
 
 
@@ -1556,7 +1834,31 @@ def _run_ground_stage(
         context_sha, _ = store_context(state_root, context)
         context_shas.append(context_sha)
         prompt = _prompt_spec(GROUND_STAGE)
-        response = infer(prompt, context)
+        request = _resume_request(
+            stage=GROUND_STAGE, input_sha=context_sha,
+            prompt=prompt, implementation_revision=implementation_revision,
+            infer=infer,
+        )
+        try:
+            cached = _load_verified_resume(
+                state_root, request=request, prompt=prompt, context=context,
+                context_sha=context_sha,
+                events_by_id={str(e["evidence_id"]): e for e in context.events},
+            )
+        except (ArtifactLifecycleError, GitHubDailySummaryError) as exc:
+            raise GitHubDailySummaryError(
+                f"ground batch {context.batch_index + 1}/{context.batch_count}: "
+                f"untrusted resume artifact: {type(exc).__name__}"
+            ) from exc
+        if cached is not None:
+            previous, output_sha, provenance_sha = cached
+            if not isinstance(previous, GroundOutput):
+                raise GitHubDailySummaryError("resumed Ground output type mismatch")
+            stored.append(StoredGroundOutput(output_sha, previous))
+            provenance_shas.append(provenance_sha)
+            continue
+
+        response = _invoke_model_stage(infer, prompt, context)
         try:
             output = _parse_model_ground_output(
                 response.content,
@@ -1580,6 +1882,12 @@ def _run_ground_stage(
         )
         provenance_sha, _ = store_inference_record(state_root, record)
         provenance_shas.append(provenance_sha)
+        if request is not None:
+            from .github_daily_resume import store_resume
+            store_resume(
+                state_root, request=request, output_sha256=output_sha,
+                provenance_sha256=provenance_sha,
+            )
     return tuple(stored), tuple(context_shas), tuple(provenance_shas)
 
 
