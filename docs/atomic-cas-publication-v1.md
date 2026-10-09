@@ -32,7 +32,10 @@ publication.
 6. If the canonical target already exists, verify only an `O_NOFOLLOW`,
    `O_NONBLOCK`, regular, single-link inode of the exact same length and
    bytes. Identical writers are idempotent. Conflicting or special-file
-   targets fail closed and never overwrite.
+   targets fail closed and never overwrite. An already-verified identical
+   target is a fast path that skips redundant temporary allocation and data
+   writes, while still `fsync`ing the parent directory. Missing targets
+   always use atomic no-replace publication rather than check-then-rename.
 7. Remove any uncommitted staging inode for an ordinary failed attempt and
    `fsync` the parent directory before reporting success.
 
@@ -61,6 +64,12 @@ violate Linux sync/rename durability semantics.
   directory ACL. On the production summarizer's `UMask=0027`, existing and
   newly created file mode is 0640; regression coverage checks this parity.
   Other services retain their own umask/group/default-ACL contract.
+- The random staging name does **not** make staged bytes confidential by
+  itself. Staging is created with the same requested mode and process umask
+  as the final artifact; an observer already authorized to list/read this
+  directory may see uncommitted bytes. Directory ownership, ACL and umask
+  are therefore explicit confidentiality prerequisites. Do not assume that
+  an unexpected orphan temporary file has safe-to-disclose contents.
 
 ## Orphan staging maintenance
 
