@@ -239,3 +239,99 @@ def test_existing_immutable_artifact_skips_staging_and_rewrite(
         assert cas._store_immutable(target, payload) == target
     assert target.read_bytes() == payload
     assert not list(tmp_path.glob(".obsidian-cas-*.tmp"))
+
+
+def test_staged_payload_is_owner_only_until_bytes_are_complete(tmp_path: Path, monkeypatch):
+    """No observer with group/other read authority can see partial bytes."""
+    target = tmp_path / "staged.json"
+    captured = []
+    write_original = cas._write_all
+
+    def inspected_write(fd, data):
+        import stat
+        captured.append(stat.S_IMODE(os.fstat(fd).st_mode))
+        write_original(fd, data)
+
+    with monkeypatch.context() as m:
+        m.setattr(cas, "_write_all", inspected_write)
+        cas._store_immutable(target, b"private until complete")
+    assert captured == [0o600]
+    assert target.read_bytes() == b"private until complete"
+    # A production equivalent UMask=0027 regression is already above.
+
+
+def test_default_acl_reader_masked_while_staged_then_restored(
+    tmp_path: Path, monkeypatch
+):
+    """Simulate named Renderer ACL inherited by a 0640 Summary CAS object."""
+    import ctypes
+    import stat
+
+    try:
+        acl = ctypes.CDLL("libacl.so.1", use_errno=True)
+    except OSError:
+        pytest.skip("Linux POSIX ACL library is unavailable")
+    acl.acl_from_text.argtypes = [ctypes.c_char_p]
+    acl.acl_from_text.restype = ctypes.c_void_p
+    acl.acl_set_file.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_void_p]
+    acl.acl_set_file.restype = ctypes.c_int
+    acl.acl_get_file.argtypes = [ctypes.c_char_p, ctypes.c_int]
+    acl.acl_get_file.restype = ctypes.c_void_p
+    acl.acl_to_text.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ssize_t)]
+    acl.acl_to_text.restype = ctypes.c_void_p
+    acl.acl_free.argtypes = [ctypes.c_void_p]
+    acl.acl_free.restype = ctypes.c_int
+
+    default_acl = acl.acl_from_text(b"u::rwx,u:1001:r-x,g::---,m::rwx,o::---")
+    if not default_acl:
+        pytest.skip("cannot construct POSIX default ACL")
+    try:
+        if acl.acl_set_file(os.fsencode(tmp_path), 0x4000, default_acl) != 0:
+            pytest.skip("filesystem does not support default ACL")
+    finally:
+        acl.acl_free(default_acl)
+
+    def access_acl_text(path: Path) -> str:
+        handle = acl.acl_get_file(os.fsencode(path), 0x8000)
+        assert handle
+        try:
+            n = ctypes.c_ssize_t()
+            ptr = acl.acl_to_text(handle, ctypes.byref(n))
+            assert ptr
+            try:
+                return ctypes.string_at(ptr, n.value).decode("utf-8")
+            finally:
+                acl.acl_free(ptr)
+        finally:
+            acl.acl_free(handle)
+
+    target = tmp_path / "summary-cas.json"
+    snapshots = []
+    original_write = cas._write_all
+
+    def observe(fd, data):
+        snapshots.append((stat.S_IMODE(os.fstat(fd).st_mode), access_acl_text(target.parent / staging[0])))
+        original_write(fd, data)
+
+    staging = []
+    original_open = cas.os.open
+    def observe_new_open(file, flags, *args, **kwargs):
+        result = original_open(file, flags, *args, **kwargs)
+        if isinstance(file, str) and file.startswith(".obsidian-cas-"):
+            staging.append(file)
+        return result
+
+    with monkeypatch.context() as m:
+        m.setattr(cas, "_write_all", observe)
+        m.setattr(cas.os, "open", observe_new_open)
+        cas._store_immutable(target, b"fully committed private content")
+
+    assert len(snapshots) == 1
+    mode, acl_during_write = snapshots[0]
+    assert mode == 0o600
+    assert "user:1001:r-x" in acl_during_write
+    assert "#effective:---" in acl_during_write
+    assert stat.S_IMODE(target.stat().st_mode) == 0o640
+    acl_final = access_acl_text(target)
+    assert "user:1001:r-x" in acl_final
+    assert "#effective:r--" in acl_final
