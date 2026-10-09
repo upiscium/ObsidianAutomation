@@ -689,6 +689,10 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--target-sha", required=True)
+    parser.add_argument(
+        "--approve-legacy-live-effects", action="store_true",
+        help="Explicit authorization for the legacy full-transaction live Writer/Sync smoke",
+    )
     parser.add_argument("--app-root", type=Path, default=DEFAULT_APP_ROOT)
     parser.add_argument("--venv-root", type=Path, default=DEFAULT_VENV_ROOT)
     parser.add_argument("--systemd-dir", type=Path, default=DEFAULT_SYSTEMD_DIR)
@@ -711,7 +715,18 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Iterable[str] | None = None) -> int:
-    args = _build_parser().parse_args(list(argv) if argv is not None else None)
+    arguments = list(argv) if argv is not None else sys.argv[1:]
+    if arguments and arguments[0] in {"stage", "activate", "inspect"}:
+        from .github_production_staging import main as staged_main
+        return staged_main(arguments)
+    # Preserve the full-transaction command, but require distinct consent to
+    # its live GitHub Writer/Sync smoke; a SHA is not that consent.
+    args = _build_parser().parse_args(arguments)
+    if not args.approve_legacy_live_effects:
+        print(json.dumps({"event": "obsidian-github-production-update",
+                          "status": "failed",
+                          "reason": "legacy_live_effects_not_approved"}), file=sys.stderr)
+        return 2
     try:
         receipt, path = execute_update(
             target_sha=args.target_sha,
