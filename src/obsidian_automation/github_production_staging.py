@@ -396,8 +396,16 @@ def stage_update(*, target_sha: str, app_root: Path, venv_root: Path,
             _control_write(state, "staged", target_sha, digest)
             return digest
         except BaseException:
-            # On SIGKILL, 'preparing' remains durable. Both are blocked until
-            # an independently authorized state reconciliation.
+            # An interrupted/failed Stage has no authority to restore timers.
+            # Best-effort stop BOTH, even when an intermediate disable failed;
+            # never let a restored timer invoke old/new code accidentally.
+            for unit in legacy.MANAGED_TIMER_UNITS:
+                try:
+                    runner(("systemctl", "disable", "--now", unit))
+                except Exception:
+                    pass
+            # A hard kill leaves the durable preparing marker for manual
+            # reconciliation. Do not infer safe recovery from a failed step.
             try:
                 _control_write(state, "failed", target_sha, None)
             except Exception:
