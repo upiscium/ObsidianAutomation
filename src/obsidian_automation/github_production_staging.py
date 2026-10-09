@@ -335,6 +335,13 @@ def stage_update(*, target_sha: str, app_root: Path, venv_root: Path,
         legacy._require_directory(systemd_dir, label="stage systemd directory")
         previous_sha = _checkout(app_root, runner)
         legacy._validate_target(target_sha, app_root=app_root, runner=runner)
+        if previous_sha != target_sha:
+            ff = runner(("git", "-C", str(app_root), "merge-base",
+                         "--is-ancestor", previous_sha, target_sha))
+            if ff.returncode != 0:
+                raise legacy.ProductionUpdateError(
+                    "normal Stage rejects non-fast-forward or rollback targets"
+                )
         _require_idle_services(runner)
         timers = _snapshot_timers(runner)
         configs = _config_manifest(config_files)
