@@ -366,3 +366,13 @@ def test_full_pipeline_reuses_both_partial_and_grounding(tmp_path):
     assert a.grounded_summary_sha256 == b.grounded_summary_sha256
     assert a.provenance_sha256s == b.provenance_sha256s
     assert a.claim_count == b.claim_count
+
+def test_intermediate_length_implementation_revision_keeps_existing_contract(tmp_path):
+    bundle, contexts = _fixture(1)
+    revision = "e" * 48
+    model = MockModel()
+    _partials(tmp_path, _bound(model), bundle, contexts, revision=revision)
+    assert model.calls == [(PARTIAL_STAGE, 0)]
+    repeated = MockModel()
+    _partials(tmp_path, _bound(repeated), bundle, contexts, revision=revision)
+    assert repeated.calls == []

@@ -53,7 +53,7 @@ def _request_bytes(request: Mapping[str, object]) -> bytes:
     ):
         _require_sha256(request[name], label=f"resume {name}")
     revision = request["implementation_revision"]
-    if not isinstance(revision, str) or len(revision) not in {40, 64} or any(
+    if not isinstance(revision, str) or not 40 <= len(revision) <= 64 or any(
         character not in "0123456789abcdef" for character in revision
     ):
         raise ArtifactLifecycleError("resume implementation revision is invalid")
