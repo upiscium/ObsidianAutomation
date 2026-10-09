@@ -38,6 +38,10 @@ CLAIM_KINDS = frozenset(
 )
 
 MAX_PARTIAL_CONTEXT_BYTES = 64 * 1024
+# Model-facing default is deliberately lower than the immutable safety ceiling.
+# This keeps each event intact while avoiding long, nearly-full 64-KiB prompts.
+# A single oversized original event still fails closed instead of being omitted.
+DEFAULT_PARTIAL_CONTEXT_BYTES = 24 * 1024
 MAX_REDUCE_CONTEXT_BYTES = 64 * 1024
 MAX_GROUND_CONTEXT_BYTES = 256 * 1024
 MAX_GROUND_CLAIMS_PER_CONTEXT = 1
@@ -648,7 +652,7 @@ def _partition_payloads(
 def partition_evidence(
     bundle: EvidenceBundle,
     *,
-    max_bytes: int = MAX_PARTIAL_CONTEXT_BYTES,
+    max_bytes: int = DEFAULT_PARTIAL_CONTEXT_BYTES,
 ) -> tuple[SummaryContext, ...]:
     if not bundle.events:
         return ()
@@ -1589,7 +1593,7 @@ def run_pipeline(
     state_root: Path,
     infer: Infer,
     implementation_revision: str,
-    partial_context_bytes: int = MAX_PARTIAL_CONTEXT_BYTES,
+    partial_context_bytes: int = DEFAULT_PARTIAL_CONTEXT_BYTES,
     reduce_context_bytes: int = MAX_REDUCE_CONTEXT_BYTES,
     ground_context_bytes: int = MAX_GROUND_CONTEXT_BYTES,
 ) -> PipelineResult:

@@ -17,6 +17,8 @@ from obsidian_automation.github_daily_summary import (
     GROUND_STAGE,
     PARTIAL_STAGE,
     REDUCE_STAGE,
+    DEFAULT_PARTIAL_CONTEXT_BYTES,
+    MAX_PARTIAL_CONTEXT_BYTES,
     GitHubDailySummaryError,
     InferenceResponse,
     ClaimOutput,
@@ -161,6 +163,78 @@ def test_event_partition_is_lossless_and_bounded(tmp_path: Path) -> None:
     ]
     expected = [event["evidence_id"] for event in bundle.events]
     assert observed == expected
+
+
+def test_default_partial_batches_split_large_comments_without_evidence_loss(
+    tmp_path: Path,
+) -> None:
+    """Seven 8-KiB issue comments form one near-64KiB batch at the old limit."""
+    start, _ = _date_window(date(2026, 10, 5))
+    body = _bounded_text(
+        "x" * (8 * 1024), limit=8 * 1024, label="issue comment"
+    )
+    assert body is not None
+    events = [
+        _make_event(
+            kind="issue_comment",
+            repository="upiscium/Test",
+            occurred_at=start + timedelta(seconds=index),
+            url=(
+                "https://github.com/upiscium/Test/issues/7#issuecomment-"
+                f"{index + 1}"
+            ),
+            actor="test",
+            entity_type="issue_comment",
+            number=7,
+            source_id=f"comment-{index}",
+            body=body,
+        )
+        for index in range(7)
+    ]
+    evidence = make_daily_evidence_bundle(
+        target_date=date(2026, 10, 5),
+        projects=[
+            ProjectBinding(
+                project_path="10-Project/Test/Test.md",
+                repository="upiscium/Test",
+            )
+        ],
+        events=events,
+    )
+    bundle = parse_evidence_bundle(evidence.canonical_bytes)
+
+    old = partition_evidence(
+        bundle, max_bytes=MAX_PARTIAL_CONTEXT_BYTES
+    )
+    assert len(old) == 1
+    assert len(old[0].to_json_bytes()) > DEFAULT_PARTIAL_CONTEXT_BYTES
+
+    contexts = partition_evidence(bundle)
+    assert len(contexts) > 1
+    assert all(
+        0 < len(context.to_json_bytes()) <= DEFAULT_PARTIAL_CONTEXT_BYTES
+        for context in contexts
+    )
+    assert all(0 < len(context.events) <= 2 for context in contexts)
+
+    original_ids = [str(event["evidence_id"]) for event in bundle.events]
+    actual_ids = [
+        str(event["evidence_id"])
+        for context in contexts
+        for event in context.events
+    ]
+    assert actual_ids == original_ids
+    assert len(set(actual_ids)) == len(original_ids)
+
+    for context in contexts:
+        prompt = prompt_spec(
+            PARTIAL_STAGE, source_count=len(context.events)
+        )
+        refs = prompt.output_schema["properties"]["claims"]["items"][
+            "properties"
+        ]["source_refs"]
+        assert refs["items"]["enum"] == list(range(len(context.events)))
+        assert refs["items"]["maximum"] == len(context.events) - 1
 
 
 def test_claim_parser_rejects_out_of_context_evidence(tmp_path: Path) -> None:
@@ -437,7 +511,11 @@ def test_partial_model_schema_binds_66_evidence_refs_and_preserves_ids(
 ) -> None:
     path, _ = _evidence(tmp_path, 66)
     bundle = parse_evidence_bundle(path.read_bytes())
-    contexts = partition_evidence(bundle)
+    # This test isolates the 66-source schema contract. The smaller default
+    # partition is independently tested with seven 8-KiB comments above.
+    contexts = partition_evidence(
+        bundle, max_bytes=MAX_PARTIAL_CONTEXT_BYTES
+    )
     assert len(contexts) == 1
     context = contexts[0]
     assert len(context.events) == 66
