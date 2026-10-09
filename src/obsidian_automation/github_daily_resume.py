@@ -82,7 +82,10 @@ def _root(state_root: Path, *, create: bool) -> Path | None:
 
 
 def _read_bounded(path: Path, *, max_bytes: int) -> bytes:
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    flags = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+             | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0))
+    # Checking the inode type *after* opening a FIFO with blocking O_RDONLY
+    # can deadlock the resume reader. Regular files ignore O_NONBLOCK.
     try:
         fd = os.open(path, flags)
     except OSError as exc:
