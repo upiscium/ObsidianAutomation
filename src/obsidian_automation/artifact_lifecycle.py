@@ -256,7 +256,16 @@ def _store_immutable(path: Path, data: bytes) -> Path:
         except OSError as exc:
             raise ArtifactLifecycleError("cannot stage immutable artifact") from exc
         temp_exists = True
+        # Capture the mode granted by the service umask and inherited ACL
+        # before narrowing it. A renderer allowed to read final CAS objects
+        # must not read *partially written* staging content.
+        staged_mode = stat.S_IMODE(os.fstat(fd).st_mode)
+        os.fchmod(fd, staged_mode & 0o600)
         _write_all(fd, data)
+        os.fsync(fd)
+        # Restore the creation-time permissions only after the complete
+        # payload is synced. chmod restores the inherited ACL mask as well.
+        os.fchmod(fd, staged_mode)
         os.fsync(fd)
         os.close(fd)
         fd = None
