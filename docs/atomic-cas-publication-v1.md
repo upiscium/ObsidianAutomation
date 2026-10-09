@@ -22,14 +22,17 @@ publication.
 
 1. Require the existing final parent directory to be nonsymlinked.
 2. Open that directory with `O_DIRECTORY|O_NOFOLLOW` where available.
-3. Create a random `.obsidian-cas-<token>.tmp` inode in that directory using
-   `O_CREAT|O_EXCL|O_NOFOLLOW` and the normal caller umask. Capture its initial
-   permissions (including inherited ACL mask), then immediately restrict
-   effective file permissions to owner-only **before writing any content**.
-   The final canonical pathname does not yet exist.
-4. Write the entire content and `fsync` the staged file. After all content is
-   synced, restore the original creation-time file mode, including the
-   inherited named-user ACL mask, and `fsync` again before publication.
+3. Create a random **zero-byte** `.obsidian-mode-probe-<token>.tmp`
+   inode with requested mode `0644` to observe the service umask and
+   inherited default-ACL effective mask. No sensitive content is ever written
+   to this probe. Close and unlink it before allocating data staging.
+4. Create the actual `.obsidian-cas-<token>.tmp` data inode with mode
+   **`0600` at `O_CREAT|O_EXCL|O_NOFOLLOW` time**, then enforce owner-only
+   permissions before writing. Do **not** create it read-accessible and
+   narrow access afterward: chmod cannot revoke another process's already
+   open read handle. Write and `fsync` the complete data, restore the mode
+   observed from the zero-byte probe (and the inherited named-user ACL mask),
+   then `fsync` again before publication.
 5. On Linux, publish by `renameat2(..., RENAME_NOREPLACE)` in the *same
    directory*. A missing libc symbol or unsupported kernel/filesystem fails
    closed; never implement check-then-rename as a fallback.
@@ -64,10 +67,13 @@ violate Linux sync/rename durability semantics.
   automatically.
 - Linux `renameat2(RENAME_NOREPLACE)` is required. macOS, Windows, or
   unsupported network/shared filesystems are not supported by this path.
-- The supplied 0o644 staging mode is filtered by the process umask and
-  directory ACL. On the production summarizer's `UMask=0027`, existing and
-  newly created file mode is 0640; regression coverage checks this parity.
-  Other services retain their own umask/group/default-ACL contract.
+- The empty permission-probe inode requests `0644`, while the data
+  inode requests `0600` from creation onward. The inherited ACL mask of
+  the private data inode is expanded only after its bytes are completely
+  synced. On production `UMask=0027`, both existing and newly published
+  final CAS objects use `0640`; the default named-Renderer ACL is restored
+  with effective read access only for the complete payload. Other services
+  retain their own umask/group/default-ACL contract.
 - A random temporary filename alone is **not** a confidentiality
   boundary. The temporary file's owner-only mode and inherited ACL mask
   prevent group/Renderer reads of partially written payloads. Once fully
