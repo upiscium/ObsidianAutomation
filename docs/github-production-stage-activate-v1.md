@@ -27,8 +27,9 @@ This is **documentation, not a command to run before approval**.
 - Validates a clean main checkout, exact target commit reachable from
   origin/main, and current production HEAD as an ancestor of the target.
   Non-fast-forward updates and rollbacks require a separate recovery contract;
-  this normal Stage intentionally refuses them. Effect-capable services must
-  be idle before and during staging, and both managed timers must exist.
+  this normal Stage intentionally refuses them. **Every installed**
+  `obsidian-github-*.service` must be confirmed inactive before/during staging,
+  not merely the Writer/Sync shortlist; both managed timers must exist.
 - Fingerprints the exact authorized config files (SHA-256 only, not content).
   By default the summarizer config is required; additional security-relevant
   service config paths may be supplied explicitly. The installed managed
@@ -41,8 +42,12 @@ This is **documentation, not a command to run before approval**.
 - Disables/stops the GitHub Sync and Daily Progress timers and requires both
   disabled/inactive. No Core Promotion timer operation is permitted.
 - Resets only the verified production checkout to SHA, installs package/units
-  and Daily summarizer revision, then runs ONLY the GitHub safe and Daily safe
-  smoke profiles. The `--profile live` command is absent by design.
+  and Daily summarizer revision. The installed Python package module inventory
+  and each module byte hash must match the exact checked-out source; deployed
+  GitHub console-script entrypoints are also SHA-256 bound in the Stage receipt.
+  This prevents a clean Git HEAD from concealing installed venv code drift.
+  Stage then runs ONLY the GitHub safe and Daily safe smoke profiles.
+  The `--profile live` command is absent by design.
 - Verifies timers are still inert, effect-capable services remain idle and
   configuration digests remain unchanged. Writes an immutable, canonical,
   SHA-256-addressed stage receipt with prior/target revisions, config and
