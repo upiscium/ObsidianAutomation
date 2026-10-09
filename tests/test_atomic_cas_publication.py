@@ -153,3 +153,70 @@ def test_production_umask_027_preserves_group_read_mode(tmp_path: Path):
     assert proc.exitcode == 0
     assert (target.stat().st_mode & 0o777) == 0o640
     assert target.read_bytes() == b"production-mode-sample"
+
+
+def _attempt_fifo_collision(final: str):
+    try:
+        cas._store_immutable(Path(final), b"data")
+    except cas.ArtifactLifecycleError:
+        os._exit(0)
+    os._exit(76)
+
+
+def test_fifo_target_collision_fails_closed_without_blocking(tmp_path: Path):
+    """A non-regular final pathname must not hang opening a FIFO for read."""
+    final = tmp_path / "target.json"
+    os.mkfifo(final)
+    proc = multiprocessing.get_context("fork").Process(
+        target=_attempt_fifo_collision, args=(str(final),)
+    )
+    proc.start()
+    proc.join(timeout=3)
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(timeout=2)
+        pytest.fail("FIFO target caused a blocking collision read")
+    assert proc.exitcode == 0
+    assert final.is_fifo()
+
+
+def test_failed_staging_fsync_never_publishes_final(tmp_path: Path, monkeypatch):
+    target = tmp_path / "target.json"
+    original = os.fsync
+
+    def fail_regular_file_sync(fd):
+        import stat
+        if stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("injected staging fsync failure")
+        original(fd)
+
+    with monkeypatch.context() as m:
+        m.setattr(cas.os, "fsync", fail_regular_file_sync)
+        with pytest.raises(OSError, match="injected staging"):
+            cas._store_immutable(target, b"complete")
+
+    assert not target.exists()
+    assert not list(tmp_path.glob(".obsidian-cas-*.tmp"))
+    assert cas._store_immutable(target, b"complete") == target
+
+
+def test_failed_directory_fsync_has_complete_final_and_idempotent_retry(
+    tmp_path: Path, monkeypatch
+):
+    target = tmp_path / "target.json"
+    original = os.fsync
+
+    def fail_directory_sync(fd):
+        import stat
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError("injected directory fsync failure")
+        original(fd)
+
+    with monkeypatch.context() as m:
+        m.setattr(cas.os, "fsync", fail_directory_sync)
+        with pytest.raises(OSError, match="injected directory"):
+            cas._store_immutable(target, b"complete")
+
+    assert target.read_bytes() == b"complete"
+    assert not list(tmp_path.glob(".obsidian-cas-*.tmp"))
+    assert cas._store_immutable(target, b"complete") == target
