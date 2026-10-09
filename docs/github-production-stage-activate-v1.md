@@ -32,6 +32,8 @@ This is **documentation, not a command to run before approval**.
   services are also examined for exact absolute `EnvironmentFile=` bindings;
   required files must exist, and even the absence of an optional file is
   recorded. A changed or newly created optional config blocks Activate.
+  The complete installed `obsidian-github-*` Unit namespace, including older
+  managed units, is also bound; adding/removing an installed Unit blocks Activate.
 - Saves an fsynced PREPARING marker **before** stopping managed timers.
 - Disables/stops the GitHub Sync and Daily Progress timers and requires both
   disabled/inactive. No Core Promotion timer operation is permitted.
