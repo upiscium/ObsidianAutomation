@@ -220,3 +220,22 @@ def test_failed_directory_fsync_has_complete_final_and_idempotent_retry(
     assert target.read_bytes() == b"complete"
     assert not list(tmp_path.glob(".obsidian-cas-*.tmp"))
     assert cas._store_immutable(target, b"complete") == target
+
+
+def test_existing_immutable_artifact_skips_staging_and_rewrite(
+    tmp_path: Path, monkeypatch
+):
+    """Resume must not need extra free space/writable directories for CAS hits."""
+    target = tmp_path / "existing.json"
+    payload = b"already-published"
+    assert cas._store_immutable(target, payload) == target
+
+    def unexpected_write(fd, data):
+        raise AssertionError("duplicate CAS store attempted redundant staging")
+
+    with monkeypatch.context() as m:
+        m.setattr(cas, "_write_all", unexpected_write)
+        m.setattr(cas, "_rename_noreplace", unexpected_write)
+        assert cas._store_immutable(target, payload) == target
+    assert target.read_bytes() == payload
+    assert not list(tmp_path.glob(".obsidian-cas-*.tmp"))
