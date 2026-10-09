@@ -227,7 +227,10 @@ def _store_immutable(path: Path, data: bytes) -> Path:
     except OSError as exc:
         raise ArtifactLifecycleError("cannot safely open immutable artifact directory") from exc
     staged_name = f".obsidian-cas-{secrets.token_hex(16)}.tmp"
+    mode_probe_name = f".obsidian-mode-probe-{secrets.token_hex(16)}.tmp"
     temp_exists = False
+    probe_exists = False
+    mode_fd: int | None = None
     fd: int | None = None
     try:
         # A CAS object commonly already exists on replay. Verify the completed
@@ -251,16 +254,29 @@ def _store_immutable(path: Path, data: bytes) -> Path:
             return path
         create_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
         create_flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+        # A zero-byte permission probe captures the existing creation-mode /
+        # inherited default-ACL contract. No sensitive content is ever written
+        # to this publicly readable inode.
         try:
-            fd = os.open(staged_name, create_flags, 0o644, dir_fd=parent_fd)
+            mode_fd = os.open(mode_probe_name, create_flags, 0o644, dir_fd=parent_fd)
+        except OSError as exc:
+            raise ArtifactLifecycleError("cannot probe immutable artifact permissions") from exc
+        probe_exists = True
+        staged_mode = stat.S_IMODE(os.fstat(mode_fd).st_mode)
+        if staged_mode & 0o600 != 0o600:
+            raise ArtifactLifecycleError("immutable artifact permissions lack owner read/write")
+        os.close(mode_fd)
+        mode_fd = None
+        os.unlink(mode_probe_name, dir_fd=parent_fd)
+        probe_exists = False
+        # Data staging starts owner-only *at creation*, not after a readable
+        # open(0644) interval. chmod cannot revoke already-open read handles.
+        try:
+            fd = os.open(staged_name, create_flags, 0o600, dir_fd=parent_fd)
         except OSError as exc:
             raise ArtifactLifecycleError("cannot stage immutable artifact") from exc
         temp_exists = True
-        # Capture the mode granted by the service umask and inherited ACL
-        # before narrowing it. A renderer allowed to read final CAS objects
-        # must not read *partially written* staging content.
-        staged_mode = stat.S_IMODE(os.fstat(fd).st_mode)
-        os.fchmod(fd, staged_mode & 0o600)
+        os.fchmod(fd, 0o600)
         _write_all(fd, data)
         os.fsync(fd)
         # Restore the creation-time permissions only after the complete
@@ -281,6 +297,13 @@ def _store_immutable(path: Path, data: bytes) -> Path:
         os.fsync(parent_fd)
         return path
     finally:
+        if mode_fd is not None:
+            os.close(mode_fd)
+        if probe_exists:
+            try:
+                os.unlink(mode_probe_name, dir_fd=parent_fd)
+            except FileNotFoundError:
+                pass
         if fd is not None:
             os.close(fd)
         if temp_exists:
