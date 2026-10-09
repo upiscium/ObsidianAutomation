@@ -382,3 +382,13 @@ def test_refuse_non_fast_forward(tmp_path):
     assert runner.current_sha == PREVIOUS
     assert runner.enabled and runner.active
     assert _control(opts) == {"status": "none"}
+
+
+def test_stage_failure_disables_both_managed_timers(tmp_path):
+    runner, opts = setup(tmp_path, fail_profile="safe")
+    with pytest.raises(ProductionUpdateError):
+        stage(runner, opts)
+    assert runner.enabled is False and runner.active is False
+    assert runner.daily_enabled is False and runner.daily_active is False
+    assert _control(opts)["status"] == "failed"
+    assert not _called(runner, ("--profile", "live"))
