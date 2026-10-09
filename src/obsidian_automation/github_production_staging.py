@@ -218,6 +218,17 @@ def _unit_manifest(directory: Path, names: Sequence[str]) -> dict[str, str]:
     return result
 
 
+def _all_installed_unit_names(directory: Path) -> tuple[str, ...]:
+    """Bind the complete installed managed namespace, including older units."""
+    found = {
+        file.name for pattern in ("obsidian-github-*.service", "obsidian-github-*.timer")
+        for file in directory.glob(pattern)
+    }
+    if not found or len(found) > 128:
+        raise legacy.ProductionUpdateError("installed managed unit set is invalid")
+    return tuple(sorted(found))
+
+
 def _environment_manifest(systemd_dir: Path, names: Sequence[str]) -> dict[str, str]:
     """Bind every EnvironmentFile declared by the exact installed service units.
 
@@ -341,8 +352,11 @@ def stage_update(*, target_sha: str, app_root: Path, venv_root: Path,
             legacy._run(runner, (str(pip), "install", "--no-deps", "--force-reinstall", str(app_root)),
                         label="stage install reviewed package")
             installed = legacy._install_managed_units(app_root, systemd_dir)
+            managed_names = _all_installed_unit_names(systemd_dir)
+            if not set(installed).issubset(managed_names):
+                raise legacy.ProductionUpdateError("installed unit inventory incomplete")
             _install_revision(daily_revision_env, target_sha)
-            environment_files = _environment_manifest(systemd_dir, installed)
+            environment_files = _environment_manifest(systemd_dir, managed_names)
             legacy._run(runner, ("systemctl", "daemon-reload"), label="stage reload units")
             smoke = venv_root / "bin" / "obsidian-github-production-smoke"
             daily = venv_root / "bin" / "obsidian-github-daily-production-smoke"
@@ -354,7 +368,9 @@ def stage_update(*, target_sha: str, app_root: Path, venv_root: Path,
             _require_idle_services(runner)
             if _config_manifest(config_files) != configs:
                 raise legacy.ProductionUpdateError("configuration drift during stage")
-            if _environment_manifest(systemd_dir, installed) != environment_files:
+            if _all_installed_unit_names(systemd_dir) != managed_names:
+                raise legacy.ProductionUpdateError("installed unit set changed during stage")
+            if _environment_manifest(systemd_dir, managed_names) != environment_files:
                 raise legacy.ProductionUpdateError("Unit EnvironmentFile drift during stage")
             receipt = {
                 "record_version": VERSION, "stage": "staged",
@@ -362,7 +378,7 @@ def stage_update(*, target_sha: str, app_root: Path, venv_root: Path,
                 "app_root": str(app_root.absolute()), "venv_root": str(venv_root.absolute()),
                 "systemd_dir": str(systemd_dir.absolute()),
                 "revision_env": str(daily_revision_env.absolute()),
-                "config_manifest": configs, "unit_manifest": _unit_manifest(systemd_dir, installed),
+                "config_manifest": configs, "unit_manifest": _unit_manifest(systemd_dir, managed_names),
                 "env_manifest": environment_files,
                 "timer_states": timers, "safe_smoke": "passed",
                 "daily_safe_smoke": "passed", "created_at": legacy._utc_now(),
@@ -419,6 +435,8 @@ def activate_update(*, stage_sha256: str, approve_live_github_writer: bool,
         _require_idle_services(runner)
         if _config_manifest(config_files) != receipt["config_manifest"]:
             raise legacy.ProductionUpdateError("configuration drift after stage")
+        if _all_installed_unit_names(systemd_dir) != tuple(sorted(receipt["unit_manifest"])):
+            raise legacy.ProductionUpdateError("installed unit set drift after stage")
         if _unit_manifest(systemd_dir, sorted(receipt["unit_manifest"])) != receipt["unit_manifest"]:
             raise legacy.ProductionUpdateError("unit-file drift after stage")
         if _environment_manifest(systemd_dir, sorted(receipt["unit_manifest"])) != receipt["env_manifest"]:
