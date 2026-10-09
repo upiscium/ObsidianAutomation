@@ -511,7 +511,11 @@ def test_partial_model_schema_binds_66_evidence_refs_and_preserves_ids(
 ) -> None:
     path, _ = _evidence(tmp_path, 66)
     bundle = parse_evidence_bundle(path.read_bytes())
-    contexts = partition_evidence(bundle)
+    # This test isolates the 66-source schema contract. The smaller default
+    # partition is independently tested with seven 8-KiB comments above.
+    contexts = partition_evidence(
+        bundle, max_bytes=MAX_PARTIAL_CONTEXT_BYTES
+    )
     assert len(contexts) == 1
     context = contexts[0]
     assert len(context.events) == 66
