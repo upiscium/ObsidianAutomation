@@ -12,12 +12,14 @@ from test_github_production_update import FakeRunner, PREVIOUS, TARGET, _layout
 
 
 class Runner(FakeRunner):
-    def __init__(self, app: Path, venv: Path, *, allow_fast_forward=True, **kwargs):
+    def __init__(self, app: Path, venv: Path, *, allow_fast_forward=True,
+                 active_extra_services=(), **kwargs):
         super().__init__(
             app, venv, daily_present=True,
             daily_enabled=True, daily_active=False, **kwargs,
         )
         self.allow_fast_forward = allow_fast_forward
+        self.active_extra_services = frozenset(active_extra_services)
 
     def __call__(self, argv):
         argv = tuple(str(x) for x in argv)
@@ -25,14 +27,28 @@ class Runner(FakeRunner):
                     "--is-ancestor", PREVIOUS, TARGET):
             self.calls.append(argv)
             return CommandResult(0 if self.allow_fast_forward else 1, "", "")
-        if argv[:2] == ("systemctl", "is-active") and argv[2] in staged.EFFECT_SERVICES:
+        if (argv[:2] == ("systemctl", "is-active") and len(argv) == 3
+                and argv[2].startswith("obsidian-github-") and argv[2].endswith(".service")):
             self.calls.append(argv)
+            if argv[2] in self.active_extra_services:
+                return CommandResult(0, "active\n", "")
             return CommandResult(3, "inactive\n", "")
         return super().__call__(argv)
 
 
 def setup(tmp_path: Path, **runner_options):
     app, venv, units, receipts = _layout(tmp_path)
+    # Production already has managed unit files; model that initial state.
+    for source in (app / "examples" / "github-sync").glob("obsidian-github-*"):
+        (units / source.name).write_bytes(source.read_bytes())
+    source_package = app / "src" / "obsidian_automation"
+    installed_package = venv / "lib" / "python3.12" / "site-packages" / "obsidian_automation"
+    source_package.mkdir(parents=True)
+    installed_package.mkdir(parents=True)
+    for name in ("__init__.py", "github_production_staging.py"):
+        contents = f"# reviewed package fixture: {name}\\n"
+        (source_package / name).write_text(contents)
+        (installed_package / name).write_text(contents)
     receipts.mkdir(mode=0o700)
     config = tmp_path / "etc/obsidian-github-summarizer/config.env"
     config.write_text("DAILY_SUMMARY_MODEL=gemma4:12b\n")
@@ -392,3 +408,66 @@ def test_stage_failure_disables_both_managed_timers(tmp_path):
     assert runner.daily_enabled is False and runner.daily_active is False
     assert _control(opts)["status"] == "failed"
     assert not _called(runner, ("--profile", "live"))
+
+
+def test_running_daily_render_blocks_stage_before_any_production_effect(tmp_path):
+    """A preexisting Daily renderer must not be ignored by the idle gate."""
+    active = "obsidian-github-daily-render.service"
+    runner, opts = setup(tmp_path, active_extra_services=(active,))
+    with pytest.raises(ProductionUpdateError, match="not confirmed idle"):
+        stage(runner, opts)
+    assert runner.current_sha == PREVIOUS
+    assert runner.enabled and runner.active
+    assert not _called(runner, ("--profile", "safe"))
+    assert _control(opts) == {"status": "none"}
+
+
+def test_unlisted_installed_managed_service_must_also_be_idle(tmp_path):
+    """The full existing unit namespace is authoritative, not a fixed shortlist."""
+    active = "obsidian-github-unanticipated.service"
+    runner, opts = setup(tmp_path, active_extra_services=(active,))
+    (opts["systemd_dir"] / active).write_text("[Service]\nExecStart=/bin/true\n")
+    with pytest.raises(ProductionUpdateError, match="not confirmed idle"):
+        stage(runner, opts)
+    assert runner.current_sha == PREVIOUS
+    assert runner.enabled and runner.active
+    assert _control(opts) == {"status": "none"}
+
+
+@pytest.mark.parametrize("corruption", [
+    "installed_python", "console_script", "extra_module", "missing_module"
+])
+def test_poststage_deployed_code_drift_blocks_live_smoke(tmp_path, corruption):
+    runner, opts = setup(tmp_path)
+    receipt = stage(runner, opts)
+    assert "code_manifest" in staged._receipt_read(
+        opts["receipt_dir"] / staged.STAGING_ROOT, receipt
+    )
+
+    package = opts["venv_root"] / "lib" / "python3.12" / "site-packages" / "obsidian_automation"
+    if corruption == "installed_python":
+        (package / "github_production_staging.py").write_text("# compromised installed code\n")
+    elif corruption == "console_script":
+        (opts["venv_root"] / "bin" / "obsidian-github-production-smoke").write_text(
+            "# changed executable\n"
+        )
+    elif corruption == "extra_module":
+        (package / "hidden.py").write_text("# unexpected module\n")
+    else:
+        (package / "__init__.py").unlink()
+
+    with pytest.raises(ProductionUpdateError, match="installed"):
+        activate(receipt, opts)
+    assert not _called(runner, ("--profile", "live"))
+    assert _control(opts)["status"] == "staged"
+
+
+def test_stage_rejects_installed_package_mismatch_before_safe_smoke(tmp_path):
+    runner, opts = setup(tmp_path)
+    package = opts["venv_root"] / "lib" / "python3.12" / "site-packages" / "obsidian_automation"
+    (package / "github_production_staging.py").write_text("# bad build output\n")
+    with pytest.raises(ProductionUpdateError, match="installed package bytes"):
+        stage(runner, opts)
+    assert _control(opts)["status"] == "failed"
+    assert runner.enabled is False and runner.active is False
+    assert not _called(runner, ("--profile", "safe"))
