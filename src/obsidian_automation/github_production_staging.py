@@ -168,6 +168,81 @@ def _control_write(state: Path, status: str, target: str, receipt: str | None) -
         "stage_sha256": receipt, "updated_at": legacy._utc_now(),
     }), immutable=False)
 
+def _assert_known_timer_inventory(runner: legacy.CommandRunner, systemd_dir: Path) -> None:
+    """Only the two separately authorized GitHub timers may exist anywhere.
+
+    Checking timer state for the two named units is insufficient if a third
+    already-loaded transient timer can start services during Stage.
+    """
+    expected = set(legacy.MANAGED_TIMER_UNITS)
+    installed = {
+        name for name in _all_installed_unit_names(systemd_dir)
+        if name.endswith(".timer")
+    }
+    if installed != expected:
+        raise legacy.ProductionUpdateError("unknown or missing installed GitHub timer")
+    commands = (
+        ("systemctl", "list-unit-files", "--all", "--type=timer",
+         "--no-legend", "--no-pager", "obsidian-github-*.timer"),
+        ("systemctl", "list-units", "--all", "--type=timer",
+         "--no-legend", "--plain", "--no-pager", "obsidian-github-*.timer"),
+    )
+    for argv in commands:
+        observation = runner(argv)
+        if observation.returncode != 0:
+            raise legacy.ProductionUpdateError("cannot enumerate GitHub timer authority")
+        names: set[str] = set()
+        for line in observation.stdout.splitlines():
+            fields = line.strip().split()
+            if not fields:
+                continue
+            name = fields[0]
+            if (not name.startswith("obsidian-github-") or not name.endswith(".timer")
+                    or "/" in name or name in names):
+                raise legacy.ProductionUpdateError("GitHub timer inventory is ambiguous")
+            names.add(name)
+        if names != expected:
+            raise legacy.ProductionUpdateError("unexpected loaded or installed GitHub timer")
+
+
+def _assert_no_systemd_dropins(
+    runner: legacy.CommandRunner, systemd_dir: Path, names: Sequence[str]
+) -> None:
+    """Reject all effective or staged drop-ins, rather than silently omit them.
+
+    A DropInPaths change can replace ExecStart or EnvironmentFile without
+    affecting the top-level unit digest bound to the Stage receipt.
+    """
+    for name in names:
+        if name not in _all_installed_unit_names(systemd_dir):
+            raise legacy.ProductionUpdateError("managed unit inventory drift")
+        observed = runner((
+            "systemctl", "show", "-p", "LoadState", "-p", "FragmentPath",
+            "-p", "DropInPaths", "--no-pager", name,
+        ))
+        if observed.returncode != 0:
+            raise legacy.ProductionUpdateError("cannot inspect effective systemd unit")
+        fields: dict[str, str] = {}
+        for line in observed.stdout.splitlines():
+            if "=" not in line:
+                raise legacy.ProductionUpdateError("invalid effective systemd unit response")
+            key, value = line.split("=", 1)
+            if key in fields or key not in {"LoadState", "FragmentPath", "DropInPaths"}:
+                raise legacy.ProductionUpdateError("ambiguous effective systemd unit response")
+            fields[key] = value
+        if (set(fields) != {"LoadState", "FragmentPath", "DropInPaths"}
+                or fields["LoadState"] != "loaded"
+                or fields["FragmentPath"] != str(systemd_dir / name)
+                or fields["DropInPaths"]):
+            raise legacy.ProductionUpdateError("unsupported effective systemd drop-in or unit origin")
+        # Reject pending, not-yet-loaded drop-ins as well. The active unit
+        # setting alone is insufficient after an out-of-band config edit.
+        for prefix in (systemd_dir, Path("/run/systemd/system")):
+            drop = prefix / (name + ".d")
+            if os.path.lexists(drop):
+                raise legacy.ProductionUpdateError("unreviewed systemd drop-in directory")
+
+
 def _snapshot_timers(runner: legacy.CommandRunner) -> dict[str, dict[str, bool]]:
     out: dict[str, dict[str, bool]] = {}
     for unit in legacy.MANAGED_TIMER_UNITS:
@@ -392,6 +467,9 @@ def stage_update(*, target_sha: str, app_root: Path, venv_root: Path,
                 raise legacy.ProductionUpdateError(
                     "normal Stage rejects non-fast-forward or rollback targets"
                 )
+        _assert_known_timer_inventory(runner, systemd_dir)
+        _assert_no_systemd_dropins(runner, systemd_dir,
+                                  _all_installed_unit_names(systemd_dir))
         _require_idle_services(runner, systemd_dir)
         timers = _snapshot_timers(runner)
         configs = _config_manifest(config_files)
@@ -400,6 +478,7 @@ def stage_update(*, target_sha: str, app_root: Path, venv_root: Path,
             for unit in legacy.MANAGED_TIMER_UNITS:
                 legacy._run(runner, ("systemctl", "disable", "--now", unit), label="stage stop managed timer")
             _require_inert(runner)
+            _assert_known_timer_inventory(runner, systemd_dir)
             _require_idle_services(runner, systemd_dir)
             legacy._git(runner, app_root, "reset", "--hard", target_sha, label="stage exact checkout")
             _checkout(app_root, runner, expected=target_sha)
@@ -416,6 +495,8 @@ def stage_update(*, target_sha: str, app_root: Path, venv_root: Path,
             _install_revision(daily_revision_env, target_sha)
             environment_files = _environment_manifest(systemd_dir, managed_names)
             legacy._run(runner, ("systemctl", "daemon-reload"), label="stage reload units")
+            _assert_known_timer_inventory(runner, systemd_dir)
+            _assert_no_systemd_dropins(runner, systemd_dir, managed_names)
             smoke = venv_root / "bin" / "obsidian-github-production-smoke"
             daily = venv_root / "bin" / "obsidian-github-daily-production-smoke"
             if not smoke.is_file() or not daily.is_file():
@@ -423,6 +504,8 @@ def stage_update(*, target_sha: str, app_root: Path, venv_root: Path,
             legacy._run(runner, (str(smoke), "--profile", "safe"), label="stage safe smoke")
             legacy._run(runner, (str(daily), "--profile", "safe"), label="stage Daily safe smoke")
             _require_inert(runner)
+            _assert_known_timer_inventory(runner, systemd_dir)
+            _assert_no_systemd_dropins(runner, systemd_dir, managed_names)
             _require_idle_services(runner, systemd_dir)
             if _deployed_code_manifest(app_root, venv_root) != code_manifest:
                 raise legacy.ProductionUpdateError("installed package changed during safe Stage")
@@ -501,6 +584,9 @@ def activate_update(*, stage_sha256: str, approve_live_github_writer: bool,
                 raise legacy.ProductionUpdateError("staged runtime path drift")
         _checkout(app_root, runner, expected=receipt["target_sha"])
         _require_inert(runner)
+        _assert_known_timer_inventory(runner, systemd_dir)
+        _assert_no_systemd_dropins(runner, systemd_dir,
+                                  _all_installed_unit_names(systemd_dir))
         _require_idle_services(runner, systemd_dir)
         if _deployed_code_manifest(app_root, venv_root) != receipt["code_manifest"]:
             raise legacy.ProductionUpdateError("installed package drift after stage")
@@ -532,6 +618,9 @@ def activate_update(*, stage_sha256: str, approve_live_github_writer: bool,
                 raise legacy.ProductionUpdateError("live smoke executable missing")
             legacy._run(runner, (str(smoke), "--profile", "live"),
                         label="explicitly approved GitHub Writer live smoke")
+            _assert_known_timer_inventory(runner, systemd_dir)
+            _assert_no_systemd_dropins(runner, systemd_dir,
+                                      _all_installed_unit_names(systemd_dir))
             _require_idle_services(runner, systemd_dir)
             for unit, restore in (
                 (legacy.TIMER_UNIT, restore_sync_timer),
