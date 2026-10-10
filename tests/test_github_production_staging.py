@@ -13,16 +13,43 @@ from test_github_production_update import FakeRunner, PREVIOUS, TARGET, _layout
 
 class Runner(FakeRunner):
     def __init__(self, app: Path, venv: Path, *, allow_fast_forward=True,
-                 active_extra_services=(), **kwargs):
+                 active_extra_services=(), extra_loaded_timers=(),
+                 effective_dropins=(), bad_fragments=(), **kwargs):
         super().__init__(
             app, venv, daily_present=True,
             daily_enabled=True, daily_active=False, **kwargs,
         )
         self.allow_fast_forward = allow_fast_forward
         self.active_extra_services = frozenset(active_extra_services)
+        self.extra_loaded_timers = set(extra_loaded_timers)
+        self.effective_dropins = set(effective_dropins)
+        self.bad_fragments = set(bad_fragments)
+        self.systemd_dir = None
 
     def __call__(self, argv):
         argv = tuple(str(x) for x in argv)
+        if argv[:2] == ("systemctl", "list-unit-files"):
+            self.calls.append(argv)
+            files = sorted(p.name for p in self.systemd_dir.glob("obsidian-github-*.timer"))
+            return CommandResult(0, "".join(f"{name} enabled enabled\n" for name in files), "")
+        if argv[:2] == ("systemctl", "list-units"):
+            self.calls.append(argv)
+            loaded = sorted(
+                {p.name for p in self.systemd_dir.glob("obsidian-github-*.timer")}
+                | self.extra_loaded_timers
+            )
+            return CommandResult(0, "".join(f"{name} loaded inactive dead fixture\n" for name in loaded), "")
+        if argv[:2] == ("systemctl", "show") and "-p" in argv:
+            name = argv[-1]
+            self.calls.append(argv)
+            if name in self.bad_fragments:
+                fragment = "/run/systemd/system/" + name
+            else:
+                fragment = str(self.systemd_dir / name)
+            drop = "/etc/systemd/system/" + name + ".d/override.conf" if name in self.effective_dropins else ""
+            return CommandResult(
+                0, f"LoadState=loaded\nFragmentPath={fragment}\nDropInPaths={drop}\n", ""
+            )
         if argv == ("git", "-C", str(self.app_root), "merge-base",
                     "--is-ancestor", PREVIOUS, TARGET):
             self.calls.append(argv)
@@ -54,6 +81,7 @@ def setup(tmp_path: Path, **runner_options):
     config.write_text("DAILY_SUMMARY_MODEL=gemma4:12b\n")
     revision = config.parent / "revision.env"
     runner = Runner(app, venv, **runner_options)
+    runner.systemd_dir = units
     opts = dict(
         app_root=app, venv_root=venv, systemd_dir=units,
         receipt_dir=receipts, daily_revision_env=revision,
@@ -471,3 +499,85 @@ def test_stage_rejects_installed_package_mismatch_before_safe_smoke(tmp_path):
     assert _control(opts)["status"] == "failed"
     assert runner.enabled is False and runner.active is False
     assert not _called(runner, ("--profile", "safe"))
+
+
+def test_unknown_installed_timer_is_rejected_before_effects(tmp_path):
+    runner, opts = setup(tmp_path)
+    (opts["systemd_dir"] / "obsidian-github-surprise.timer").write_text(
+        "[Timer]\nOnCalendar=hourly\n"
+    )
+    with pytest.raises(ProductionUpdateError, match="unknown or missing installed GitHub timer"):
+        stage(runner, opts)
+    assert runner.current_sha == PREVIOUS
+    assert runner.enabled and runner.active
+    assert _control(opts) == {"status": "none"}
+    assert not _called(runner, ("--profile", "safe"))
+
+
+def test_unknown_loaded_timer_not_on_disk_is_rejected_before_effects(tmp_path):
+    runner, opts = setup(tmp_path, extra_loaded_timers=("obsidian-github-transient.timer",))
+    with pytest.raises(ProductionUpdateError, match="unexpected loaded or installed"):
+        stage(runner, opts)
+    assert runner.current_sha == PREVIOUS
+    assert runner.enabled and runner.active
+    assert _control(opts) == {"status": "none"}
+
+
+def test_unknown_loaded_timer_appearing_after_stage_blocks_activate(tmp_path):
+    runner, opts = setup(tmp_path)
+    receipt = stage(runner, opts)
+    runner.extra_loaded_timers.add("obsidian-github-unexpected.timer")
+    with pytest.raises(ProductionUpdateError, match="unexpected loaded or installed"):
+        activate(receipt, opts)
+    assert _control(opts)["status"] == "staged"
+    assert not _called(runner, ("--profile", "live"))
+
+
+def test_installed_dropin_prevents_stage_before_timer_stop(tmp_path):
+    runner, opts = setup(tmp_path)
+    override = opts["systemd_dir"] / "obsidian-github-writer.service.d"
+    override.mkdir()
+    (override / "override.conf").write_text("[Service]\nExecStart=\n")
+    with pytest.raises(ProductionUpdateError, match="drop-in"):
+        stage(runner, opts)
+    assert _control(opts) == {"status": "none"}
+    assert runner.enabled and runner.active
+    assert runner.current_sha == PREVIOUS
+
+
+def test_pending_unloaded_dropin_blocks_activate(tmp_path):
+    runner, opts = setup(tmp_path)
+    receipt = stage(runner, opts)
+    override = opts["systemd_dir"] / "obsidian-github-sync.service.d"
+    override.mkdir()
+    (override / "override.conf").write_text("[Service]\nEnvironment=UNREVIEWED=1\n")
+    with pytest.raises(ProductionUpdateError, match="drop-in"):
+        activate(receipt, opts)
+    assert _control(opts)["status"] == "staged"
+    assert not _called(runner, ("--profile", "live"))
+
+
+def test_systemd_effective_dropin_caught_before_stage(tmp_path):
+    runner, opts = setup(tmp_path, effective_dropins=("obsidian-github-writer.service",))
+    with pytest.raises(ProductionUpdateError, match="drop-in"):
+        stage(runner, opts)
+    assert _control(opts) == {"status": "none"}
+    assert runner.enabled and runner.active
+
+
+def test_systemd_effective_dropin_added_after_stage_caught_before_live(tmp_path):
+    runner, opts = setup(tmp_path)
+    receipt = stage(runner, opts)
+    runner.effective_dropins.add("obsidian-github-compactor.service")
+    with pytest.raises(ProductionUpdateError, match="drop-in"):
+        activate(receipt, opts)
+    assert _control(opts)["status"] == "staged"
+    assert not _called(runner, ("--profile", "live"))
+
+
+def test_systemd_unit_fragment_rebinding_fails_closed(tmp_path):
+    runner, opts = setup(tmp_path, bad_fragments=("obsidian-github-writer.service",))
+    with pytest.raises(ProductionUpdateError, match="unit origin"):
+        stage(runner, opts)
+    assert _control(opts) == {"status": "none"}
+    assert runner.current_sha == PREVIOUS
