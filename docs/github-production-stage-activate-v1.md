@@ -29,7 +29,12 @@ This is **documentation, not a command to run before approval**.
   Non-fast-forward updates and rollbacks require a separate recovery contract;
   this normal Stage intentionally refuses them. **Every installed**
   `obsidian-github-*.service` must be confirmed inactive before/during staging,
-  not merely the Writer/Sync shortlist; both managed timers must exist.
+  not merely the Writer/Sync shortlist. The **only allowed GitHub timers** are
+  the known Sync and Daily Progress timers. The installed-files inventory,
+  systemd unit-file enumeration, and loaded-unit enumeration must all agree;
+  any additional enabled, disabled, transient or loaded GitHub timer is a
+  fail-closed **pre-effect** blocker. Repeat these checks after timer stop,
+  daemon reload and safe smoke. No unknown timer is automatically stopped.
 - Fingerprints the exact authorized config files (SHA-256 only, not content).
   By default the summarizer config is required; additional security-relevant
   service config paths may be supplied explicitly. The installed managed
@@ -38,6 +43,11 @@ This is **documentation, not a command to run before approval**.
   recorded. A changed or newly created optional config blocks Activate.
   The complete installed `obsidian-github-*` Unit namespace, including older
   managed units, is also bound; adding/removing an installed Unit blocks Activate.
+  For every managed unit, the effective systemd `LoadState` and
+  `FragmentPath` must match the trusted installed file and `DropInPaths`
+  must be empty. Pending per-unit `.d` override directories are also
+  rejected before and after Stage and before/after Activate; no drop-in
+  directives are silently excluded from the revision contract.
 - Saves an fsynced PREPARING marker **before** stopping managed timers.
 - Disables/stops the GitHub Sync and Daily Progress timers and requires both
   disabled/inactive. No Core Promotion timer operation is permitted.
@@ -73,8 +83,10 @@ for this exact stage. A ChatGPT consent to **design** does not supply this.
 - Requires an exact, immutable stage receipt digest and STAGED control marker.
 - Checks stage-to-runtime path identity, code checkout, deployed units,
   explicit config file digests and installed revision binding.
-- Requires both managed timers disabled/inactive and the effect-capable
-  services idle. Timer drift blocks Live Smoke.
+- Requires both managed timers disabled/inactive, the **complete allowed
+  timer inventory** unchanged, all managed units free of effective or pending
+  systemd drop-ins, and all effect-capable services idle. Any unknown timer,
+  added drop-in or fragment rebind blocks Live Smoke.
 - Can optionally restore **only the GitHub Sync timer** with
   `--restore-sync-timer`, and only if the original timer state authorized it.
 - **Daily Progress timer restoration is explicitly forbidden in Activate.**
@@ -105,8 +117,11 @@ for this exact stage. A ChatGPT consent to **design** does not supply this.
   The control is atomically replaced and fsynced. Crashes during publication
   may strand an orphan temp entry; **never** age-delete by default.
 - The stage lock serializes only participating updater processes. An
-  independent administrator manually starting a Writer or timer can race
-  the checks; this is an explicit operator/host authority boundary.
+  independent administrator manually starting a Writer/timer, changing
+  systemd unit/drop-in files, or running daemon-reload can race the checks;
+  this is an explicit trusted-root operator boundary. Pre/post checks
+  mitigate drift but cannot defend against an adversarial privileged systemd
+  administrator acting between every individual check.
 - This patch does not rewrite previously published 2026-10-07/08 Evidence,
   invent completed Summary refs, run Daily Writer, or grant Nextcloud CAS.
 - Offline unit tests simulate Git and systemd commands in isolated
