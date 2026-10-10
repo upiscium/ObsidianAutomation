@@ -667,3 +667,63 @@ def test_external_loaded_service_added_after_stage_blocks_activate(tmp_path):
         activate(receipt, opts)
     assert _control(opts)["status"] == "staged"
     assert not _called(runner, ("--profile", "live"))
+
+
+def test_direct_sync_toml_drift_is_bound_before_live_smoke(tmp_path):
+    runner, opts = setup(tmp_path)
+    direct = tmp_path / "sync-config.toml"
+    direct.write_text("github_api_base = 'https://api.github.com'\n")
+    unit = opts["app_root"] / "examples" / "github-sync" / "obsidian-github-sync.service"
+    unit.write_text(
+        f"[Service]\nExecStart=/opt/sync-cli \\\n"
+        f"  --config {direct}\n"
+    )
+    receipt = stage(runner, opts)
+    proof = staged._receipt_read(opts["receipt_dir"] / staged.STAGING_ROOT, receipt)
+    assert str(direct) in proof["direct_manifest"]
+    assert "github_api_base" not in str(proof)
+    direct.write_text("github_api_base = 'https://unexpected.invalid'\n")
+    with pytest.raises(ProductionUpdateError, match="direct service file input drift"):
+        activate(receipt, opts)
+    assert _control(opts)["status"] == "staged"
+    assert not _called(runner, ("--profile", "live"))
+
+
+@pytest.mark.parametrize("flag", ("--rclone-config", "--filter-file", "--password-file"))
+def test_additional_direct_files_bound_before_activate(tmp_path, flag):
+    runner, opts = setup(tmp_path)
+    secret = tmp_path / "bound-input"
+    secret.write_text("PRIVATE_TEST_MARKER\n")
+    unit = opts["app_root"] / "examples" / "github-sync" / "obsidian-github-sync.service"
+    unit.write_text(f"[Service]\nExecStart=/opt/sync-cli {flag}={secret}\n")
+    receipt = stage(runner, opts)
+    assert str(secret) in staged._receipt_read(
+        opts["receipt_dir"] / staged.STAGING_ROOT, receipt
+    )["direct_manifest"]
+    secret.write_text("PRIVATE_TEST_MARKER_MODIFIED\n")
+    with pytest.raises(ProductionUpdateError, match="direct service file input drift"):
+        activate(receipt, opts)
+    assert not _called(runner, ("--profile", "live"))
+
+
+def test_unreviewed_sensitive_file_flag_fails_stage(tmp_path):
+    runner, opts = setup(tmp_path)
+    unit = opts["app_root"] / "examples" / "github-sync" / "obsidian-github-sync.service"
+    unit.write_text("[Service]\nExecStart=/opt/sync-cli --new-api-config=/etc/secret\n")
+    with pytest.raises(ProductionUpdateError, match="unreviewed direct file argument"):
+        stage(runner, opts)
+    assert _control(opts)["status"] == "failed"
+    assert runner.enabled is False and runner.active is False
+    assert not _called(runner, ("--profile", "live"))
+
+
+def test_missing_mandatory_direct_file_blocks_stage(tmp_path):
+    runner, opts = setup(tmp_path)
+    missing = tmp_path / "not-yet-provisioned.toml"
+    unit = opts["app_root"] / "examples" / "github-sync" / "obsidian-github-sync.service"
+    unit.write_text(f"[Service]\nExecStart=/opt/sync-cli --config {missing}\n")
+    with pytest.raises(FileNotFoundError):
+        stage(runner, opts)
+    assert _control(opts)["status"] == "failed"
+    assert not runner.enabled and not runner.active
+    assert not _called(runner, ("--profile", "live"))
