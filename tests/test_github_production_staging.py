@@ -14,7 +14,8 @@ from test_github_production_update import FakeRunner, PREVIOUS, TARGET, _layout
 class Runner(FakeRunner):
     def __init__(self, app: Path, venv: Path, *, allow_fast_forward=True,
                  active_extra_services=(), extra_loaded_timers=(),
-                 effective_dropins=(), bad_fragments=(), **kwargs):
+                 extra_loaded_services=(), extra_installed_services=(),
+                 alternate_unit_paths=(), effective_dropins=(), bad_fragments=(), **kwargs):
         super().__init__(
             app, venv, daily_present=True,
             daily_enabled=True, daily_active=False, **kwargs,
@@ -22,23 +23,41 @@ class Runner(FakeRunner):
         self.allow_fast_forward = allow_fast_forward
         self.active_extra_services = frozenset(active_extra_services)
         self.extra_loaded_timers = set(extra_loaded_timers)
+        self.extra_loaded_services = set(extra_loaded_services)
+        self.extra_installed_services = set(extra_installed_services)
+        self.alternate_unit_paths = tuple(alternate_unit_paths)
         self.effective_dropins = set(effective_dropins)
         self.bad_fragments = set(bad_fragments)
         self.systemd_dir = None
 
     def __call__(self, argv):
         argv = tuple(str(x) for x in argv)
+        if argv[:2] == ("systemd-analyze", "unit-paths"):
+            self.calls.append(argv)
+            return CommandResult(
+                0, "".join(f"{path}\n" for path in
+                           (self.systemd_dir, *self.alternate_unit_paths)), "",
+            )
         if argv[:2] == ("systemctl", "list-unit-files"):
             self.calls.append(argv)
-            files = sorted(p.name for p in self.systemd_dir.glob("obsidian-github-*.timer"))
-            return CommandResult(0, "".join(f"{name} enabled enabled\n" for name in files), "")
+            kind = ".service" if "--type=service" in argv else ".timer"
+            files = {p.name for p in self.systemd_dir.glob("obsidian-github-*" + kind)}
+            if kind == ".service":
+                files |= self.extra_installed_services
+            return CommandResult(
+                0, "".join(f"{name} enabled enabled\n" for name in sorted(files)), "",
+            )
         if argv[:2] == ("systemctl", "list-units"):
             self.calls.append(argv)
-            loaded = sorted(
-                {p.name for p in self.systemd_dir.glob("obsidian-github-*.timer")}
-                | self.extra_loaded_timers
+            kind = ".service" if "--type=service" in argv else ".timer"
+            loaded = {p.name for p in self.systemd_dir.glob("obsidian-github-*" + kind)}
+            if kind == ".timer":
+                loaded |= self.extra_loaded_timers
+            else:
+                loaded |= self.extra_loaded_services
+            return CommandResult(
+                0, "".join(f"{name} loaded inactive dead fixture\n" for name in sorted(loaded)), "",
             )
-            return CommandResult(0, "".join(f"{name} loaded inactive dead fixture\n" for name in loaded), "")
         if argv[:2] == ("systemctl", "show") and "-p" in argv:
             name = argv[-1]
             self.calls.append(argv)
@@ -581,3 +600,70 @@ def test_systemd_unit_fragment_rebinding_fails_closed(tmp_path):
         stage(runner, opts)
     assert _control(opts) == {"status": "none"}
     assert runner.current_sha == PREVIOUS
+
+
+@pytest.mark.parametrize("dirname", [
+    "obsidian-github-writer.service.d",
+    "service.d",
+])
+def test_vendor_or_global_pending_dropin_blocks_activate(tmp_path, dirname):
+    vendor = tmp_path / "vendor-units"
+    vendor.mkdir()
+    runner, opts = setup(tmp_path, alternate_unit_paths=(vendor,))
+    receipt = stage(runner, opts)
+    dropin = vendor / dirname
+    dropin.mkdir()
+    (dropin / "override.conf").write_text(
+        "[Service]\nEnvironment=UNREVIEWED=1\n"
+    )
+    with pytest.raises(ProductionUpdateError, match="drop-in"):
+        activate(receipt, opts)
+    assert _control(opts)["status"] == "staged"
+    assert not _called(runner, ("--profile", "live"))
+
+
+def test_whitespace_indented_environment_binding_is_hashed(tmp_path):
+    runner, opts = setup(tmp_path)
+    config = tmp_path / "writer-environment.env"
+    config.write_text("WRITER_MODE=before\n")
+    source = opts["app_root"] / "examples" / "github-sync" / "obsidian-github-writer.service"
+    source.write_text(f"[Service]\n \t EnvironmentFile = {config}\n")
+    receipt = stage(runner, opts)
+    stage_record = staged._receipt_read(opts["receipt_dir"] / staged.STAGING_ROOT, receipt)
+    assert str(config) in stage_record["env_manifest"]
+    config.write_text("WRITER_MODE=after\n")
+    with pytest.raises(ProductionUpdateError, match="EnvironmentFile drift"):
+        activate(receipt, opts)
+    assert _control(opts)["status"] == "staged"
+    assert not _called(runner, ("--profile", "live"))
+
+
+def test_external_loaded_service_blocks_stage_before_effects(tmp_path):
+    runner, opts = setup(
+        tmp_path, extra_loaded_services=("obsidian-github-transient-worker.service",),
+    )
+    with pytest.raises(ProductionUpdateError, match="unexpected installed or loaded GitHub service"):
+        stage(runner, opts)
+    assert _control(opts) == {"status": "none"}
+    assert runner.current_sha == PREVIOUS
+    assert runner.enabled and runner.active
+
+
+def test_external_installed_service_blocks_stage_before_effects(tmp_path):
+    runner, opts = setup(
+        tmp_path, extra_installed_services=("obsidian-github-external-worker.service",),
+    )
+    with pytest.raises(ProductionUpdateError, match="unexpected installed or loaded GitHub service"):
+        stage(runner, opts)
+    assert _control(opts) == {"status": "none"}
+    assert runner.current_sha == PREVIOUS
+
+
+def test_external_loaded_service_added_after_stage_blocks_activate(tmp_path):
+    runner, opts = setup(tmp_path)
+    receipt = stage(runner, opts)
+    runner.extra_loaded_services.add("obsidian-github-transient-worker.service")
+    with pytest.raises(ProductionUpdateError, match="unexpected installed or loaded GitHub service"):
+        activate(receipt, opts)
+    assert _control(opts)["status"] == "staged"
+    assert not _called(runner, ("--profile", "live"))
