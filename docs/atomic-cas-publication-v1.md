@@ -21,6 +21,9 @@ publication.
 ## Publication state machine
 
 1. Require the existing final parent directory to be nonsymlinked.
+   On first use, `ensure_artifact_layout` durably syncs the containing
+   directory immediately after creating each managed artifact subdirectory.
+   A parent fsync failure is not accepted as a successful first-use layout.
 2. Open that directory with `O_DIRECTORY|O_NOFOLLOW` where available.
 3. Create a random **zero-byte** `.obsidian-mode-probe-<token>.tmp`
    inode with requested mode `0644` to observe the service umask and
