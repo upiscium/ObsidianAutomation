@@ -413,3 +413,39 @@ def test_data_staging_starts_owner_only_at_inode_creation(tmp_path: Path, monkey
     assert target.read_bytes() == b"private bytes must start owner-only"
     assert not list(tmp_path.glob(".obsidian-mode-probe-*.tmp"))
     assert not list(tmp_path.glob(".obsidian-cas-*.tmp"))
+
+
+def test_first_use_layout_fsyncs_parent_before_artifact_publish(tmp_path, monkeypatch):
+    """An fsynced child directory alone does not persist its parent's entry."""
+    recorded = []
+    real_fsync = cas.os.fsync
+
+    def record_fsync(fd):
+        recorded.append(os.readlink(f"/proc/self/fd/{fd}"))
+        real_fsync(fd)
+
+    with monkeypatch.context() as m:
+        m.setattr(cas.os, "fsync", record_fsync)
+        layout = cas.ensure_artifact_layout(tmp_path)
+        assert set(recorded) == {str(tmp_path)}
+        assert len(recorded) == 4
+        recorded.clear()
+        assert cas.ensure_artifact_layout(tmp_path) == layout
+        assert recorded == []
+        cas._store_immutable(layout.untrusted / "first.json", b"fully-committed")
+    assert (layout.untrusted / "first.json").read_bytes() == b"fully-committed"
+
+
+def test_new_directory_parent_fsync_failure_never_reports_success(tmp_path, monkeypatch):
+    original = cas.os.fsync
+
+    def deny_parent(fd):
+        if os.readlink(f"/proc/self/fd/{fd}") == str(tmp_path):
+            raise OSError("simulated layout parent fsync failure")
+        return original(fd)
+
+    with monkeypatch.context() as m:
+        m.setattr(cas.os, "fsync", deny_parent)
+        with pytest.raises(OSError, match="layout parent fsync failure"):
+            cas.ensure_artifact_layout(tmp_path)
+    assert not list(tmp_path.rglob("*.json"))
