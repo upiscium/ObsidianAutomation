@@ -86,6 +86,31 @@ violate Linux sync/rename durability semantics.
   and umask therefore remain mandatory security prerequisites. Orphan
   temporary file contents must never be treated as safe to disclose.
 
+## Existing-object permission admission and ACL policy
+
+A matching CAS hit **attests bytes and inode identity only**. The existing
+fast-path reader checks regular type, single-link count, size and exact bytes;
+it does **not** measure the existing object's mode or effective named-user ACL.
+It never retroactively `chmod`s an existing final inode. Therefore returning a
+byte-identical hit must not be interpreted as proving that an earlier writer
+created it under today's service umask or ACL. Before authorizing production
+resume, the deployment gate must inventory the exact canonical state roots,
+final-file modes and effective ACLs; unexpectedly permissive existing files are
+an **operational BLOCK**, requiring separately approved reconciliation rather
+than silent acceptance. The observed production CAS `0640` sample is evidence
+for the currently inspected host, not a universal filesystem guarantee.
+
+The zero-byte mode probe and owner-only data staging assume a stable,
+**trusted root-owned parent default-ACL policy throughout publication**.
+An administrator with authority to change that default ACL between probe
+and data creation can also change the DAC/ACL of published objects, and is
+outside the untrusted-writer threat model. Do not claim protection against
+concurrent privileged ACL-policy mutation, and do not authorize such a
+migration while CAS producers are running. If simultaneous policy changes
+become a supported use case, introduce a separate, reviewed ACL-aware
+publication protocol rather than treating the mode snapshot as a live ACL
+attestation.
+
 ## Orphan staging maintenance
 
 The `.obsidian-cas-*.tmp` pattern is an **uncommitted temporary namespace**,
