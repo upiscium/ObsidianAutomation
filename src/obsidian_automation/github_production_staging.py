@@ -205,6 +205,26 @@ def _assert_known_timer_inventory(runner: legacy.CommandRunner, systemd_dir: Pat
             raise legacy.ProductionUpdateError("unexpected loaded or installed GitHub timer")
 
 
+def _systemd_unit_search_dirs(
+    runner: legacy.CommandRunner, systemd_dir: Path
+) -> tuple[Path, ...]:
+    response = runner(("systemd-analyze", "unit-paths"))
+    if response.returncode != 0:
+        raise legacy.ProductionUpdateError("cannot inspect systemd unit search paths")
+    paths: set[Path] = {systemd_dir}
+    count = 0
+    for raw in response.stdout.splitlines():
+        name = raw.strip()
+        candidate = Path(name)
+        if not name or not candidate.is_absolute() or ".." in candidate.parts:
+            raise legacy.ProductionUpdateError("invalid systemd unit search path")
+        count += 1
+        paths.add(candidate)
+    if count == 0 or len(paths) > 64:
+        raise legacy.ProductionUpdateError("systemd unit search path inventory invalid")
+    return tuple(sorted(paths))
+
+
 def _assert_no_systemd_dropins(
     runner: legacy.CommandRunner, systemd_dir: Path, names: Sequence[str]
 ) -> None:
@@ -213,8 +233,10 @@ def _assert_no_systemd_dropins(
     A DropInPaths change can replace ExecStart or EnvironmentFile without
     affecting the top-level unit digest bound to the Stage receipt.
     """
+    directories = _systemd_unit_search_dirs(runner, systemd_dir)
+    installed_names = set(_all_installed_unit_names(systemd_dir))
     for name in names:
-        if name not in _all_installed_unit_names(systemd_dir):
+        if name not in installed_names:
             raise legacy.ProductionUpdateError("managed unit inventory drift")
         observed = runner((
             "systemctl", "show", "-p", "LoadState", "-p", "FragmentPath",
@@ -235,12 +257,13 @@ def _assert_no_systemd_dropins(
                 or fields["FragmentPath"] != str(systemd_dir / name)
                 or fields["DropInPaths"]):
             raise legacy.ProductionUpdateError("unsupported effective systemd drop-in or unit origin")
-        # Reject pending, not-yet-loaded drop-ins as well. The active unit
-        # setting alone is insufficient after an out-of-band config edit.
-        for prefix in (systemd_dir, Path("/run/systemd/system")):
-            drop = prefix / (name + ".d")
-            if os.path.lexists(drop):
-                raise legacy.ProductionUpdateError("unreviewed systemd drop-in directory")
+        # Search all supported pending vendor/root/global overrides.
+        for prefix in directories:
+            # Name-specific and systemd-supported type-wide overrides.
+            # Refuse any directory at these positions (including symlinks).
+            for dirname in (name + ".d", name.rpartition(".")[2] + ".d"):
+                if os.path.lexists(prefix / dirname):
+                    raise legacy.ProductionUpdateError("unreviewed systemd drop-in directory")
 
 
 def _snapshot_timers(runner: legacy.CommandRunner) -> dict[str, dict[str, bool]]:
@@ -258,7 +281,35 @@ def _require_inert(runner: legacy.CommandRunner) -> None:
             raise legacy.ProductionUpdateError(f"staged timer is not inert: {unit}")
 
 def _require_idle_services(runner: legacy.CommandRunner, systemd_dir: Path) -> None:
-    """Check every installed managed service, not only today\'s Writer chain."""
+    """Verify complete installed and loaded GitHub service authority and idle state."""
+    expected = {
+        name for name in _all_installed_unit_names(systemd_dir)
+        if name.endswith(".service")
+    }
+    if not expected:
+        raise legacy.ProductionUpdateError("empty managed GitHub service inventory")
+    queries = (
+        (("systemctl", "list-unit-files", "--all", "--type=service",
+          "--no-legend", "--no-pager", "obsidian-github-*.service"), True),
+        (("systemctl", "list-units", "--all", "--type=service",
+          "--no-legend", "--plain", "--no-pager", "obsidian-github-*.service"), False),
+    )
+    for argv, require_all in queries:
+        response = runner(argv)
+        if response.returncode != 0:
+            raise legacy.ProductionUpdateError("cannot enumerate GitHub service authority")
+        discovered: set[str] = set()
+        for line in response.stdout.splitlines():
+            parts = line.strip().split()
+            if not parts:
+                continue
+            unit = parts[0]
+            if (not unit.startswith("obsidian-github-") or not unit.endswith(".service")
+                    or "/" in unit or unit in discovered):
+                raise legacy.ProductionUpdateError("ambiguous GitHub service inventory")
+            discovered.add(unit)
+        if (discovered != expected if require_all else not discovered.issubset(expected)):
+            raise legacy.ProductionUpdateError("unexpected installed or loaded GitHub service")
     units = set(EFFECT_SERVICES)
     units.update(name for name in _all_installed_unit_names(systemd_dir)
                  if name.endswith(".service"))
@@ -320,9 +371,15 @@ def _environment_manifest(systemd_dir: Path, names: Sequence[str]) -> dict[str, 
             continue
         data = _read_file(systemd_dir / name, max_bytes=1024 * 1024)
         for line in data.decode("utf-8").splitlines():
-            if not line.startswith("EnvironmentFile="):
+            stripped = line.lstrip()
+            if not stripped or stripped.startswith(("#", ";")):
                 continue
-            raw = line.partition("=")[2].strip()
+            assignment = re.match(r"^EnvironmentFile\s*=\s*(.*)$", stripped)
+            if assignment is None:
+                if stripped.startswith("EnvironmentFile"):
+                    raise legacy.ProductionUpdateError("unsupported EnvironmentFile assignment")
+                continue
+            raw = assignment.group(1).strip()
             optional = raw.startswith("-")
             value = raw[1:] if optional else raw
             if not value or any(c.isspace() or c in "'\\\"" for c in value):
