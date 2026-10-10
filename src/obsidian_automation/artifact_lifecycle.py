@@ -104,7 +104,21 @@ def _require_sha256(value: str, *, label: str) -> str:
 
 def _require_safe_directory(path: Path, *, create: bool) -> None:
     if create:
-        path.mkdir(mode=0o755, exist_ok=True)
+        try:
+            path.mkdir(mode=0o755)
+        except FileExistsError:
+            pass
+        else:
+            # The directory inode can be fsynced later by a CAS writer, but
+            # its *name in the parent* must be durable before we claim that a
+            # subsequent published artifact path survives a power loss.
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+            parent_fd = os.open(path.parent, flags)
+            try:
+                os.fsync(parent_fd)
+            finally:
+                os.close(parent_fd)
     try:
         path.lstat()
     except FileNotFoundError as exc:
