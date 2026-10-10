@@ -29,7 +29,11 @@ This is **documentation, not a command to run before approval**.
   Non-fast-forward updates and rollbacks require a separate recovery contract;
   this normal Stage intentionally refuses them. **Every installed**
   `obsidian-github-*.service` must be confirmed inactive before/during staging,
-  not merely the Writer/Sync shortlist. The **only allowed GitHub timers** are
+  not merely the Writer/Sync shortlist. Both installed and loaded GitHub
+  **service inventories** are enumerated through systemctl: unknown externally
+  installed or transient services are rejected even when their unit file does
+  not appear in the configured systemd directory.
+  The **only allowed GitHub timers** are
   the known Sync and Daily Progress timers. The installed-files inventory,
   systemd unit-file enumeration, and loaded-unit enumeration must all agree;
   any additional enabled, disabled, transient or loaded GitHub timer is a
@@ -45,9 +49,13 @@ This is **documentation, not a command to run before approval**.
   managed units, is also bound; adding/removing an installed Unit blocks Activate.
   For every managed unit, the effective systemd `LoadState` and
   `FragmentPath` must match the trusted installed file and `DropInPaths`
-  must be empty. Pending per-unit `.d` override directories are also
-  rejected before and after Stage and before/after Activate; no drop-in
-  directives are silently excluded from the revision contract.
+  must be empty. Pending per-unit `.d` override directories **and global
+  service.d/timer.d overrides** are rejected across all directories listed
+  by `systemd-analyze unit-paths` (as well as the configured unit directory),
+  even if not loaded yet. This applies before and after Stage and Activate;
+  no drop-in directives are silently excluded from the revision contract.
+  The EnvironmentFile parser accepts whitespace-indented assignments and
+  binds every recognized absolute path; unsupported syntax fails closed.
 - Saves an fsynced PREPARING marker **before** stopping managed timers.
 - Disables/stops the GitHub Sync and Daily Progress timers and requires both
   disabled/inactive. No Core Promotion timer operation is permitted.
