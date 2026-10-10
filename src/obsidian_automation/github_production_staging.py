@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import stat
 import sys
 import tempfile
@@ -401,6 +402,77 @@ def _environment_manifest(systemd_dir: Path, names: Sequence[str]) -> dict[str, 
     return manifest
 
 
+_DIRECT_FILE_FLAGS = frozenset({
+    "--config", "--rclone-config", "--filter-file", "--password-file",
+})
+
+
+def _direct_service_input_manifest(
+    systemd_dir: Path, names: Sequence[str]
+) -> dict[str, str]:
+    """Bind files supplied as direct ExecStart arguments, not EnvironmentFiles.
+
+    Only audited absolute file arguments are accepted. An unrecognized
+    *-file/*-config flag fails closed rather than silently skipping security
+    inputs (e.g. watcher config.toml, rclone config, WebDAV credentials).
+    """
+    paths: set[Path] = set()
+    directive = re.compile(r"^Exec(?:Start|StartPre|StartPost|Reload|Stop|StopPost)\s*=(.*)$")
+    for name in names:
+        if not name.endswith(".service"):
+            continue
+        raw = _read_file(systemd_dir / name, max_bytes=1024 * 1024).decode("utf-8")
+        commands: list[str] = []
+        accumulated = ""
+        for line in raw.splitlines():
+            clean = line.strip()
+            if not accumulated:
+                if not clean or clean.startswith(("#", ";")):
+                    continue
+                match = directive.match(clean)
+                if match is None:
+                    continue
+                accumulated = match.group(1).strip()
+            else:
+                accumulated += " " + clean
+            if accumulated.endswith("\\"):
+                accumulated = accumulated[:-1].rstrip()
+                continue
+            commands.append(accumulated)
+            accumulated = ""
+        if accumulated:
+            raise legacy.ProductionUpdateError("unterminated systemd ExecStart file argument")
+        for command in commands:
+            try:
+                words = shlex.split(command, posix=True)
+            except ValueError as exc:
+                raise legacy.ProductionUpdateError("invalid systemd ExecStart arguments") from exc
+            for i, word in enumerate(words):
+                key, sep, embedded = word.partition("=")
+                is_file_flag = key in _DIRECT_FILE_FLAGS
+                if (key.startswith("--")
+                        and (key.endswith("-file") or key.endswith("-config"))
+                        and not is_file_flag):
+                    raise legacy.ProductionUpdateError("unreviewed direct file argument")
+                if not is_file_flag:
+                    continue
+                if sep:
+                    value = embedded
+                elif i + 1 < len(words):
+                    value = words[i + 1]
+                else:
+                    raise legacy.ProductionUpdateError("direct file argument has no value")
+                path = Path(value)
+                if (not path.is_absolute() or ".." in path.parts
+                        or "$" in value or "%" in value):
+                    raise legacy.ProductionUpdateError("direct file input must be an absolute stable path")
+                paths.add(path)
+    if len(paths) > 32:
+        raise legacy.ProductionUpdateError("too many direct file inputs")
+    return {str(path): _digest(_read_file(path, max_bytes=65536))
+            for path in sorted(paths)}
+
+
 def _deployed_code_manifest(app_root: Path, venv_root: Path) -> dict[str, str]:
     """Verify installed package bytes against pinned source and bind entrypoints.
 
@@ -478,7 +550,7 @@ def _receipt_read(state: Path, sha: str) -> dict[str, object]:
     expected = {
         "record_version", "stage", "target_sha", "previous_sha",
         "app_root", "venv_root", "systemd_dir", "revision_env",
-        "timer_states", "config_manifest", "unit_manifest", "env_manifest", "code_manifest",
+        "timer_states", "config_manifest", "unit_manifest", "env_manifest", "code_manifest", "direct_manifest",
         "safe_smoke", "daily_safe_smoke", "created_at",
     }
     if set(obj) != expected or obj["record_version"] != VERSION or obj["stage"] != "staged":
@@ -489,7 +561,7 @@ def _receipt_read(state: Path, sha: str) -> dict[str, object]:
     if obj["safe_smoke"] != "passed" or obj["daily_safe_smoke"] != "passed":
         raise legacy.ProductionUpdateError("stage safe-smoke receipts incomplete")
     if any(not isinstance(obj[item], dict)
-           for item in ("config_manifest", "unit_manifest", "env_manifest", "code_manifest")):
+           for item in ("config_manifest", "unit_manifest", "env_manifest", "code_manifest", "direct_manifest")):
         raise legacy.ProductionUpdateError("stage manifest types invalid")
     timers = obj["timer_states"]
     if not isinstance(timers, dict) or set(timers) != set(legacy.MANAGED_TIMER_UNITS):
@@ -551,6 +623,7 @@ def stage_update(*, target_sha: str, app_root: Path, venv_root: Path,
                 raise legacy.ProductionUpdateError("installed unit inventory incomplete")
             _install_revision(daily_revision_env, target_sha)
             environment_files = _environment_manifest(systemd_dir, managed_names)
+            direct_files = _direct_service_input_manifest(systemd_dir, managed_names)
             legacy._run(runner, ("systemctl", "daemon-reload"), label="stage reload units")
             _assert_known_timer_inventory(runner, systemd_dir)
             _assert_no_systemd_dropins(runner, systemd_dir, managed_names)
@@ -572,6 +645,8 @@ def stage_update(*, target_sha: str, app_root: Path, venv_root: Path,
                 raise legacy.ProductionUpdateError("installed unit set changed during stage")
             if _environment_manifest(systemd_dir, managed_names) != environment_files:
                 raise legacy.ProductionUpdateError("Unit EnvironmentFile drift during stage")
+            if _direct_service_input_manifest(systemd_dir, managed_names) != direct_files:
+                raise legacy.ProductionUpdateError("direct service file input drift during stage")
             receipt = {
                 "record_version": VERSION, "stage": "staged",
                 "previous_sha": previous_sha, "target_sha": target_sha,
@@ -580,6 +655,7 @@ def stage_update(*, target_sha: str, app_root: Path, venv_root: Path,
                 "revision_env": str(daily_revision_env.absolute()),
                 "config_manifest": configs, "unit_manifest": _unit_manifest(systemd_dir, managed_names),
                 "env_manifest": environment_files,
+                "direct_manifest": direct_files,
                 "code_manifest": code_manifest,
                 "timer_states": timers, "safe_smoke": "passed",
                 "daily_safe_smoke": "passed", "created_at": legacy._utc_now(),
@@ -655,6 +731,8 @@ def activate_update(*, stage_sha256: str, approve_live_github_writer: bool,
             raise legacy.ProductionUpdateError("unit-file drift after stage")
         if _environment_manifest(systemd_dir, sorted(receipt["unit_manifest"])) != receipt["env_manifest"]:
             raise legacy.ProductionUpdateError("Unit EnvironmentFile drift after stage")
+        if _direct_service_input_manifest(systemd_dir, sorted(receipt["unit_manifest"])) != receipt["direct_manifest"]:
+            raise legacy.ProductionUpdateError("direct service file input drift after stage")
         if _read_file(daily_revision_env) != f"OBSIDIAN_AUTOMATION_REVISION={receipt['target_sha']}\n".encode():
             raise legacy.ProductionUpdateError("Daily revision binding changed since Stage")
 
