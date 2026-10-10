@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import ctypes
+import errno
 import hashlib
 import json
 import os
 import re
+import secrets
+import stat
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -100,7 +104,21 @@ def _require_sha256(value: str, *, label: str) -> str:
 
 def _require_safe_directory(path: Path, *, create: bool) -> None:
     if create:
-        path.mkdir(mode=0o755, exist_ok=True)
+        try:
+            path.mkdir(mode=0o755)
+        except FileExistsError:
+            pass
+        else:
+            # The directory inode can be fsynced later by a CAS writer, but
+            # its *name in the parent* must be durable before we claim that a
+            # subsequent published artifact path survives a power loss.
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+            parent_fd = os.open(path.parent, flags)
+            try:
+                os.fsync(parent_fd)
+            finally:
+                os.close(parent_fd)
     try:
         path.lstat()
     except FileNotFoundError as exc:
@@ -158,46 +176,156 @@ def _write_all(fd: int, data: bytes) -> None:
         view = view[written:]
 
 
-def _store_immutable(path: Path, data: bytes) -> Path:
-    _require_safe_directory(path.parent, create=False)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    if hasattr(os, "O_CLOEXEC"):
-        flags |= os.O_CLOEXEC
-    try:
-        fd = os.open(path, flags, 0o644)
-    except FileExistsError:
-        existing = _read_exact_file(path)
-        if existing == data:
-            return path
-        raise ArtifactLifecycleError(
-            f"immutable artifact already exists with different bytes: {path}"
-        )
-    except OSError as exc:
-        raise ArtifactLifecycleError(f"cannot create artifact: {path}") from exc
+def _rename_noreplace(parent_fd: int, staged_name: str, target_name: str) -> None:
+    """Publish a fully fsynced staged inode atomically without overwriting.
 
+    The supported deployment platform is Linux. If libc/kernel/filesystem
+    cannot provide RENAME_NOREPLACE, refuse publication instead of doing an
+    unsafe check-then-rename.
+    """
     try:
-        _write_all(fd, data)
-        os.fsync(fd)
-    except Exception:
-        try:
-            os.close(fd)
-        finally:
-            try:
-                path.unlink()
-            except OSError:
-                pass
-        raise
-    else:
+        func = ctypes.CDLL(None, use_errno=True).renameat2
+    except AttributeError as exc:
+        raise ArtifactLifecycleError("atomic no-replace rename is unavailable") from exc
+    func.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    func.restype = ctypes.c_int
+    if func(parent_fd, os.fsencode(staged_name), parent_fd, os.fsencode(target_name), 1) == 0:
+        return
+    code = ctypes.get_errno()
+    if code == errno.EEXIST:
+        raise FileExistsError(code, os.strerror(code), target_name)
+    raise ArtifactLifecycleError("atomic no-replace rename failed") from OSError(
+        code, os.strerror(code), target_name
+    )
+
+
+def _same_immutable_bytes(parent_fd: int, name: str, data: bytes) -> bool:
+    """Read a colliding final inode without following symlinks or external links."""
+    flags = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+             | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0))
+    # A hostile FIFO at the final name must not block before fstat verifies
+    # a regular inode. O_NONBLOCK has no effect on regular-file reads.
+    try:
+        fd = os.open(name, flags, dir_fd=parent_fd)
+    except OSError as exc:
+        raise ArtifactLifecycleError("existing immutable artifact cannot be opened safely") from exc
+    try:
+        status = os.fstat(fd)
+        if (not stat.S_ISREG(status.st_mode) or status.st_nlink != 1
+                or status.st_size != len(data)):
+            return False
+        result = bytearray()
+        while len(result) <= len(data):
+            chunk = os.read(fd, min(65536, len(data) + 1 - len(result)))
+            if not chunk:
+                break
+            result.extend(chunk)
+        return bytes(result) == data
+    finally:
         os.close(fd)
 
-    dir_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+
+def _store_immutable(path: Path, data: bytes) -> Path:
+    """No-overwrite, crash-consistent CAS publication.
+
+    A writer interrupted before publication leaves only an uncommitted
+    private .tmp file, never a partial final pathname. The final rename
+    requires a Linux atomic no-replace primitive, and it is preceded by
+    fsync of the staged file and followed by parent-directory fsync.
+    """
+    _require_safe_directory(path.parent, create=False)
+    parent_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    parent_flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
     try:
-        os.fsync(dir_fd)
+        parent_fd = os.open(path.parent, parent_flags)
+    except OSError as exc:
+        raise ArtifactLifecycleError("cannot safely open immutable artifact directory") from exc
+    staged_name = f".obsidian-cas-{secrets.token_hex(16)}.tmp"
+    mode_probe_name = f".obsidian-mode-probe-{secrets.token_hex(16)}.tmp"
+    temp_exists = False
+    probe_exists = False
+    mode_fd: int | None = None
+    fd: int | None = None
+    try:
+        # A CAS object commonly already exists on replay. Verify the completed
+        # canonical inode before allocating/writing a redundant temporary copy.
+        # This is only an optimization: a missing pathname still uses atomic
+        # RENAME_NOREPLACE, and a mismatched existing object fails closed.
+        try:
+            os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise ArtifactLifecycleError("cannot inspect immutable artifact") from exc
+        else:
+            if not _same_immutable_bytes(parent_fd, path.name, data):
+                raise ArtifactLifecycleError(
+                    "immutable artifact already exists with different bytes"
+                )
+            # Another producer might have renamed this inode but crashed
+            # before syncing the parent. Re-establish directory durability.
+            os.fsync(parent_fd)
+            return path
+        create_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        create_flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+        # A zero-byte permission probe captures the existing creation-mode /
+        # inherited default-ACL contract. No sensitive content is ever written
+        # to this publicly readable inode.
+        try:
+            mode_fd = os.open(mode_probe_name, create_flags, 0o644, dir_fd=parent_fd)
+        except OSError as exc:
+            raise ArtifactLifecycleError("cannot probe immutable artifact permissions") from exc
+        probe_exists = True
+        staged_mode = stat.S_IMODE(os.fstat(mode_fd).st_mode)
+        if staged_mode & 0o600 != 0o600:
+            raise ArtifactLifecycleError("immutable artifact permissions lack owner read/write")
+        os.close(mode_fd)
+        mode_fd = None
+        os.unlink(mode_probe_name, dir_fd=parent_fd)
+        probe_exists = False
+        # Data staging starts owner-only *at creation*, not after a readable
+        # open(0644) interval. chmod cannot revoke already-open read handles.
+        try:
+            fd = os.open(staged_name, create_flags, 0o600, dir_fd=parent_fd)
+        except OSError as exc:
+            raise ArtifactLifecycleError("cannot stage immutable artifact") from exc
+        temp_exists = True
+        os.fchmod(fd, 0o600)
+        _write_all(fd, data)
+        os.fsync(fd)
+        # Restore the creation-time permissions only after the complete
+        # payload is synced. chmod restores the inherited ACL mask as well.
+        os.fchmod(fd, staged_mode)
+        os.fsync(fd)
+        os.close(fd)
+        fd = None
+        try:
+            _rename_noreplace(parent_fd, staged_name, path.name)
+        except FileExistsError as exc:
+            if not _same_immutable_bytes(parent_fd, path.name, data):
+                raise ArtifactLifecycleError(
+                    "immutable artifact already exists with different bytes"
+                ) from exc
+        else:
+            temp_exists = False
+        os.fsync(parent_fd)
+        return path
     finally:
-        os.close(dir_fd)
-    return path
+        if mode_fd is not None:
+            os.close(mode_fd)
+        if probe_exists:
+            try:
+                os.unlink(mode_probe_name, dir_fd=parent_fd)
+            except FileNotFoundError:
+                pass
+        if fd is not None:
+            os.close(fd)
+        if temp_exists:
+            try:
+                os.unlink(staged_name, dir_fd=parent_fd)
+            except FileNotFoundError:
+                pass
+        os.close(parent_fd)
 
 
 def store_untrusted_proposal(ai_root: Path, proposal_bytes: bytes) -> tuple[str, Path]:
