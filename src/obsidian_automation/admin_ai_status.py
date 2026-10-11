@@ -28,7 +28,7 @@ def _empty(freshness: str = "unavailable") -> dict[str, object]:
         "age_seconds": None,
         "review_count": None,
         "operational_failures": None,
-        "transient_retries": None,
+        "pending_retry_failures": None,
         "incidents": [],
         "deterministic_rejections": None,
         "backpressure": None,
@@ -95,7 +95,10 @@ def load_ai_health(
     try:
         raw = _read_bounded_nofollow(path)
         parsed = parse_status(raw)
-    except (OSError, ValueError, UnicodeError, PreReviewStatusError):
+    except (OSError, ValueError, TypeError, UnicodeError, PreReviewStatusError):
+        # The older status parser can raise TypeError for syntactically JSON
+        # valid unhashable fields (e.g. pipeline_health=[]). A malformed AI
+        # projection must not take down unrelated systemd status reporting.
         return _empty()
     # parse_status already validated an exact UTC Z timestamp.
     generated = datetime.fromisoformat(parsed.generated_at[:-1] + "+00:00")
@@ -119,9 +122,21 @@ def load_ai_health(
     expected_health = (
         "CRITICAL" if blocked or exhausted else "WARNING" if transient else "OK"
     )
-    if parsed.pipeline_health != expected_health:
-        # A syntactically valid but contradictory status is not trustworthy:
-        # do not turn an active blocked job into a green dashboard.
+    review_count = counts["awaiting_human_review"]
+    oldest_review_age = parsed.oldest_review_wait_seconds
+    expected_backpressure = review_count >= parsed.backpressure_threshold
+    expected_reminder = (
+        oldest_review_age is not None
+        and oldest_review_age >= parsed.review_reminder_seconds
+    )
+    if (
+        parsed.pipeline_health != expected_health
+        # These fields are producer-derived state, not independent user
+        # decisions. Contradiction must not be displayed as a factual status.
+        or parsed.backpressure_active != expected_backpressure
+        or parsed.review_reminder_due != expected_reminder
+        or (review_count == 0) != (oldest_review_age is None)
+    ):
         return _empty("invalid")
     incidents = [
         {"code": code, "severity": "critical", "affected": number}
@@ -131,6 +146,15 @@ def load_ai_health(
         )
         if number
     ]
+    if transient:
+        # retryable_failure records a failed attempt pending another claim;
+        # the status projection does NOT prove that retry budget remains or
+        # that a worker is actively retrying. It may persist indefinitely.
+        incidents.append({
+            "code": "retryable_failure_pending",
+            "severity": "warning",
+            "affected": transient,
+        })
     return {
         "freshness": "fresh",
         "health": expected_health.lower(),
@@ -138,7 +162,7 @@ def load_ai_health(
         "age_seconds": age,
         "review_count": parsed.states["awaiting_human_review"],
         "operational_failures": blocked + exhausted,
-        "transient_retries": transient,
+        "pending_retry_failures": transient,
         "incidents": incidents,
         "deterministic_rejections": counts["deterministic_reject"],
         "backpressure": parsed.backpressure_active,

@@ -99,7 +99,9 @@ def classify_timer(props: Mapping[str, str] | None) -> str:
     if unitfile in {"masked", "masked-runtime"}:
         return "blocked"
     if unitfile == "disabled" and active == "inactive":
-        return "paused"
+        # An unrecognized or contradictory SubState is not proof of a
+        # deliberately quiescent timer.
+        return "paused" if state == "dead" else "unknown"
     if unitfile in {"enabled", "enabled-runtime"} and active == "active" and state == "waiting":
         return "scheduled"
     if active == "active" and state == "running":

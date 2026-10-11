@@ -185,3 +185,12 @@ def test_proven_failure_remains_visible_when_companion_unit_missing() -> None:
         return subprocess.CompletedProcess(argv, 0, raw, "")
 
     assert all(entry["health"] == "failed" for entry in aggregate_status(runner=runner))
+
+def test_disabled_timer_with_unknown_substate_is_unknown_not_paused() -> None:
+    props = timer(
+        UnitFileState="disabled", ActiveState="inactive",
+        SubState="unrecognized-state",
+    )
+    assert classify_timer(props) == "unknown"
+    props["SubState"] = "dead"
+    assert classify_timer(props) == "paused"

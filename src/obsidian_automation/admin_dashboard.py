@@ -108,7 +108,7 @@ const labels = {
   no_next_run:"次回未設定", running:"実行中", succeeded:"直近成功",
   not_observed:"実行記録なし", fresh:"最新", stale:"古い状態", unavailable:"未取得",
   invalid:"不正な状態", ok:"Pre-reviewの既知障害なし",
-  warning:"Pre-review再試行中", critical:"Pre-review障害",
+  warning:"Pre-review失敗・再試行待ち", critical:"Pre-review障害",
   observed_success:"直近成功（鮮度未検証）"
 };
 const $ = (id) => document.getElementById(id);
@@ -163,18 +163,19 @@ function renderAi(p) {
   $("pipeline-details").replaceChildren(
     metric("Review待ち", value(p.review_count)),
     metric("要対応エラー", value(p.operational_failures)),
-    metric("一時的な再試行", value(p.transient_retries)),
+    metric("失敗・再試行待ち（予算未確認）", value(p.pending_retry_failures)),
     metric("Validation棄却（正常）", value(p.deterministic_rejections)),
     metric("Backpressure", p.backpressure === null ? "—" : p.backpressure === true ? "有効" : "無効"),
     metric("観測経過", p.age_seconds === null ? "—" : value(p.age_seconds) + "秒"),
   );
   const knownIncidents = {
     blocked_generations: "Blocked",
-    retry_exhausted_generations: "Retry exhausted"
+    retry_exhausted_generations: "Retry exhausted",
+    retryable_failure_pending: "失敗後の再試行待ち"
   };
   const incidents = p.freshness === "fresh" && Array.isArray(p.incidents)
     ? p.incidents : [];
-  for (const incident of incidents.slice(0, 2)) {
+  for (const incident of incidents.slice(0, 3)) {
     if (!Object.hasOwn(knownIncidents, incident.code)) continue;
     $("pipeline-details").append(
       metric(knownIncidents[incident.code], value(incident.affected))

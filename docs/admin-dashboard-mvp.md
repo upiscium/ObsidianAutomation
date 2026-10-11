@@ -58,8 +58,7 @@ The test mocks do not establish actual production systemd health or correct mana
 
 The AI status projection must not describe a normal deterministic Validation
 rejection as an incident. Only blocked generations and retry-exhausted
-generations contribute to the actionable operational error count; an in-budget
-retryable_failure is shown separately as transient retry activity. Fixed,
+generations contribute to the actionable operational error count; a retryable_failure is an observed failed attempt, shown separately as a warning pending another claim (remaining retry budget is not proven). Fixed,
 bounded incident codes and counts are available for blocked and exhausted
 categories, never original model output or raw diagnostic text.
 
@@ -70,7 +69,7 @@ aggregate as proof of health. A missing or stale source behaves similarly:
 no previous counts are presented as current. An ordinary rejected candidate,
 even if numerous, is not an outage and needs no Human Acknowledge.
 
-A systemd oneshot that succeeded at some unspecified time is now described as
+The pending-failure status may persist even after the final permitted failed attempt until another claim happens, or indefinitely if workers stop. The Dashboard must neither claim retry is actively running nor suppress the warning. Settling exhaustion at the actual last failed attempt rather than a later claim is tracked in #319; this read-only status change deliberately does not alter the authoritative worker state machine. A systemd oneshot that succeeded at some unspecified time is now described as
 observed_success (freshness unverified), not healthy. A verified latest run
 failure has priority over an unrelated field that is unknown. The original
 non-mutating five-unit systemctl allowlist, fixed-path read model, and

@@ -140,7 +140,7 @@ def test_ai_pipeline_projection_is_sanitized_and_not_a_health_override() -> None
             "freshness": "fresh", "health": "critical",
             "generated_at": "2026-10-11T11:00:00Z", "age_seconds": 1,
             "review_count": 2, "operational_failures": 3,
-            "transient_retries": 1,
+            "pending_retry_failures": 1,
             "incidents": [
                 {"code": "blocked_generations", "severity": "critical", "affected": 3}
             ],
@@ -194,7 +194,8 @@ def test_invalid_port_rejected() -> None:
 def test_status_javascript_renders_distinct_incident_and_retry_metrics() -> None:
     from obsidian_automation.admin_dashboard import JS
     assert 'metric("要対応エラー", value(p.operational_failures))' in JS
-    assert 'metric("一時的な再試行", value(p.transient_retries))' in JS
+    assert 'metric("失敗・再試行待ち（予算未確認）", value(p.pending_retry_failures))' in JS
+    assert 'retryable_failure_pending' in JS
     assert 'metric("Validation棄却（正常）", value(p.deterministic_rejections))' in JS
     assert 'retry_exhausted_generations' in JS
     assert 'blocked_generations' in JS

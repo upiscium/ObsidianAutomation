@@ -47,7 +47,7 @@ def _projection(
         "states": states,
         "review_wait": {
             "count": 2, "oldest_age_seconds": 61,
-            "reminder_after_seconds": 86400, "reminder_due": True,
+            "reminder_after_seconds": 86400, "reminder_due": False,
         },
         "backpressure": {"threshold": 8, "active": False},
     }
@@ -87,14 +87,15 @@ def test_valid_status_provides_only_sanitized_fresh_counts(
         "age_seconds": 30,
         "review_count": 2,
         "operational_failures": 5,
-        "transient_retries": 1,
+        "pending_retry_failures": 1,
         "incidents": [
             {"code": "blocked_generations", "severity": "critical", "affected": 2},
             {"code": "retry_exhausted_generations", "severity": "critical", "affected": 3},
+            {"code": "retryable_failure_pending", "severity": "warning", "affected": 1},
         ],
         "deterministic_rejections": 4,
         "backpressure": False,
-        "review_reminder_due": True,
+        "review_reminder_due": False,
     }
     encoded = json.dumps(value)
     assert "UNTRUSTED_REASON_CANARY" not in encoded
@@ -222,20 +223,24 @@ def test_expected_deterministic_reject_is_not_an_error(tmp_path: Path) -> None:
     assert value["freshness"] == "fresh"
     assert value["health"] == "ok"
     assert value["operational_failures"] == 0
-    assert value["transient_retries"] == 0
+    assert value["pending_retry_failures"] == 0
     assert value["deterministic_rejections"] == 13
     assert value["incidents"] == []
 
 
-def test_transient_retry_is_not_an_actionable_incident(tmp_path: Path) -> None:
+def test_retryable_failure_is_visible_without_proven_retry_budget(tmp_path: Path) -> None:
     src = _write(tmp_path / "projection.json", _projection(
         state_overrides={"blocked": 0, "retry_exhausted": 0},
     ))
     value = load_ai_health(path=src, now=UTC_NOW)
     assert value["health"] == "warning"
     assert value["operational_failures"] == 0
-    assert value["transient_retries"] == 1
-    assert value["incidents"] == []
+    assert value["pending_retry_failures"] == 1
+    # This state may represent a final failed attempt before the next claim:
+    # the projection does not prove that another retry is available.
+    assert value["incidents"] == [
+        {"code": "retryable_failure_pending", "severity": "warning", "affected": 1},
+    ]
 
 
 def test_stale_source_does_not_expose_actionable_or_retry_counts(tmp_path: Path) -> None:
@@ -246,5 +251,40 @@ def test_stale_source_does_not_expose_actionable_or_retry_counts(tmp_path: Path)
     assert value["freshness"] == "stale"
     assert value["health"] == "unknown"
     assert value["operational_failures"] is None
-    assert value["transient_retries"] is None
+    assert value["pending_retry_failures"] is None
     assert value["incidents"] == []
+
+@pytest.mark.parametrize("alter", [
+    lambda p: p["backpressure"].update(active=True),
+    lambda p: p["review_wait"].update(reminder_due=True),
+    lambda p: p["review_wait"].update(oldest_age_seconds=None),
+])
+def test_inconsistent_derived_review_fields_are_unknown(
+    tmp_path: Path, alter,
+) -> None:
+    record = json.loads(_projection())
+    alter(record)
+    src = _write(
+        tmp_path / "projection.json",
+        (json.dumps(record) + "\n").encode(),
+    )
+    value = load_ai_health(path=src, now=UTC_NOW)
+    assert value["freshness"] == "invalid"
+    assert value["health"] == "unknown"
+    assert value["review_count"] is None
+    assert value["backpressure"] is None
+    assert value["incidents"] == []
+
+
+def test_unhashable_health_type_does_not_raise_or_export_private_data(
+    tmp_path: Path,
+) -> None:
+    record = json.loads(_projection())
+    record["pipeline_health"] = []
+    record["reasons"] = ["UNTRUSTED_CANARY"]
+    src = _write(tmp_path / "projection.json", json.dumps(record).encode())
+    value = load_ai_health(path=src, now=UTC_NOW)
+    assert value["freshness"] == "unavailable"
+    assert value["health"] == "unknown"
+    assert value["review_count"] is None
+    assert "UNTRUSTED_CANARY" not in str(value)
