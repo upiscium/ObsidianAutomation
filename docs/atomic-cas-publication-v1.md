@@ -100,16 +100,32 @@ an **operational BLOCK**, requiring separately approved reconciliation rather
 than silent acceptance. The observed production CAS `0640` sample is evidence
 for the currently inspected host, not a universal filesystem guarantee.
 
-The zero-byte mode probe and owner-only data staging assume a stable,
-**trusted root-owned parent default-ACL policy throughout publication**.
-An administrator with authority to change that default ACL between probe
-and data creation can also change the DAC/ACL of published objects, and is
-outside the untrusted-writer threat model. Do not claim protection against
-concurrent privileged ACL-policy mutation, and do not authorize such a
-migration while CAS producers are running. If simultaneous policy changes
-become a supported use case, introduce a separate, reviewed ACL-aware
-publication protocol rather than treating the mode snapshot as a live ACL
-attestation.
+The zero-byte mode probe and owner-only data staging require a stable
+**trusted parent-directory ACL policy throughout publication**. The concrete
+production Summary layout has root-controlled ancestors, but the final
+`20-Summary/` parent and `github-daily-summary/` namespace are owned by
+`obsidian-github-summarizer`, **not root**. The service UID and privileged
+operators are trusted to preserve that namespace/ACL policy; no other
+untrusted identity may change its default ACL or rename its ancestors. A
+compromised peer with the same service UID or a privileged administrator
+could change the policy between the mode probe and publication, and remains
+outside this helper's adversarial concurrency model.
+
+On 2026-10-11, a **read-only** inspection of production
+`/var/lib/obsidian-github-pipeline/daily-progress/20-Summary` observed
+service-owned `0770` parent, service-owned `0750` final Summary directory,
+a named Renderer reader ACL, and the Summary service `UMask=0027`. The 326
+sampled JSON CAS files under that Summary subtree were all mode `0640`,
+with no sampled group-writable, world-readable, or multi-link files. This
+is bounded **current-state evidence** for the relevant service, not proof
+of every CAS root, immutable future ACLs, or absence of an authorized
+racing same-UID/root process.
+
+Do not claim protection against concurrent trusted-principal ACL-policy
+mutation, and do not authorize an ACL migration while CAS producers are
+running. If simultaneous ACL changes become a supported use case, introduce
+a separate, reviewed ACL-aware publication protocol rather than treating
+the mode snapshot as a live ACL attestation.
 
 ## Orphan staging maintenance
 
