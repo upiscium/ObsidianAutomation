@@ -118,11 +118,29 @@ def _write_json(path: Path, value: dict) -> None:
 
 
 def _fsync_directory(path: Path) -> None:
-    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    fd = os.open(
+        path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    )
     try:
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def _fsync_receipt_parents(path: Path) -> None:
+    """Require durable directory entries before any host lifecycle effects.
+
+    Every ancestor is synced: a prior failed first-use attempt may have left
+    one or more newly created directories visible but not durable. Repeating
+    this for already-existing paths makes an interrupted bootstrap safe to
+    retry without inferring durability from mere existence.
+    """
+    for parent in path.parents:
+        _safe_path(parent)
+        try:
+            _fsync_directory(parent)
+        except OSError as exc:
+            raise LifecycleError("runtime_receipt_parent_not_durable") from exc
 
 
 def _load_source_module(path: Path, name: str):
@@ -297,6 +315,10 @@ class RuntimeTransaction:
             raise LifecycleError("unsafe_runtime_receipt_directory")
         if self.require_root and directory.st_uid != 0:
             raise LifecycleError("unsafe_runtime_receipt_owner")
+        # mkdir(parents=True) can create several ancestors on first install.
+        # Sync every parent, including on retries after a failed parent fsync,
+        # before acquiring the host lock or writing a PREPARING intent.
+        _fsync_receipt_parents(self.receipt_dir)
         lock = self.receipt_dir / "host-update.lock"
         _safe_path(lock)
         fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)

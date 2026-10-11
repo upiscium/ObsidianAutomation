@@ -119,13 +119,14 @@ def _validate_dir(path: Path, *, private: bool) -> None:
 def _state_dir(root: Path, *, create: bool) -> Path:
     _validate_dir(root, private=False)
     result = root / STAGING_ROOT
-    newly_created = create and not os.path.lexists(result)
     if create:
         result.mkdir(mode=0o700, exist_ok=True)
     _validate_dir(result, private=True)
-    if newly_created:
-        # Persist the directory *entry* before publishing PREPARING or touching
-        # timers. Fsyncing the new child's contents alone is insufficient.
+    if create:
+        # Always sync the parent even when the child already exists. An earlier
+        # invocation may have created this entry and failed its parent fsync;
+        # treating existence as durability would allow a later unsafe retry.
+        # The inspect-only path never creates or syncs deployment state.
         parent_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             os.fsync(parent_fd)
@@ -362,6 +363,33 @@ def _contain_failed_timers(runner: legacy.CommandRunner) -> None:
         )
 
 
+_MONOTONIC_ELAPSE_COMPONENT = re.compile(
+    r"(?P<amount>[0-9]{1,12}(?:\.[0-9]{1,6})?)(?:month|min|us|ms|y|w|d|h|s)"
+)
+
+
+def _finite_monotonic_elapse(value: str) -> bool:
+    """Validate systemctl's rendered monotonic time span, not arbitrary text.
+
+    systemctl show normally formats this property as a time span such as
+    '1month 2w 5d 13h 51min 2.256ms'; zero/unset and unrecognized encodings
+    cannot prove that a waiting timer is armed. This check deliberately
+    rejects unsupported future formats rather than accepting unknown strings.
+    """
+    if not isinstance(value, str) or not 0 < len(value) <= 128:
+        return False
+    parts = value.split(" ")
+    if not parts or len(parts) > 16:
+        return False
+    positive = False
+    for part in parts:
+        match = _MONOTONIC_ELAPSE_COMPONENT.fullmatch(part)
+        if match is None:
+            return False
+        positive = positive or any(char in "123456789" for char in match["amount"])
+    return positive
+
+
 def _require_restored_sync_timer_armed(runner: legacy.CommandRunner) -> None:
     """An active Sync timer must also have a viable next-elapse state."""
     response = runner((
@@ -382,7 +410,7 @@ def _require_restored_sync_timer_armed(runner: legacy.CommandRunner) -> None:
         raise legacy.ProductionUpdateError("incomplete Sync timer arming state")
     if (state["SubState"] not in {"waiting", "running"} or
             (state["SubState"] == "waiting" and
-             state["NextElapseUSecMonotonic"] in {"", "0", "infinity", "n/a"})):
+             not _finite_monotonic_elapse(state["NextElapseUSecMonotonic"]))):
         raise legacy.ProductionUpdateError("restored Sync timer not armed")
 
 

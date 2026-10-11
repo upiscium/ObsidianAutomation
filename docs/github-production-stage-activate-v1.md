@@ -365,12 +365,21 @@ and independent review gates open.
   suspicious symlink block host/legacy effects until manual reconciliation.
   Legacy --approve-legacy-live-effects remains an explicit break-glass route,
   not an alternative Activate receipt.
-- New Stage control directory creation fsyncs its parent deployment directory
-  BEFORE PREPARING, and the marker/receipt publication fsyncs its directory.
-  Failure before this durability boundary cannot proceed to timer effects.
+- Before PREPARING, Stage fsyncs the control directory's parent deployment
+  directory on **every Stage attempt**, not just the first creation. The
+  directory may already exist from a failed previous fsync without having
+  durable parent metadata. Any failed parent fsync blocks before timer effects,
+  and a retry must successfully repeat it. Marker/receipt publication
+  separately fsyncs its own directory. No power-loss guarantee is inferred
+  from the mere existence of a directory after an error.
 - When restoring a previously active GitHub Sync timer, Activate requires
-  SubState=waiting with a finite next elapse or SubState=running. Merely
-  enabled/active is not sufficient, and failures are not marked activated.
+  SubState=waiting with a **recognized, strictly positive systemctl-rendered
+  monotonic time span** (e.g. 5min or 1month 2w 5d 13h 51min 2.256ms),
+  or SubState=running. Empty/zero/infinite, malformed, unexpected or future
+  unrecognized formats fail closed; arbitrary nonempty strings do not count
+  as finite. Merely enabled/active is not sufficient, and failures are not
+  marked activated. This is a state/readiness check, not a guarantee the
+  scheduler will actually execute at the expected time.
 - The managed Unit scanner rejects dashed-prefix drop-ins and unsupported
   shell/systemd pipe execution wrappers. Bootstrap Git validation uses a
   trusted absolute /usr/bin/git with sanitized Git environment. Stage Git/pip

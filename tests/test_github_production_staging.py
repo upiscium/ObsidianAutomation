@@ -1243,6 +1243,15 @@ def test_first_staged_state_directory_parent_fsync_required(tmp_path, monkeypatc
     ("waiting", "infinity"),
     ("waiting", "0"),
     ("waiting", ""),
+    ("waiting", "forever"),
+    ("waiting", "not-yet-armed"),
+    ("waiting", "-1s"),
+    ("waiting", "0s 0ms"),
+    ("waiting", "2min garbage"),
+    ("waiting", "1.2.3s"),
+    ("waiting", "1fortnight"),
+    ("waiting", "1e100s"),
+    ("waiting", "1h  30min"),
 ])
 def test_sync_timer_restore_requires_confirmed_next_firing(tmp_path, substate, next_elapse):
     runner, opts = setup(
@@ -1256,8 +1265,14 @@ def test_sync_timer_restore_requires_confirmed_next_firing(tmp_path, substate, n
     assert not runner.daily_enabled and not runner.daily_active
 
 
-def test_sync_timer_restore_waiting_with_next_firing_passes(tmp_path):
-    runner, opts = setup(tmp_path, sync_substate="waiting", sync_next_elapse="5min")
+@pytest.mark.parametrize("next_elapse", [
+    "5min",
+    "1h 3min 4.2s",
+    "1month 2w 5d 13h 51min 2.256ms",
+    "0s 2.1ms",
+])
+def test_sync_timer_restore_waiting_with_next_firing_passes(tmp_path, next_elapse):
+    runner, opts = setup(tmp_path, sync_substate="waiting", sync_next_elapse=next_elapse)
     receipt = stage(runner, opts)
     activate(receipt, opts, sync=True)
     assert runner.enabled and runner.active
@@ -1380,3 +1395,30 @@ def test_root_stage_receipt_redirection_cannot_bypass_shared_authority(tmp_path,
             runner=runner, require_root=True,
         )
     assert not runner.calls
+
+
+def test_retry_after_failed_stage_parent_fsync_rechecks_durability(tmp_path, monkeypatch):
+    runner, opts = setup(tmp_path)
+    real_fsync = staged.os.fsync
+    attempts = []
+
+    def fail_parent(fd):
+        if staged.os.readlink(f"/proc/self/fd/{fd}") == str(opts["receipt_dir"]):
+            attempts.append("root-parent")
+            raise OSError("injected parent fsync failure")
+        return real_fsync(fd)
+
+    for _ in range(2):
+        with monkeypatch.context() as m:
+            m.setattr(staged.os, "fsync", fail_parent)
+            with pytest.raises(OSError, match="injected parent fsync failure"):
+                stage(runner, opts)
+        assert not runner.calls
+        assert (opts["receipt_dir"] / staged.STAGING_ROOT).is_dir()
+        assert not (opts["receipt_dir"] / staged.STAGING_ROOT / staged.CONTROL_FILE).exists()
+    # On the second attempt the directory already existed. Stage still had to
+    # call fsync on the receipt parent, instead of inferring durability.
+    assert attempts == ["root-parent", "root-parent"]
+    assert len(stage(runner, opts)) == 64
+    assert _control(opts)["status"] == "staged"
+    assert not _called(runner, ("--profile", "live"))

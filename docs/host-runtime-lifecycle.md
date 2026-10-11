@@ -154,6 +154,14 @@ an old result or an idle worker; it does not establish new work completed.
 
 The consolidated host lifecycle and GitHub Stage/Activate share the same
 root-owned host receipt directory and exact host-update.lock flock inode.
+On first use, the host updater may create the receipt directory and its missing
+ancestors. Before acquiring the lock or writing a pending intent it fsyncs
+**every parent directory** through filesystem root, including on subsequent
+attempts when directories already exist. A directory left visible by a failed
+fsync does not count as durable; any parent sync failure blocks effects and
+requires revalidation on retry. The pending journal then fsyncs its own file
+and containing directory before any timers are touched. A successful test on
+temporary storage does not itself establish hardware power-loss semantics.
 The host lifecycle rejects any unresolved GitHub Stage control after acquiring
 the shared lock, before any effect. A Stage control directory without a
 complete activated marker requires manual reconciliation, even if a previous

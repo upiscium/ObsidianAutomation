@@ -540,3 +540,61 @@ def test_host_runtime_and_github_stage_share_exact_lock_inode(setup):
             with life.RuntimeTransaction(**kwargs):
                 pytest.fail("host updater bypassed held GitHub lock")
     assert not system.commands
+
+
+def test_host_receipt_first_use_ancestors_durable_before_lock_or_effects(
+    setup, tmp_path, monkeypatch
+):
+    kwargs, system, _ = setup
+    kwargs["receipt_dir"] = tmp_path / "outer" / "inner" / "receipts"
+    attempted = []
+    real = life._fsync_directory
+
+    def record_and_fail(directory):
+        attempted.append(directory)
+        if directory == kwargs["receipt_dir"].parent:
+            raise OSError("injected parent fsync failure")
+        return real(directory)
+
+    with monkeypatch.context() as m:
+        m.setattr(life, "_fsync_directory", record_and_fail)
+        with pytest.raises(life.LifecycleError, match="runtime_receipt_parent_not_durable"):
+            with life.RuntimeTransaction(**kwargs):
+                pytest.fail("effects admitted before receipt ancestry became durable")
+    assert kwargs["receipt_dir"].is_dir()
+    assert attempted[0] == kwargs["receipt_dir"].parent
+    assert not system.commands
+    assert not (kwargs["receipt_dir"] / "pending-runtime.json").exists()
+
+    def record_all(directory):
+        attempted.append(directory)
+        return real(directory)
+
+    with monkeypatch.context() as m:
+        m.setattr(life, "_fsync_directory", record_all)
+        with life.RuntimeTransaction(**kwargs):
+            pass
+    # The second attempt must fsync the same parent despite its child existing.
+    assert attempted.count(kwargs["receipt_dir"].parent) == 2
+    assert tmp_path / "outer" in attempted
+    assert tmp_path in attempted
+    assert not system.commands
+    assert not (kwargs["receipt_dir"] / "pending-runtime.json").exists()
+
+
+def test_host_receipt_existing_dir_fsync_failure_blocks_pre_effect(setup, monkeypatch):
+    kwargs, system, _ = setup
+    kwargs["receipt_dir"].mkdir()
+    real = life._fsync_directory
+
+    def refuse_parent(path):
+        if path == kwargs["receipt_dir"].parent:
+            raise OSError("rejected parent durability")
+        return real(path)
+
+    with monkeypatch.context() as m:
+        m.setattr(life, "_fsync_directory", refuse_parent)
+        with pytest.raises(life.LifecycleError, match="runtime_receipt_parent_not_durable"):
+            complete(kwargs)
+    assert not system.commands
+    assert not (kwargs["receipt_dir"] / "pending-runtime.json").exists()
