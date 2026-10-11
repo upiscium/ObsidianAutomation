@@ -44,9 +44,13 @@ Management Web UI + unprivileged Management API (no generic shell/root access)
    │ Unix identities/ACLs │      host-mode Actions runner)         │
    └──────────────────────┼────────────────────────────────────────┘
                           │
-                  Vault Gateway
-            (only role with Standard
-             Nextcloud remote secret)
+             Nextcloud connection boundary
+              (implementation undecided)
+        ┌─────────────────┼─────────────────┐
+    managed direct    one remote-I/O     scoped UDS DAV
+    credentials       owner + local      Gateway/proxy
+    to selected jobs  verified views     per-role policy
+        └─────────────────┼─────────────────┘
                           │ HTTPS WebDAV
                        Nextcloud
 
@@ -64,21 +68,25 @@ A generic host-mode Gitea Runner MUST NOT be placed into the same privileged-dat
 
 | Dimension | Standard (default proposal) | Strict (compatible option) |
 | --- | --- | --- |
-| Nextcloud user accounts | One **dedicated** service account, one configured credential to Gateway | Several remotely restricted accounts/share bindings |
-| Internal processes | Separate Unix identities and Gateway capability checks | Separate Unix identities and credentials/remote shares |
-| Snapshot | Remote reads through read-only Gateway capability | Remote read-only share/account |
-| Canonical creation/update/delete | Gateway enforces per-role path/verb/CAS rules | Remote Nextcloud permissions **and** local contract |
-| Gateway/remote credential compromise | Broad access up to that account's Nextcloud permissions | Restricted by the compromised credential's remote share |
+| Nextcloud user accounts | One **dedicated** service account, one user-managed connection | Several remotely restricted accounts/share bindings |
+| Internal processes | Separate Unix identities; credential exposure/capabilities depend on selected adapter | Separate Unix identities and credentials/remote shares |
+| Snapshot | Read-only by application/capability contract; shared remote account may still have writer rights | Remote read-only share/account |
+| Canonical creation/update/delete | Existing path, CAS, provenance and review guards; selected adapter may add server-side checks | Remote Nextcloud permissions **and** local contract |
+| Remote credential compromise | Broad access up to that account's Nextcloud permissions, regardless of adapter | Restricted by the compromised credential's remote share |
 | Setup burden | Lower | Higher |
 | Security equivalence | **Not equivalent to Strict** | Stronger external enforcement |
 
 Standard MUST NOT silently reuse the human's primary Nextcloud password; prefer a dedicated application password/account. Provisioning brand-new Nextcloud server accounts is optional; v1 can take an operator-supplied app credential and does not require Nextcloud server administrator permission.
 
-One account in Standard is an explicit tradeoff: the remote server cannot distinguish the individual authority of the services behind a shared credential. Treat Gateway bugs/compromise as high-impact. There must be no documentation falsely advertising remotely enforced read-only Snapshot in this mode.
+One account in Standard is an explicit tradeoff: the remote server cannot distinguish the individual authority of the services behind a shared credential. Treat a compromised credential holder (whether a direct consumer, central I/O owner or Gateway) as high-impact. There must be no documentation falsely advertising remotely enforced read-only Snapshot in this mode.
 
-## 5. Vault Gateway contract (proposed)
+## 5. Remote-I/O authority contract and optional Gateway design (proposed)
 
-Only the Gateway may read the Standard Nextcloud credential. Service-to-Gateway requests travel over restricted local Unix sockets with peer identity verification, **not** arbitrary remote proxies.
+All Standard implementations must preserve existing fixed effects, CAS/provenance validation, local isolation and explicit audits. They differ in **which processes hold the remote credential**:
+
+- Managed direct credentials: only intentionally authorized remote-facing services can receive the shared credential through protected systemd secret delivery; the service's compromised credential grants the full shared remote account authority. Do not claim a local filter narrows remote permissions.
+- Single remote-I/O owner: only the owner holds the credential; reads become verified local mirrors/role-limited views, while remote mutations are independently checked typed requests. Concurrency, stale-data and durable-stage contracts must remain intact.
+- Scope-specific UDS Gateway (the optional design below): only the Gateway holds the credential. Service-to-Gateway requests travel over restricted local Unix sockets with peer identity verification, **not** arbitrary remote proxies.
 
 Compile a fixed, reviewed capability matrix per service identity. The matrix must constrain all of: target Vault / canonical root / permitted relative path patterns / HTTP method / operation semantics, e.g.:
 
@@ -93,7 +101,7 @@ Compile a fixed, reviewed capability matrix per service identity. The matrix mus
 
 No privilege escalation via caller-supplied role/path, arbitrary HTTP verb, URL, redirect or header. Normalize paths exactly and reject `..`, encoded separators, ambiguities, case-fold collisions, symlinks where relevant, escaping of the selected Vault. Preserve conditional-write and exact-byte verification semantics. A Gateway reimplementation must pass the existing writer, receipt, recovery and Human Review contracts, including #287.
 
-If Gateway unavailable or its policy identity is stale, deny effects rather than passing a raw remote credential to the job.
+If a Gateway is selected and unavailable or its policy identity is stale, deny effects rather than passing a raw remote credential to the job. Do not use an unsafe fallback from a Gateway deployment to direct credentials without a new reviewed config change.
 
 ### 5.1. rclone integration feasibility gate (not solved by this ADR)
 
@@ -103,7 +111,7 @@ Existing `vault_mirror.py` runs `rclone sync` with a named remote and `rclone.co
 
 Before claiming Standard single-credential support, prototype at least a Gateway-owned mirror pull, a scoped local DAV interface (with actual caller authentication, not an unauthenticated loopback listener), and a constrained Gateway-launched rclone child. Model who can read the remote credential and who can write each local mirror in each option. In particular, passing the secret to a subprocess is still credential exposure, even if the credential is short-lived.
 
-The selected adapter must preserve named-remote filtering behavior, local-only `--delete-after` / `--delete-excluded`, canonical I/O and mirror-read-view locks, Snapshot double-pull/check, remote freshness limitations, and untrusted-path handling. Test no remote writes and matching local manifests on a disposable DAV fixture before integrating with service users. If the adapter is not viable or increases risk excessively, do **not** fake Gateway isolation; retain multiple remotely scoped accounts behind a one-screen GUI instead and revise this ADR.
+The selected adapter must preserve named-remote filtering behavior, local-only `--delete-after` / `--delete-excluded`, canonical I/O and mirror-read-view locks, Snapshot double-pull/check, remote freshness limitations, and untrusted-path handling. Test no remote writes and matching local manifests on a disposable DAV fixture before integrating with service users. If the Gateway adapter is not viable or increases risk excessively, do **not** fake Gateway isolation. Evaluate a simpler Standard direct/central-I/O option with explicit compromised-credential blast radius and operator acceptance, or retain multiple remotely scoped accounts behind a one-screen GUI.
 
 ## 6. Loginless management console
 
