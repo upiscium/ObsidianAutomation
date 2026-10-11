@@ -417,7 +417,7 @@ def _direct_service_input_manifest(
     inputs (e.g. watcher config.toml, rclone config, WebDAV credentials).
     """
     paths: set[Path] = set()
-    directive = re.compile(r"^Exec(?:Start|StartPre|StartPost|Reload|Stop|StopPost)\s*=(.*)$")
+    directive = re.compile(r"^Exec(?:Condition|Start|StartPre|StartPost|Reload|Stop|StopPost)\s*=(.*)$")
     for name in names:
         if not name.endswith(".service"):
             continue
@@ -443,6 +443,14 @@ def _direct_service_input_manifest(
         if accumulated:
             raise legacy.ProductionUpdateError("unterminated systemd ExecStart file argument")
         for command in commands:
+            # systemd decodes C-style escapes, unlike POSIX shlex.
+            # Continuation backslashes were already consumed above; any
+            # remaining backslash might alter an Exec file path at runtime,
+            # so fail closed instead of hashing a guessed pathname.
+            if "\\" in command:
+                raise legacy.ProductionUpdateError(
+                    "unsupported systemd Exec backslash escape"
+                )
             try:
                 words = shlex.split(command, posix=True)
             except ValueError as exc:
