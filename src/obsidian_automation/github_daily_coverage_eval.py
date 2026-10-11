@@ -7,7 +7,9 @@ Grounding results. Human verdicts are not inferred from model advisories.
 from __future__ import annotations
 
 import re
+import stat
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal, Sequence
 
 SHA_RE = re.compile(r"^[a-f0-9]{64}$")
@@ -92,8 +94,21 @@ def evaluate_coverage(inp: CoverageInput) -> dict[str, object]:
     flattened = tuple(eid for partition in inp.partitioned_ids for eid in partition)
     if not inp.partitioned_ids or any(not part for part in inp.partitioned_ids):
         raise CoverageError("empty or absent partition")
-    if flattened != tuple(event_repos):
-        raise CoverageError("partition dropped, duplicated or reordered evidence")
+    if (len(flattened) != len(event_repos)
+            or len(set(flattened)) != len(flattened)
+            or set(flattened) != set(event_repos)):
+        raise CoverageError("partition dropped or duplicated evidence")
+    # The production partitioner groups by repository, so globally interleaved
+    # original events may legitimately become consecutive per-repository groups.
+    # Preserve exact *per-repository* sequence, and prohibit mixed-repo batches.
+    for part in inp.partitioned_ids:
+        if len({event_repos[eid] for eid in part}) != 1:
+            raise CoverageError("partition mixes repositories")
+    for repository in set(event_repos.values()):
+        original = tuple(eid for eid, repo in event_repos.items() if repo == repository)
+        observed = tuple(eid for eid in flattened if event_repos[eid] == repository)
+        if observed != original:
+            raise CoverageError("partition reordered evidence within repository")
 
     cited: set[str] = set()
     claim_ids: set[str] = set()
@@ -171,5 +186,77 @@ def evaluate_coverage(inp: CoverageInput) -> dict[str, object]:
         "human_semantic_counts": human_counts,
         "model_advisory_missing_count": advisory_missing,
         "sample_status": sample_status,
+        "publication_authorized": False,
+    }
+
+
+MAX_EVIDENCE_INPUT_BYTES = 16 * 1024 * 1024
+
+
+def verified_partition_report(
+    evidence_file: Path, *, max_partial_context_bytes: int,
+) -> dict[str, object]:
+    """Validate one immutable Evidence file and derive metadata-only partitions.
+
+    Unlike evaluate_coverage(), this is an artifact-backed structural report.
+    It does NOT accept batched model output, adjudicate semantic omissions,
+    invoke Ollama, or authorize a Daily Writer.
+    """
+    if (not isinstance(evidence_file, Path) or not evidence_file.is_absolute()
+            or ".." in evidence_file.parts):
+        raise CoverageError("canonical Evidence path must be absolute")
+    if (type(max_partial_context_bytes) is not int
+            or not 1 <= max_partial_context_bytes <= MAX_EVIDENCE_INPUT_BYTES):
+        raise CoverageError("Partial context limit is invalid")
+    try:
+        info = evidence_file.lstat()
+    except OSError as exc:
+        raise CoverageError("canonical Evidence file unavailable") from exc
+    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+            or info.st_size <= 0 or info.st_size > MAX_EVIDENCE_INPUT_BYTES):
+        raise CoverageError("canonical Evidence inode is not safely bounded")
+
+    # load_evidence_bundle verifies the canonical content bytes and SHA-named
+    # file identity, and rederives each original event's own SHA before use.
+    from .artifact_lifecycle import _canonical_json_bytes, sha256_bytes
+    from .github_daily_summary import load_evidence_bundle, partition_evidence
+
+    bundle = load_evidence_bundle(evidence_file)
+    contexts = partition_evidence(bundle, max_bytes=max_partial_context_bytes)
+
+    original_repos: dict[str, list[str]] = {}
+    for event in bundle.events:
+        original_repos.setdefault(str(event["repository"]), []).append(
+            str(event["evidence_id"])
+        )
+    projected_repos: dict[str, list[str]] = {}
+    for context in contexts:
+        for event in context.events:
+            projected_repos.setdefault(str(event["repository"]), []).append(
+                str(event["evidence_id"])
+            )
+    if original_repos != projected_repos:
+        raise CoverageError("partition changed repository Evidence identity/order")
+
+    context_ids = [sha256_bytes(context.to_json_bytes()) for context in contexts]
+    partition_sha = sha256_bytes(_canonical_json_bytes({
+        "record_version": 1,
+        "evidence_bundle_sha256": bundle.sha256,
+        "max_partial_context_bytes": max_partial_context_bytes,
+        "context_sha256s": context_ids,
+    }))
+    return {
+        "record_version": 1,
+        "stage": "read_only_partition_metadata",
+        "evidence_bundle_sha256": bundle.sha256,
+        "partition_sha256": partition_sha,
+        "original_event_count": len(bundle.events),
+        "partitioned_event_count": sum(len(context.events) for context in contexts),
+        "repository_count": len(original_repos),
+        "partial_context_count": len(contexts),
+        "max_partial_context_bytes": max(
+            (len(context.to_json_bytes()) for context in contexts), default=0
+        ),
+        "source_text_returned": False,
         "publication_authorized": False,
     }
