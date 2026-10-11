@@ -706,6 +706,56 @@ def test_additional_direct_files_bound_before_activate(tmp_path, flag):
     assert not _called(runner, ("--profile", "live"))
 
 
+@pytest.mark.parametrize("flag_style", ("separate", "equals"))
+def test_exec_condition_direct_input_is_bound_and_activation_checks_drift(tmp_path, flag_style):
+    runner, opts = setup(tmp_path)
+    config = tmp_path / "conditional-config.toml"
+    config.write_text("condition = 'before'\n")
+    unit = opts["app_root"] / "examples" / "github-sync" / "obsidian-github-sync.service"
+    suffix = f"--config={config}" if flag_style == "equals" else f"--config {config}"
+    unit.write_text(f"[Service]\nExecCondition=/opt/test-condition {suffix}\nExecStart=/opt/sync-cli\n")
+    receipt = stage(runner, opts)
+    proof = staged._receipt_read(opts["receipt_dir"] / staged.STAGING_ROOT, receipt)
+    assert str(config) in proof["direct_manifest"]
+    config.write_text("condition = 'after'\n")
+    with pytest.raises(ProductionUpdateError, match="direct service file input drift"):
+        activate(receipt, opts)
+    assert _control(opts)["status"] == "staged"
+    assert not _called(runner, ("--profile", "live"))
+
+
+def test_unknown_exec_condition_file_flag_fails_closed(tmp_path):
+    runner, opts = setup(tmp_path)
+    unit = opts["app_root"] / "examples" / "github-sync" / "obsidian-github-sync.service"
+    unit.write_text("[Service]\nExecCondition=/opt/test-condition --another-config=/etc/secret\n")
+    with pytest.raises(ProductionUpdateError, match="unreviewed direct file argument"):
+        stage(runner, opts)
+    assert _control(opts)["status"] == "failed"
+    assert not runner.enabled and not runner.active
+    assert not _called(runner, ("--profile", "live"))
+
+
+@pytest.mark.parametrize("directive", ("ExecStart", "ExecCondition"))
+def test_systemd_c_escape_in_direct_path_is_rejected_not_misbound(tmp_path, directive):
+    runner, opts = setup(tmp_path)
+    actual = tmp_path / "input.toml"
+    decoy = tmp_path / "inputx2etoml"
+    actual.write_text("real confidential input\n")
+    decoy.write_text("decoy data, must never bind in place of real\n")
+    unit = opts["app_root"] / "examples" / "github-sync" / "obsidian-github-sync.service"
+    # A systemd C-style \x2e escape denotes '.', but POSIX shlex would
+    # incorrectly hash the filename inputx2etoml if it is present.
+    unit.write_text(
+        f"[Service]\n{directive}=/opt/test-condition "
+        f"--config={tmp_path}/input\\x2etoml\n"
+    )
+    with pytest.raises(ProductionUpdateError, match="unsupported systemd Exec backslash escape"):
+        stage(runner, opts)
+    assert _control(opts)["status"] == "failed"
+    assert not runner.enabled and not runner.active
+    assert not _called(runner, ("--profile", "live"))
+
+
 def test_unreviewed_sensitive_file_flag_fails_stage(tmp_path):
     runner, opts = setup(tmp_path)
     unit = opts["app_root"] / "examples" / "github-sync" / "obsidian-github-sync.service"
