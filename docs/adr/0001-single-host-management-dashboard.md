@@ -92,6 +92,14 @@ No privilege escalation via caller-supplied role/path, arbitrary HTTP verb, URL,
 
 If Gateway unavailable or its policy identity is stale, deny effects rather than passing a raw remote credential to the job.
 
+### 5.1. rclone integration feasibility gate (not solved by this ADR)
+
+**Blocking spike: [#308](https://github.com/upiscium/ObsidianAutomation/issues/308).** Existing `vault_mirror.py` runs `rclone sync` with a named remote and `rclone.conf`; AI and GitHub mirrors and the Snapshot path currently depend on separate rclone/WebDAV credentials. The above Unix-socket Gateway is a *proposed authority contract*, not a drop-in compatible backend for rclone.
+
+Before claiming Standard single-credential support, prototype at least a Gateway-owned mirror pull, a scoped local DAV interface (with actual caller authentication, not an unauthenticated loopback listener), and a constrained Gateway-launched rclone child. Model who can read the remote credential and who can write each local mirror in each option. In particular, passing the secret to a subprocess is still credential exposure, even if the credential is short-lived.
+
+The selected adapter must preserve named-remote filtering behavior, local-only `--delete-after` / `--delete-excluded`, canonical I/O and mirror-read-view locks, Snapshot double-pull/check, remote freshness limitations, and untrusted-path handling. Test no remote writes and matching local manifests on a disposable DAV fixture before integrating with service users. If the adapter is not viable or increases risk excessively, do **not** fake Gateway isolation; retain multiple remotely scoped accounts behind a one-screen GUI instead and revise this ADR.
+
 ## 6. Loginless management console
 
 Loginless means **no separate GUI username/password prompt**, not unauthenticated exposure to the public Internet.
@@ -165,6 +173,6 @@ Pending approval:
 3. Confirm authorized phone/network ingress; do not interpret "loginless" as public binding.
 4. Decide whether force-stopping active effects is even necessary; safest MVP is schedule pause + controlled drain.
 
-Implementation issues: [#300](https://github.com/upiscium/ObsidianAutomation/issues/300) Management API; [#301](https://github.com/upiscium/ObsidianAutomation/issues/301) Connections; [#302](https://github.com/upiscium/ObsidianAutomation/issues/302) Gateway; [#303](https://github.com/upiscium/ObsidianAutomation/issues/303) Vault mapping; [#304](https://github.com/upiscium/ObsidianAutomation/issues/304) Dashboard; [#305](https://github.com/upiscium/ObsidianAutomation/issues/305) Snapshot/Publisher; [#306](https://github.com/upiscium/ObsidianAutomation/issues/306) migration.
+Implementation feasibility gate: [#308](https://github.com/upiscium/ObsidianAutomation/issues/308) rclone/Nextcloud adapter.\n\nImplementation issues: [#300](https://github.com/upiscium/ObsidianAutomation/issues/300) Management API; [#301](https://github.com/upiscium/ObsidianAutomation/issues/301) Connections; [#302](https://github.com/upiscium/ObsidianAutomation/issues/302) Gateway; [#303](https://github.com/upiscium/ObsidianAutomation/issues/303) Vault mapping; [#304](https://github.com/upiscium/ObsidianAutomation/issues/304) Dashboard; [#305](https://github.com/upiscium/ObsidianAutomation/issues/305) Snapshot/Publisher; [#306](https://github.com/upiscium/ObsidianAutomation/issues/306) migration.
 
 **This ADR proposes, but does not authorize, software deployment, credentials migration, LXC removal, Nextcloud writes or public publishing.**
