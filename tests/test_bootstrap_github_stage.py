@@ -63,12 +63,17 @@ def invoke(root: Path, target: str, *args: str, mimic_root: bool = False):
     arguments.extend(args)
     if mimic_root:
         # Only the fake scratch test subprocess sees the euid substitution.
-        # The loaded fake Stage is a return-value stub: no systemctl or pip.
+        # CI runs without real permission to write /run; emulate root's
+        # writable private temp parent solely in this no-effect stub test.
+        # Production bootstrap's /run trust and permission gate is unchanged.
         wrapper = (
-            "import os,runpy,sys;"
+            "import importlib.util,os,pathlib,sys;"
             "os.geteuid=lambda:0;"
-            "sys.argv=['bootstrap_github_stage.py',*sys.argv[1:]];"
-            f"runpy.run_path({str(BOOTSTRAP)!r},run_name='__main__')"
+            f"spec=importlib.util.spec_from_file_location('bootstrap_fixture',{str(BOOTSTRAP)!r});"
+            "module=importlib.util.module_from_spec(spec);"
+            "spec.loader.exec_module(module);"
+            "module._private_temp_parent=lambda *,stage:pathlib.Path('/tmp');"
+            "sys.exit(module.main(sys.argv[1:]))"
         )
         cmd = [sys.executable, "-I", "-B", "-c", wrapper, *arguments]
     else:
