@@ -96,7 +96,7 @@ Compile a fixed, reviewed capability matrix per service identity. The matrix mus
 - Review Intake: bounded read of Review projections;
 - Knowledge canonical writer: exact proposed target, `If-None-Match: *` and independent read-back check;
 - GitHub Project/Daily writer: bounded owned path/section, `If-Match` CAS and read-back check;
-- cleanup: exact-case and auditable `04-AI` set only, delete never generalized to a Vault root;
+- cleanup: exact-case and auditable 04-AI set only, delete never generalized to a Vault root. New deterministic rejection cleanup (#309) uses a separately versioned, server-originated request/result, exact four fixed pre-review stage targets and immutable rejection evidence; existing Human Review cleanup remains a distinct six-stage authority.
 - Core Promotion: reviewed include list, checkpoint and remote-live reconciliation semantics unchanged.
 
 No privilege escalation via caller-supplied role/path, arbitrary HTTP verb, URL, redirect or header. Normalize paths exactly and reject `..`, encoded separators, ambiguities, case-fold collisions, symlinks where relevant, escaping of the selected Vault. Preserve conditional-write and exact-byte verification semantics. A Gateway reimplementation must pass the existing writer, receipt, recovery and Human Review contracts, including the exact-case automatic rejection cleanup in #309. Ordinary deterministic Validation rejection does not require an Acknowledge request.
@@ -134,8 +134,23 @@ A timer's `active` / `enabled` is not the same as its oneshot service's current 
 | Trigger one existing service | Potentially remote-effectful | Existing service-specific authority/preflight; clearly describe effect |
 | Replace secret / Vault mapping | Configuration | Validate and stage; no implicit remote modification |
 | Activate staged production revision | Live deployment | Exact-target approval, #294 stage/activate gate |
-| Deterministic Validation rejection cleanup | Audited bounded background DELETE | #309 requires verified canonical rejection, immutable case/generation binding, fixed four-path `04-AI` allowlist, Sync-only execution, idempotent race/replay protection; no Human Acknowledge |
+| Deterministic Validation rejection cleanup | Audited bounded background DELETE | #309 requires a versioned, server-owned exact-case/generation request, canonical rejected Validation record + original published projection/result hashes, a four-path 04-AI allowlist, and Sync-only conditional DELETE after remote strong-ETag/bytes revalidation; no Human Acknowledge, never unconditional delete |
 | Force stop active job | Risk of partial effect | Separate explicit guarded operation; not in MVP |
+
+For automatic deterministic Validation rejection in #309, the server-side
+cleanup producer and Sync transport MUST retain separately versioned immutable
+request/result schemas, original projection bindings, and a strict fixed path
+derivation. Verify the remote target's exact bytes/identity and a strong ETag
+immediately before destructive effects, then use a conditional If-Match DELETE;
+never assume a local lock alone protects a remotely replaced projection.
+Unexpected Human edits, a changed ETag, a newer generation or missing binding
+must fail closed without deleting another note. Lost DELETE responses, partial
+cleanup, already-absent targets and replay/republication require bounded
+reconciliation backed by immutable evidence and a durable non-resurrection
+rule. A cleanup conflict becomes a visible operational incident in #300/#304,
+not a hidden successful Validation rejection. These conditions are a future
+acceptance contract, not proof that existing Human Review cleanup already
+implements conditional remote deletion.
 
 The registry must be single-source-of-truth for status, packaging, control and lifecycle. Respect durable lock/pending journal, exact SHA, running-work drain and no duplicate writer / parallel runner. Simple dashboard clicks do not waive the existing consent boundary.
 
@@ -183,6 +198,7 @@ Replace the generic host-mode Gitea Actions publisher with a dedicated local, no
 - Browser-origin, CSRF, Host, DNS rebinding, XSS and unauthorized ingress tests.
 - Secret masking/rotation, direct unauthorized file reads, leaked logs/receipts, SSRF and API input bounds.
 - For every selected mode: per-role secret accessibility and remote compromise blast radius, CAS conflict, timeout, replay, delete confinement, readback mismatch; for optional Gateway also socket/root/method checks and stale-cache behavior. The #308 rclone 412→DELETE regression must never reach canonical transports.
+- #309 verified remote bytes/strong-ETag If-Match delete, lost-response recovery, four-stage-only cleanup, no resurrection or cross-case deletion; no arbitrary path from a client.
 - Existing immutable AI validation/review/executor/cleanup evidence and #309 verified automatic rejection cleanup (never arbitrary or Human-ack-driven DELETE), with no silent Human Review bypass.
 - Daily manually edited section preservation, `If-Match` CAS, timestamp/bindings, no semantic recursion changes.
 - Snapshot pull/check failure, Git publication race and idempotent no-op, no generic Runner requirement.
@@ -200,6 +216,6 @@ Pending approval:
 
 Implementation feasibility gate: [#308](https://github.com/upiscium/ObsidianAutomation/issues/308) rclone/Nextcloud adapter.
 
-Implementation issues: [#300](https://github.com/upiscium/ObsidianAutomation/issues/300) Management API; [#301](https://github.com/upiscium/ObsidianAutomation/issues/301) Connections; [#302](https://github.com/upiscium/ObsidianAutomation/issues/302) Gateway; [#303](https://github.com/upiscium/ObsidianAutomation/issues/303) Vault mapping; [#304](https://github.com/upiscium/ObsidianAutomation/issues/304) Dashboard; [#305](https://github.com/upiscium/ObsidianAutomation/issues/305) Snapshot/Publisher; [#306](https://github.com/upiscium/ObsidianAutomation/issues/306) migration.
+Implementation issues: [#300](https://github.com/upiscium/ObsidianAutomation/issues/300) Management API; [#301](https://github.com/upiscium/ObsidianAutomation/issues/301) Connections; [#302](https://github.com/upiscium/ObsidianAutomation/issues/302) Standard/Strict Nextcloud credential and transport choice (Gateway optional); [#303](https://github.com/upiscium/ObsidianAutomation/issues/303) Vault mapping; [#304](https://github.com/upiscium/ObsidianAutomation/issues/304) Dashboard; [#305](https://github.com/upiscium/ObsidianAutomation/issues/305) Snapshot/Publisher; [#306](https://github.com/upiscium/ObsidianAutomation/issues/306) migration.
 
 **This ADR proposes, but does not authorize, software deployment, credentials migration, LXC removal, Nextcloud writes or public publishing.**
