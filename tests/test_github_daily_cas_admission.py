@@ -51,11 +51,17 @@ def _fixture(tmp_path, monkeypatch):
                         if name == "summarizer" else
                         SimpleNamespace(pw_uid=reader, pw_gid=gid)
                         if name == "renderer" else (_ for _ in ()).throw(KeyError(name)))
-    _set_acl(
-        stage,
-        f"u::rwx,u:{uid}:rwx,u:{reader}:r-x,g::---,m::rwx,o::---",
-        default=True,
-    )
+    for directory in (root, stage):
+        _set_acl(
+            directory,
+            f"u::rwx,u:{uid}:rwx,u:{reader}:r-x,g::---,m::r-x,o::---",
+            default=False,
+        )
+        _set_acl(
+            directory,
+            f"u::rwx,u:{uid}:rwx,u:{reader}:r-x,g::---,m::rwx,o::---",
+            default=True,
+        )
     final = stage / ("a" * 64 + ".github-daily-partial-output.json")
     original_mask = os.umask(0o027)
     try:
@@ -100,6 +106,14 @@ def test_valid_existing_daily_cas_acl_is_accepted_without_reading_payload(tmp_pa
     ("orphan_temp", "unknown or uncommitted"),
     ("unknown_stage", "unexpected stage"),
     ("wrong_artifact_class", "unknown or uncommitted"),
+    ("root_acl_extra_reader", "CAS directory named ACL"),
+    ("stage_acl_extra_reader", "CAS directory named ACL"),
+    ("root_default_extra_reader", "CAS directory named ACL"),
+    ("stage_default_extra_reader", "CAS directory named ACL"),
+    ("root_default_removed", "required named-user ACL missing"),
+    ("stage_default_removed", "required named-user ACL missing"),
+    ("root_access_broad", "CAS root ownership or mode"),
+    ("stage_access_broad", "CAS stage directory mode/owner"),
 ])
 def test_unsafe_existing_cas_objects_are_blocked(tmp_path, monkeypatch, mutate, reason):
     root, final, uid, reader = _fixture(tmp_path, monkeypatch)
@@ -139,8 +153,43 @@ def test_unsafe_existing_cas_objects_are_blocked(tmp_path, monkeypatch, mutate, 
     elif mutate == "wrong_artifact_class":
         wrong = root / "output" / ("b" * 64 + ".github-daily-ground-context.json")
         wrong.write_bytes(b"unreviewed class")
+    elif mutate in {
+        "root_acl_extra_reader", "stage_acl_extra_reader",
+        "root_default_extra_reader", "stage_default_extra_reader",
+    }:
+        extra = reader + 1
+        changed = root if mutate.startswith("root") else root / "output"
+        default = "default" in mutate
+        mask = "rwx" if default else "r-x"
+        _set_acl(
+            changed,
+            f"u::rwx,u:{uid}:rwx,u:{reader}:r-x,u:{extra}:r-x,"
+            f"g::---,m::{mask},o::---",
+            default=default,
+        )
+    elif mutate in {"root_default_removed", "stage_default_removed"}:
+        changed = root if mutate.startswith("root") else root / "output"
+        os.removexattr(changed, "system.posix_acl_default")
+    elif mutate in {"root_access_broad", "stage_access_broad"}:
+        changed = root if mutate.startswith("root") else root / "output"
+        changed.chmod(0o755)
     with pytest.raises(audit.DailyCASAdmissionError, match=reason):
         _audit(root)
+
+
+def test_symlinked_cas_root_and_stage_fail_without_following(tmp_path, monkeypatch):
+    root, final, uid, reader = _fixture(tmp_path, monkeypatch)
+    fake_root = tmp_path / "alias"
+    fake_root.symlink_to(root, target_is_directory=True)
+    with pytest.raises(audit.DailyCASAdmissionError, match="CAS root cannot be safely opened"):
+        _audit(fake_root)
+    stage = root / "output"
+    relocated = tmp_path / "hidden-real-output"
+    stage.rename(relocated)
+    stage.symlink_to(relocated, target_is_directory=True)
+    with pytest.raises(audit.DailyCASAdmissionError, match="CAS stage cannot be safely opened"):
+        _audit(root)
+    assert final.name.endswith(".github-daily-partial-output.json")
 
 
 def test_empty_root_and_bounded_files_fail_closed(tmp_path, monkeypatch):
@@ -150,6 +199,14 @@ def test_empty_root_and_bounded_files_fail_closed(tmp_path, monkeypatch):
     monkeypatch.setattr(audit.pwd, "getpwnam",
                         lambda name: SimpleNamespace(pw_uid=os.getuid(), pw_gid=os.getgid())
                         if name == "summarizer" else SimpleNamespace(pw_uid=os.getuid() + 1))
+    owner = os.getuid()
+    reader = owner + 1
+    for default, mask in ((False, "r-x"), (True, "rwx")):
+        _set_acl(
+            root,
+            f"u::rwx,u:{owner}:rwx,u:{reader}:r-x,g::---,m::{mask},o::---",
+            default=default,
+        )
     with pytest.raises(audit.DailyCASAdmissionError, match="no published"):
         _audit(root)
     with pytest.raises(audit.DailyCASAdmissionError, match="limit invalid"):
