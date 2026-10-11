@@ -476,8 +476,8 @@ def test_symlinked_derived_build_path_is_rejected_without_traversal(tmp_path):
         stage(runner, opts)
     assert marker.read_text() == "must remain untouched"
     assert (opts["app_root"] / "build").is_symlink()
-    assert _control(opts)["status"] == "failed"
-    assert runner.enabled is False and runner.daily_enabled is False
+    assert _control(opts) == {"status": "none"}
+    assert runner.enabled and runner.active and runner.daily_enabled
     assert not _called(runner, ("--profile", "live"))
 
 
@@ -526,8 +526,86 @@ def test_preflight_checks_all_derived_directories_before_cleanup(tmp_path):
     with pytest.raises(ProductionUpdateError, match="unsafe ignored package build path"):
         stage(runner, opts)
     assert (build / "stale").read_text() == "keep until entire cleanup set validated"
-    assert _control(opts)["status"] == "failed"
+    assert _control(opts) == {"status": "none"}
+    assert runner.enabled and runner.active and runner.daily_enabled
     assert not _called(runner, ("--profile", "live"))
+
+
+@pytest.mark.parametrize("case,expected_error", (
+    ("nested_symlink", "unreviewed ignored package build file type"),
+    ("nested_mount", "unsafe or oversized ignored package build subtree"),
+    ("nested_special", "unreviewed ignored package build file type"),
+    ("hardlinked", "hardlinked ignored package build artifact"),
+    ("too_many", "unsafe or oversized ignored package build subtree"),
+    ("too_large", "oversized ignored package build artifacts"),
+    ("world_writable_dir", "insecure ignored package build directory"),
+))
+def test_unsafe_nested_ignored_build_fails_before_timer_or_marker(
+    tmp_path, monkeypatch, case, expected_error,
+):
+    import os
+    runner, opts = setup(tmp_path)
+    build = opts["app_root"] / "build"
+    child = build / "lib"
+    child.mkdir(parents=True)
+    marker = child / "stale.py"
+    marker.write_text("must not be deleted")
+    if case == "nested_symlink":
+        (child / "external").symlink_to(tmp_path)
+    elif case == "nested_mount":
+        injected = child / "mounted"
+        injected.mkdir()
+        originals = staged._current_mount_points
+        monkeypatch.setattr(
+            staged, "_current_mount_points",
+            lambda: originals() | frozenset({injected}),
+        )
+    elif case == "nested_special":
+        os.mkfifo(child / "old-fifo")
+    elif case == "hardlinked":
+        os.link(marker, child / "shared.py")
+    elif case == "too_many":
+        monkeypatch.setattr(staged, "MAX_IGNORED_BUILD_ENTRIES", 1)
+    elif case == "too_large":
+        monkeypatch.setattr(staged, "MAX_IGNORED_BUILD_BYTES", 1)
+    elif case == "world_writable_dir":
+        child.chmod(0o777)
+    with pytest.raises(ProductionUpdateError, match=expected_error):
+        stage(runner, opts)
+    assert marker.read_text() == "must not be deleted"
+    assert _control(opts) == {"status": "none"}
+    assert runner.enabled and runner.active and runner.daily_enabled
+    assert not _called(runner, ("--profile", "live"))
+
+
+def test_ignored_build_tree_checked_before_removing_other_candidates(tmp_path):
+    runner, opts = setup(tmp_path)
+    build = opts["app_root"] / "build"
+    build.mkdir()
+    marker = build / "old.py"
+    marker.write_text("keep")
+    unsafe = opts["app_root"] / "src" / "obsidian_automation.egg-info"
+    unsafe.mkdir()
+    (unsafe / "external").symlink_to(tmp_path)
+    with pytest.raises(ProductionUpdateError, match="unreviewed ignored package build file type"):
+        stage(runner, opts)
+    assert marker.read_text() == "keep"
+    assert _control(opts) == {"status": "none"}
+    assert runner.enabled and runner.active
+
+
+def test_mountinfo_parser_detects_escaped_bind_mount_path(tmp_path, monkeypatch):
+    from pathlib import Path
+    marker = "42 1 0:22 / /tmp/test" + chr(92) + "040space rw,relatime - ext4 /dev/root rw"
+    original = Path.read_text
+
+    def mocked_read(self, *args, **kwargs):
+        if str(self) == "/proc/self/mountinfo":
+            return marker + chr(10)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", mocked_read)
+    assert Path("/tmp/test space") in staged._current_mount_points()
 
 
 def test_automatically_bound_writer_environment_file_drift_blocks_live(tmp_path):
