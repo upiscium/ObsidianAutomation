@@ -96,10 +96,10 @@ Compile a fixed, reviewed capability matrix per service identity. The matrix mus
 - Review Intake: bounded read of Review projections;
 - Knowledge canonical writer: exact proposed target, `If-None-Match: *` and independent read-back check;
 - GitHub Project/Daily writer: bounded owned path/section, `If-Match` CAS and read-back check;
-- cleanup: exact-case and auditable `04-AI` set only, delete never generalized to a Vault root;
+- cleanup: exact-case and auditable 04-AI set only, delete never generalized to a Vault root. New deterministic rejection cleanup (#309) uses a separately versioned, server-originated request/result, exact four fixed pre-review stage targets and immutable rejection evidence; existing Human Review cleanup remains a distinct six-stage authority.
 - Core Promotion: reviewed include list, checkpoint and remote-live reconciliation semantics unchanged.
 
-No privilege escalation via caller-supplied role/path, arbitrary HTTP verb, URL, redirect or header. Normalize paths exactly and reject `..`, encoded separators, ambiguities, case-fold collisions, symlinks where relevant, escaping of the selected Vault. Preserve conditional-write and exact-byte verification semantics. A Gateway reimplementation must pass the existing writer, receipt, recovery and Human Review contracts, including #287.
+No privilege escalation via caller-supplied role/path, arbitrary HTTP verb, URL, redirect or header. Normalize paths exactly and reject `..`, encoded separators, ambiguities, case-fold collisions, symlinks where relevant, escaping of the selected Vault. Preserve conditional-write and exact-byte verification semantics. A Gateway reimplementation must preserve the existing writer, receipt, recovery and Human Review contracts unchanged. Separately, the new #309 server-originated deterministic-rejection cleanup requires its own four-stage exact-case binding, conditional DELETE and immutable receipts; it neither replaces nor broadens Human Review's existing six-stage cleanup authority. Ordinary deterministic Validation rejection does not require an Acknowledge request.
 
 If a Gateway is selected and unavailable or its policy identity is stale, deny effects rather than passing a raw remote credential to the job. Do not use an unsafe fallback from a Gateway deployment to direct credentials without a new reviewed config change.
 
@@ -127,17 +127,44 @@ The Web API stays non-root. A local operation broker exposes only a fixed typed 
 
 A timer's `active` / `enabled` is not the same as its oneshot service's current status. Expose schedule, last run, proven last success, freshness, queue/backpressure, missing config and provider unavailability separately; unknown must remain unknown.
 
-| Operator action | Effect class | Default execution |
+| Action / event | Effect class | Default execution |
 | --- | --- | --- |
 | View state/last sanitized result | Observation | No canonical effect |
 | Pause/resume schedule | Host scheduling | Does not kill active job by default; preserve intent |
 | Trigger one existing service | Potentially remote-effectful | Existing service-specific authority/preflight; clearly describe effect |
 | Replace secret / Vault mapping | Configuration | Validate and stage; no implicit remote modification |
 | Activate staged production revision | Live deployment | Exact-target approval, #294 stage/activate gate |
-| Acknowledge rejected Validation | Human disposition | #287 bound request / audited cleanup, not unconditional deletion |
+| Deterministic Validation rejection cleanup | Audited bounded background DELETE | #309 requires a versioned, server-owned exact-case/generation request, canonical rejected Validation record + original published projection/result hashes, a four-path 04-AI allowlist, and Sync-only conditional DELETE after remote strong-ETag/bytes revalidation; no Human Acknowledge, never unconditional delete |
 | Force stop active job | Risk of partial effect | Separate explicit guarded operation; not in MVP |
 
+For automatic deterministic Validation rejection in #309, the server-side
+cleanup producer and Sync transport MUST retain separately versioned immutable
+request/result schemas, original projection bindings, and a strict fixed path
+derivation. Verify the remote target's exact bytes/identity and a strong ETag
+immediately before destructive effects, then use a conditional If-Match DELETE;
+never assume a local lock alone protects a remotely replaced projection.
+Unexpected Human edits, a changed ETag, a newer generation or missing binding
+must fail closed without deleting another note. Lost DELETE responses, partial
+cleanup, already-absent targets and replay/republication require bounded
+reconciliation backed by immutable evidence and a durable non-resurrection
+rule. A cleanup conflict becomes a visible operational incident in #300/#304,
+not a hidden successful Validation rejection. These conditions are a future
+acceptance contract, not proof that existing Human Review cleanup already
+implements conditional remote deletion.
+
 The registry must be single-source-of-truth for status, packaging, control and lifecycle. Respect durable lock/pending journal, exact SHA, running-work drain and no duplicate writer / parallel runner. Simple dashboard clicks do not waive the existing consent boundary.
+
+### 7.1. User-facing Review vs operational incidents
+
+ObsidianCore [#220](https://github.com/upiscium/ObsidianCore/issues/220) / Draft PR #221 is a **Human Review-only action inbox**. It does not provide a service-health signal; a queue with zero Reviews must never be interpreted as a healthy or even running pipeline. The Automation Management API (#300) and mobile Dashboard (#304) exclusively own operational incidents and remediation status.
+
+- A durably confirmed `deterministic_reject` is an **expected non-promotion outcome**, not an operational failure or required Human Acknowledge. The bounded server-originated cleanup contract is #309.
+- `blocked` and `retry_exhausted` are actionable incidents. A retryable generation failure is transient, distinct from retry budget exhaustion.
+- Verified provider/transport unavailability, failed Nextcloud cleanup/consistency checks and recurring service errors also belong in the operations Dashboard; they must **not be silently deleted or mislabeled as normal Validator rejections**.
+- `UNKNOWN` data, missing operational sources, stale last-success evidence and disabled timers must be distinguished from `OK`. A past successful systemd oneshot cannot prove present health or data freshness.
+- Report bounded incident components, reason codes, affected counts, timestamps only when supported by trustworthy evidence, and explicit recovered/active distinctions; never raw credentials, logs, untrusted model text or arbitrary Vault paths. Read-only status pages do not perform remote/canonical writes.
+
+This ownership boundary does not override #294 stage/activate or future service-control safety gates. Core Review-only production promotion is blocked until the operational incident replacement has independent acceptance and genuine failures remain discoverable.
 
 ## 8. Config and Vault bindings
 
@@ -149,18 +176,18 @@ Changing a binding is **not** a blind move/rename of human content. Dry-run its 
 
 ## 9. Snapshot and public publication in one host
 
-Keep Snapshot's stable-mirror and deterministic Git snapshot proof, isolated working paths, verified pull and conditional push. Snapshot's remote read-only *capability* is enforced by Gateway in Standard and by the remote account additionally in Strict.
+Keep Snapshot's stable-mirror and deterministic Git snapshot proof, isolated working paths, verified pull and conditional push. In **initial Standard v1 with managed shared direct credentials**, Snapshot is read-only only at the intended application/role boundary: the Nextcloud credential itself may have write/delete authority. Do **not** claim remote read-only enforcement in this profile. An optional reviewed Gateway could strengthen local per-role enforcement but remains a separate unqualified implementation; only a restricted Nextcloud account/share such as Strict provides independent remote ACL enforcement. Document the shared-credential compromise blast radius explicitly.
 
 Replace the generic host-mode Gitea Actions publisher with a dedicated local, non-interactive publisher using the existing `obsidian-public-publish` validation/commit logic and reviewed publishing credentials. Trigger only from verified new snapshot provenance (or bounded polling with equivalent proof); serialize publication. Preserve `repository_owned` files, clean-worktree assertions, no-change behavior, validation failures, optimistic Git push and network-retry semantics. Never allow arbitrary untrusted Gitea workflow steps inside the secrets-bearing LXC.
 
 ## 10. Migration, rollback and acceptance gates
 
 1. **Read-only inventory** of existing LXC services, remote account/share scope, filesystem metadata, immutable state, Git refs, timers, config existence; report no credential values.
-2. **Stage** exact reviewed SHA, new management/role services, Gateway policy, local publisher and private config without enabling writers; preserve old LXC roles as rollback candidates.
+2. **Stage** exact reviewed SHA, new management/role services, the selected remote-I/O adapter configuration (Gateway policy only if Gateway is selected; otherwise reviewed direct/central-I/O credential bindings and service-identity allowlists), local publisher and private config without enabling writers; preserve old LXC roles as rollback candidates.
 3. **Dry-run and verify** Vault root/bindings, Snapshot consistency, pending AI & Daily jobs, generated state, remote readback, Gitea/GitHub connectivity and invalid credentials.
 4. **Quiesce old effects**: stop further scheduling, drain active work, verify locks and absence of in-flight canonical writers/publishers. Do not assume a process-count check alone proves idle.
 5. **Copy durable state** under a quiesced boundary. Rebuild disposable mirrors only after ensuring no data/provenance loss. Re-run role permission/secret-readability smokes.
-6. **Human-gated activate** the new one-host profile only after no duplicate authority, code revision, policy identity, and no-write gates pass.
+6. **Human-gated activate** the new one-host profile only after no duplicate authority, code revision, exact selected adapter/credential configuration identity, per-service secret exposure tests, and no-write gates pass. Validate Gateway policy identity only if the Gateway adapter is selected; a direct Standard profile is not required to invent a Gateway policy or claim Gateway isolation.
 7. **Observe and accept** live snapshot, AI Review, GitHub Daily CAS, Core Promotion and publication, checking remote bytes and receipts. Keep old containers disabled but recoverable until explicit disposal approval.
 
 **Rollback limitation:** after new remote writes are committed, simply restoring old databases/re-enabling old writers may overwrite or replay effects. A safe switch-back must reconcile the new authoritative remote state first; otherwise stop effects and fix forward. Never promise automatic lossless rollback of an already mutating system.
@@ -171,7 +198,8 @@ Replace the generic host-mode Gitea Actions publisher with a dedicated local, no
 - Browser-origin, CSRF, Host, DNS rebinding, XSS and unauthorized ingress tests.
 - Secret masking/rotation, direct unauthorized file reads, leaked logs/receipts, SSRF and API input bounds.
 - For every selected mode: per-role secret accessibility and remote compromise blast radius, CAS conflict, timeout, replay, delete confinement, readback mismatch; for optional Gateway also socket/root/method checks and stale-cache behavior. The #308 rclone 412→DELETE regression must never reach canonical transports.
-- Existing immutable AI validation/review/executor/cleanup evidence, #287, and no silent Human Review bypass.
+- #309 verified remote bytes/strong-ETag If-Match delete, lost-response recovery, four-stage-only cleanup, no resurrection or cross-case deletion; no arbitrary path from a client.
+- Existing immutable AI validation/review/executor/cleanup evidence and #309 verified automatic rejection cleanup (never arbitrary or Human-ack-driven DELETE), with no silent Human Review bypass.
 - Daily manually edited section preservation, `If-Match` CAS, timestamp/bindings, no semantic recursion changes.
 - Snapshot pull/check failure, Git publication race and idempotent no-op, no generic Runner requirement.
 - Upgrade journal/timer restoration/#294 exact-target consent gate, #253 build hygiene, #254 non-root package import.
@@ -188,6 +216,6 @@ Pending approval:
 
 Implementation feasibility gate: [#308](https://github.com/upiscium/ObsidianAutomation/issues/308) rclone/Nextcloud adapter.
 
-Implementation issues: [#300](https://github.com/upiscium/ObsidianAutomation/issues/300) Management API; [#301](https://github.com/upiscium/ObsidianAutomation/issues/301) Connections; [#302](https://github.com/upiscium/ObsidianAutomation/issues/302) Gateway; [#303](https://github.com/upiscium/ObsidianAutomation/issues/303) Vault mapping; [#304](https://github.com/upiscium/ObsidianAutomation/issues/304) Dashboard; [#305](https://github.com/upiscium/ObsidianAutomation/issues/305) Snapshot/Publisher; [#306](https://github.com/upiscium/ObsidianAutomation/issues/306) migration.
+Implementation issues: [#300](https://github.com/upiscium/ObsidianAutomation/issues/300) Management API; [#301](https://github.com/upiscium/ObsidianAutomation/issues/301) Connections; [#302](https://github.com/upiscium/ObsidianAutomation/issues/302) Standard/Strict Nextcloud credential and transport choice (Gateway optional); [#303](https://github.com/upiscium/ObsidianAutomation/issues/303) Vault mapping; [#304](https://github.com/upiscium/ObsidianAutomation/issues/304) Dashboard; [#305](https://github.com/upiscium/ObsidianAutomation/issues/305) Snapshot/Publisher; [#306](https://github.com/upiscium/ObsidianAutomation/issues/306) migration.
 
 **This ADR proposes, but does not authorize, software deployment, credentials migration, LXC removal, Nextcloud writes or public publishing.**
