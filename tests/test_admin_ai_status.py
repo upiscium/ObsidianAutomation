@@ -1,0 +1,184 @@
+"""Regression tests for the bounded AI management read model."""
+from __future__ import annotations
+
+import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pytest
+
+from obsidian_automation.admin_ai_status import load_ai_health
+from obsidian_automation.pre_review_status import ALL_STATES
+
+
+UTC_NOW = datetime(2026, 10, 11, 11, 0, tzinfo=timezone.utc)
+
+
+def _projection(
+    generated_at: str = "2026-10-11T10:59:30Z",
+    *, health: str = "OK", current_version: bool = False,
+) -> bytes:
+    states = {name: 0 for name in ALL_STATES}
+    states.update({
+        "awaiting_human_review": 2,
+        "retryable_failure": 1,
+        "retry_exhausted": 3,
+        "blocked": 2,
+        "deterministic_reject": 4,
+    })
+    payload: dict[str, object] = {
+        "record_version": 2 if current_version else 1,
+        "authority": "orchestration_status_projection_only",
+        "generated_at": generated_at,
+        "pipeline_health": health,
+        "reasons": ["SECRET_SHOULD_NOT_LEAK=12345"],
+        "current_jobs": sum(states.values()),
+        "states": states,
+        "review_wait": {
+            "count": 2, "oldest_age_seconds": 61,
+            "reminder_after_seconds": 86400, "reminder_due": True,
+        },
+        "backpressure": {"threshold": 8, "active": False},
+    }
+    if current_version:
+        payload["planner_cadence"] = {
+            "eligible": False, "interval_seconds": 10800,
+            "reason": "active_wait", "awaiting_human_review": 2,
+            "last_submission_at": None,
+            "next_eligible_at": generated_at,
+            "last_selection_policy": None,
+            "last_objective_policy": None,
+            "last_novelty_skip_at": None,
+            "last_novelty_skip_reason": None,
+        }
+    return (json.dumps(payload, separators=(",", ":")) + "\n").encode()
+
+
+def _write(path: Path, content: bytes) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    path.chmod(0o600)
+    return path
+
+
+@pytest.mark.parametrize("current_version", [False, True])
+def test_valid_status_provides_only_sanitized_fresh_counts(
+    tmp_path: Path, current_version: bool,
+) -> None:
+    src = _write(tmp_path / "status" / "projection.json", _projection(
+        current_version=current_version
+    ))
+    value = load_ai_health(path=src, now=UTC_NOW)
+    assert value == {
+        "freshness": "fresh",
+        "health": "ok",
+        "generated_at": "2026-10-11T10:59:30Z",
+        "age_seconds": 30,
+        "review_count": 2,
+        "operational_failures": 6,
+        "deterministic_rejections": 4,
+        "backpressure": False,
+        "review_reminder_due": True,
+    }
+    encoded = json.dumps(value)
+    assert "SECRET_SHOULD_NOT_LEAK" not in encoded
+    assert "planner_cadence" not in encoded
+    assert "states" not in encoded
+
+
+def test_critical_projection_is_not_collapsed_to_healthy(tmp_path: Path) -> None:
+    src = _write(tmp_path / "projection.json", _projection(health="CRITICAL"))
+    assert load_ai_health(path=src, now=UTC_NOW)["health"] == "critical"
+
+
+def test_stale_projection_cannot_show_old_review_count_as_current(tmp_path: Path) -> None:
+    src = _write(tmp_path / "projection.json", _projection(
+        "2026-10-11T10:44:59Z"
+    ))
+    val = load_ai_health(path=src, now=UTC_NOW)
+    assert val["freshness"] == "stale"
+    assert val["health"] == "unknown"
+    assert val["review_count"] is None
+    assert val["operational_failures"] is None
+    assert val["age_seconds"] == 901
+
+
+def test_near_boundary_and_small_clock_skew(tmp_path: Path) -> None:
+    src = _write(tmp_path / "projection.json", _projection(
+        "2026-10-11T10:45:01Z"
+    ))
+    assert load_ai_health(path=src, now=UTC_NOW)["freshness"] == "fresh"
+    src.write_bytes(_projection("2026-10-11T11:00:30Z"))
+    val = load_ai_health(path=src, now=UTC_NOW)
+    assert val["freshness"] == "fresh"
+    assert val["age_seconds"] == 0
+
+
+def test_future_projection_is_invalid(tmp_path: Path) -> None:
+    src = _write(tmp_path / "projection.json", _projection(
+        "2026-10-11T11:01:10Z"
+    ))
+    val = load_ai_health(path=src, now=UTC_NOW)
+    assert val["freshness"] == "invalid"
+    assert val["generated_at"] is None
+    assert val["review_count"] is None
+
+
+def test_missing_and_malformed_inputs_do_not_leak_source(tmp_path: Path) -> None:
+    path = tmp_path / "no-status.json"
+    assert load_ai_health(path=path, now=UTC_NOW)["freshness"] == "unavailable"
+    src = _write(path, b'{"token":"private_secret"}')
+    val = load_ai_health(path=src, now=UTC_NOW)
+    assert val["freshness"] == "unavailable"
+    assert "private_secret" not in str(val)
+    src.write_bytes(b"x" * (64 * 1024 + 1))
+    assert load_ai_health(path=src, now=UTC_NOW)["freshness"] == "unavailable"
+
+
+def test_symlink_leaf_and_parent_are_rejected(tmp_path: Path) -> None:
+    safe = _write(tmp_path / "real" / "projection.json", _projection())
+    alias = tmp_path / "status.json"
+    alias.symlink_to(safe)
+    assert load_ai_health(path=alias, now=UTC_NOW)["freshness"] == "unavailable"
+    alias_dir = tmp_path / "alias"
+    alias_dir.symlink_to(safe.parent, target_is_directory=True)
+    assert load_ai_health(
+        path=alias_dir / "projection.json", now=UTC_NOW
+    )["freshness"] == "unavailable"
+
+
+def test_hardlink_and_writable_file_are_rejected(tmp_path: Path) -> None:
+    src = _write(tmp_path / "projection.json", _projection())
+    alias = tmp_path / "linked.json"
+    os.link(src, alias)
+    assert load_ai_health(path=src, now=UTC_NOW)["freshness"] == "unavailable"
+    alias.unlink()
+    src.chmod(0o666)
+    assert load_ai_health(path=src, now=UTC_NOW)["freshness"] == "unavailable"
+
+
+def test_directory_and_relative_path_are_rejected(tmp_path: Path) -> None:
+    assert load_ai_health(path=tmp_path, now=UTC_NOW)["freshness"] == "unavailable"
+    assert load_ai_health(path=Path("relative.json"), now=UTC_NOW)["freshness"] == "unavailable"
+    assert load_ai_health(path=tmp_path / ".." / "fake.json", now=UTC_NOW)[
+        "freshness"
+    ] == "unavailable"
+
+
+def test_atomic_replace_reports_consistent_new_version(tmp_path: Path) -> None:
+    src = _write(tmp_path / "projection.json", _projection())
+    replace = _write(tmp_path / "new.json", _projection(health="WARNING"))
+    os.replace(replace, src)
+    val = load_ai_health(path=src, now=UTC_NOW)
+    assert val["health"] == "warning"
+
+
+def test_untrusted_timestamp_and_invalid_configuration(tmp_path: Path) -> None:
+    src = _write(tmp_path / "projection.json", _projection())
+    with pytest.raises(ValueError):
+        load_ai_health(path=src, now=datetime(2026, 10, 11, 11))
+    with pytest.raises(ValueError):
+        load_ai_health(path=src, now=UTC_NOW, stale_after_seconds=0)
+    with pytest.raises(ValueError):
+        load_ai_health(path=src, now=UTC_NOW, stale_after_seconds=True)
