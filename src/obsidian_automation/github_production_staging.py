@@ -6,6 +6,7 @@ Activation cannot infer approval from SSH connectivity or from Stage success.
 from __future__ import annotations
 
 import argparse
+import ast
 import fcntl
 import hashlib
 import json
@@ -538,6 +539,77 @@ def _discard_ignored_package_build_artifacts(app_root: Path) -> tuple[str, ...]:
     return tuple(str(path.relative_to(app_root)) for path in present)
 
 
+
+def _reviewed_service_roles(app_root: Path) -> tuple[str, ...]:
+    """Read role IDs from the reviewed authority provisioner, without executing it."""
+    source = app_root / "tools" / "provision_automation_authority.py"
+    text = _read_file(source, max_bytes=256*1024).decode("utf-8")
+    try:
+        tree = ast.parse(text, filename="authority-manifest.py")
+        declarations = [
+            node.value for node in tree.body
+            if isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "PRIMARY_USERS"
+        ]
+        if len(declarations) != 1:
+            raise ValueError("missing canonical PRIMARY_USERS")
+        items = ast.literal_eval(declarations[0])
+    except (SyntaxError, ValueError, TypeError) as exc:
+        raise legacy.ProductionUpdateError("authority role manifest cannot be validated") from exc
+    if not isinstance(items, tuple) or not 10 <= len(items) <= 64:
+        raise legacy.ProductionUpdateError("authority role inventory count invalid")
+    roles = []
+    seen = set()
+    for item in items:
+        if (not isinstance(item, tuple) or len(item) != 3
+                or not all(isinstance(x, str) for x in item)):
+            raise legacy.ProductionUpdateError("authority role manifest tuple invalid")
+        name, group, home = item
+        if (not re.fullmatch(r"[a-z][a-z0-9-]{2,63}", name)
+                or not re.fullmatch(r"[a-z][a-z0-9-]{2,63}", group)
+                or not home.startswith("/") or name in seen):
+            raise legacy.ProductionUpdateError("authority role identity invalid")
+        seen.add(name)
+        if name.startswith("obsidian-"):
+            roles.append(name)
+    if len(roles) < 8:
+        raise legacy.ProductionUpdateError("insufficient Obsidian service identities")
+    return tuple(roles)
+
+
+_ROLE_PROBE_SCRIPT = (
+    "import os,sys,obsidian_automation;"
+    "sys.exit(0 if all(os.access(p,os.R_OK|os.X_OK) for p in sys.argv[1:]) else 17)"
+)
+
+
+def _service_role_package_smoke(
+    app_root: Path, venv_root: Path, code_manifest: Mapping[str, str],
+    runner: legacy.CommandRunner,
+) -> tuple[str, ...]:
+    """Read/import under every manifest identity, without invoking any Writer."""
+    roles = _reviewed_service_roles(app_root)
+    python = venv_root / "bin" / "python"
+    if not python.is_file():
+        raise legacy.ProductionUpdateError("installed venv python entrypoint missing")
+    script_paths = tuple(
+        str(venv_root / "bin" / key[len("entrypoint:"):])
+        for key in sorted(code_manifest)
+        if key.startswith("entrypoint:")
+    )
+    if not 2 <= len(script_paths) <= 128:
+        raise legacy.ProductionUpdateError("installed console script count invalid")
+    for role in roles:
+        legacy._run(
+            runner,
+            ("runuser", "-u", role, "--", str(python), "-I", "-B", "-c",
+             _ROLE_PROBE_SCRIPT, *script_paths),
+            label="production service-role import and entrypoint readability smoke",
+        )
+    return roles
+
+
 def _deployed_code_manifest(app_root: Path, venv_root: Path) -> dict[str, str]:
     """Verify installed package bytes against pinned source and bind entrypoints.
 
@@ -616,7 +688,7 @@ def _receipt_read(state: Path, sha: str) -> dict[str, object]:
         "record_version", "stage", "target_sha", "previous_sha",
         "app_root", "venv_root", "systemd_dir", "revision_env",
         "timer_states", "config_manifest", "unit_manifest", "env_manifest", "code_manifest", "direct_manifest",
-        "safe_smoke", "daily_safe_smoke", "created_at",
+        "service_role_smoke", "safe_smoke", "daily_safe_smoke", "created_at",
     }
     if set(obj) != expected or obj["record_version"] != VERSION or obj["stage"] != "staged":
         raise legacy.ProductionUpdateError("stage receipt schema differs")
@@ -628,6 +700,16 @@ def _receipt_read(state: Path, sha: str) -> dict[str, object]:
     if any(not isinstance(obj[item], dict)
            for item in ("config_manifest", "unit_manifest", "env_manifest", "code_manifest", "direct_manifest")):
         raise legacy.ProductionUpdateError("stage manifest types invalid")
+    role_smoke = obj["service_role_smoke"]
+    if (not isinstance(role_smoke, dict) or set(role_smoke) != {"status", "roles"}
+            or role_smoke["status"] != "passed"
+            or not isinstance(role_smoke["roles"], list)
+            or len(role_smoke["roles"]) < 8
+            or len(role_smoke["roles"]) > 64
+            or len(set(role_smoke["roles"])) != len(role_smoke["roles"])
+            or not all(isinstance(role, str) and role.startswith("obsidian-")
+                       for role in role_smoke["roles"])):
+        raise legacy.ProductionUpdateError("stage service-role smoke receipt invalid")
     timers = obj["timer_states"]
     if not isinstance(timers, dict) or set(timers) != set(legacy.MANAGED_TIMER_UNITS):
         raise legacy.ProductionUpdateError("stage timer keys differ")
@@ -684,6 +766,9 @@ def stage_update(*, target_sha: str, app_root: Path, venv_root: Path,
                 legacy._run(runner, (str(pip), "install", "--no-deps", "--force-reinstall", str(app_root)),
                             label="stage install reviewed package")
             code_manifest = _deployed_code_manifest(app_root, venv_root)
+            service_roles = _service_role_package_smoke(
+                app_root, venv_root, code_manifest, runner
+            )
             installed = legacy._install_managed_units(app_root, systemd_dir)
             managed_names = _all_installed_unit_names(systemd_dir)
             if not set(installed).issubset(managed_names):
@@ -724,6 +809,7 @@ def stage_update(*, target_sha: str, app_root: Path, venv_root: Path,
                 "env_manifest": environment_files,
                 "direct_manifest": direct_files,
                 "code_manifest": code_manifest,
+                "service_role_smoke": {"status": "passed", "roles": list(service_roles)},
                 "timer_states": timers, "safe_smoke": "passed",
                 "daily_safe_smoke": "passed", "created_at": legacy._utc_now(),
             }
@@ -790,6 +876,11 @@ def activate_update(*, stage_sha256: str, approve_live_github_writer: bool,
         _require_idle_services(runner, systemd_dir)
         if _deployed_code_manifest(app_root, venv_root) != receipt["code_manifest"]:
             raise legacy.ProductionUpdateError("installed package drift after stage")
+        actual_roles = _service_role_package_smoke(
+            app_root, venv_root, receipt["code_manifest"], runner
+        )
+        if list(actual_roles) != receipt["service_role_smoke"]["roles"]:
+            raise legacy.ProductionUpdateError("service-role inventory drift after Stage")
         if _config_manifest(config_files) != receipt["config_manifest"]:
             raise legacy.ProductionUpdateError("configuration drift after stage")
         if _all_installed_unit_names(systemd_dir) != tuple(sorted(receipt["unit_manifest"])):
