@@ -183,9 +183,30 @@ def ollama_infer(
         transport=transport,
     )
     config = dict(ollama_model_config(inference_options))
-    config["daily_summary_adapter_version"] = "ollama-chat-structured-v0"
+    # The chat API returns a model name but no per-response manifest digest.
+    # Resolver checks narrow accidental alias drift; operationally immutable
+    # model tags on a trusted Ollama server remain an explicit precondition.
+    config["daily_summary_adapter_version"] = "ollama-chat-structured-v1-tag-guard"
+    config["model_tag_trust_boundary"] = "trusted-immutable-alias-prepost-checked"
+
+    def verify_alias_digest(phase: str) -> None:
+        # /api/tags must retain the exact prebound identity throughout
+        # this logical request. This detects persistent alias retargeting,
+        # not an adversarial D1 -> D2 -> D1 ABA race during /api/chat.
+        current = resolve_ollama_model(
+            root,
+            identity.identifier,
+            timeout=min(timeout_value, 15.0),
+            transport=transport,
+        )
+        if (current.identifier != identity.identifier
+                or current.digest != identity.digest):
+            raise OllamaProviderError(
+                f"Ollama model alias digest changed {phase} inference"
+            )
 
     def infer(prompt: PromptSpec, context: SummaryContext) -> InferenceResponse:
+        verify_alias_digest("before")
         data = _ollama_content(
             root,
             model_identifier=identity.identifier,
@@ -195,6 +216,7 @@ def ollama_infer(
             timeout=timeout_value,
             transport=transport,
         )
+        verify_alias_digest("after")
         return InferenceResponse(
             content=data,
             model_provider=OLLAMA_PROVIDER_NAME,
