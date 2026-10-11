@@ -182,16 +182,25 @@ It restricts nested directories and canonical SHA-based file suffixes to the
 reviewed Daily Context/Output/Provenance/Final/Resume namespaces. Each regular,
 single-link JSON inode must belong to the dedicated Summarizer UID/GID, have
 exact mode `0640`, a valid Linux POSIX access ACL with **exactly** the two
-approved named users, and effective read-only access for both. It refuses
-unexpected named ACL identities, world/group write permissions, malformed
+approved named users, and effective read-only access for both. The CAS root
+and each stage directory must have exact `0750` owner/mode plus an approved
+**access ACL (mask r-x) and inherited default ACL (mask rwx)**. Directory
+ACLs likewise must contain only the named Summarizer and Renderer users, no
+unreviewed named-group or other principals, and exactly the currently
+approved access and inheritance rights. It refuses unexpected ACL identities
+on both directories and files, world/group write permissions, malformed
 ACLs, symlinks, special files, ambiguous file classes, orphan `.tmp` entries,
-and an empty namespace. It uses `fstat` / file-descriptor `getxattr`,
+and an empty namespace. The scanner opens root, stage directories and
+published inodes with Linux `O_NOFOLLOW` and traverses **directory file
+descriptors**, not path strings that could be retargeted between one scan and
+the next. It uses `fstat` / file-descriptor `getxattr`,
 **never reads source, prompts, model responses, or JSON bodies**, and prints
 only bounded counts/status.
 
 This specific policy follows the 2026-10-11 read-only production observation:
-Summary service `UMask=0027`, a service-owned Summary namespace, a named
-Renderer reader ACL, and 325 canonical JSON files under
+Summary service `UMask=0027`, a service-owned Summary namespace, matching
+access/default named-user ACLs on the root and each existing stage directory,
+a named Renderer reader ACL, and 325 canonical JSON files under
 `20-Summary/github-daily-summary` all with the identical expected 0640
 mode/ACL signature. Another related Summary state scope was counted
 separately; do not conflate the file counts.
