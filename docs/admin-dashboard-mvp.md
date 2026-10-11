@@ -84,3 +84,12 @@ pre-existing commit and does not, by itself, establish credential exposure.
 This amendment does not add provider outage monitoring, actual Nextcloud
 cleanup conflict detection, cross-service incident history, service control,
 remote ingress or production deployment. Those remain separate acceptance gates.
+
+## Malformed AI projection isolation
+
+The AI status reader treats both strict JSON decoder errors (invalid UTF-8,
+duplicate JSON keys, non-object JSON) and typed projection validation failures
+as an unavailable AI observation. It must **not** fail the combined HTTP status
+endpoint or hide independent systemd service results. Local synthetic API
+fixtures exercise these decoder paths and verify HTTP 200 with explicit unknown
+AI health while the fixed service observations remain intact.

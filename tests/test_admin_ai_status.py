@@ -288,3 +288,51 @@ def test_unhashable_health_type_does_not_raise_or_export_private_data(
     assert value["health"] == "unknown"
     assert value["review_count"] is None
     assert "UNTRUSTED_CANARY" not in str(value)
+
+@pytest.mark.parametrize("invalid", [
+    bytes([0xFF, 0xFE, 0xF0]),
+    b'{"duplicate_field":1,"duplicate_field":2}',
+])
+def test_underlying_decoder_errors_are_unknown_and_keep_other_services_visible(
+    tmp_path: Path, invalid: bytes,
+) -> None:
+    import http.client
+    import threading
+    from obsidian_automation.admin_dashboard import make_server
+
+    src = _write(tmp_path / "projection.json", invalid)
+    assert load_ai_health(path=src, now=UTC_NOW)["freshness"] == "unavailable"
+
+    def systemd_observer():
+        return [{
+            "id": "test-service", "label": "Independent Systemd Observation",
+            "health": "observed_success", "schedule": "scheduled",
+            "latest_execution": "succeeded",
+        }]
+
+    server = make_server(
+        port=0, observer=systemd_observer,
+        ai_observer=lambda: load_ai_health(path=src, now=UTC_NOW),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+        try:
+            conn.request("GET", "/api/v1/status", headers={"Host": f"127.0.0.1:{port}"})
+            response = conn.getresponse()
+            data = response.read()
+            assert response.status == 200
+        finally:
+            conn.close()
+        payload = json.loads(data)
+        assert payload["ai_pipeline"]["health"] == "unknown"
+        assert payload["ai_pipeline"]["freshness"] == "unavailable"
+        assert payload["ai_pipeline"]["review_count"] is None
+        assert payload["services"][0]["id"] == "test-service"
+        assert b"duplicate_field" not in data
+    finally:
+        server.shutdown()
+        thread.join(timeout=3)
+        server.server_close()

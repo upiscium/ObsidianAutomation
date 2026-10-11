@@ -10,7 +10,8 @@ import stat
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .pre_review_status import PreReviewStatusError, parse_status
+from .artifact_lifecycle import ArtifactLifecycleError
+from .pre_review_status import parse_status
 
 
 AI_STATUS_PATH = Path(
@@ -95,10 +96,10 @@ def load_ai_health(
     try:
         raw = _read_bounded_nofollow(path)
         parsed = parse_status(raw)
-    except (OSError, ValueError, TypeError, UnicodeError, PreReviewStatusError):
-        # The older status parser can raise TypeError for syntactically JSON
-        # valid unhashable fields (e.g. pipeline_health=[]). A malformed AI
-        # projection must not take down unrelated systemd status reporting.
+    except (OSError, ValueError, TypeError, UnicodeError, ArtifactLifecycleError):
+        # Both the parser and its underlying strict JSON decoder may reject
+        # malformed data (duplicate keys, invalid UTF-8, invalid field types).
+        # An AI observation failure must not obscure independent systemd state.
         return _empty()
     # parse_status already validated an exact UTC Z timestamp.
     generated = datetime.fromisoformat(parsed.generated_at[:-1] + "+00:00")
