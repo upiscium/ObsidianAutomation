@@ -102,6 +102,43 @@ def test_bad_or_stale_provenance_fails_closed(change):
         evaluate_coverage(change(fixture()))
 
 
+def test_cross_repository_partition_preserves_local_order_without_global_order():
+    # Original canonical Evidence is chronologically interleaved A1 B1 A2 B2;
+    # the actual partitioner groups each repository's events separately.
+    events = (
+        OriginalEvent(h("1"), "upiscium/A"),
+        OriginalEvent(h("2"), "upiscium/B"),
+        OriginalEvent(h("3"), "upiscium/A"),
+        OriginalEvent(h("4"), "upiscium/B"),
+    )
+    f = replace(
+        fixture(),
+        original_events=events,
+        partitioned_ids=((h("1"), h("3")), (h("2"), h("4"))),
+        batched_claims=(
+            BatchedClaim(h("a"), "upiscium/A", (h("1"), h("3"))),
+            BatchedClaim(h("b"), "upiscium/B", (h("2"), h("4"))),
+        ),
+        supported_single_claims=(),
+        adjudications=(),
+    )
+    report = evaluate_coverage(f)
+    assert report["partitioned_event_count"] == 4
+    assert report["directly_cited_event_count"] == 4
+    assert report["publication_authorized"] is False
+
+    # Reordering *within* a repository is not a valid partition.
+    with pytest.raises(CoverageError, match="reordered"):
+        evaluate_coverage(replace(f, partitioned_ids=(
+            (h("3"), h("1")), (h("2"), h("4")),
+        )))
+    # Mixing repositories in one model context also violates the contract.
+    with pytest.raises(CoverageError, match="mixes repositories"):
+        evaluate_coverage(replace(f, partitioned_ids=(
+            (h("1"), h("2")), (h("3"), h("4")),
+        )))
+
+
 def test_routine_event_without_single_claim_is_not_forced_into_a_claim():
     f = fixture()
     no_supported = replace(f, supported_single_claims=(), adjudications=())
