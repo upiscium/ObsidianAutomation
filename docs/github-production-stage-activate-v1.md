@@ -12,6 +12,93 @@ Publishing reviewed code and exercising real production effects must be
 separate authorities. Stage/Activate add such a boundary while keeping the
 legacy full transaction available **only with a new explicit live-effects flag**.
 
+## One-time install-free Stage bootstrap (first deployment only)
+
+The current production executable is built from a revision **before** the
+`stage` subcommand was added. Running that installed CLI cannot bootstrap the
+two-phase flow, while running the historical full updater just to install a
+new CLI would trigger an **unapproved Live Smoke**. Do not use either route.
+
+The reviewed target includes `tools/bootstrap_github_stage.py`: a standalone
+Python stdlib-only entrypoint, invoked from the **exact merged Git commit**.
+It first validates a clean production `main` checkout, exact 40-character
+SHA-1 commit, target reachable from the locally verified `origin/main`, and
+fast-forward ancestry. It reads only three allowed `src/obsidian_automation/`
+Python **Git objects** (`__init__`, `github_production_update`,
+`github_production_staging`) after verifying their Git mode, exact blob hash
+and byte limit. It loads them from an owner-private, temporary directory with
+isolated Python imports; **the production checkout and installed package do
+not need to change before Stage itself acquires its transaction lock**.
+The private directory is removed on normal return; a hard loss might leave
+a private orphan that requires deliberate inspection, not age-only deletion.
+
+### Read-only source/Stage inspection
+
+After an operator has separately approved refreshing local Git references
+(`git fetch origin main` does **not** switch the installed checkout),
+substitute the exact merged, independently reviewed full SHA:
+
+```bash
+set -euo pipefail
+APP=/opt/obsidian-automation/app
+VENV=/opt/obsidian-automation/venv
+TARGET='<exact-40-character-reviewed-merged-SHA>'
+git -C "$APP" show "$TARGET:tools/bootstrap_github_stage.py" |
+  /usr/bin/python3 -I -B - inspect \
+    --target-sha "$TARGET" \
+    --app-root "$APP" \
+    --venv-root "$VENV" \
+    --bind-config-file /etc/obsidian-github-summarizer/config.env
+```
+
+The bootstrap requires `python3 -I -B` (isolated imports without bytecode
+writes) and trusted absolute operator paths. This sample is **inspect-only**;
+the approved Stage invocation must be separately assembled from the exact
+source and authority receipts.
+
+This does **not** update code, stop timers, invoke Writer/Smoke or create a
+stage receipt. It returns `source_attested_no_effects` and an existing
+transaction marker status; it is **not** a claim that the entire service/unit
+runtime preflight has passed. Unmerged Draft PR heads and unexpected branch,
+dirty checkout, rollback, malformed/symlinked Git source fail closed.
+
+### First Stage, only under a separate operator approval
+
+The exact same `git show` pipeline may instead be called with the `stage`
+subcommand and `--approve-stage-effects` **only after explicit external
+approval of that exact target SHA and change scope**. The Stage command
+may disable managed timers, reset the production Git checkout, remove validated
+ignored build artifacts, install the package/units and write durable Stage
+state. The flag is a local guard; it is **not** the approval itself.
+The bootstrap deliberately exposes **no** Activate, live Writer, Daily timer,
+force-deploy, alternative Git SHA or rollback command.
+
+Once a successful Stage returns its SHA-addressed receipt, use the now
+installed reviewed CLI's `inspect` command for the later stage transaction
+readback. Do not restore Sync/Daily timers by inference. **Activate requires a
+separate exact-receipt Live Smoke approval** and any allowed Sync timer
+restoration requires explicit separate consent. Daily publication requires
+its own independent Writer/Nextcloud CAS authorization.
+
+### Interrupted Stage / failed bootstrap recovery
+
+| Durable marker | Meaning | Operator recovery gate |
+|---|---|---|
+| `none` | No committed Stage control marker; first read-only source inspection may be repeated | Verify checkout, installed package, timers and any orphan temporary state before authorizing a new Stage |
+| `preparing` | Timers may have been stopped; installation may be partly applied | Keep Writer/Daily inactive; collect unit/package/receipt metadata and verify upstream/canonical refs. **No automatic retry or checkout reset** |
+| `failed` | Stage or Activate encountered an error; effects may already have happened | Diagnose the failed cutpoint; explicitly authorize repair/rollback or a new staged transaction |
+| `staged` | Safe Stage receipt exists; both managed timers should be inert | Validate exact receipt, code/ACL/config/unit drift; separately approve (or refuse) Activate |
+| `activating` | Live GitHub Writer Smoke may have run partially or fully | **Do not replay Smoke** without independently reconciling published/canonical effects and receiving new consent |
+| `activated` | Activation receipt was committed | Confirm exact receipt, permitted timer state and downstream project/daily acceptance independently |
+
+The bootstrap error result explicitly says
+`failed_manual_reconciliation_required` and
+`stage_effects_may_have_occurred=true` if a separately authorized Stage
+raised an error; it cannot claim that the operation rolled back. A bootstrap
+failure before Stage authorization has `blocked` status and no Stage authority.
+No recovery method silently removes an existing marker, resumes a failed
+transaction, changes a timer, replays Writer or rewrites canonical Evidence.
+
 ## Stage
 
 Command shape (operator sets exact, reviewed full SHA and verified host paths):
