@@ -37,9 +37,11 @@ class DailyCASAdmissionError(ValueError):
     """The metadata does not establish the configured CAS admission policy."""
 
 
-def _acl_from_fd(fd: int) -> dict[tuple[int, int | None], int]:
+def _acl_from_fd(
+    fd: int, *, attr: str = "system.posix_acl_access",
+) -> dict[tuple[int, int | None], int]:
     try:
-        raw = os.getxattr(fd, "system.posix_acl_access")
+        raw = os.getxattr(fd, attr)
     except OSError as exc:
         if exc.errno == errno.ENODATA:
             raise DailyCASAdmissionError("required named-user ACL missing") from exc
@@ -82,6 +84,35 @@ def _verify_acl(fd: int, *, owner_uid: int, reader_uid: int) -> None:
         raise DailyCASAdmissionError("CAS named-reader effective rights differ from policy")
 
 
+def _verify_directory_acl(fd: int, *, owner_uid: int, reader_uid: int) -> None:
+    """Admit approved access and inherited ACL separately.
+
+    Effective access to the leaf names and future files both matter. A
+    directory with an extra named traverser may expose private CAS names,
+    even if individual published file ACLs are currently restrictive.
+    """
+    keys = {
+        (USER_OBJ, None), (GROUP_OBJ, None), (MASK, None),
+        (OTHER, None), (USER, owner_uid), (USER, reader_uid),
+    }
+    if owner_uid == reader_uid:
+        raise DailyCASAdmissionError("CAS directory role identities overlap")
+    for attr, expected_mask in (
+        ("system.posix_acl_access", 0o5),
+        ("system.posix_acl_default", 0o7),
+    ):
+        acl = _acl_from_fd(fd, attr=attr)
+        if set(acl) != keys:
+            raise DailyCASAdmissionError("CAS directory named ACL differs from policy")
+        if (acl[(USER_OBJ, None)] != 0o7
+                or acl[(GROUP_OBJ, None)] != 0
+                or acl[(MASK, None)] != expected_mask
+                or acl[(OTHER, None)] != 0
+                or acl[(USER, owner_uid)] != 0o7
+                or acl[(USER, reader_uid)] != 0o5):
+            raise DailyCASAdmissionError("CAS directory ACL rights differ from policy")
+
+
 def audit_daily_summary_cas(
     root: Path, *, owner_name: str, reader_name: str,
     max_files: int = MAX_FILES,
@@ -101,56 +132,116 @@ def audit_daily_summary_cas(
         raise DailyCASAdmissionError("required service identity unavailable") from exc
     if not isinstance(root, Path) or not root.is_absolute() or ".." in root.parts:
         raise DailyCASAdmissionError("CAS root path invalid")
+    # Hold directory descriptors throughout the scan. A later rename/symlink
+    # of an on-disk path cannot redirect this audit to a different subtree.
+    directory_flags = (
+        os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
     try:
-        metadata = root.lstat()
+        root_fd = os.open(root, directory_flags)
     except OSError as exc:
-        raise DailyCASAdmissionError("CAS root cannot be inspected") from exc
-    if (not stat.S_ISDIR(metadata.st_mode)
-            or metadata.st_uid != owner.pw_uid or metadata.st_gid != owner.pw_gid
-            or stat.S_IMODE(metadata.st_mode) & 0o007
-            or stat.S_IMODE(metadata.st_mode) & 0o020):
-        raise DailyCASAdmissionError("CAS root ownership or mode not admitted")
-
+        raise DailyCASAdmissionError("CAS root cannot be safely opened") from exc
     files = dirs = 0
-    with os.scandir(root) as stages:
-        stage_entries = list(stages)
-    for stage in stage_entries:
-        if stage.name not in ALLOWED_STAGE_DIRS or not stage.is_dir(follow_symlinks=False):
-            raise DailyCASAdmissionError("CAS contains an unexpected stage directory/entry")
-        st = stage.stat(follow_symlinks=False)
-        if (st.st_uid != owner.pw_uid or st.st_gid != owner.pw_gid
-                or stat.S_IMODE(st.st_mode) & 0o027):
-            raise DailyCASAdmissionError("CAS stage directory mode/owner untrusted")
-        dirs += 1
-        with os.scandir(stage.path) as entries:
-            for entry in entries:
-                if (not SHA_FILENAME.fullmatch(entry.name)
-                        or not any(
-                            entry.name.endswith(f".github-daily-{suffix}.json")
-                            for suffix in ALLOWED_STAGE_SUFFIXES[stage.name]
-                        )):
-                    raise DailyCASAdmissionError("CAS has unknown or uncommitted artifact name")
-                flags = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-                         | getattr(os, "O_NONBLOCK", 0)
-                         | getattr(os, "O_CLOEXEC", 0))
-                try:
-                    fd = os.open(entry.path, flags)
-                except OSError as exc:
-                    raise DailyCASAdmissionError("CAS file cannot be safely opened") from exc
-                try:
-                    info = os.fstat(fd)
-                    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
-                            or info.st_uid != owner.pw_uid
-                            or info.st_gid != owner.pw_gid
-                            or stat.S_IMODE(info.st_mode) != 0o640
-                            or not 0 <= info.st_size <= MAX_FILE_BYTES):
-                        raise DailyCASAdmissionError("CAS published inode metadata violates policy")
-                    _verify_acl(fd, owner_uid=owner.pw_uid, reader_uid=reader.pw_uid)
-                    files += 1
-                    if files > max_files:
-                        raise DailyCASAdmissionError("CAS audit size limit exceeded")
-                finally:
-                    os.close(fd)
+    try:
+        metadata = os.fstat(root_fd)
+        if (not stat.S_ISDIR(metadata.st_mode)
+                or metadata.st_uid != owner.pw_uid
+                or metadata.st_gid != owner.pw_gid
+                or stat.S_IMODE(metadata.st_mode) != 0o750):
+            raise DailyCASAdmissionError("CAS root ownership or mode not admitted")
+        _verify_directory_acl(
+            root_fd, owner_uid=owner.pw_uid, reader_uid=reader.pw_uid
+        )
+        try:
+            with os.scandir(root_fd) as stages:
+                for stage in stages:
+                    if stage.name not in ALLOWED_STAGE_DIRS:
+                        raise DailyCASAdmissionError(
+                            "CAS contains an unexpected stage directory/entry"
+                        )
+                    try:
+                        stage_fd = os.open(
+                            stage.name, directory_flags, dir_fd=root_fd
+                        )
+                    except OSError as exc:
+                        raise DailyCASAdmissionError(
+                            "CAS stage cannot be safely opened"
+                        ) from exc
+                    try:
+                        st = os.fstat(stage_fd)
+                        if (not stat.S_ISDIR(st.st_mode)
+                                or st.st_uid != owner.pw_uid
+                                or st.st_gid != owner.pw_gid
+                                or stat.S_IMODE(st.st_mode) != 0o750):
+                            raise DailyCASAdmissionError(
+                                "CAS stage directory mode/owner untrusted"
+                            )
+                        _verify_directory_acl(
+                            stage_fd,
+                            owner_uid=owner.pw_uid,
+                            reader_uid=reader.pw_uid,
+                        )
+                        dirs += 1
+                        try:
+                            with os.scandir(stage_fd) as entries:
+                                for entry in entries:
+                                    if (not SHA_FILENAME.fullmatch(entry.name)
+                                            or not any(
+                                                entry.name.endswith(
+                                                    f".github-daily-{suffix}.json"
+                                                )
+                                                for suffix in ALLOWED_STAGE_SUFFIXES[stage.name]
+                                            )):
+                                        raise DailyCASAdmissionError(
+                                            "CAS has unknown or uncommitted artifact name"
+                                        )
+                                    flags = (
+                                        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                                        | getattr(os, "O_NONBLOCK", 0)
+                                        | getattr(os, "O_CLOEXEC", 0)
+                                    )
+                                    try:
+                                        fd = os.open(
+                                            entry.name, flags, dir_fd=stage_fd
+                                        )
+                                    except OSError as exc:
+                                        raise DailyCASAdmissionError(
+                                            "CAS file cannot be safely opened"
+                                        ) from exc
+                                    try:
+                                        info = os.fstat(fd)
+                                        if (not stat.S_ISREG(info.st_mode)
+                                                or info.st_nlink != 1
+                                                or info.st_uid != owner.pw_uid
+                                                or info.st_gid != owner.pw_gid
+                                                or stat.S_IMODE(info.st_mode) != 0o640
+                                                or not 0 <= info.st_size <= MAX_FILE_BYTES):
+                                            raise DailyCASAdmissionError(
+                                                "CAS published inode metadata violates policy"
+                                            )
+                                        _verify_acl(
+                                            fd,
+                                            owner_uid=owner.pw_uid,
+                                            reader_uid=reader.pw_uid,
+                                        )
+                                        files += 1
+                                        if files > max_files:
+                                            raise DailyCASAdmissionError(
+                                                "CAS audit size limit exceeded"
+                                            )
+                                    finally:
+                                        os.close(fd)
+                        except OSError as exc:
+                            raise DailyCASAdmissionError(
+                                "CAS stage cannot be enumerated"
+                            ) from exc
+                    finally:
+                        os.close(stage_fd)
+        except OSError as exc:
+            raise DailyCASAdmissionError("CAS root cannot be enumerated") from exc
+    finally:
+        os.close(root_fd)
     if files == 0:
         raise DailyCASAdmissionError("CAS namespace has no published artifacts")
     # This is deliberately a point-in-time report. Files can change *after*
