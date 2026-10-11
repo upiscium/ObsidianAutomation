@@ -15,7 +15,8 @@ class Runner(FakeRunner):
     def __init__(self, app: Path, venv: Path, *, allow_fast_forward=True,
                  active_extra_services=(), extra_loaded_timers=(),
                  extra_loaded_services=(), extra_installed_services=(),
-                 alternate_unit_paths=(), effective_dropins=(), bad_fragments=(), **kwargs):
+                 alternate_unit_paths=(), effective_dropins=(), bad_fragments=(),
+                 fail_role_import=None, **kwargs):
         super().__init__(
             app, venv, daily_present=True,
             daily_enabled=True, daily_active=False, **kwargs,
@@ -28,10 +29,16 @@ class Runner(FakeRunner):
         self.alternate_unit_paths = tuple(alternate_unit_paths)
         self.effective_dropins = set(effective_dropins)
         self.bad_fragments = set(bad_fragments)
+        self.fail_role_import = fail_role_import
         self.systemd_dir = None
 
     def __call__(self, argv):
         argv = tuple(str(x) for x in argv)
+        if argv[:2] == ("runuser", "-u"):
+            self.calls.append(argv)
+            if argv[2] == self.fail_role_import:
+                return CommandResult(1, "", "injected permission denial")
+            return CommandResult(0, "", "")
         if argv[:2] == ("systemd-analyze", "unit-paths"):
             self.calls.append(argv)
             return CommandResult(
@@ -88,6 +95,17 @@ def setup(tmp_path: Path, **runner_options):
     for source in (app / "examples" / "github-sync").glob("obsidian-github-*"):
         (units / source.name).write_bytes(source.read_bytes())
     source_package = app / "src" / "obsidian_automation"
+    # Exact canonical-structure fixture: roles are parsed, not executed.
+    authority_dir = app / "tools"
+    authority_dir.mkdir()
+    (authority_dir / "provision_automation_authority.py").write_text(
+        "PRIMARY_USERS: tuple[tuple[str, str, str], ...] = (\n"
+        + "".join(f"    ('obsidian-test-role-{i}', 'obsidian-test-role-{i}', '/nonexistent'),\n"
+                  for i in range(10))
+        + ")\n"
+    )
+    (venv / "bin" / "python").write_text("#!/bin/sh\n", encoding="utf-8")
+    (venv / "bin" / "python").chmod(0o755)
     installed_package = venv / "lib" / "python3.12" / "site-packages" / "obsidian_automation"
     source_package.mkdir(parents=True)
     installed_package.mkdir(parents=True)
@@ -126,6 +144,51 @@ def _control(options):
 
 def _called(runner, suffix):
     return any(call[-len(suffix):] == suffix for call in runner.calls)
+
+
+
+def test_stage_receipt_binds_all_canonical_role_smokes(tmp_path):
+    runner, opts = setup(tmp_path)
+    receipt = stage(runner, opts)
+    record = staged._receipt_read(opts["receipt_dir"] / staged.STAGING_ROOT, receipt)
+    roles = record["service_role_smoke"]["roles"]
+    assert len(roles) == 10
+    assert roles[0] == "obsidian-test-role-0"
+    calls = [c for c in runner.calls if c[:2] == ("runuser", "-u")]
+    assert [c[2] for c in calls] == roles
+    assert all(c[5:8] == ("-I", "-B", "-c") for c in calls)
+    assert all("obsidian-github-production-smoke" in " ".join(c) for c in calls)
+    assert not _called(runner, ("--profile", "live"))
+
+
+def test_denied_service_role_import_blocks_staging_without_live_effects(tmp_path):
+    runner, opts = setup(tmp_path, fail_role_import="obsidian-test-role-3")
+    with pytest.raises(ProductionUpdateError, match="service-role import"):
+        stage(runner, opts)
+    assert _control(opts)["status"] == "failed"
+    assert not runner.enabled and not runner.daily_enabled
+    assert not _called(runner, ("--profile", "live"))
+
+
+def test_poststage_service_role_permission_drift_blocks_activation(tmp_path):
+    runner, opts = setup(tmp_path)
+    receipt = stage(runner, opts)
+    runner.fail_role_import = "obsidian-test-role-7"
+    with pytest.raises(ProductionUpdateError, match="service-role import"):
+        activate(receipt, opts)
+    assert _control(opts)["status"] == "staged"
+    assert not _called(runner, ("--profile", "live"))
+
+
+def test_invalid_authority_manifest_blocks_staging_after_timer_stop(tmp_path):
+    runner, opts = setup(tmp_path)
+    manifest = opts["app_root"] / "tools" / "provision_automation_authority.py"
+    manifest.write_text("PRIMARY_USERS = arbitrary_function_call()\n")
+    with pytest.raises(ProductionUpdateError, match="authority role manifest"):
+        stage(runner, opts)
+    assert _control(opts)["status"] == "failed"
+    assert not runner.enabled and not runner.daily_enabled
+    assert not _called(runner, ("--profile", "live"))
 
 
 def test_stage_is_safe_only_and_timers_remain_inert(tmp_path):
