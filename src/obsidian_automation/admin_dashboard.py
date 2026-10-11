@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable, Sequence
 
 from .admin_status import aggregate_status
+from .admin_ai_status import load_ai_health
 
 HTML = """<!doctype html>
 <html lang="ja">
@@ -38,6 +39,11 @@ HTML = """<!doctype html>
       <span id="updated" aria-live="polite">状態を取得しています…</span>
       <span id="count">—</span>
     </div>
+    <section id="pipeline" class="pipeline" aria-label="AI Pipeline" aria-live="polite">
+      <h2>AI Pipeline</h2>
+      <p id="pipeline-summary">AIの運用状況を取得しています…</p>
+      <div id="pipeline-details" class="pipeline-details"></div>
+    </section>
     <section id="services" class="cards" aria-label="サービス一覧" aria-live="polite"></section>
     <p id="error" class="error" role="status"></p>
     <footer>状態はsystemdの直近の観測結果です。成功履歴やVaultの完全性を証明するものではありません。</footer>
@@ -67,6 +73,13 @@ button:disabled { opacity:.55; cursor:wait }
 .notice { background:var(--surface); border:1px solid var(--border); border-left:4px solid var(--accent);
   border-radius:10px; padding:13px 16px; display:flex; gap:16px; margin:26px 0 22px; flex-wrap:wrap }
 .summary { display:flex; justify-content:space-between; gap:12px; margin:0 0 15px }
+.pipeline { background:var(--surface); border:1px solid var(--border); border-radius:14px;
+  padding:18px 19px; margin:0 0 16px }
+.pipeline h2 { margin:0; font-size:1.1rem }
+.pipeline p { color:var(--muted); margin:5px 0 12px }
+.pipeline-details { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:8px 18px }
+.metric { display:flex; flex-direction:column; font-size:.82rem; color:var(--muted) }
+.metric strong { font-size:1.08rem; color:var(--ink) }
 .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:16px }
 .card { background:var(--surface); border:1px solid var(--border); border-radius:14px;
   padding:18px 19px; min-height:168px }
@@ -93,7 +106,8 @@ const labels = {
   unverified:"未検証", scheduled:"待機中", triggering:"起動処理中",
   not_installed:"未導入", blocked:"ブロック", stopped:"停止",
   no_next_run:"次回未設定", running:"実行中", succeeded:"直近成功",
-  not_observed:"実行記録なし"
+  not_observed:"実行記録なし", fresh:"最新", stale:"古い状態", unavailable:"未取得",
+  invalid:"不正な時刻", ok:"正常", warning:"注意", critical:"異常"
 };
 const $ = (id) => document.getElementById(id);
 const stateText = (value) => labels[value] || "不明";
@@ -126,6 +140,32 @@ function card(service) {
   box.append(top, name, line("定期実行", service.schedule), line("直近の実行", service.latest_execution));
   return box;
 }
+function renderAi(p) {
+  if (!p || !["fresh","stale","unavailable","invalid"].includes(p.freshness)) {
+    throw Error("invalid_ai_projection");
+  }
+  $("pipeline-summary").textContent = p.freshness === "fresh"
+    ? "Pipeline: " + stateText(p.health)
+    : "Pipeline: " + stateText(p.freshness) + "（現在の状態は未確認）";
+  const value = (v) => Number.isSafeInteger(v) && v >= 0 ? String(v) : "—";
+  const metric = (name, v) => {
+    const box = document.createElement("div");
+    box.className = "metric";
+    const label = document.createElement("span");
+    label.textContent = name;
+    const strong = document.createElement("strong");
+    strong.textContent = v;
+    box.append(label, strong);
+    return box;
+  };
+  $("pipeline-details").replaceChildren(
+    metric("Review待ち", value(p.review_count)),
+    metric("運用エラー", value(p.operational_failures)),
+    metric("Validation却下", value(p.deterministic_rejections)),
+    metric("Backpressure", p.backpressure === null ? "—" : p.backpressure === true ? "有効" : "無効"),
+    metric("観測経過", p.age_seconds === null ? "—" : value(p.age_seconds) + "秒"),
+  );
+}
 async function refresh() {
   $("refresh").disabled = true;
   $("error").textContent = "";
@@ -134,10 +174,17 @@ async function refresh() {
     if (!response.ok) throw Error("server");
     const data = await response.json();
     if (data.version !== 1 || !Array.isArray(data.services)) throw Error("schema");
+    renderAi(data.ai_pipeline);
     $("services").replaceChildren(...data.services.map(card));
     $("updated").textContent = "観測日時: " + data.generated_at;
     $("count").textContent = data.services.length + " services";
   } catch {
+    // Previous observations must never remain visible as current on errors.
+    $("services").replaceChildren();
+    $("pipeline-details").replaceChildren();
+    $("pipeline-summary").textContent = "Pipeline: 現在の状態は未確認";
+    $("updated").textContent = "観測失敗";
+    $("count").textContent = "—";
     $("error").textContent = "状態を取得できませんでした。サーバー側の設定を確認してください。";
   } finally {
     $("refresh").disabled = false;
@@ -148,6 +195,7 @@ refresh();
 """
 
 Observer = Callable[[], list[dict[str, object]]]
+AIObserver = Callable[[], dict[str, object]]
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -196,6 +244,7 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/v1/status":
             try:
                 services = self.server.observer()
+                ai_pipeline = self.server.ai_observer()
             except Exception:
                 self._reply(503, b'{"error":"status_unavailable"}', "application/json")
                 return
@@ -203,6 +252,7 @@ class Handler(BaseHTTPRequestHandler):
                 "version": 1, "authority": "observation_only",
                 "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "services": services,
+                "ai_pipeline": ai_pipeline,
                 "actions": {"start": False, "stop": False, "trigger": False},
             }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
             self._reply(200, data, "application/json; charset=utf-8")
@@ -221,11 +271,16 @@ class Handler(BaseHTTPRequestHandler):
     do_OPTIONS = do_POST
 
 
-def make_server(*, port: int = 8370, observer: Observer = aggregate_status) -> ThreadingHTTPServer:
+def make_server(
+    *, port: int = 8370,
+    observer: Observer = aggregate_status,
+    ai_observer: AIObserver = load_ai_health,
+) -> ThreadingHTTPServer:
     if not isinstance(port, int) or not 0 <= port <= 65535:
         raise ValueError("port must be between 0 and 65535")
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     server.observer = observer
+    server.ai_observer = ai_observer
     server.daemon_threads = True
     return server
 
