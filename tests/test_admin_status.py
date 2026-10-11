@@ -119,15 +119,16 @@ def test_aggregate_projections_are_sanitized_and_distinguish_health() -> None:
         assert kw["check"] is False
         fields = TIMER_FIELDS if argv[2].endswith(".timer") else SERVICE_FIELDS
         values = "\n".join(f"{key}={samples[argv[2]][key]}" for key in fields) + "\n"
-        return subprocess.CompletedProcess(argv, 0, values, "PASSWORD=do-not-include")
+        # Synthetic unrequested stderr canary, not an actual credential.
+        return subprocess.CompletedProcess(argv, 0, values, "IGNORED_FIELD=redaction-canary")
     view = aggregate_status(runner=runner)
     assert [s["health"] for s in view] == [
-        "healthy", "paused", "failed", "unverified", "unverified",
+        "observed_success", "paused", "failed", "unverified", "unverified",
     ]
     assert view[1]["latest_execution"] == "not_observed"
     assert view[3]["latest_execution"] == "not_observed"
     assert len(calls) == 10
-    assert "PASSWORD" not in str(view)
+    assert "redaction-canary" not in str(view)
 
 
 
@@ -144,3 +145,141 @@ def test_failed_systemctl_is_unknown_not_healthy() -> None:
     def fail(argv, **kw):
         return subprocess.CompletedProcess(argv, 1, "", "secret-content")
     assert all(x["health"] == "unknown" for x in aggregate_status(runner=fail))
+
+def test_proven_failure_has_priority_over_unknown_timer_substate() -> None:
+    samples = {}
+    for spec in SERVICES:
+        samples[spec.timer] = timer(SubState="not-a-known-state")
+        samples[spec.service] = service(ActiveState="failed", Result="exit-code")
+
+    def runner(argv, **kw):
+        fields = TIMER_FIELDS if argv[2].endswith(".timer") else SERVICE_FIELDS
+        raw = "\n".join(f"{key}={samples[argv[2]][key]}" for key in fields) + "\n"
+        return subprocess.CompletedProcess(argv, 0, raw, "")
+
+    assert all(entry["health"] == "failed" for entry in aggregate_status(runner=runner))
+
+
+def test_observed_success_does_not_claim_current_freshness() -> None:
+    samples = {}
+    for spec in SERVICES:
+        samples[spec.timer] = timer()
+        samples[spec.service] = service()
+
+    def runner(argv, **kw):
+        fields = TIMER_FIELDS if argv[2].endswith(".timer") else SERVICE_FIELDS
+        raw = "\n".join(f"{key}={samples[argv[2]][key]}" for key in fields) + "\n"
+        return subprocess.CompletedProcess(argv, 0, raw, "")
+
+    assert all(entry["health"] == "observed_success" for entry in aggregate_status(runner=runner))
+
+def test_proven_failure_remains_visible_when_companion_unit_missing() -> None:
+    samples = {}
+    for spec in SERVICES:
+        samples[spec.timer] = timer(LoadState="not-found")
+        samples[spec.service] = service(ActiveState="failed", Result="exit-code")
+
+    def runner(argv, **kwargs):
+        fields = TIMER_FIELDS if argv[2].endswith(".timer") else SERVICE_FIELDS
+        raw = "\n".join(f"{key}={samples[argv[2]][key]}" for key in fields) + "\n"
+        return subprocess.CompletedProcess(argv, 0, raw, "")
+
+    assert all(entry["health"] == "failed" for entry in aggregate_status(runner=runner))
+
+def test_disabled_timer_with_unknown_substate_is_unknown_not_paused() -> None:
+    props = timer(
+        UnitFileState="disabled", ActiveState="inactive",
+        SubState="unrecognized-state",
+    )
+    assert classify_timer(props) == "unknown"
+    props["SubState"] = "dead"
+    assert classify_timer(props) == "paused"
+
+def test_masked_timer_load_state_is_blocked_not_unknown() -> None:
+    assert classify_timer(timer(
+        LoadState="masked", UnitFileState="masked",
+        ActiveState="inactive", SubState="dead",
+    )) == "blocked"
+    assert classify_timer(timer(
+        LoadState="masked", UnitFileState="enabled",
+        ActiveState="inactive", SubState="dead",
+    )) == "blocked"
+    assert classify_timer(timer(
+        LoadState="loaded", UnitFileState="masked-runtime",
+        ActiveState="inactive", SubState="dead",
+    )) == "blocked"
+
+
+def test_masked_timer_remains_visible_when_service_not_observed() -> None:
+    observations = {}
+    for item in SERVICES:
+        observations[item.timer] = timer(
+            LoadState="masked", UnitFileState="masked",
+            ActiveState="inactive", SubState="dead",
+        )
+        observations[item.service] = service(
+            ExecMainStartTimestampMonotonic="0",
+            ExecMainExitTimestampMonotonic="0",
+            ExecMainCode="0",
+        )
+
+    def runner(argv, **kwargs):
+        fields = TIMER_FIELDS if argv[2].endswith(".timer") else SERVICE_FIELDS
+        values = "\n".join(
+            f"{key}={observations[argv[2]][key]}" for key in fields
+        ) + "\n"
+        return subprocess.CompletedProcess(argv, 0, values, "")
+
+    output = aggregate_status(runner=runner)
+    assert len(output) == len(SERVICES)
+    assert all(item["schedule"] == "blocked" for item in output)
+    assert all(item["health"] == "failed" for item in output)
+
+def test_masked_timer_with_invalid_or_contradictory_properties_is_unknown() -> None:
+    assert classify_timer(timer(
+        LoadState="garbage", UnitFileState="masked",
+        ActiveState="inactive", SubState="dead",
+    )) == "unknown"
+    assert classify_timer({
+        "UnitFileState": "masked",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+    }) == "unknown"
+    assert classify_timer(timer(
+        LoadState="not-found", UnitFileState="masked",
+        ActiveState="inactive", SubState="dead",
+    )) == "unknown"
+    assert classify_timer(timer(
+        LoadState="masked", UnitFileState="bad-setting",
+        ActiveState="inactive", SubState="dead",
+    )) == "unknown"
+    assert classify_timer(timer(
+        LoadState="masked", UnitFileState="masked",
+        ActiveState="invalid", SubState="dead",
+    )) == "unknown"
+    assert classify_timer(timer(
+        LoadState="error", UnitFileState="masked",
+        ActiveState="inactive", SubState="dead",
+    )) == "unknown"
+    assert classify_timer(timer(
+        LoadState="masked", UnitFileState="masked",
+        ActiveState="inactive", SubState="malformed",
+    )) == "unknown"
+
+def test_masked_timer_may_still_be_active_and_is_not_quiescent_blocked() -> None:
+    assert classify_timer(timer(
+        LoadState="loaded", UnitFileState="masked",
+        ActiveState="active", SubState="waiting",
+    )) == "unknown"
+    assert classify_timer(timer(
+        LoadState="masked", UnitFileState="masked",
+        ActiveState="active", SubState="running",
+    )) == "unknown"
+    assert classify_timer(timer(
+        LoadState="loaded", UnitFileState="masked-runtime",
+        ActiveState="deactivating", SubState="stop",
+    )) == "unknown"
+    assert classify_timer(timer(
+        LoadState="loaded", UnitFileState="masked",
+        ActiveState="failed", SubState="failed",
+    )) == "failed"

@@ -48,8 +48,52 @@ The test mocks do not establish actual production systemd health or correct mana
 
 1. AI `pre_review_status` read projection is implemented in this incremental branch; next integrate `mirror_status` and a **dedicated durable GitHub pipeline read model** for independently proven last-success/failure and reasons. The existing systemd display only provides a latest attempt; do not call it a verified remote state or invent a history from it.
 2. Unify the service registry with runtime/provisioning logic instead of maintaining duplicate lists long-term (current prototype duplicates known names deliberately to prevent dynamic command injection).
-3. Add a narrowly scoped local operation broker for approved `pause`, `resume`, `run_once` with idempotency, lock and persistent audit, and do not bypass #294 deployment stage/activate or #287 Human Review.
+3. Add a narrowly scoped local operation broker for approved `pause`, `resume`, `run_once` with idempotency, lock and persistent audit, and do not bypass #294 deployment stage/activate or #309 exact-bound automatic rejection cleanup.
 4. Confirm trustworthy origin when opened from a private WireGuard-connected phone and add real deployment-unit hardening; never silently expand the host bind address.
 5. Carry out independently qualified Security and Correctness review before changing the production profile or merging.
 
 **This document and implementation do not authorize or perform production service activation or Vault writes.**
+
+## Corrected incident and successful-run semantics (subsequent child PR)
+
+The AI status projection must not describe a normal deterministic Validation
+rejection as an incident. Only blocked generations and retry-exhausted
+generations contribute to the actionable operational error count; a retryable_failure is an observed failed attempt, shown separately as a warning pending another claim (remaining retry budget is not proven). Fixed,
+bounded incident codes and counts are available for blocked and exhausted
+categories, never original model output or raw diagnostic text.
+
+The pre-review status has a redundant aggregate health level and detailed
+state counters. If these contradict each other, the Dashboard returns
+invalid/unknown with hidden counters rather than treating the apparently green
+aggregate as proof of health. A missing or stale source behaves similarly:
+no previous counts are presented as current. An ordinary rejected candidate,
+even if numerous, is not an outage and needs no Human Acknowledge.
+
+The pending-failure status may persist even after the final permitted failed attempt until another claim happens, or indefinitely if workers stop. The Dashboard must neither claim retry is actively running nor suppress the warning. Settling exhaustion at the actual last failed attempt rather than a later claim is tracked in #319; this read-only status change deliberately does not alter the authoritative worker state machine. A systemd oneshot that succeeded at some unspecified time is now described as
+observed_success (freshness unverified), not healthy. A verified latest run
+failure has priority over an unrelated field that is unknown. The original
+non-mutating five-unit systemctl allowlist, fixed-path read model, and
+localhost-only web server are unchanged.
+
+The prior test's credential-looking PASSWORD assignment was a synthetic
+redaction canary, not a real secret. It is replaced by an explicit nonsecret
+unexpected-field canary so generic secret scanners do not confuse test data
+with live credentials. The historic scan alert may still reference the
+pre-existing commit and does not, by itself, establish credential exposure.
+
+This amendment does not add provider outage monitoring, actual Nextcloud
+cleanup conflict detection, cross-service incident history, service control,
+remote ingress or production deployment. Those remain separate acceptance gates.
+
+## Malformed AI projection isolation
+
+The AI status reader treats both strict JSON decoder errors (invalid UTF-8,
+duplicate JSON keys, non-object JSON) and typed projection validation failures
+as an unavailable AI observation. It must **not** fail the combined HTTP status
+endpoint or hide independent systemd service results. Local synthetic API
+fixtures exercise these decoder paths and verify HTTP 200 with explicit unknown
+AI health while the fixed service observations remain intact.
+
+## Masked timer observability
+
+When systemd reports a mask (`LoadState=masked` or `UnitFileState=masked` / `masked-runtime`) **and** confirms the timer is `inactive/dead`, the Dashboard shows `blocked`. Masking does not necessarily stop a previously active timer; `active/waiting`, `active/running`, or transitional masked states remain `unknown` rather than being misrepresented as quiescent. A verified `ActiveState=failed` remains a failure. Malformed, missing, or contradictory properties—including `LoadState=not-found` paired with a masked unit file—also remain `unknown`. These observations grant no authority to unmask or control a timer.

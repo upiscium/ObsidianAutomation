@@ -17,7 +17,8 @@ UTC_NOW = datetime(2026, 10, 11, 11, 0, tzinfo=timezone.utc)
 
 def _projection(
     generated_at: str = "2026-10-11T10:59:30Z",
-    *, health: str = "OK", current_version: bool = False,
+    *, health: str | None = None, current_version: bool = False,
+    state_overrides: dict[str, int] | None = None,
 ) -> bytes:
     states = {name: 0 for name in ALL_STATES}
     states.update({
@@ -27,17 +28,26 @@ def _projection(
         "blocked": 2,
         "deterministic_reject": 4,
     })
+    if state_overrides:
+        if not set(state_overrides) <= set(states):
+            raise ValueError("unsupported test fixture state")
+        states.update(state_overrides)
+    if health is None:
+        health = (
+            "CRITICAL" if states["blocked"] or states["retry_exhausted"]
+            else "WARNING" if states["retryable_failure"] else "OK"
+        )
     payload: dict[str, object] = {
         "record_version": 2 if current_version else 1,
         "authority": "orchestration_status_projection_only",
         "generated_at": generated_at,
         "pipeline_health": health,
-        "reasons": ["SECRET_SHOULD_NOT_LEAK=12345"],
+        "reasons": ["UNTRUSTED_REASON_CANARY"],
         "current_jobs": sum(states.values()),
         "states": states,
         "review_wait": {
             "count": 2, "oldest_age_seconds": 61,
-            "reminder_after_seconds": 86400, "reminder_due": True,
+            "reminder_after_seconds": 86400, "reminder_due": False,
         },
         "backpressure": {"threshold": 8, "active": False},
     }
@@ -72,17 +82,23 @@ def test_valid_status_provides_only_sanitized_fresh_counts(
     value = load_ai_health(path=src, now=UTC_NOW)
     assert value == {
         "freshness": "fresh",
-        "health": "ok",
+        "health": "critical",
         "generated_at": "2026-10-11T10:59:30Z",
         "age_seconds": 30,
         "review_count": 2,
-        "operational_failures": 6,
+        "operational_failures": 5,
+        "pending_retry_failures": 1,
+        "incidents": [
+            {"code": "blocked_generations", "severity": "critical", "affected": 2},
+            {"code": "retry_exhausted_generations", "severity": "critical", "affected": 3},
+            {"code": "retryable_failure_pending", "severity": "warning", "affected": 1},
+        ],
         "deterministic_rejections": 4,
         "backpressure": False,
-        "review_reminder_due": True,
+        "review_reminder_due": False,
     }
     encoded = json.dumps(value)
-    assert "SECRET_SHOULD_NOT_LEAK" not in encoded
+    assert "UNTRUSTED_REASON_CANARY" not in encoded
     assert "planner_cadence" not in encoded
     assert "states" not in encoded
 
@@ -168,7 +184,10 @@ def test_directory_and_relative_path_are_rejected(tmp_path: Path) -> None:
 
 def test_atomic_replace_reports_consistent_new_version(tmp_path: Path) -> None:
     src = _write(tmp_path / "projection.json", _projection())
-    replace = _write(tmp_path / "new.json", _projection(health="WARNING"))
+    replace = _write(tmp_path / "new.json", _projection(
+        health="WARNING",
+        state_overrides={"blocked": 0, "retry_exhausted": 0},
+    ))
     os.replace(replace, src)
     val = load_ai_health(path=src, now=UTC_NOW)
     assert val["health"] == "warning"
@@ -182,3 +201,138 @@ def test_untrusted_timestamp_and_invalid_configuration(tmp_path: Path) -> None:
         load_ai_health(path=src, now=UTC_NOW, stale_after_seconds=0)
     with pytest.raises(ValueError):
         load_ai_health(path=src, now=UTC_NOW, stale_after_seconds=True)
+
+def test_inconsistent_pipeline_health_is_untrusted_not_green(tmp_path: Path) -> None:
+    src = _write(tmp_path / "projection.json", _projection(health="OK"))
+    value = load_ai_health(path=src, now=UTC_NOW)
+    assert value["freshness"] == "invalid"
+    assert value["health"] == "unknown"
+    assert value["review_count"] is None
+    assert value["operational_failures"] is None
+    assert value["incidents"] == []
+
+
+def test_expected_deterministic_reject_is_not_an_error(tmp_path: Path) -> None:
+    src = _write(tmp_path / "projection.json", _projection(
+        state_overrides={
+            "blocked": 0, "retry_exhausted": 0, "retryable_failure": 0,
+            "deterministic_reject": 13,
+        },
+    ))
+    value = load_ai_health(path=src, now=UTC_NOW)
+    assert value["freshness"] == "fresh"
+    assert value["health"] == "ok"
+    assert value["operational_failures"] == 0
+    assert value["pending_retry_failures"] == 0
+    assert value["deterministic_rejections"] == 13
+    assert value["incidents"] == []
+
+
+def test_retryable_failure_is_visible_without_proven_retry_budget(tmp_path: Path) -> None:
+    src = _write(tmp_path / "projection.json", _projection(
+        state_overrides={"blocked": 0, "retry_exhausted": 0},
+    ))
+    value = load_ai_health(path=src, now=UTC_NOW)
+    assert value["health"] == "warning"
+    assert value["operational_failures"] == 0
+    assert value["pending_retry_failures"] == 1
+    # This state may represent a final failed attempt before the next claim:
+    # the projection does not prove that another retry is available.
+    assert value["incidents"] == [
+        {"code": "retryable_failure_pending", "severity": "warning", "affected": 1},
+    ]
+
+
+def test_stale_source_does_not_expose_actionable_or_retry_counts(tmp_path: Path) -> None:
+    src = _write(tmp_path / "projection.json", _projection(
+        "2026-10-11T10:44:58Z",
+    ))
+    value = load_ai_health(path=src, now=UTC_NOW)
+    assert value["freshness"] == "stale"
+    assert value["health"] == "unknown"
+    assert value["operational_failures"] is None
+    assert value["pending_retry_failures"] is None
+    assert value["incidents"] == []
+
+@pytest.mark.parametrize("alter", [
+    lambda p: p["backpressure"].update(active=True),
+    lambda p: p["review_wait"].update(reminder_due=True),
+    lambda p: p["review_wait"].update(oldest_age_seconds=None),
+])
+def test_inconsistent_derived_review_fields_are_unknown(
+    tmp_path: Path, alter,
+) -> None:
+    record = json.loads(_projection())
+    alter(record)
+    src = _write(
+        tmp_path / "projection.json",
+        (json.dumps(record) + "\n").encode(),
+    )
+    value = load_ai_health(path=src, now=UTC_NOW)
+    assert value["freshness"] == "invalid"
+    assert value["health"] == "unknown"
+    assert value["review_count"] is None
+    assert value["backpressure"] is None
+    assert value["incidents"] == []
+
+
+def test_unhashable_health_type_does_not_raise_or_export_private_data(
+    tmp_path: Path,
+) -> None:
+    record = json.loads(_projection())
+    record["pipeline_health"] = []
+    record["reasons"] = ["UNTRUSTED_CANARY"]
+    src = _write(tmp_path / "projection.json", json.dumps(record).encode())
+    value = load_ai_health(path=src, now=UTC_NOW)
+    assert value["freshness"] == "unavailable"
+    assert value["health"] == "unknown"
+    assert value["review_count"] is None
+    assert "UNTRUSTED_CANARY" not in str(value)
+
+@pytest.mark.parametrize("invalid", [
+    bytes([0xFF, 0xFE, 0xF0]),
+    b'{"duplicate_field":1,"duplicate_field":2}',
+])
+def test_underlying_decoder_errors_are_unknown_and_keep_other_services_visible(
+    tmp_path: Path, invalid: bytes,
+) -> None:
+    import http.client
+    import threading
+    from obsidian_automation.admin_dashboard import make_server
+
+    src = _write(tmp_path / "projection.json", invalid)
+    assert load_ai_health(path=src, now=UTC_NOW)["freshness"] == "unavailable"
+
+    def systemd_observer():
+        return [{
+            "id": "test-service", "label": "Independent Systemd Observation",
+            "health": "observed_success", "schedule": "scheduled",
+            "latest_execution": "succeeded",
+        }]
+
+    server = make_server(
+        port=0, observer=systemd_observer,
+        ai_observer=lambda: load_ai_health(path=src, now=UTC_NOW),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+        try:
+            conn.request("GET", "/api/v1/status", headers={"Host": f"127.0.0.1:{port}"})
+            response = conn.getresponse()
+            data = response.read()
+            assert response.status == 200
+        finally:
+            conn.close()
+        payload = json.loads(data)
+        assert payload["ai_pipeline"]["health"] == "unknown"
+        assert payload["ai_pipeline"]["freshness"] == "unavailable"
+        assert payload["ai_pipeline"]["review_count"] is None
+        assert payload["services"][0]["id"] == "test-service"
+        assert b"duplicate_field" not in data
+    finally:
+        server.shutdown()
+        thread.join(timeout=3)
+        server.server_close()

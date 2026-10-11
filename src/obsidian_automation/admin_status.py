@@ -92,14 +92,26 @@ def classify_timer(props: Mapping[str, str] | None) -> str:
     active = _enum(props.get("ActiveState"), ACTIVE)
     unitfile = _enum(props.get("UnitFileState"), UNIT_FILES)
     state = props.get("SubState")
-    if load == "not-found":
-        return "not_installed"
-    if load != "loaded" or active == "unknown" or unitfile == "unknown":
+    if "unknown" in (load, active, unitfile):
+        # A malformed/unrecognized property cannot safely establish either
+        # normal scheduling or an intentional mask.
         return "unknown"
-    if unitfile in {"masked", "masked-runtime"}:
-        return "blocked"
+    if load == "not-found":
+        # Missing + masked is contradictory, not proof of either state.
+        return "unknown" if unitfile in {"masked", "masked-runtime"} else "not_installed"
+    if load not in {"loaded", "masked"}:
+        return "unknown"
+    if load == "masked" or unitfile in {"masked", "masked-runtime"}:
+        # A mask prevents future activation, but does not necessarily stop
+        # an already active/waiting timer. Do not claim it is quiescent unless
+        # systemd also shows inactive/dead. An explicit failure stays visible.
+        if active == "failed":
+            return "failed"
+        return "blocked" if active == "inactive" and state == "dead" else "unknown"
     if unitfile == "disabled" and active == "inactive":
-        return "paused"
+        # An unrecognized or contradictory SubState is not proof of a
+        # deliberately quiescent timer.
+        return "paused" if state == "dead" else "unknown"
     if unitfile in {"enabled", "enabled-runtime"} and active == "active" and state == "waiting":
         return "scheduled"
     if active == "active" and state == "running":
@@ -147,16 +159,19 @@ def aggregate_status(*, runner: Runner = subprocess.run) -> list[dict[str, objec
     for spec in SERVICES:
         timer = classify_timer(_run_properties(spec.timer, TIMER_FIELDS, runner=runner))
         service = classify_service(_run_properties(spec.service, SERVICE_FIELDS, runner=runner))
-        if timer == "not_installed" or service == "not_installed":
+        if service == "failed" or timer in {"blocked", "failed"}:
+            # Independently proven failure remains actionable even when
+            # the companion unit is absent or cannot be observed.
+            health = "failed"
+        elif timer == "not_installed" or service == "not_installed":
             health = "not_installed"
         elif timer == "unknown" or service == "unknown":
             health = "unknown"
-        elif service == "failed" or timer in {"blocked", "failed"}:
-            health = "failed"
         elif timer == "paused":
             health = "paused"
         elif timer in {"scheduled", "triggering"} and service == "succeeded":
-            health = "healthy"
+            # systemd's last completed oneshot can be arbitrarily old.
+            health = "observed_success"
         else:
             health = "unverified"
         results.append({

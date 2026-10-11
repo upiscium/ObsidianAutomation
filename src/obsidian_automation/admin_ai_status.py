@@ -10,7 +10,8 @@ import stat
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .pre_review_status import PreReviewStatusError, parse_status
+from .artifact_lifecycle import ArtifactLifecycleError
+from .pre_review_status import parse_status
 
 
 AI_STATUS_PATH = Path(
@@ -28,6 +29,8 @@ def _empty(freshness: str = "unavailable") -> dict[str, object]:
         "age_seconds": None,
         "review_count": None,
         "operational_failures": None,
+        "pending_retry_failures": None,
+        "incidents": [],
         "deterministic_rejections": None,
         "backpressure": None,
         "review_reminder_due": None,
@@ -93,7 +96,10 @@ def load_ai_health(
     try:
         raw = _read_bounded_nofollow(path)
         parsed = parse_status(raw)
-    except (OSError, ValueError, UnicodeError, PreReviewStatusError):
+    except (OSError, ValueError, TypeError, UnicodeError, ArtifactLifecycleError):
+        # Both the parser and its underlying strict JSON decoder may reject
+        # malformed data (duplicate keys, invalid UTF-8, invalid field types).
+        # An AI observation failure must not obscure independent systemd state.
         return _empty()
     # parse_status already validated an exact UTC Z timestamp.
     generated = datetime.fromisoformat(parsed.generated_at[:-1] + "+00:00")
@@ -107,18 +113,59 @@ def load_ai_health(
             "generated_at": parsed.generated_at,
             "age_seconds": age,
         }
-    failures = sum(
-        parsed.states[name]
-        for name in ("retryable_failure", "retry_exhausted", "blocked")
+    # Only verified terminal operational blockers count as actionable errors.
+    # An ordinary Validation rejection is not an outage, and in-budget retry
+    # should be shown as a transient condition rather than a critical incident.
+    counts = parsed.states
+    blocked = counts["blocked"]
+    exhausted = counts["retry_exhausted"]
+    transient = counts["retryable_failure"]
+    expected_health = (
+        "CRITICAL" if blocked or exhausted else "WARNING" if transient else "OK"
     )
+    review_count = counts["awaiting_human_review"]
+    oldest_review_age = parsed.oldest_review_wait_seconds
+    expected_backpressure = review_count >= parsed.backpressure_threshold
+    expected_reminder = (
+        oldest_review_age is not None
+        and oldest_review_age >= parsed.review_reminder_seconds
+    )
+    if (
+        parsed.pipeline_health != expected_health
+        # These fields are producer-derived state, not independent user
+        # decisions. Contradiction must not be displayed as a factual status.
+        or parsed.backpressure_active != expected_backpressure
+        or parsed.review_reminder_due != expected_reminder
+        or (review_count == 0) != (oldest_review_age is None)
+    ):
+        return _empty("invalid")
+    incidents = [
+        {"code": code, "severity": "critical", "affected": number}
+        for code, number in (
+            ("blocked_generations", blocked),
+            ("retry_exhausted_generations", exhausted),
+        )
+        if number
+    ]
+    if transient:
+        # retryable_failure records a failed attempt pending another claim;
+        # the status projection does NOT prove that retry budget remains or
+        # that a worker is actively retrying. It may persist indefinitely.
+        incidents.append({
+            "code": "retryable_failure_pending",
+            "severity": "warning",
+            "affected": transient,
+        })
     return {
         "freshness": "fresh",
-        "health": parsed.pipeline_health.lower(),
+        "health": expected_health.lower(),
         "generated_at": parsed.generated_at,
         "age_seconds": age,
         "review_count": parsed.states["awaiting_human_review"],
-        "operational_failures": failures,
-        "deterministic_rejections": parsed.states["deterministic_reject"],
+        "operational_failures": blocked + exhausted,
+        "pending_retry_failures": transient,
+        "incidents": incidents,
+        "deterministic_rejections": counts["deterministic_reject"],
         "backpressure": parsed.backpressure_active,
         "review_reminder_due": parsed.review_reminder_due,
     }
