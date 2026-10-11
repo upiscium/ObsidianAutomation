@@ -71,19 +71,29 @@ This is **documentation, not a command to run before approval**.
   nonregular direct files, variable-expanded/nonabsolute paths, and changed
   direct input hashes fail closed; neither file contents nor credentials
   are written to receipts or diagnostic logs.
+- **Before the PREPARING marker or timer changes**, run a read-only,
+  fail-closed preflight of the **fixed allowlist** of ignored setuptools
+  build directories (`build/`, `dist/`, and root/src
+  `obsidian_automation.egg-info/`). Verify the root and **every descendant**
+  is an expected, root-owned regular file or non-group/world-writable
+  directory on the checkout filesystem. Symlinks, special files, hardlinked
+  artifacts, other-owner files, unexpectedly mounted subdirectories (including
+  same-device bind mounts from Linux `/proc/self/mountinfo`), and any
+  inspection errors are refused. Bound the entire cleanup set to at most
+  4,096 descendant entries and 128 MiB of regular-file payloads. Refusal
+  leaves both timer states unchanged and no PREPARING transaction.
 - Saves an fsynced PREPARING marker **before** stopping managed timers.
 - Disables/stops the GitHub Sync and Daily Progress timers and requires both
   disabled/inactive. No Core Promotion timer operation is permitted.
-- Resets only the verified production checkout to SHA. Before installation,
-  it checks a **fixed allowlist** of ignored setuptools build directories
-  (`build/`, `dist/`, and the root/src `obsidian_automation.egg-info/`)
-  for ownership, non-symlink directory type and filesystem boundary; an
-  unexpected inode/mountpoint fails closed. It removes only the validated
-  derived build directories while under the approved Stage lock, preventing
-  stale `build/lib` modules from silently entering the newly installed wheel
-  (related #253). Such cleanup is a local checkout mutation, **not** part
-  of the effect-free preflight; no production cleanup is authorized merely
-  by this document.
+- Resets only the verified production checkout to SHA. Under the approved
+  Stage lock and with both timers inert, **revalidate** the exact ignored
+  build namespace and then remove only these validated derived directories
+  before pip builds the replacement package (related #253). A path changed
+  after preflight still fails closed; ordinary Stage failure leaves timers
+  inert and requires operator reconciliation. Linux descriptor-safe rmtree
+  and stable trusted root-owned checkout ancestors are prerequisites.
+  This cleanup is a filesystem mutation **only within an approved Stage**;
+  neither this document nor the read-only preflight authorizes removal.
   The pip build/install subprocess inherits an explicit `umask 0022`
   rather than a restrictive operator shell umask; the updater restores the
   caller's previous umask on success **and on a pip failure**.
