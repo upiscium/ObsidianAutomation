@@ -30,3 +30,30 @@ human semantic comparisons and acceptable material omission rate, and measure
 whole-day Ollama call count/token/time. Keep the exact 2026-10-08 historical
 Evidence immutable. Do not alter the production partitioner or Writer via
 this diagnostic prototype.
+
+## Canonical Evidence structural adapter (read-only)
+
+The `verified_partition_report(evidence_file, max_partial_context_bytes=...)`
+entrypoint accepts a **bounded, absolute, canonical SHA-named Evidence file**,
+uses `load_evidence_bundle` to revalidate its bytes and each original event
+identity, and derives actual `partition_evidence` SummaryContexts for that
+exact proposed byte budget. It returns only the Evidence SHA, partition SHA
+(which binds the context SHA list and byte budget), counts and maximum context
+size; it never returns event titles, actors, issue bodies, summaries or source
+text. Validation necessarily reads the private original Evidence into memory,
+but there is **no external upload, logging of source text, model call or write**.
+
+The production partial partitioner groups by repository while preserving
+**per-repository event order**. Original globally interleaved streams may
+therefore legitimately be reordered across different repositories. The pure
+evaluation function now checks exact preservation of each repository's event
+sequence, forbids cross-repository model batches, and detects missing or
+duplicated Evidence IDs, instead of incorrectly requiring the flattened model
+batch order to equal global chronological Evidence order.
+
+This structural report is **not** semantic coverage: to evaluate real model
+outputs one still needs exact partition/provenance-bound Grounding and
+independent human entailment/missing assessments. The adapter does not silently
+fabricate batched claims or standalone Grounding approvals. Both functions
+return `publication_authorized: false`. The canonical 2026-10-08 Evidence
+remains immutable, and no production Daily Note or Writer is affected.
