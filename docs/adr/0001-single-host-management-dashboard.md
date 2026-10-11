@@ -173,6 +173,8 @@ Pending approval:
 3. Confirm authorized phone/network ingress; do not interpret "loginless" as public binding.
 4. Decide whether force-stopping active effects is even necessary; safest MVP is schedule pause + controlled drain.
 
-Implementation feasibility gate: [#308](https://github.com/upiscium/ObsidianAutomation/issues/308) rclone/Nextcloud adapter.\n\nImplementation issues: [#300](https://github.com/upiscium/ObsidianAutomation/issues/300) Management API; [#301](https://github.com/upiscium/ObsidianAutomation/issues/301) Connections; [#302](https://github.com/upiscium/ObsidianAutomation/issues/302) Gateway; [#303](https://github.com/upiscium/ObsidianAutomation/issues/303) Vault mapping; [#304](https://github.com/upiscium/ObsidianAutomation/issues/304) Dashboard; [#305](https://github.com/upiscium/ObsidianAutomation/issues/305) Snapshot/Publisher; [#306](https://github.com/upiscium/ObsidianAutomation/issues/306) migration.
+Implementation feasibility gate: [#308](https://github.com/upiscium/ObsidianAutomation/issues/308) rclone/Nextcloud adapter.
+
+Implementation issues: [#300](https://github.com/upiscium/ObsidianAutomation/issues/300) Management API; [#301](https://github.com/upiscium/ObsidianAutomation/issues/301) Connections; [#302](https://github.com/upiscium/ObsidianAutomation/issues/302) Gateway; [#303](https://github.com/upiscium/ObsidianAutomation/issues/303) Vault mapping; [#304](https://github.com/upiscium/ObsidianAutomation/issues/304) Dashboard; [#305](https://github.com/upiscium/ObsidianAutomation/issues/305) Snapshot/Publisher; [#306](https://github.com/upiscium/ObsidianAutomation/issues/306) migration.
 
 **This ADR proposes, but does not authorize, software deployment, credentials migration, LXC removal, Nextcloud writes or public publishing.**
