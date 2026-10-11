@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -1440,3 +1441,135 @@ def test_stage_pip_uses_preprovisioned_offline_build_backend_only(tmp_path):
     assert argv[-1] == str(opts["app_root"])
     assert not any(part.startswith(("https://", "http://")) for part in argv)
     assert not _called(runner, ("--profile", "live"))
+
+
+def _trusted_build_venv_fixture(tmp_path):
+    venv = tmp_path / "build-venv"
+    bin_dir = venv / "bin"
+    site = venv / "lib" / "python3.13" / "site-packages"
+    bin_dir.mkdir(parents=True)
+    site.mkdir(parents=True)
+    (bin_dir / "python").symlink_to("/usr/bin/python3")
+    (bin_dir / "python3").symlink_to("/usr/bin/python3")
+    (venv / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    pip = bin_dir / "pip"
+    pip.write_text(f"#!{bin_dir}/python3\nprint('simulated pip')\n")
+    pip.chmod(0o755)
+    for project, version in (("pip", "25.1.1"), ("setuptools", "78.1.1"), ("wheel", "0.46.1")):
+        module = site / project
+        module.mkdir()
+        (module / "__init__.py").write_text("# test-only\n")
+        metadata = site / f"{project}-{version}.dist-info"
+        metadata.mkdir()
+        (metadata / "METADATA").write_text(f"Name: {project}\nVersion: {version}\n")
+    (site / "distutils-precedence.pth").write_text("import _distutils_hack\n")
+    return venv, site
+
+
+def test_stage_trusted_local_pip_backend_preflight_accepts_private_fixture(tmp_path):
+    venv, site = _trusted_build_venv_fixture(tmp_path)
+    manifest = staged._assert_trusted_stage_build_venv(
+        venv, trusted_uid=os.geteuid()
+    )
+    assert manifest["setuptools"] == "78.1.1"
+    assert manifest["pip"] == "25.1.1"
+    assert manifest["wheel"] == "0.46.1"
+    assert len(manifest["digest_sha256"]) == 64
+    assert manifest == staged._assert_trusted_stage_build_venv(
+        venv, trusted_uid=os.geteuid()
+    )
+    assert (site / "setuptools-78.1.1.dist-info/METADATA").exists()
+    (site / "setuptools/__init__.py").write_text("# changed bytes\n")
+    changed = staged._assert_trusted_stage_build_venv(
+        venv, trusted_uid=os.geteuid()
+    )
+    assert changed["digest_sha256"] != manifest["digest_sha256"]
+
+
+@pytest.mark.parametrize("corruption", (
+    "world_writable_pip", "symlinked_pip", "world_writable_backend",
+    "symlinked_backend", "hardlinked_module", "writable_pth",
+    "missing_setuptools", "old_setuptools", "writable_venv",
+    "untrusted_python_target", "writable_pyvenv_config", "invalid_pip_shebang"
+))
+def test_untrusted_local_stage_build_source_is_rejected(tmp_path, corruption):
+    venv, site = _trusted_build_venv_fixture(tmp_path)
+    pip = venv / "bin/pip"
+    backend = site / "setuptools"
+    if corruption == "world_writable_pip":
+        pip.chmod(0o777)
+    elif corruption == "symlinked_pip":
+        pip.unlink()
+        pip.symlink_to("/bin/sh")
+    elif corruption == "world_writable_backend":
+        backend.chmod(0o777)
+    elif corruption == "symlinked_backend":
+        (backend / "__init__.py").unlink()
+        (backend / "__init__.py").symlink_to("/etc/passwd")
+    elif corruption == "hardlinked_module":
+        file = backend / "__init__.py"
+        os.link(file, backend / "hardlinked.py")
+    elif corruption == "writable_pth":
+        (site / "distutils-precedence.pth").chmod(0o666)
+    elif corruption == "missing_setuptools":
+        (site / "setuptools-78.1.1.dist-info").rename(site / "setuptools-tampered-info")
+    elif corruption == "old_setuptools":
+        file = site / "setuptools-78.1.1.dist-info/METADATA"
+        file.write_text("Name: setuptools\nVersion: 74.0.0\n")
+    elif corruption == "untrusted_python_target":
+        (venv / "bin/python3").unlink()
+        (venv / "bin/python3").symlink_to("/bin/sh")
+    elif corruption == "writable_pyvenv_config":
+        (venv / "pyvenv.cfg").chmod(0o666)
+    elif corruption == "invalid_pip_shebang":
+        pip.write_text("#!/usr/bin/env python3\n")
+    else:
+        venv.chmod(0o777)
+    with pytest.raises(ProductionUpdateError, match="Stage|stage|venv|build|setuptools"):
+        staged._assert_trusted_stage_build_venv(venv, trusted_uid=os.geteuid())
+
+
+def test_trusted_build_manifest_excludes_only_reinstalled_app(tmp_path):
+    venv, site = _trusted_build_venv_fixture(tmp_path)
+    before = staged._assert_trusted_stage_build_venv(
+        venv, trusted_uid=os.geteuid()
+    )
+    app = site / "obsidian_automation"
+    app.mkdir()
+    (app / "__init__.py").write_text("# replaced application module\n")
+    dist = site / "obsidian_automation-0.1.0.dist-info"
+    dist.mkdir()
+    (dist / "METADATA").write_text("Name: obsidian-automation\nVersion: 0.1.0\n")
+    after_install = staged._assert_trusted_stage_build_venv(
+        venv, trusted_uid=os.geteuid()
+    )
+    assert before == after_install
+    (site / "unexpected-new-startup.pth").write_text("import unknown_module\n")
+    after_startup_drift = staged._assert_trusted_stage_build_venv(
+        venv, trusted_uid=os.geteuid()
+    )
+    assert before["digest_sha256"] != after_startup_drift["digest_sha256"]
+
+
+def test_stage_receipt_rejects_untrusted_build_manifest_shape(tmp_path):
+    import hashlib
+
+    runner, opts = setup(tmp_path)
+    original_sha = stage(runner, opts)
+    state = opts["receipt_dir"] / staged.STAGING_ROOT
+    original = staged._receipt_read(state, original_sha)
+    assert original["build_manifest"] is None  # simulated, no root authorization
+
+    for bad in (
+        "unbound backend",
+        {"digest_sha256": "not-a-sha", "pip": "25.1.1",
+         "setuptools": "78.1.1", "wheel": "0.46.1"},
+        {"digest_sha256": "a" * 64, "pip": "25.1.1",
+         "setuptools": 78, "wheel": "0.46.1"},
+    ):
+        tampered = dict(original, build_manifest=bad)
+        payload = staged._encode(tampered)
+        sha = hashlib.sha256(payload).hexdigest()
+        (state / f"{sha}.staging-receipt.json").write_bytes(payload)
+        with pytest.raises(ProductionUpdateError, match="build provenance"):
+            staged._receipt_read(state, sha)

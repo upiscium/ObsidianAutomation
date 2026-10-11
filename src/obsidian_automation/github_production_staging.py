@@ -58,7 +58,8 @@ def _trusted_stage_runner(argv: Sequence[str]) -> legacy.CommandResult:
         )
     else:
         env.update({"PIP_CONFIG_FILE": "/dev/null", "PIP_NO_INPUT": "1",
-                    "PIP_DISABLE_PIP_VERSION_CHECK": "1", "PYTHONNOUSERSITE": "1"})
+                    "PIP_DISABLE_PIP_VERSION_CHECK": "1", "PYTHONNOUSERSITE": "1",
+                    "PYTHONDONTWRITEBYTECODE": "1"})
         command = tuple(argv)
     result = subprocess.run(
         command, check=False, capture_output=True, text=True, env=env,
@@ -625,6 +626,147 @@ def _direct_service_input_manifest(
 
 
 
+def _assert_trusted_stage_build_venv(
+    venv_root: Path, *, trusted_uid: int = 0
+) -> dict[str, str]:
+    """Pre-effect ownership admission for code run by pip under Stage authority.
+
+    This prevents a less-privileged user from replacing root-executed pip,
+    setuptools or Python startup files. It cannot prove the provenance of
+    legitimately root-installed code; that remains an operator review gate.
+    """
+    if not venv_root.is_absolute() or ".." in venv_root.parts:
+        raise legacy.ProductionUpdateError("untrusted Stage build venv path")
+    # Check complete ancestor chain before traversing the build environment.
+    for path in reversed((venv_root, *venv_root.parents)):
+        info = path.lstat()
+        mode = stat.S_IMODE(info.st_mode)
+        if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
+            raise legacy.ProductionUpdateError("untrusted Stage build venv ancestor")
+        if path == venv_root:
+            if info.st_uid != trusted_uid or mode & 0o022:
+                raise legacy.ProductionUpdateError("untrusted Stage build venv owner/mode")
+        elif info.st_uid not in {0, trusted_uid} or (
+            mode & 0o022 and not (info.st_uid == 0 and mode & stat.S_ISVTX)
+        ):
+            raise legacy.ProductionUpdateError("writable Stage build venv ancestor")
+
+    def check(path: Path, *, directory: bool) -> None:
+        info = path.lstat()
+        mode = stat.S_IMODE(info.st_mode)
+        if (info.st_uid != trusted_uid or mode & 0o022
+                or stat.S_ISLNK(info.st_mode)):
+            raise legacy.ProductionUpdateError("untrusted Stage build file authority")
+        if directory:
+            if not stat.S_ISDIR(info.st_mode):
+                raise legacy.ProductionUpdateError("untrusted Stage build directory")
+        elif not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise legacy.ProductionUpdateError("untrusted Stage build file type")
+
+    pip = venv_root / "bin" / "pip"
+    check(venv_root / "bin", directory=True)
+    check(pip, directory=False)
+    if not (pip.stat().st_mode & stat.S_IXUSR):
+        raise legacy.ProductionUpdateError("unexecutable Stage build pip")
+    check(venv_root / "pyvenv.cfg", directory=False)
+    # An ordinary virtualenv points bin/python and bin/python3 to the distro
+    # interpreter. These expected symlinks are allowed only when they resolve
+    # to a root-owned, non-writable binary under the trusted /usr/bin tree.
+    python_targets: list[str] = []
+    for name in ("python", "python3"):
+        path = venv_root / "bin" / name
+        link = path.lstat()
+        if link.st_uid != trusted_uid or not (
+            stat.S_ISLNK(link.st_mode) or stat.S_ISREG(link.st_mode)
+        ):
+            raise legacy.ProductionUpdateError("untrusted Stage Python launcher")
+        target = path.resolve(strict=True)
+        if (target.parent != Path("/usr/bin")
+                or re.fullmatch(r"python3\.[0-9]{1,2}", target.name) is None):
+            raise legacy.ProductionUpdateError("Stage Python target outside trusted system")
+        for parent in (target, *target.parents):
+            info = parent.lstat()
+            if info.st_uid != 0 or stat.S_IMODE(info.st_mode) & 0o022:
+                raise legacy.ProductionUpdateError("untrusted Stage system Python target")
+            if parent == target:
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                    raise legacy.ProductionUpdateError("invalid Stage system Python binary")
+            elif not stat.S_ISDIR(info.st_mode):
+                raise legacy.ProductionUpdateError("untrusted Stage Python target ancestor")
+        python_targets.append(str(target))
+    first_line = _read_file(pip, max_bytes=2 * 1024 * 1024).split(b"\n", 1)[0]
+    if first_line not in (
+        ("#!" + str(venv_root / "bin" / name)).encode("utf-8")
+        for name in ("python", "python3")
+    ):
+        raise legacy.ProductionUpdateError("unexpected Stage pip interpreter shebang")
+    check(venv_root / "lib", directory=True)
+    sites = tuple(sorted((venv_root / "lib").glob("python*/site-packages")))
+    if len(sites) != 1:
+        raise legacy.ProductionUpdateError("ambiguous Stage build site-packages")
+    site = sites[0]
+    check(site.parent, directory=True)
+    check(site, directory=True)
+    versions: dict[str, str] = {}
+    for project in ("pip", "setuptools", "wheel"):
+        check(site / project, directory=True)
+        matches = tuple(site.glob(project + "-*.dist-info"))
+        if len(matches) != 1:
+            raise legacy.ProductionUpdateError("missing or ambiguous Stage build backend")
+        check(matches[0], directory=True)
+        data = _read_file(matches[0] / "METADATA", max_bytes=1024 * 1024)
+        names = re.findall(rb"^Name: ([A-Za-z0-9_.-]+)$", data, flags=re.MULTILINE)
+        raw_versions = re.findall(
+            rb"^Version: ([0-9]+(?:\.[0-9]+){1,3})$", data, flags=re.MULTILINE
+        )
+        if (names != [project.encode("ascii")] or len(raw_versions) != 1):
+            raise legacy.ProductionUpdateError("Stage build distribution identity invalid")
+        versions[project] = raw_versions[0].decode("ascii")
+        if project == "setuptools" and int(versions[project].split(".")[0]) < 75:
+            raise legacy.ProductionUpdateError("unreviewed Stage setuptools version")
+
+    # Check all installed startup/import files: arbitrary .pth imports and
+    # unrelated site modules can run before a backend's own first statement.
+    # Hash all stable non-application files to bind the preinstalled build
+    # environment to the staged receipt; the app's own wheel is being replaced.
+    digest = hashlib.sha256()
+    digest.update(b"trusted-stage-build-environment-v1\n")
+    digest.update(bytes.fromhex(_digest(_read_file(pip, max_bytes=2 * 1024 * 1024))))
+    digest.update(bytes.fromhex(_digest(_read_file(
+        venv_root / "pyvenv.cfg", max_bytes=65536
+    ))))
+    for target in python_targets:
+        digest.update(target.encode("utf-8") + b"\x00")
+    # Bound enumeration *before* sorting; even a root-managed malformed venv
+    # should not cause a memory blowup in a pre-effect admission probe.
+    candidates: list[Path] = []
+    for path in site.rglob("*"):
+        if len(candidates) >= 8192:
+            raise legacy.ProductionUpdateError("Stage build venv inventory exceeds budget")
+        candidates.append(path)
+    for path in sorted(candidates):
+        info = path.lstat()
+        directory = stat.S_ISDIR(info.st_mode)
+        check(path, directory=directory)
+        relative = path.relative_to(site).as_posix()
+        root_entry = relative.split("/", 1)[0]
+        if (relative == "obsidian_automation" or
+                relative.startswith("obsidian_automation/") or
+                (root_entry.startswith("obsidian_automation-")
+                 and root_entry.endswith(".dist-info"))):
+            # Reviewed app code/entrypoints receive separate exact-byte
+            # postinstall attestation; they are expected to change under pip.
+            continue
+        digest.update(relative.encode("utf-8") + b"\x00")
+        digest.update(format(stat.S_IMODE(info.st_mode), "04o").encode("ascii") + b"\x00")
+        if directory:
+            digest.update(b"dir\n")
+        else:
+            digest.update(bytes.fromhex(_digest(_read_file(path, max_bytes=2 * 1024 * 1024))))
+            digest.update(b"\n")
+    return {"digest_sha256": digest.hexdigest(), **versions}
+
+
 @contextmanager
 def _controlled_package_install_umask():
     """Ensure predictable service-readable wheel/install bytes, then restore.
@@ -972,7 +1114,7 @@ def _receipt_read(state: Path, sha: str) -> dict[str, object]:
         "record_version", "stage", "target_sha", "previous_sha",
         "app_root", "venv_root", "systemd_dir", "revision_env",
         "timer_states", "config_manifest", "unit_manifest", "env_manifest", "code_manifest", "direct_manifest",
-        "service_role_smoke", "safe_smoke", "daily_safe_smoke", "created_at",
+        "build_manifest", "service_role_smoke", "safe_smoke", "daily_safe_smoke", "created_at",
     }
     if set(obj) != expected or obj["record_version"] != VERSION or obj["stage"] != "staged":
         raise legacy.ProductionUpdateError("stage receipt schema differs")
@@ -984,6 +1126,19 @@ def _receipt_read(state: Path, sha: str) -> dict[str, object]:
     if any(not isinstance(obj[item], dict)
            for item in ("config_manifest", "unit_manifest", "env_manifest", "code_manifest", "direct_manifest")):
         raise legacy.ProductionUpdateError("stage manifest types invalid")
+    build = obj["build_manifest"]
+    if build is not None and (
+        not isinstance(build, dict) or set(build) != {
+            "digest_sha256", "pip", "setuptools", "wheel"
+        } or not isinstance(build["digest_sha256"], str)
+        or not HASH_RE.fullmatch(build["digest_sha256"])
+        or not all(
+            isinstance(build[name], str)
+            and re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,3}", build[name])
+            for name in ("pip", "setuptools", "wheel")
+        )
+    ):
+        raise legacy.ProductionUpdateError("Stage build provenance receipt invalid")
     role_smoke = obj["service_role_smoke"]
     if (not isinstance(role_smoke, dict) or set(role_smoke) != {"status", "roles"}
             or role_smoke["status"] != "passed"
@@ -1037,6 +1192,14 @@ def stage_update(*, target_sha: str, app_root: Path, venv_root: Path,
         _require_idle_services(runner, systemd_dir)
         timers = _snapshot_timers(runner)
         configs = _config_manifest(config_files)
+        # A privileged offline pip install would execute local pip/setuptools
+        # as root. Refuse untrusted or redirected build environments BEFORE the
+        # PREPARING marker/timer effects; test-mode runners use simulated pip.
+        build_manifest: dict[str, str] | None = None
+        if require_root:
+            if venv_root != Path("/opt/obsidian-automation/venv"):
+                raise legacy.ProductionUpdateError("unexpected privileged Stage venv root")
+            build_manifest = _assert_trusted_stage_build_venv(venv_root)
         # Reject unsafe ignored build trees before disabling any timer or
         # writing the durable PREPARING transition marker.
         _inspect_ignored_package_build_artifacts(app_root)
@@ -1064,6 +1227,11 @@ def stage_update(*, target_sha: str, app_root: Path, venv_root: Path,
                      "--force-reinstall", str(app_root)),
                     label="stage install reviewed package",
                 )
+            if (require_root and
+                    _assert_trusted_stage_build_venv(venv_root) != build_manifest):
+                raise legacy.ProductionUpdateError(
+                    "trusted Stage build environment changed during package install"
+                )
             code_manifest = _deployed_code_manifest(app_root, venv_root)
             service_roles = _service_role_package_smoke(
                 app_root, venv_root, code_manifest, runner
@@ -1090,6 +1258,9 @@ def stage_update(*, target_sha: str, app_root: Path, venv_root: Path,
             _require_idle_services(runner, systemd_dir)
             if _deployed_code_manifest(app_root, venv_root) != code_manifest:
                 raise legacy.ProductionUpdateError("installed package changed during safe Stage")
+            if (require_root and
+                    _assert_trusted_stage_build_venv(venv_root) != build_manifest):
+                raise legacy.ProductionUpdateError("trusted Stage build environment drift")
             if _config_manifest(config_files) != configs:
                 raise legacy.ProductionUpdateError("configuration drift during stage")
             if _all_installed_unit_names(systemd_dir) != managed_names:
@@ -1108,6 +1279,7 @@ def stage_update(*, target_sha: str, app_root: Path, venv_root: Path,
                 "env_manifest": environment_files,
                 "direct_manifest": direct_files,
                 "code_manifest": code_manifest,
+                "build_manifest": build_manifest,
                 "service_role_smoke": {"status": "passed", "roles": list(service_roles)},
                 "timer_states": timers, "safe_smoke": "passed",
                 "daily_safe_smoke": "passed", "created_at": legacy._utc_now(),
@@ -1169,6 +1341,13 @@ def activate_update(*, stage_sha256: str, approve_live_github_writer: bool,
         for key, path in expected_paths.items():
             if receipt[key] != str(path.absolute()):
                 raise legacy.ProductionUpdateError("staged runtime path drift")
+        if require_root:
+            if venv_root != Path("/opt/obsidian-automation/venv"):
+                raise legacy.ProductionUpdateError("unexpected privileged Stage venv root")
+            if not isinstance(receipt["build_manifest"], dict):
+                raise legacy.ProductionUpdateError("Stage build provenance receipt missing")
+            if _assert_trusted_stage_build_venv(venv_root) != receipt["build_manifest"]:
+                raise legacy.ProductionUpdateError("Stage build environment changed before Activate")
         _checkout(app_root, runner, expected=receipt["target_sha"])
         _require_inert(runner)
         _assert_known_timer_inventory(runner, systemd_dir)

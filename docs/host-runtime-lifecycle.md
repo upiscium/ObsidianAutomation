@@ -18,7 +18,7 @@ The target implementation:
 1. Locks a root-owned deployment journal directory against concurrent updates.
 2. Rechecks the clean production `main` checkout and target ancestry.
 3. Acquires the shared refresh-update lock, rechecks the independent
-   enabled/active states of all four managed timers and prepares the restoration
+   enabled/active states of all five managed timers and prepares the restoration
    intent. Capturing the states
    inside the shared lock prevents a concurrent legacy updater's temporary
    stopped state from becoming a new restoration intent.
@@ -49,6 +49,7 @@ Managed recurrence is exactly:
 obsidian-ai-vault-pull.timer
 obsidian-pre-review.timer
 obsidian-github-sync.timer
+obsidian-github-daily-progress.timer
 obsidian-core-promotion.timer
 ```
 

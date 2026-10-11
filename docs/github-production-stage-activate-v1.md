@@ -408,3 +408,42 @@ host filesystem/ACL/systemd compatibility remain distinct acceptance gates,
 followed by separate explicit merge, Stage, Activate, Writer, timer restoration
 and Daily CAS authorizations. Passing simulation tests is not proof of
 production power-loss recovery.
+
+## R10 candidate: privileged build-environment admission (2026-10-12)
+
+Before writing PREPARING or stopping either GitHub timer, root-mode Stage is
+restricted to the canonical /opt/obsidian-automation/venv and validates
+the complete trust path from / through the venv. Expected venv directories,
+bin/pip, pyvenv.cfg, Python launcher symlinks, resolved root-owned
+/usr/bin/python3.X binaries, and all installed site-packages entries are
+checked for owner/mode/type. Files must have nlink=1, directory and file
+symlinks in site-packages are rejected, and Python executable symlinks are
+accepted only if they resolve to root-owned, non-group/world-writable CPython
+binaries under /usr/bin. The pip script must use a reviewed venv
+Python shebang. Symlinked files in unexpected locations, writable
+.pth startup hooks, foreign-owned modules, unsupported backend identities,
+multiple site-package directories, or setuptools below version 75 fail closed.
+
+The bounded inventory is SHA-256 fingerprinted before any timer effect. This
+binds the pip script, Python launcher targets, pyvenv config and installed
+non-application import modules and package metadata. The app distribution
+itself is excluded from this stable-build digest because Stage reinstalls it
+and separately attests its Python code and GitHub entrypoints. The build
+digest plus pip/setuptools/wheel versions is attached to the immutable Stage
+receipt; post-install and post-safe-smoke checks reject unexpected build-code
+changes. Activate repeats the trust and digest checks before marking
+activating or running a live Writer.
+
+This is a local root-managed source trust check, not a cryptographic
+certificate that a privileged administrator installed the correct official
+wheel. It assumes no malicious actor already controls root or a trusted
+system Python/interpreter and that root-owned directory ancestors cannot be
+replaced by an adversary during the transaction. The operator still must
+verify the installed backend's origin and expected hash against its approved
+wheelhouse/distro provenance before the first Stage. The legacy break-glass
+updater is not covered by this Stage build-environment receipt.
+
+Negative fixtures cover writable pip/modules/startup files, symlinks,
+unexpected interpreters, hardlinks, missing/old setuptools, and malformed
+build receipts. These isolated tests do not exercise production power-loss
+semantics or grant Stage/Activate authority.
