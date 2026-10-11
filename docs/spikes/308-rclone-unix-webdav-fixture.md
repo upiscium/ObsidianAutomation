@@ -62,6 +62,7 @@ rclone check fixture-gw:ObsidianVault "$FIXTURE/mirror" \
 | Initial filtered download | Four files, 98 B total |
 | Initial exact downloaded comparison | 0 differences, 4 matches |
 | Remote `04-AI` exclusion | Local 04-AI absent; source file still present |
+| Unfiltered `rclone lsf -R` on the socket | Could still list `04-AI/50-Review/review.md`; the client-side filter is **not** an access restriction |
 | Socket permissions | `0700`; `chmod 000` caused client listing failure |
 | Synthetic remote write attempt | CLI failure; direct PUT HTTP 404; source file not created |
 | Modification/deletion behind default WebDAV serve | **STALE**: second sync incorrectly reported nothing to transfer; exact check detected 2 differences |
