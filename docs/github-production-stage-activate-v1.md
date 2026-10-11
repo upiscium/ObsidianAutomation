@@ -56,14 +56,21 @@ This is **documentation, not a command to run before approval**.
   no drop-in directives are silently excluded from the revision contract.
   The EnvironmentFile parser accepts whitespace-indented assignments and
   binds every recognized absolute path; unsupported syntax fails closed.
-  Stage also parses the reviewed managed Unit ExecStart/ExecStartPre/etc.
-  arguments and SHA-256 binds files referenced directly by `--config`,
-  `--rclone-config`, `--filter-file`, and `--password-file`. This explicitly
-  covers GitHub watcher `config.toml`, rclone configuration/filter files and
-  WebDAV password files, which are **not** EnvironmentFiles. Unknown file-like
-  options, missing or nonregular direct files, variable-expanded/nonabsolute
-  paths, and changed direct input hashes fail closed; neither file contents
-  nor credentials are written to receipts or diagnostic logs.
+  Stage also scans the reviewed managed Unit `ExecCondition`,
+  `ExecStart`, `ExecStartPre`, `ExecStartPost`, `ExecReload`,
+  `ExecStop` and `ExecStopPost` arguments. Files referenced directly by
+  `--config`, `--rclone-config`, `--filter-file`, and
+  `--password-file` are SHA-256 bound. This explicitly covers GitHub
+  watcher `config.toml`, rclone configuration/filter files and WebDAV
+  password files, which are **not** EnvironmentFiles. Because systemd
+  performs C-style escape decoding that differs from POSIX `shlex`,
+  this v1 scanner **rejects residual backslash escapes after legitimate
+  line continuations have been joined** rather than guessing which path
+  systemd will pass to the process. Such units need a separately reviewed
+  parser extension before staging. Unknown file-like options, missing or
+  nonregular direct files, variable-expanded/nonabsolute paths, and changed
+  direct input hashes fail closed; neither file contents nor credentials
+  are written to receipts or diagnostic logs.
 - Saves an fsynced PREPARING marker **before** stopping managed timers.
 - Disables/stops the GitHub Sync and Daily Progress timers and requires both
   disabled/inactive. No Core Promotion timer operation is permitted.
