@@ -37,20 +37,21 @@ class StageBootstrapError(RuntimeError):
 
 def _safe_git_env() -> dict[str, str]:
     """Ignore inherited Git settings and disable replacement objects."""
-    env = {key: value for key, value in os.environ.items()
-           if not key.startswith("GIT_")}
-    env.update({
+    env = {
+        "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+        "HOME": "/root",
+        "LC_ALL": "C.UTF-8",
         "GIT_NO_REPLACE_OBJECTS": "1",
         "GIT_OPTIONAL_LOCKS": "0",
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_CONFIG_GLOBAL": "/dev/null",
-    })
+    }
     return env
 
 
 def _git(root: Path, *arguments: str, stdin: bytes | None = None) -> bytes:
     result = subprocess.run(
-        ("git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+        ("/usr/bin/git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
          "-C", str(root), *arguments),
         input=stdin,
         capture_output=True,
@@ -87,7 +88,7 @@ def _preflight_git(root: Path, target: str) -> str:
     # branch or a rollback. Refuse until the exact reviewed SHA was merged.
     for older, newer in ((target, "refs/remotes/origin/main"), (current, target)):
         result = subprocess.run(
-            ("git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+            ("/usr/bin/git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
              "-C", str(root), "merge-base", "--is-ancestor", older, newer),
             capture_output=True, timeout=30, check=False, env=_safe_git_env(),
         )

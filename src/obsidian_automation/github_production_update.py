@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -9,6 +10,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +21,8 @@ DEFAULT_APP_ROOT = Path("/opt/obsidian-github-sync/app")
 DEFAULT_VENV_ROOT = Path("/opt/obsidian-github-sync/venv")
 DEFAULT_SYSTEMD_DIR = Path("/etc/systemd/system")
 DEFAULT_RECEIPT_DIR = Path("/var/lib/obsidian-github-sync/deployments")
+HOST_RECEIPT_DIR = Path("/var/lib/obsidian-automation/deployments")
+STAGE_TRANSACTION_DIR = "staged-github-production-v1"
 TIMER_UNIT = "obsidian-github-sync.timer"
 DAILY_TIMER_UNIT = "obsidian-github-daily-progress.timer"
 MANAGED_TIMER_UNITS = (TIMER_UNIT, DAILY_TIMER_UNIT)
@@ -129,6 +133,76 @@ def _require_directory(path: Path, *, label: str) -> None:
         raise ProductionUpdateError(f"{label} does not exist") from exc
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
         raise ProductionUpdateError(f"{label} must be a non-symlink directory")
+
+
+def _require_no_unresolved_stage(stage_receipt_dir: Path) -> None:
+    """Legacy effects must not bypass an existing Stage or an uncertain crash."""
+    state = stage_receipt_dir / STAGE_TRANSACTION_DIR
+    if not os.path.lexists(state):
+        return
+    info = state.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) & 0o077):
+        raise ProductionUpdateError("unsafe existing Stage authority directory")
+    path = state / "control.json"
+    # A state directory without its control marker is deliberately uncertain.
+    fd = -1
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) & 0o077
+                or not 0 < info.st_size <= 32768):
+            raise ProductionUpdateError("untrusted Stage control marker")
+        raw = os.read(fd, 32769)
+        if len(raw) != info.st_size:
+            raise ProductionUpdateError("inconsistent Stage control marker")
+        value = json.loads(raw)
+        if (not isinstance(value, dict) or value.get("record_version") != 1
+                or value.get("status") != "activated"
+                or not isinstance(value.get("stage_sha256"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", value["stage_sha256"])):
+            raise ProductionUpdateError("unresolved staged transaction blocks legacy live effects")
+    except (OSError, ValueError, TypeError) as exc:
+        raise ProductionUpdateError("Stage reconciliation required before legacy effects") from exc
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+@contextmanager
+def _host_update_guard(host_receipt_dir: Path, *, require_root: bool,
+                       stage_receipt_dir: Path | None = None):
+    """Share host-update.lock with the consolidated lifecycle and deny pending effects."""
+    if require_root and host_receipt_dir != HOST_RECEIPT_DIR:
+        raise ProductionUpdateError("production host lock path is fixed")
+    if not require_root:
+        host_receipt_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _require_directory(host_receipt_dir, label="host lifecycle receipt directory")
+    info = host_receipt_dir.lstat()
+    if (info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o022):
+        raise ProductionUpdateError("untrusted host lifecycle receipt directory")
+    fd = os.open(host_receipt_dir / "host-update.lock",
+                 os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) & 0o077):
+            raise ProductionUpdateError("untrusted host-wide update lock")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise ProductionUpdateError("host-wide update already in progress") from exc
+        # An unresolved host intent means Stage/legacy has no authority to mutate.
+        if os.path.lexists(host_receipt_dir / "pending-runtime.json"):
+            raise ProductionUpdateError("host lifecycle reconciliation required")
+        if stage_receipt_dir is not None:
+            _require_no_unresolved_stage(stage_receipt_dir)
+        yield
+    finally:
+        os.close(fd)
 
 
 def _run(
@@ -387,7 +461,7 @@ def _persist_receipt(receipt_dir: Path, receipt: DeploymentReceipt) -> Path:
     return target
 
 
-def execute_update(
+def _execute_update_unlocked(
     *,
     target_sha: str,
     app_root: Path = DEFAULT_APP_ROOT,
@@ -681,6 +755,38 @@ def execute_update(
         if isinstance(exc, ProductionUpdateError):
             raise ProductionUpdateError(f"{stage}: {exc}") from exc
         raise ProductionUpdateError(f"{stage}: unexpected update failure") from exc
+
+
+def execute_update(
+    *,
+    target_sha: str,
+    app_root: Path = DEFAULT_APP_ROOT,
+    venv_root: Path = DEFAULT_VENV_ROOT,
+    systemd_dir: Path = DEFAULT_SYSTEMD_DIR,
+    receipt_dir: Path = DEFAULT_RECEIPT_DIR,
+    daily_revision_env: Path = DEFAULT_DAILY_REVISION_ENV,
+    runner: CommandRunner = _default_runner,
+    require_root: bool = True,
+    bootstrap_pre_disabled_timer: bool = False,
+    host_receipt_dir: Path | None = None,
+) -> tuple[DeploymentReceipt, Path]:
+    """Legacy live effects are break-glass only, never parallel to a Stage/host update."""
+    if require_root and os.geteuid() != 0:
+        raise ProductionUpdateError("production update must run as root")
+    if require_root and receipt_dir != DEFAULT_RECEIPT_DIR:
+        raise ProductionUpdateError("production Stage receipt root is fixed")
+    host_root = host_receipt_dir
+    if host_root is None:
+        host_root = HOST_RECEIPT_DIR if require_root else receipt_dir.parent / "host-receipts"
+    with _host_update_guard(host_root, require_root=require_root,
+                            stage_receipt_dir=receipt_dir):
+        return _execute_update_unlocked(
+            target_sha=target_sha, app_root=app_root, venv_root=venv_root,
+            systemd_dir=systemd_dir, receipt_dir=receipt_dir,
+            daily_revision_env=daily_revision_env, runner=runner,
+            require_root=require_root,
+            bootstrap_pre_disabled_timer=bootstrap_pre_disabled_timer,
+        )
 
 
 def _build_parser() -> argparse.ArgumentParser:

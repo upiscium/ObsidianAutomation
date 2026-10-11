@@ -16,7 +16,8 @@ class Runner(FakeRunner):
                  active_extra_services=(), extra_loaded_timers=(),
                  unloaded_timers=(), extra_loaded_services=(), extra_installed_services=(),
                  alternate_unit_paths=(), effective_dropins=(), bad_fragments=(),
-                 fail_role_import=None, fail_disable=False, **kwargs):
+                 fail_role_import=None, fail_disable=False,
+                 sync_substate="waiting", sync_next_elapse="5min", **kwargs):
         super().__init__(
             app, venv, daily_present=True,
             daily_enabled=True, daily_active=False, **kwargs,
@@ -32,6 +33,8 @@ class Runner(FakeRunner):
         self.bad_fragments = set(bad_fragments)
         self.fail_role_import = fail_role_import
         self.fail_disable = fail_disable
+        self.sync_substate = sync_substate
+        self.sync_next_elapse = sync_next_elapse
         self.systemd_dir = None
 
     def __call__(self, argv):
@@ -72,6 +75,13 @@ class Runner(FakeRunner):
             return CommandResult(
                 0, "".join(f"{name} loaded inactive dead fixture\n" for name in sorted(loaded)), "",
             )
+        if (argv[:3] == ("systemctl", "show", "obsidian-github-sync.timer")
+                and "--property=SubState" in argv):
+            self.calls.append(argv)
+            return CommandResult(0, (
+                f"SubState={self.sync_substate}\n"
+                f"NextElapseUSecMonotonic={self.sync_next_elapse}\n"
+            ), "")
         if argv[:2] == ("systemctl", "show") and "-p" in argv:
             name = argv[-1]
             self.calls.append(argv)
@@ -408,7 +418,7 @@ def test_legacy_cli_requires_distinct_live_effect_approval(tmp_path, monkeypatch
 
 def test_interrupted_preparing_marker_refuses_unreviewed_reentry(tmp_path):
     runner, opts = setup(tmp_path)
-    with staged._lock(opts["receipt_dir"]) as state:
+    with staged._lock(opts["receipt_dir"], require_root=False) as state:
         staged._control_write(state, "preparing", TARGET, None)
     calls = list(runner.calls)
     with pytest.raises(ProductionUpdateError, match="unresolved"):
@@ -418,8 +428,8 @@ def test_interrupted_preparing_marker_refuses_unreviewed_reentry(tmp_path):
 
 def test_second_staging_process_cannot_acquire_transaction_lock(tmp_path):
     runner, opts = setup(tmp_path)
-    with staged._lock(opts["receipt_dir"]):
-        with pytest.raises(ProductionUpdateError, match="already running"):
+    with staged._lock(opts["receipt_dir"], require_root=False):
+        with pytest.raises(ProductionUpdateError, match="already in progress"):
             stage(runner, opts)
     assert runner.calls == []
 
@@ -1106,7 +1116,7 @@ def test_stage_git_runner_strips_inherited_object_and_config_overrides(monkeypat
     assert result.returncode == 0 and result.stdout == "ok"
     argv, kwargs = seen[0]
     assert argv[:5] == (
-        "git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"
+        "/usr/bin/git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"
     )
     assert kwargs["env"]["GIT_NO_REPLACE_OBJECTS"] == "1"
     assert kwargs["env"]["GIT_CONFIG_NOSYSTEM"] == "1"
@@ -1147,3 +1157,226 @@ def test_stage_unit_validation_before_any_unit_replacement(tmp_path):
     # Validation of the last source must not replace an earlier installed Unit.
     assert first.read_bytes() == original
     assert _control(opts)["status"] == "failed"
+
+
+def test_pending_host_lifecycle_blocks_stage_and_activate_before_effects(tmp_path):
+    runner, opts = setup(tmp_path)
+    host = opts["receipt_dir"].parent / "host-receipts"
+    host.mkdir(mode=0o700)
+    pending = host / "pending-runtime.json"
+    pending.write_text('{"phase":"incomplete"}\n')
+    with pytest.raises(ProductionUpdateError, match="host lifecycle reconciliation"):
+        stage(runner, opts)
+    assert not runner.calls
+    assert not (opts["receipt_dir"] / staged.STAGING_ROOT).exists()
+
+    pending.unlink()
+    receipt = stage(runner, opts)
+    calls = list(runner.calls)
+    pending.write_text('{"phase":"failed"}\n')
+    with pytest.raises(ProductionUpdateError, match="host lifecycle reconciliation"):
+        activate(receipt, opts)
+    assert runner.calls == calls
+    assert _control(opts)["status"] == "staged"
+    assert not _called(runner, ("--profile", "live"))
+
+
+def test_host_wide_lock_serializes_stage_with_legacy(tmp_path):
+    runner, opts = setup(tmp_path)
+    host = opts["receipt_dir"].parent / "host-receipts"
+    with staged.legacy._host_update_guard(host, require_root=False):
+        with pytest.raises(ProductionUpdateError, match="already in progress"):
+            stage(runner, opts)
+        with pytest.raises(ProductionUpdateError, match="already in progress"):
+            staged.legacy.execute_update(
+                target_sha=TARGET, app_root=opts["app_root"],
+                venv_root=opts["venv_root"],
+                systemd_dir=opts["systemd_dir"],
+                receipt_dir=opts["receipt_dir"],
+                daily_revision_env=opts["daily_revision_env"],
+                runner=runner, require_root=False,
+            )
+    assert not runner.calls
+    assert not (opts["receipt_dir"] / staged.STAGING_ROOT).exists()
+
+
+def test_legacy_live_cannot_bypass_existing_stage(tmp_path):
+    runner, opts = setup(tmp_path)
+    stage(runner, opts)
+    calls = list(runner.calls)
+    with pytest.raises(ProductionUpdateError, match="unresolved staged transaction"):
+        staged.legacy.execute_update(
+            target_sha=TARGET, app_root=opts["app_root"],
+            venv_root=opts["venv_root"],
+            systemd_dir=opts["systemd_dir"],
+            receipt_dir=opts["receipt_dir"],
+            daily_revision_env=opts["daily_revision_env"],
+            runner=runner, require_root=False,
+        )
+    assert runner.calls == calls
+    assert _control(opts)["status"] == "staged"
+    assert not _called(runner, ("--profile", "live"))
+
+
+def test_first_staged_state_directory_parent_fsync_required(tmp_path, monkeypatch):
+    runner, opts = setup(tmp_path)
+    real_fsync = staged.os.fsync
+    seen = []
+
+    def fail_parent_fsync(fd):
+        if staged.os.readlink(f"/proc/self/fd/{fd}") == str(opts["receipt_dir"]):
+            seen.append("root-parent")
+            raise OSError("injected new directory durability failure")
+        return real_fsync(fd)
+
+    with monkeypatch.context() as m:
+        m.setattr(staged.os, "fsync", fail_parent_fsync)
+        with pytest.raises(OSError, match="injected new directory durability"):
+            stage(runner, opts)
+    assert seen == ["root-parent"]
+    assert not runner.calls
+    assert not (opts["receipt_dir"] / staged.STAGING_ROOT / staged.CONTROL_FILE).exists()
+
+
+@pytest.mark.parametrize("substate,next_elapse", [
+    ("elapsed", "infinity"),
+    ("waiting", "infinity"),
+    ("waiting", "0"),
+    ("waiting", ""),
+])
+def test_sync_timer_restore_requires_confirmed_next_firing(tmp_path, substate, next_elapse):
+    runner, opts = setup(
+        tmp_path, sync_substate=substate, sync_next_elapse=next_elapse
+    )
+    receipt = stage(runner, opts)
+    with pytest.raises(ProductionUpdateError, match="restored Sync timer not armed"):
+        activate(receipt, opts, sync=True)
+    assert _control(opts)["status"] == "failed"
+    assert not runner.enabled and not runner.active
+    assert not runner.daily_enabled and not runner.daily_active
+
+
+def test_sync_timer_restore_waiting_with_next_firing_passes(tmp_path):
+    runner, opts = setup(tmp_path, sync_substate="waiting", sync_next_elapse="5min")
+    receipt = stage(runner, opts)
+    activate(receipt, opts, sync=True)
+    assert runner.enabled and runner.active
+    assert _control(opts)["status"] == "activated"
+
+
+@pytest.mark.parametrize("dirname", ["obsidian-.service.d", "obsidian-github-.service.d"])
+def test_dashed_prefix_dropins_block_before_stage_effects(tmp_path, dirname):
+    runner, opts = setup(tmp_path)
+    folder = opts["systemd_dir"] / dirname
+    folder.mkdir()
+    (folder / "override.conf").write_text("[Service]\nExecStart=\n")
+    with pytest.raises(ProductionUpdateError, match="drop-in"):
+        stage(runner, opts)
+    assert _control(opts) == {"status": "none"}
+    assert runner.enabled and runner.active
+    assert not runner.calls or not _called(runner, ("disable", "--now"))
+
+
+@pytest.mark.parametrize("command", [
+    "|/bin/sh -c 'run --config /etc/private/hidden.toml'",
+    "-|/bin/sh -c 'run --password-file /etc/private/secret'",
+    "/usr/bin/env sh -c 'run --config /etc/private/hidden.toml'",
+    "/bin/bash -lc 'run --config /etc/private/hidden.toml'",
+])
+def test_shell_wrapped_direct_inputs_are_rejected(tmp_path, command):
+    runner, opts = setup(tmp_path)
+    unit = opts["app_root"] / "examples/github-sync/obsidian-github-writer.service"
+    unit.write_text(f"[Service]\nExecStart={command}\n")
+    with pytest.raises(ProductionUpdateError, match="shell-command Exec inputs"):
+        stage(runner, opts)
+    assert _control(opts)["status"] == "failed"
+    assert not _called(runner, ("--profile", "live"))
+
+
+def test_stage_pip_subprocess_ignores_inherited_pip_and_python_settings(monkeypatch):
+    from types import SimpleNamespace
+    observed = []
+
+    def fake_run(command, **kwargs):
+        observed.append((command, kwargs["env"]))
+        return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setenv("PIP_CONFIG_FILE", "/tmp/attacker-pip.conf")
+    monkeypatch.setenv("PIP_INDEX_URL", "https://untrusted.example.invalid")
+    monkeypatch.setenv("PYTHONPATH", "/tmp/malicious-package")
+    monkeypatch.setenv("LD_PRELOAD", "/tmp/evil.so")
+    monkeypatch.setenv("PATH", "/tmp/rogue")
+    monkeypatch.setattr(staged.subprocess, "run", fake_run)
+    pip = "/opt/obsidian-automation/venv/bin/pip"
+    result = staged._trusted_stage_runner((pip, "install", "--no-deps", "/opt/app"))
+    assert result.returncode == 0
+    command, env = observed[0]
+    assert command[0] == pip
+    assert env["PIP_CONFIG_FILE"] == "/dev/null"
+    assert env["PYTHONNOUSERSITE"] == "1"
+    assert env["PATH"] == "/usr/sbin:/usr/bin:/sbin:/bin"
+    for name in ("PIP_INDEX_URL", "PYTHONPATH", "LD_PRELOAD"):
+        assert name not in env
+
+
+@pytest.mark.parametrize("phase", ["preparing", "activating"])
+def test_hard_process_loss_keeps_durable_control_and_blocks_reentry(tmp_path, phase):
+    from multiprocessing import get_context
+    import os
+
+    runner, opts = setup(tmp_path)
+    receipt = stage(runner, opts)
+    before = list(runner.calls)
+
+    def crash_after_marker():
+        with staged._lock(opts["receipt_dir"], require_root=False) as state:
+            staged._control_write(
+                state, phase, TARGET, receipt if phase == "activating" else None
+            )
+            os._exit(73)
+
+    worker = get_context("fork").Process(target=crash_after_marker)
+    worker.start()
+    worker.join(timeout=10)
+    assert worker.exitcode == 73
+    assert _control(opts)["status"] == phase
+    with pytest.raises(ProductionUpdateError, match="matching inert stage"):
+        activate(receipt, opts)
+    with pytest.raises(ProductionUpdateError, match="unresolved staged transaction"):
+        stage(runner, opts)
+    assert runner.calls == before
+    assert not _called(runner, ("--profile", "live"))
+
+
+def test_immutable_receipt_link_failure_cannot_claim_staged(tmp_path, monkeypatch):
+    runner, opts = setup(tmp_path)
+    real_link = staged.os.link
+
+    def refuse_stage_receipt(source, target, *args, **kwargs):
+        if str(target).endswith(".staging-receipt.json"):
+            raise OSError("injected receipt link failure")
+        return real_link(source, target, *args, **kwargs)
+
+    with monkeypatch.context() as m:
+        m.setattr(staged.os, "link", refuse_stage_receipt)
+        with pytest.raises(OSError, match="receipt link failure"):
+            stage(runner, opts)
+    assert _control(opts)["status"] == "failed"
+    assert not runner.enabled and not runner.active
+    assert not _called(runner, ("--profile", "live"))
+
+
+def test_root_stage_receipt_redirection_cannot_bypass_shared_authority(tmp_path, monkeypatch):
+    runner, opts = setup(tmp_path)
+    monkeypatch.setattr(staged.os, "geteuid", lambda: 0)
+    with pytest.raises(ProductionUpdateError, match="receipt root is fixed"):
+        staged.stage_update(target_sha=TARGET, **{**opts, "require_root": True})
+    with pytest.raises(ProductionUpdateError, match="receipt root is fixed"):
+        staged.legacy.execute_update(
+            target_sha=TARGET, app_root=opts["app_root"],
+            venv_root=opts["venv_root"], systemd_dir=opts["systemd_dir"],
+            receipt_dir=opts["receipt_dir"],
+            daily_revision_env=opts["daily_revision_env"],
+            runner=runner, require_root=True,
+        )
+    assert not runner.calls

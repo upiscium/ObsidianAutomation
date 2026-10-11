@@ -32,21 +32,34 @@ HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 MAX_RECORD = 32768
 DEFAULT_CONFIG = Path("/etc/obsidian-github-summarizer/config.env")
 def _trusted_stage_runner(argv: Sequence[str]) -> legacy.CommandResult:
-    """Production Stage Git calls cannot inherit Git transport/object overrides."""
-    if not argv or argv[0] != "git":
+    """Sanitize privileged Git/pip execution without changing other role smokes."""
+    if not argv:
+        raise legacy.ProductionUpdateError("empty Stage command")
+    if argv[0] not in {"git"} and not (
+        Path(argv[0]).is_absolute() and Path(argv[0]).name == "pip"
+    ):
         return legacy._default_runner(argv)
-    env = {key: value for key, value in os.environ.items()
-           if not key.startswith("GIT_")}
-    env.update({
-        "GIT_NO_REPLACE_OBJECTS": "1",
-        "GIT_OPTIONAL_LOCKS": "0",
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_CONFIG_GLOBAL": "/dev/null",
-    })
-    command = (
-        "git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
-        *argv[1:],
-    )
+
+    env = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/root",
+           "LC_ALL": "C.UTF-8"}
+    if argv[0] == "git":
+        env.update({
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+        })
+        # Only the explicitly reviewed Adam SSH agent is accepted by Stage.
+        if os.environ.get("SSH_AUTH_SOCK") == "/run/user/1000/ssh-agent":
+            env["SSH_AUTH_SOCK"] = "/run/user/1000/ssh-agent"
+        command = (
+            "/usr/bin/git", "-c", "core.fsmonitor=false",
+            "-c", "core.hooksPath=/dev/null", *argv[1:],
+        )
+    else:
+        env.update({"PIP_CONFIG_FILE": "/dev/null", "PIP_NO_INPUT": "1",
+                    "PIP_DISABLE_PIP_VERSION_CHECK": "1", "PYTHONNOUSERSITE": "1"})
+        command = tuple(argv)
     result = subprocess.run(
         command, check=False, capture_output=True, text=True, env=env,
     )
@@ -106,27 +119,44 @@ def _validate_dir(path: Path, *, private: bool) -> None:
 def _state_dir(root: Path, *, create: bool) -> Path:
     _validate_dir(root, private=False)
     result = root / STAGING_ROOT
+    newly_created = create and not os.path.lexists(result)
     if create:
         result.mkdir(mode=0o700, exist_ok=True)
     _validate_dir(result, private=True)
+    if newly_created:
+        # Persist the directory *entry* before publishing PREPARING or touching
+        # timers. Fsyncing the new child's contents alone is insufficient.
+        parent_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
     return result
 
 @contextmanager
-def _lock(root: Path):
-    state = _state_dir(root, create=True)
-    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(state / "transaction.lock", flags, 0o600)
-    try:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.geteuid() or info.st_mode & 0o077:
-            raise legacy.ProductionUpdateError("staging lock identity invalid")
+def _lock(root: Path, *, require_root: bool = True,
+          host_receipt_dir: Path | None = None):
+    host_root = host_receipt_dir
+    if host_root is None:
+        host_root = (legacy.HOST_RECEIPT_DIR if require_root
+                     else root.parent / "host-receipts")
+    # Lock order is always host-wide first, Stage second. Both remain held
+    # until effects and receipts complete; host lifecycle uses the same inode.
+    with legacy._host_update_guard(host_root, require_root=require_root):
+        state = _state_dir(root, create=True)
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(state / "transaction.lock", flags, 0o600)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise legacy.ProductionUpdateError("a staged update is already running") from exc
-        yield state
-    finally:
-        os.close(fd)
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+                raise legacy.ProductionUpdateError("staging lock identity invalid")
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise legacy.ProductionUpdateError("a staged update is already running") from exc
+            yield state
+        finally:
+            os.close(fd)
 
 def _write_all(fd: int, data: bytes) -> None:
     view = memoryview(data)
@@ -283,11 +313,17 @@ def _assert_no_systemd_dropins(
                 or fields["FragmentPath"] != str(systemd_dir / name)
                 or fields["DropInPaths"]):
             raise legacy.ProductionUpdateError("unsupported effective systemd drop-in or unit origin")
-        # Search all supported pending vendor/root/global overrides.
+        # Include dashed-prefix directories: foo-bar.service also inherits
+        # foo-.service.d, in addition to exact and type-wide drop-ins.
+        stem, _, unit_type = name.rpartition(".")
+        segments = stem.split("-")
+        dropins = {name + ".d", unit_type + ".d"}
+        dropins.update(
+            "-".join(segments[:index]) + "-." + unit_type + ".d"
+            for index in range(1, len(segments))
+        )
         for prefix in directories:
-            # Name-specific and systemd-supported type-wide overrides.
-            # Refuse any directory at these positions (including symlinks).
-            for dirname in (name + ".d", name.rpartition(".")[2] + ".d"):
+            for dirname in sorted(dropins):
                 if os.path.lexists(prefix / dirname):
                     raise legacy.ProductionUpdateError("unreviewed systemd drop-in directory")
 
@@ -324,6 +360,30 @@ def _contain_failed_timers(runner: legacy.CommandRunner) -> None:
         raise legacy.ProductionUpdateError(
             "TIMER_CONTAINMENT_UNCONFIRMED: manual operator inspection required"
         )
+
+
+def _require_restored_sync_timer_armed(runner: legacy.CommandRunner) -> None:
+    """An active Sync timer must also have a viable next-elapse state."""
+    response = runner((
+        "systemctl", "show", legacy.TIMER_UNIT,
+        "--property=SubState", "--property=NextElapseUSecMonotonic",
+    ))
+    if response.returncode != 0:
+        raise legacy.ProductionUpdateError("cannot verify restored Sync timer")
+    state: dict[str, str] = {}
+    for line in response.stdout.splitlines():
+        if line.count("=") != 1:
+            raise legacy.ProductionUpdateError("ambiguous Sync timer arming state")
+        name, value = line.split("=", 1)
+        if name in state or name not in {"SubState", "NextElapseUSecMonotonic"}:
+            raise legacy.ProductionUpdateError("ambiguous Sync timer arming state")
+        state[name] = value
+    if set(state) != {"SubState", "NextElapseUSecMonotonic"}:
+        raise legacy.ProductionUpdateError("incomplete Sync timer arming state")
+    if (state["SubState"] not in {"waiting", "running"} or
+            (state["SubState"] == "waiting" and
+             state["NextElapseUSecMonotonic"] in {"", "0", "infinity", "n/a"})):
+        raise legacy.ProductionUpdateError("restored Sync timer not armed")
 
 
 def _require_idle_services(runner: legacy.CommandRunner, systemd_dir: Path) -> None:
@@ -504,9 +564,11 @@ def _direct_service_input_manifest(
                 raise legacy.ProductionUpdateError("invalid systemd ExecStart arguments") from exc
             if "%" in command:
                 raise legacy.ProductionUpdateError("unsupported systemd Exec specifier")
-            if (words and Path(words[0].lstrip("-+!@:")).name in {"sh", "bash", "dash", "zsh"}
-                    and "-c" in words[1:]):
-                raise legacy.ProductionUpdateError("shell-command Exec inputs cannot be bound")
+            if words:
+                prefix = words[0][:len(words[0]) - len(words[0].lstrip("-+!@:|"))]
+                executable = Path(words[0].lstrip("-+!@:|")).name
+                if "|" in prefix or executable in {"sh", "bash", "dash", "zsh", "env"}:
+                    raise legacy.ProductionUpdateError("shell-command Exec inputs cannot be bound")
             for i, word in enumerate(words):
                 key, sep, embedded = word.partition("=")
                 is_file_flag = key in _DIRECT_FILE_FLAGS
@@ -916,13 +978,17 @@ def stage_update(*, target_sha: str, app_root: Path, venv_root: Path,
                  systemd_dir: Path, receipt_dir: Path, daily_revision_env: Path,
                  config_files: Sequence[Path],
                  runner: legacy.CommandRunner = _trusted_stage_runner,
-                 require_root: bool = True) -> str:
+                 require_root: bool = True,
+                 host_receipt_dir: Path | None = None) -> str:
     """Stage a pinned commit with only safe smoke; keep managed timers inert."""
     if require_root and os.geteuid() != 0:
         raise legacy.ProductionUpdateError("root required for staging")
+    if require_root and receipt_dir != legacy.DEFAULT_RECEIPT_DIR:
+        raise legacy.ProductionUpdateError("production Stage receipt root is fixed")
     if not isinstance(target_sha, str) or not SHA_RE.fullmatch(target_sha):
         raise legacy.ProductionUpdateError("staging target SHA invalid")
-    with _lock(receipt_dir) as state:
+    with _lock(receipt_dir, require_root=require_root,
+               host_receipt_dir=host_receipt_dir) as state:
         previous_control = _control_read(state)
         if previous_control is not None and previous_control["status"] != "activated":
             raise legacy.ProductionUpdateError("unresolved staged transaction exists")
@@ -1037,10 +1103,13 @@ def activate_update(*, stage_sha256: str, approve_live_github_writer: bool,
                     config_files: Sequence[Path], restore_sync_timer: bool = False,
                     restore_daily_timer: bool = False,
                     runner: legacy.CommandRunner = _trusted_stage_runner,
-                    require_root: bool = True) -> str:
+                    require_root: bool = True,
+                    host_receipt_dir: Path | None = None) -> str:
     """Activate one exact Stage, with explicit live and timer approvals."""
     if require_root and os.geteuid() != 0:
         raise legacy.ProductionUpdateError("root required for activation")
+    if require_root and receipt_dir != legacy.DEFAULT_RECEIPT_DIR:
+        raise legacy.ProductionUpdateError("production Stage receipt root is fixed")
     if not approve_live_github_writer:
         raise legacy.ProductionUpdateError("live GitHub Writer smoke has no operator approval")
     if restore_daily_timer:
@@ -1049,7 +1118,8 @@ def activate_update(*, stage_sha256: str, approve_live_github_writer: bool,
         )
     if not isinstance(stage_sha256, str) or not HASH_RE.fullmatch(stage_sha256):
         raise legacy.ProductionUpdateError("full stage receipt SHA-256 required")
-    with _lock(receipt_dir) as state:
+    with _lock(receipt_dir, require_root=require_root,
+               host_receipt_dir=host_receipt_dir) as state:
         control = _control_read(state)
         if control is None or control["status"] != "staged" or control["stage_sha256"] != stage_sha256:
             raise legacy.ProductionUpdateError("no matching inert stage is eligible for activation")
@@ -1129,6 +1199,8 @@ def activate_update(*, stage_sha256: str, approve_live_github_writer: bool,
             for unit, expected in expected_timers.items():
                 if legacy._timer_state(runner, unit) != expected:
                     raise legacy.ProductionUpdateError("timer state failed post-activation verification")
+            if restore_sync_timer and timers[legacy.TIMER_UNIT]["active"]:
+                _require_restored_sync_timer_armed(runner)
 
             result = {
                 "record_version": VERSION, "stage": "activated",

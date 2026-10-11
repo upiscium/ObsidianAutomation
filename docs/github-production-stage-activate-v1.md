@@ -337,3 +337,55 @@ Stage, Activate, run live GitHub Writer, or restore any timer. At a minimum:
   compatibility check and request **distinct exact-SHA Stage**, **exact-receipt
   Activate/Writer**, and **timer restoration** authorities. Daily Writer/CAS
   publication acceptance remains independent.
+
+## R7 shared updater authority and crash-hardening candidate (2026-10-11)
+
+DRAFT implementation, not a deployment authorization. This supersedes the
+previous "common lock not implemented" code-level gap while keeping real-host
+and independent review gates open.
+
+- The single host-wide lock inode is
+  /var/lib/obsidian-automation/deployments/host-update.lock.
+  GitHub Stage, Activate, the legacy effectful GitHub updater and the
+  target-owned consolidated host lifecycle hold this nonblocking flock for
+  their entire effectful transaction. Stage takes it before its private
+  transaction lock; no other path may obtain these locks in reverse order.
+  The host receipt directory must be root-owned and not group/world-writable.
+  Root operation cannot redirect this path through the approved CLI.
+  The production Stage receipt directory is likewise fixed to
+  /var/lib/obsidian-github-sync/deployments; custom test-only roots cannot
+  bypass the real unresolved-Stage admission gate.
+- An existing /var/lib/obsidian-automation/deployments/pending-runtime.json
+  blocks Stage, Activate and legacy GitHub updates, including malformed and
+  failed intents. Under the same lock, consolidated host lifecycle and legacy
+  updater inspect the separate GitHub Stage control at
+  /var/lib/obsidian-github-sync/deployments/staged-github-production-v1/.
+  If that directory exists, its private control must be valid and activated;
+  preparing, staged, activating, failed, missing/corrupt controls or a
+  suspicious symlink block host/legacy effects until manual reconciliation.
+  Legacy --approve-legacy-live-effects remains an explicit break-glass route,
+  not an alternative Activate receipt.
+- New Stage control directory creation fsyncs its parent deployment directory
+  BEFORE PREPARING, and the marker/receipt publication fsyncs its directory.
+  Failure before this durability boundary cannot proceed to timer effects.
+- When restoring a previously active GitHub Sync timer, Activate requires
+  SubState=waiting with a finite next elapse or SubState=running. Merely
+  enabled/active is not sufficient, and failures are not marked activated.
+- The managed Unit scanner rejects dashed-prefix drop-ins and unsupported
+  shell/systemd pipe execution wrappers. Bootstrap Git validation uses a
+  trusted absolute /usr/bin/git with sanitized Git environment. Stage Git/pip
+  subprocesses do not inherit arbitrary pip/Python/dynamic-loader overrides;
+  only the exact Adam SSH agent path may be passed as an approved transport
+  capability.
+
+BOOTSTRAP: The first Stage bootstrap loads only the pinned three GitHub updater
+modules. Its exact target checkout must include the reciprocal host lifecycle
+gate, and previously launched host updater processes must be quiescent before
+Stage authorization. This does not protect against a privileged administrator
+deliberately running stale pre-gate binaries or manually changing systemd.
+
+Independent security/correctness re-review, crash/fault-injection and actual
+host filesystem/ACL/systemd compatibility remain distinct acceptance gates,
+followed by separate explicit merge, Stage, Activate, Writer, timer restoration
+and Daily CAS authorizations. Passing simulation tests is not proof of
+production power-loss recovery.

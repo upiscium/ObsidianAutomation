@@ -149,3 +149,20 @@ upgrade. After merge, accept one actual exact-SHA update on the automation host,
 confirm all previously serving timers return to their intended states, and check
 fresh service invocations and downstream results. `Result=success` alone may be
 an old result or an idle worker; it does not establish new work completed.
+
+## Interaction with GitHub two-phase updater (#294 / #295)
+
+The consolidated host lifecycle and GitHub Stage/Activate share the same
+root-owned host receipt directory and exact host-update.lock flock inode.
+The host lifecycle rejects any unresolved GitHub Stage control after acquiring
+the shared lock, before any effect. A Stage control directory without a
+complete activated marker requires manual reconciliation, even if a previous
+read-only inspect reports no complete Stage receipt.
+
+In the opposite direction, Stage/Activate and break-glass legacy GitHub update
+refuse any pending host runtime intent and hold the same host-wide lock while
+they change shared code, service Units or timers. This coordinates compliant
+new versions only, not arbitrary privileged actors or stale binaries. At first
+production migration verify the target-owned host lifecycle gate and quiescence
+of pre-gate updater processes. A common lock is not a substitute for operator
+approval or permission to publish Vault/Nextcloud content.

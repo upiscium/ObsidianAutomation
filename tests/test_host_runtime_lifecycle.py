@@ -489,3 +489,54 @@ def test_group_writable_runtime_journal_parent_refused(setup):
     with pytest.raises(life.LifecycleError, match="receipt_directory"):
         complete(kwargs)
     assert not system.commands
+
+
+@pytest.mark.parametrize("phase", ["preparing", "staged", "activating", "failed", "missing"])
+def test_consolidated_host_blocks_unresolved_github_stage_before_effects(setup, phase):
+    kwargs, system, _ = setup
+    stage_root = kwargs["receipt_dir"].parent / "github-receipts"
+    state = stage_root / life.STAGED_GITHUB_ROOT
+    state.mkdir(parents=True, mode=0o700)
+    if phase != "missing":
+        marker = state / "control.json"
+        marker.write_text(json.dumps({
+            "record_version": 1,
+            "target_sha": TARGET,
+            "stage_sha256": "a" * 64,
+            "status": phase,
+            "updated_at": "2026-10-11T00:00:00Z",
+        }) + "\n")
+        marker.chmod(0o600)
+    with pytest.raises(life.LifecycleError, match="staged_github_reconciliation_required"):
+        with life.RuntimeTransaction(**kwargs):
+            pytest.fail("host lifecycle admitted unresolved Stage")
+    assert not system.commands
+    assert not (kwargs["receipt_dir"] / "pending-runtime.json").exists()
+
+
+def test_consolidated_host_accepts_only_completed_stage(setup):
+    kwargs, system, _ = setup
+    stage = kwargs["receipt_dir"].parent / "github-receipts" / life.STAGED_GITHUB_ROOT
+    stage.mkdir(parents=True, mode=0o700)
+    marker = stage / "control.json"
+    marker.write_text(json.dumps({
+        "record_version": 1,
+        "target_sha": TARGET,
+        "stage_sha256": "b" * 64,
+        "status": "activated",
+        "updated_at": "2026-10-11T00:00:00Z",
+    }) + "\n")
+    marker.chmod(0o600)
+    with life.RuntimeTransaction(**kwargs):
+        pass
+    assert not system.commands
+
+
+def test_host_runtime_and_github_stage_share_exact_lock_inode(setup):
+    from obsidian_automation import github_production_update as github
+    kwargs, system, _ = setup
+    with github._host_update_guard(kwargs["receipt_dir"], require_root=False):
+        with pytest.raises(BlockingIOError):
+            with life.RuntimeTransaction(**kwargs):
+                pytest.fail("host updater bypassed held GitHub lock")
+    assert not system.commands
