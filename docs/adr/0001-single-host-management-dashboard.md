@@ -59,6 +59,9 @@ A generic host-mode Gitea Runner MUST NOT be placed into the same privileged-dat
 
 ## 4. Credential profiles and their honest guarantees
 
+**Decision is provisional.** The Standard/Strict product choice (one operator-managed Nextcloud account vs multiple remotely restricted accounts) does **not** by itself choose the internal implementation of Standard. A Standard implementation using a central DAV Gateway and a simpler Standard implementation using service-scoped `systemd LoadCredential=` delivery must be independently compared in #308. The latter is less invasive to existing `rclone.conf` clients but grants each recipient the broad Nextcloud credential; it may still be preferable if the accepted personal-use threat model prioritizes maintenance simplicity over compromise isolation. Neither is equal to Strict's server-side account ACLs.
+
+
 | Dimension | Standard (default proposal) | Strict (compatible option) |
 | --- | --- | --- |
 | Nextcloud user accounts | One **dedicated** service account, one configured credential to Gateway | Several remotely restricted accounts/share bindings |
@@ -94,7 +97,9 @@ If Gateway unavailable or its policy identity is stale, deny effects rather than
 
 ### 5.1. rclone integration feasibility gate (not solved by this ADR)
 
-**Blocking spike: [#308](https://github.com/upiscium/ObsidianAutomation/issues/308).** Existing `vault_mirror.py` runs `rclone sync` with a named remote and `rclone.conf`; AI and GitHub mirrors and the Snapshot path currently depend on separate rclone/WebDAV credentials. The above Unix-socket Gateway is a *proposed authority contract*, not a drop-in compatible backend for rclone.
+**Blocking spike: [#308](https://github.com/upiscium/ObsidianAutomation/issues/308).** An initial disposable proof is recorded in [rclone Unix WebDAV fixture results](../spikes/308-rclone-unix-webdav-fixture.md): rclone v1.75.1 synchronized a filtered local fixture through a Unix-domain DAV socket, but the default VFS directory cache gave a stale successful sync after an upstream change; disabling that cache resolved the local reproduction. This is not a real Nextcloud or per-service security test.
+
+Existing `vault_mirror.py` runs `rclone sync` with a named remote and `rclone.conf`; AI and GitHub mirrors and the Snapshot path currently depend on separate rclone/WebDAV credentials. The above Unix-socket Gateway is a *proposed authority contract*, not a drop-in compatible backend for rclone.
 
 Before claiming Standard single-credential support, prototype at least a Gateway-owned mirror pull, a scoped local DAV interface (with actual caller authentication, not an unauthenticated loopback listener), and a constrained Gateway-launched rclone child. Model who can read the remote credential and who can write each local mirror in each option. In particular, passing the secret to a subprocess is still credential exposure, even if the credential is short-lived.
 
@@ -168,7 +173,7 @@ Replace the generic host-mode Gitea Actions publisher with a dedicated local, no
 ## 12. Decision points and rollout order
 
 Pending approval:
-1. Accept Standard as default with weaker **remote** account isolation, keeping Strict as an explicit choice.
+1. Accept the Standard product goal (one operator-managed Nextcloud account) with weaker **remote** account isolation, keeping Strict as an explicit choice; choose **direct per-service credentials vs Gateway** only after #308's evidence and threat comparison.
 2. Approve Runnerless local Publisher for the *ObsidianAutomation-only* publication path, not for arbitrary Gitea workflows.
 3. Confirm authorized phone/network ingress; do not interpret "loginless" as public binding.
 4. Decide whether force-stopping active effects is even necessary; safest MVP is schedule pause + controlled drain.
