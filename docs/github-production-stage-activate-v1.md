@@ -26,7 +26,10 @@ SHA-1 commit, target reachable from the locally verified `origin/main`, and
 fast-forward ancestry. It reads only three allowed `src/obsidian_automation/`
 Python **Git objects** (`__init__`, `github_production_update`,
 `github_production_staging`) after verifying their Git mode, exact blob hash
-and byte limit. It loads them from an owner-private, temporary directory with
+and byte limit. Bootstrap explicitly disables Git replacement objects,
+refuses any local replacement refs, strips inherited Git configuration overrides,
+and uses a vetted root-owned temp parent instead of inherited TMPDIR.
+It loads the modules from an owner-private, temporary directory with
 isolated Python imports; **the production checkout and installed package do
 not need to change before Stage itself acquires its transaction lock**.
 The private directory is removed on normal return; a hard loss might leave
@@ -43,7 +46,13 @@ set -euo pipefail
 APP=/opt/obsidian-automation/app
 VENV=/opt/obsidian-automation/venv
 TARGET='<exact-40-character-reviewed-merged-SHA>'
-git -C "$APP" show "$TARGET:tools/bootstrap_github_stage.py" |
+test -z "$(env -i PATH=/usr/bin:/bin GIT_NO_REPLACE_OBJECTS=1 \
+  GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+  /usr/bin/git -C "$APP" for-each-ref --format='%(refname)' refs/replace)"
+env -i PATH=/usr/bin:/bin GIT_NO_REPLACE_OBJECTS=1 \
+  GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+  /usr/bin/git -c core.fsmonitor=false -c core.hooksPath=/dev/null \
+  -C "$APP" show "$TARGET:tools/bootstrap_github_stage.py" |
   /usr/bin/python3 -I -B - inspect \
     --target-sha "$TARGET" \
     --app-root "$APP" \
@@ -86,7 +95,7 @@ its own independent Writer/Nextcloud CAS authorization.
 |---|---|---|
 | `none` | No committed Stage control marker; first read-only source inspection may be repeated | Verify checkout, installed package, timers and any orphan temporary state before authorizing a new Stage |
 | `preparing` | Timers may have been stopped; installation may be partly applied | Keep Writer/Daily inactive; collect unit/package/receipt metadata and verify upstream/canonical refs. **No automatic retry or checkout reset** |
-| `failed` | Stage or Activate encountered an error; effects may already have happened | Diagnose the failed cutpoint; explicitly authorize repair/rollback or a new staged transaction |
+| `failed` | Stage or Activate encountered an error; effects may already have happened | Diagnose the failed cutpoint; explicitly authorize repair/rollback or a new staged transaction. If timer stop or post-stop inspection failed, the operator receives `TIMER_CONTAINMENT_UNCONFIRMED`; do not assume timers are inactive |
 | `staged` | Safe Stage receipt exists; both managed timers should be inert | Validate exact receipt, code/ACL/config/unit drift; separately approve (or refuse) Activate |
 | `activating` | Live GitHub Writer Smoke may have run partially or fully | **Do not replay Smoke** without independently reconciling published/canonical effects and receiving new consent |
 | `activated` | Activation receipt was committed | Confirm exact receipt, permitted timer state and downstream project/daily acceptance independently |
@@ -122,8 +131,10 @@ This is **documentation, not a command to run before approval**.
   not appear in the configured systemd directory.
   The **only allowed GitHub timers** are
   the known Sync and Daily Progress timers. The installed-files inventory,
-  systemd unit-file enumeration, and loaded-unit enumeration must all agree;
-  any additional enabled, disabled, transient or loaded GitHub timer is a
+  systemd unit-file enumeration must match the expected set exactly. The
+  loaded-unit inventory may omit known disabled/inactive timers, but must be
+  a subset of the installed allowlist. Any additional unknown or transient
+  GitHub timer is a
   fail-closed **pre-effect** blocker. Repeat these checks after timer stop,
   daemon reload and safe smoke. No unknown timer is automatically stopped.
 - Fingerprints the exact authorized config files (SHA-256 only, not content).
@@ -141,8 +152,14 @@ This is **documentation, not a command to run before approval**.
   by `systemd-analyze unit-paths` (as well as the configured unit directory),
   even if not loaded yet. This applies before and after Stage and Activate;
   no drop-in directives are silently excluded from the revision contract.
+  When installing new GitHub Units, Stage renders the reviewed legacy
+  /opt/obsidian-github-sync/venv/bin and WorkingDirectory paths to the
+  explicitly approved app/venv roots, matching consolidated-host rendering.
+  Any remaining unrendered legacy runtime path is rejected. The exact
+  installed bytes are SHA-bound in the Stage receipt, and rechecked by Activate.
   The EnvironmentFile parser accepts whitespace-indented assignments and
-  binds every recognized absolute path; unsupported syntax fails closed.
+  binds every recognized absolute path; unsupported syntax, including
+  systemd %-specifiers and variable-expanded paths, fails closed.
   Stage also scans the reviewed managed Unit `ExecCondition`,
   `ExecStart`, `ExecStartPre`, `ExecStartPost`, `ExecReload`,
   `ExecStop` and `ExecStopPost` arguments. Files referenced directly by
@@ -152,8 +169,9 @@ This is **documentation, not a command to run before approval**.
   password files, which are **not** EnvironmentFiles. Because systemd
   performs C-style escape decoding that differs from POSIX `shlex`,
   this v1 scanner **rejects residual backslash escapes after legitimate
-  line continuations have been joined** rather than guessing which path
-  systemd will pass to the process. Such units need a separately reviewed
+  line continuations have been joined**, and refuses %-specifiers and
+  shell -c wrappers, rather than guessing which file the runtime will read.
+  Such units need a separately reviewed
   parser extension before staging. Unknown file-like options, missing or
   nonregular direct files, variable-expanded/nonabsolute paths, and changed
   direct input hashes fail closed; neither file contents nor credentials
@@ -290,3 +308,32 @@ for this exact stage. A ChatGPT consent to **design** does not supply this.
 Connection preference: Adam RDC direct shell with the existing
 `SSH_AUTH_SOCK=/run/user/1000/ssh-agent` and strict SSH host-key checking.
 No tmux forwarding assumption and no ad-hoc rsync to live source trees.
+
+
+## R5 review remediation scope and remaining release gates (2026-10-11)
+
+The P1 bootstrap replacement-ref hazard and incorrect consolidated-host Unit
+paths have code and isolated regression coverage. Bootstrap source retrieval
+itself must use the sanitized, replacement-disabled command in this runbook:
+sanitizing only the code after import cannot attest the script being imported.
+Stage validates all rendered Unit inputs before the first Unit replacement;
+installed bytes and effective Unit paths remain subject to the Stage receipt.
+
+This is **not** an independent review verdict or authorization to merge,
+Stage, Activate, run live GitHub Writer, or restore any timer. At a minimum:
+
+- Establish a common host-wide transaction lock/pending-intent admission with
+  the consolidated host lifecycle updater. The separately authorized legacy
+  all-in-one updater must be retired or governed as break-glass against active
+  or unresolved Stage transactions, not silently treated as equivalent authority.
+- Expand fault-injection coverage for receipt publication and directory fsync,
+  interrupted preparing/activating state and Sync timer arming after restoration.
+  If timer stop cannot be verified, treat the environment as containment-
+  unconfirmed and reconcile it manually before any new effects.
+- Independently re-review the exact final commit for security, correctness,
+  compatibility and the Git/checkout trust boundary, with real Reviewer output
+  and explicit outstanding-risk disposition.
+- Merge only on separate authorization; then conduct a read-only production
+  compatibility check and request **distinct exact-SHA Stage**, **exact-receipt
+  Activate/Writer**, and **timer restoration** authorities. Daily Writer/CAS
+  publication acceptance remains independent.

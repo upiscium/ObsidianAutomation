@@ -15,6 +15,7 @@ import re
 import shlex
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 from contextlib import contextmanager
@@ -30,6 +31,28 @@ SHA_RE = re.compile(r"^[0-9a-f]{40,64}$")
 HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 MAX_RECORD = 32768
 DEFAULT_CONFIG = Path("/etc/obsidian-github-summarizer/config.env")
+def _trusted_stage_runner(argv: Sequence[str]) -> legacy.CommandResult:
+    """Production Stage Git calls cannot inherit Git transport/object overrides."""
+    if not argv or argv[0] != "git":
+        return legacy._default_runner(argv)
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith("GIT_")}
+    env.update({
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+    })
+    command = (
+        "git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+        *argv[1:],
+    )
+    result = subprocess.run(
+        command, check=False, capture_output=True, text=True, env=env,
+    )
+    return legacy.CommandResult(result.returncode, result.stdout, result.stderr)
+
+
 EFFECT_SERVICES = (
     "obsidian-github-writer.service",
     "obsidian-github-compactor.service",
@@ -190,7 +213,7 @@ def _assert_known_timer_inventory(runner: legacy.CommandRunner, systemd_dir: Pat
         ("systemctl", "list-units", "--all", "--type=timer",
          "--no-legend", "--plain", "--no-pager", "obsidian-github-*.timer"),
     )
-    for argv in commands:
+    for index, argv in enumerate(commands):
         observation = runner(argv)
         if observation.returncode != 0:
             raise legacy.ProductionUpdateError("cannot enumerate GitHub timer authority")
@@ -204,7 +227,7 @@ def _assert_known_timer_inventory(runner: legacy.CommandRunner, systemd_dir: Pat
                     or "/" in name or name in names):
                 raise legacy.ProductionUpdateError("GitHub timer inventory is ambiguous")
             names.add(name)
-        if names != expected:
+        if (names != expected if index == 0 else not names.issubset(expected)):
             raise legacy.ProductionUpdateError("unexpected loaded or installed GitHub timer")
 
 
@@ -282,6 +305,26 @@ def _require_inert(runner: legacy.CommandRunner) -> None:
     for unit in legacy.MANAGED_TIMER_UNITS:
         if legacy._timer_state(runner, unit) != (False, False):
             raise legacy.ProductionUpdateError(f"staged timer is not inert: {unit}")
+
+def _contain_failed_timers(runner: legacy.CommandRunner) -> None:
+    """Best effort, but never silently claim inert timers on an uncertain stop."""
+    uncertain = False
+    for unit in legacy.MANAGED_TIMER_UNITS:
+        try:
+            result = runner(("systemctl", "disable", "--now", unit))
+            if result.returncode != 0:
+                uncertain = True
+        except BaseException:
+            uncertain = True
+    try:
+        _require_inert(runner)
+    except BaseException:
+        uncertain = True
+    if uncertain:
+        raise legacy.ProductionUpdateError(
+            "TIMER_CONTAINMENT_UNCONFIRMED: manual operator inspection required"
+        )
+
 
 def _require_idle_services(runner: legacy.CommandRunner, systemd_dir: Path) -> None:
     """Verify complete installed and loaded GitHub service authority and idle state."""
@@ -385,6 +428,8 @@ def _environment_manifest(systemd_dir: Path, names: Sequence[str]) -> dict[str, 
             raw = assignment.group(1).strip()
             optional = raw.startswith("-")
             value = raw[1:] if optional else raw
+            if "%" in value or "$" in value:
+                raise legacy.ProductionUpdateError("unsupported EnvironmentFile specifier")
             if not value or any(c.isspace() or c in "'\\\"" for c in value):
                 raise legacy.ProductionUpdateError("unrecognized systemd EnvironmentFile expression")
             bound = Path(value)
@@ -457,6 +502,11 @@ def _direct_service_input_manifest(
                 words = shlex.split(command, posix=True)
             except ValueError as exc:
                 raise legacy.ProductionUpdateError("invalid systemd ExecStart arguments") from exc
+            if "%" in command:
+                raise legacy.ProductionUpdateError("unsupported systemd Exec specifier")
+            if (words and Path(words[0].lstrip("-+!@:")).name in {"sh", "bash", "dash", "zsh"}
+                    and "-c" in words[1:]):
+                raise legacy.ProductionUpdateError("shell-command Exec inputs cannot be bound")
             for i, word in enumerate(words):
                 key, sep, embedded = word.partition("=")
                 is_file_flag = key in _DIRECT_FILE_FLAGS
@@ -758,6 +808,48 @@ def _deployed_code_manifest(app_root: Path, venv_root: Path) -> dict[str, str]:
     return result
 
 
+def _install_stage_managed_units(app_root: Path, venv_root: Path,
+                                 systemd_dir: Path) -> tuple[str, ...]:
+    """Install reviewed units with the exact consolidated runtime paths.
+
+    The retained legacy updater copies unrendered example units. Stage must
+    instead use the consolidated-host path conversion, independent of a helper
+    script that is not loaded by the exact-Git-object bootstrap.
+    """
+    for root in (app_root, venv_root):
+        text = str(root)
+        if (not root.is_absolute() or ".." in root.parts
+                or any(c.isspace() or c in r"\%$'\";" for c in text)):
+            raise legacy.ProductionUpdateError("unsafe systemd runtime path")
+    legacy._require_directory(systemd_dir, label="stage systemd directory")
+    # Validate the complete rendered set before the first destination change.
+    approved: list[tuple[Path, bytes]] = []
+    for source in legacy._managed_unit_sources(app_root):
+        destination = systemd_dir / source.name
+        if os.path.lexists(destination) and destination.is_symlink():
+            raise legacy.ProductionUpdateError("symlinked staged systemd unit")
+        raw = _read_file(source, max_bytes=1024 * 1024)
+        try:
+            rendered = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise legacy.ProductionUpdateError("invalid staged unit encoding") from exc
+        if "\x00" in rendered or "\r" in rendered:
+            raise legacy.ProductionUpdateError("unsupported systemd unit encoding")
+        rendered = rendered.replace(
+            "/opt/obsidian-github-sync/venv/bin",
+            str(venv_root / "bin"),
+        ).replace(
+            "WorkingDirectory=/opt/obsidian-github-sync/app",
+            f"WorkingDirectory={app_root}",
+        )
+        if "/opt/obsidian-github-sync/" in rendered:
+            raise legacy.ProductionUpdateError("unrendered legacy runtime in Stage unit")
+        approved.append((destination, rendered.encode("utf-8")))
+    for destination, rendered in approved:
+        legacy._atomic_install_bytes(rendered, destination)
+    return tuple(destination.name for destination, _ in approved)
+
+
 def _install_revision(path: Path, revision: str) -> None:
     legacy._require_directory(path.parent, label="summarizer revision directory")
     fd, name = tempfile.mkstemp(prefix=".daily-stage-", dir=path.parent)
@@ -823,7 +915,7 @@ def _receipt_read(state: Path, sha: str) -> dict[str, object]:
 def stage_update(*, target_sha: str, app_root: Path, venv_root: Path,
                  systemd_dir: Path, receipt_dir: Path, daily_revision_env: Path,
                  config_files: Sequence[Path],
-                 runner: legacy.CommandRunner = legacy._default_runner,
+                 runner: legacy.CommandRunner = _trusted_stage_runner,
                  require_root: bool = True) -> str:
     """Stage a pinned commit with only safe smoke; keep managed timers inert."""
     if require_root and os.geteuid() != 0:
@@ -874,7 +966,7 @@ def stage_update(*, target_sha: str, app_root: Path, venv_root: Path,
             service_roles = _service_role_package_smoke(
                 app_root, venv_root, code_manifest, runner
             )
-            installed = legacy._install_managed_units(app_root, systemd_dir)
+            installed = _install_stage_managed_units(app_root, venv_root, systemd_dir)
             managed_names = _all_installed_unit_names(systemd_dir)
             if not set(installed).issubset(managed_names):
                 raise legacy.ProductionUpdateError("installed unit inventory incomplete")
@@ -923,21 +1015,19 @@ def stage_update(*, target_sha: str, app_root: Path, venv_root: Path,
             _publish(state, f"{digest}.staging-receipt.json", payload, immutable=True)
             _control_write(state, "staged", target_sha, digest)
             return digest
-        except BaseException:
-            # An interrupted/failed Stage has no authority to restore timers.
-            # Best-effort stop BOTH, even when an intermediate disable failed;
-            # never let a restored timer invoke old/new code accidentally.
-            for unit in legacy.MANAGED_TIMER_UNITS:
-                try:
-                    runner(("systemctl", "disable", "--now", unit))
-                except Exception:
-                    pass
-            # A hard kill leaves the durable preparing marker for manual
-            # reconciliation. Do not infer safe recovery from a failed step.
+        except BaseException as original:
+            # A failed stop must never be reported as safe containment.
+            containment_error = None
+            try:
+                _contain_failed_timers(runner)
+            except legacy.ProductionUpdateError as exc:
+                containment_error = exc
             try:
                 _control_write(state, "failed", target_sha, None)
             except Exception:
                 pass
+            if containment_error is not None:
+                raise containment_error from original
             raise
 
 
@@ -946,7 +1036,7 @@ def activate_update(*, stage_sha256: str, approve_live_github_writer: bool,
                     receipt_dir: Path, daily_revision_env: Path,
                     config_files: Sequence[Path], restore_sync_timer: bool = False,
                     restore_daily_timer: bool = False,
-                    runner: legacy.CommandRunner = legacy._default_runner,
+                    runner: legacy.CommandRunner = _trusted_stage_runner,
                     require_root: bool = True) -> str:
     """Activate one exact Stage, with explicit live and timer approvals."""
     if require_root and os.geteuid() != 0:
@@ -1052,16 +1142,18 @@ def activate_update(*, stage_sha256: str, approve_live_github_writer: bool,
             _publish(state, f"{digest}.activation-receipt.json", payload, immutable=True)
             _control_write(state, "activated", receipt["target_sha"], stage_sha256)
             return digest
-        except BaseException:
-            for unit in legacy.MANAGED_TIMER_UNITS:
-                try:
-                    runner(("systemctl", "disable", "--now", unit))
-                except Exception:
-                    pass
+        except BaseException as original:
+            containment_error = None
+            try:
+                _contain_failed_timers(runner)
+            except legacy.ProductionUpdateError as exc:
+                containment_error = exc
             try:
                 _control_write(state, "failed", receipt["target_sha"], stage_sha256)
             except Exception:
                 pass
+            if containment_error is not None:
+                raise containment_error from original
             raise
 
 def inspect_stage(*, receipt_dir: Path) -> dict[str, object]:

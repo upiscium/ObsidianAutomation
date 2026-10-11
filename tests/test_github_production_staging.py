@@ -14,9 +14,9 @@ from test_github_production_update import FakeRunner, PREVIOUS, TARGET, _layout
 class Runner(FakeRunner):
     def __init__(self, app: Path, venv: Path, *, allow_fast_forward=True,
                  active_extra_services=(), extra_loaded_timers=(),
-                 extra_loaded_services=(), extra_installed_services=(),
+                 unloaded_timers=(), extra_loaded_services=(), extra_installed_services=(),
                  alternate_unit_paths=(), effective_dropins=(), bad_fragments=(),
-                 fail_role_import=None, **kwargs):
+                 fail_role_import=None, fail_disable=False, **kwargs):
         super().__init__(
             app, venv, daily_present=True,
             daily_enabled=True, daily_active=False, **kwargs,
@@ -24,16 +24,22 @@ class Runner(FakeRunner):
         self.allow_fast_forward = allow_fast_forward
         self.active_extra_services = frozenset(active_extra_services)
         self.extra_loaded_timers = set(extra_loaded_timers)
+        self.unloaded_timers = set(unloaded_timers)
         self.extra_loaded_services = set(extra_loaded_services)
         self.extra_installed_services = set(extra_installed_services)
         self.alternate_unit_paths = tuple(alternate_unit_paths)
         self.effective_dropins = set(effective_dropins)
         self.bad_fragments = set(bad_fragments)
         self.fail_role_import = fail_role_import
+        self.fail_disable = fail_disable
         self.systemd_dir = None
 
     def __call__(self, argv):
         argv = tuple(str(x) for x in argv)
+        if (self.fail_disable and argv ==
+                ("systemctl", "disable", "--now", "obsidian-github-sync.timer")):
+            self.calls.append(argv)
+            return CommandResult(1, "", "simulated timer stop failure")
         if argv[:2] == ("runuser", "-u"):
             self.calls.append(argv)
             if argv[2] == self.fail_role_import:
@@ -59,6 +65,7 @@ class Runner(FakeRunner):
             kind = ".service" if "--type=service" in argv else ".timer"
             loaded = {p.name for p in self.systemd_dir.glob("obsidian-github-*" + kind)}
             if kind == ".timer":
+                loaded -= self.unloaded_timers
                 loaded |= self.extra_loaded_timers
             else:
                 loaded |= self.extra_loaded_services
@@ -1002,3 +1009,141 @@ def test_missing_mandatory_direct_file_blocks_stage(tmp_path):
     assert _control(opts)["status"] == "failed"
     assert not runner.enabled and not runner.active
     assert not _called(runner, ("--profile", "live"))
+
+
+def test_stage_renders_consolidated_unit_execution_paths(tmp_path):
+    runner, opts = setup(tmp_path)
+    source = opts["app_root"] / "examples/github-sync/obsidian-github-writer.service"
+    source.write_text(
+        "[Service]\n"
+        "WorkingDirectory=/opt/obsidian-github-sync/app\n"
+        "ExecStart=/opt/obsidian-github-sync/venv/bin/obsidian-github-project-status-worker\n"
+    )
+    receipt = stage(runner, opts)
+    installed = (opts["systemd_dir"] / source.name).read_text()
+    assert f"WorkingDirectory={opts['app_root']}" in installed
+    assert f"ExecStart={opts['venv_root']}/bin/obsidian-github-project-status-worker" in installed
+    assert "/opt/obsidian-github-sync" not in installed
+    proof = staged._receipt_read(opts["receipt_dir"] / staged.STAGING_ROOT, receipt)
+    assert source.name in proof["unit_manifest"]
+    assert not _called(runner, ("--profile", "live"))
+
+
+def test_stage_rejects_unmapped_legacy_runtime_path(tmp_path):
+    runner, opts = setup(tmp_path)
+    source = opts["app_root"] / "examples/github-sync/obsidian-github-writer.service"
+    source.write_text("[Service]\nExecStart=/opt/obsidian-github-sync/app/custom-script\n")
+    with pytest.raises(ProductionUpdateError, match="unrendered legacy runtime"):
+        stage(runner, opts)
+    assert _control(opts)["status"] == "failed"
+    assert not _called(runner, ("--profile", "live"))
+
+
+def test_installed_but_unloaded_known_timer_is_valid_idle_inventory(tmp_path):
+    runner, opts = setup(
+        tmp_path, unloaded_timers=("obsidian-github-daily-progress.timer",)
+    )
+    assert len(stage(runner, opts)) == 64
+    assert not _called(runner, ("--profile", "live"))
+
+
+def test_environment_file_specifier_is_not_misbound(tmp_path):
+    runner, opts = setup(tmp_path)
+    source = opts["app_root"] / "examples/github-sync/obsidian-github-writer.service"
+    source.write_text("[Service]\nEnvironmentFile=/etc/private/%n.env\n")
+    with pytest.raises(ProductionUpdateError, match="unsupported EnvironmentFile specifier"):
+        stage(runner, opts)
+    assert _control(opts)["status"] == "failed"
+    assert not _called(runner, ("--profile", "live"))
+
+
+def test_shell_wrapped_exec_inputs_are_not_misbound(tmp_path):
+    runner, opts = setup(tmp_path)
+    source = opts["app_root"] / "examples/github-sync/obsidian-github-writer.service"
+    source.write_text("[Service]\nExecStart=/bin/sh -c 'run --config /etc/private/config.toml'\n")
+    with pytest.raises(ProductionUpdateError, match="shell-command Exec inputs"):
+        stage(runner, opts)
+    assert _control(opts)["status"] == "failed"
+    assert not _called(runner, ("--profile", "live"))
+
+
+def test_failed_stage_with_failed_timer_stop_reports_unconfirmed_containment(tmp_path):
+    runner, opts = setup(tmp_path, fail_disable=True)
+    with pytest.raises(ProductionUpdateError, match="TIMER_CONTAINMENT_UNCONFIRMED"):
+        stage(runner, opts)
+    assert _control(opts)["status"] == "failed"
+    assert runner.enabled and runner.active
+    assert not _called(runner, ("--profile", "live"))
+
+
+def test_failed_activate_with_failed_timer_stop_reports_unconfirmed_containment(tmp_path):
+    runner, opts = setup(tmp_path)
+    receipt = stage(runner, opts)
+    runner.fail_profile = "live"
+    runner.fail_disable = True
+    with pytest.raises(ProductionUpdateError, match="TIMER_CONTAINMENT_UNCONFIRMED"):
+        activate(receipt, opts)
+    assert _control(opts)["status"] == "failed"
+    assert _called(runner, ("--profile", "live"))
+
+
+def test_stage_git_runner_strips_inherited_object_and_config_overrides(monkeypatch):
+    import os
+    from types import SimpleNamespace
+
+    seen = []
+
+    def fake_run(argv, **kwargs):
+        seen.append((argv, kwargs))
+        return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(staged.subprocess, "run", fake_run)
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.fsmonitor")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "true")
+    monkeypatch.setenv("GIT_NO_REPLACE_OBJECTS", "0")
+    result = staged._trusted_stage_runner(("git", "-C", "/tmp/fixture", "status", "--porcelain"))
+    assert result.returncode == 0 and result.stdout == "ok"
+    argv, kwargs = seen[0]
+    assert argv[:5] == (
+        "git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"
+    )
+    assert kwargs["env"]["GIT_NO_REPLACE_OBJECTS"] == "1"
+    assert kwargs["env"]["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert "GIT_CONFIG_COUNT" not in kwargs["env"]
+    assert os.environ["GIT_CONFIG_COUNT"] == "1"
+
+
+def test_real_consolidated_unit_templates_render_without_old_runtime(tmp_path):
+    templates = Path(__file__).resolve().parents[1] / "examples/github-sync"
+    app = tmp_path / "app"
+    venv = tmp_path / "venv"
+    units = tmp_path / "systemd"
+    sources = app / "examples/github-sync"
+    sources.mkdir(parents=True)
+    units.mkdir()
+    for source in templates.glob("obsidian-github-*"):
+        if source.suffix in {".timer", ".service"}:
+            (sources / source.name).write_bytes(source.read_bytes())
+    installed = staged._install_stage_managed_units(app, venv, units)
+    assert len(installed) == 11
+    for name in installed:
+        data = (units / name).read_text()
+        assert "/opt/obsidian-github-sync/" not in data
+        if name.endswith(".service"):
+            assert f"ExecStart={venv}/bin/" in data
+            if "WorkingDirectory=" in data:
+                assert f"WorkingDirectory={app}" in data
+
+
+def test_stage_unit_validation_before_any_unit_replacement(tmp_path):
+    runner, opts = setup(tmp_path)
+    first = opts["systemd_dir"] / "obsidian-github-compactor.service"
+    original = first.read_bytes()
+    last = opts["app_root"] / "examples/github-sync/obsidian-github-writer.service"
+    last.write_text("[Service]\nExecStart=/opt/obsidian-github-sync/app/unsupported\n")
+    with pytest.raises(ProductionUpdateError, match="unrendered legacy runtime"):
+        stage(runner, opts)
+    # Validation of the last source must not replace an earlier installed Unit.
+    assert first.read_bytes() == original
+    assert _control(opts)["status"] == "failed"

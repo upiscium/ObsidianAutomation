@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -34,13 +35,28 @@ class StageBootstrapError(RuntimeError):
     """Source identity/authority precondition was not established."""
 
 
+def _safe_git_env() -> dict[str, str]:
+    """Ignore inherited Git settings and disable replacement objects."""
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith("GIT_")}
+    env.update({
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+    })
+    return env
+
+
 def _git(root: Path, *arguments: str, stdin: bytes | None = None) -> bytes:
     result = subprocess.run(
-        ("git", "-C", str(root), *arguments),
+        ("git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+         "-C", str(root), *arguments),
         input=stdin,
         capture_output=True,
         check=False,
         timeout=30,
+        env=_safe_git_env(),
     )
     if result.returncode != 0:
         # Don't expose Git stderr, local paths or private remote addresses.
@@ -54,6 +70,9 @@ def _preflight_git(root: Path, target: str) -> str:
     if (not root.is_absolute() or ".." in root.parts or root.is_symlink()
             or not root.is_dir()):
         raise StageBootstrapError("trusted absolute production checkout required")
+    # Reject replacement refs, even if Git object validation would be self-consistent.
+    if _git(root, "for-each-ref", "--format=%(refname)", "refs/replace").strip():
+        raise StageBootstrapError("Git replacement refs are not authorized")
     if _git(root, "branch", "--show-current").strip() != b"main":
         raise StageBootstrapError("production checkout is not on main")
     if _git(root, "status", "--porcelain").strip():
@@ -68,8 +87,9 @@ def _preflight_git(root: Path, target: str) -> str:
     # branch or a rollback. Refuse until the exact reviewed SHA was merged.
     for older, newer in ((target, "refs/remotes/origin/main"), (current, target)):
         result = subprocess.run(
-            ("git", "-C", str(root), "merge-base", "--is-ancestor", older, newer),
-            capture_output=True, timeout=30, check=False,
+            ("git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+             "-C", str(root), "merge-base", "--is-ancestor", older, newer),
+            capture_output=True, timeout=30, check=False, env=_safe_git_env(),
         )
         if result.returncode != 0:
             raise StageBootstrapError("target is not merged and fast-forward reachable")
@@ -95,9 +115,23 @@ def _pinned_module_bytes(root: Path, target: str, path: str) -> bytes:
     return payload
 
 
+def _private_temp_parent(*, stage: bool) -> Path:
+    """Use a root-owned stable parent; inherited TMPDIR has no authority."""
+    parent = Path("/run" if stage else "/tmp")
+    info = parent.lstat()
+    mode = stat.S_IMODE(info.st_mode)
+    if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+            or info.st_uid != 0
+            or (stage and (mode & 0o022))
+            or (not stage and (mode & 0o022) and not (mode & stat.S_ISVTX))):
+        raise StageBootstrapError("private source import parent is not trusted")
+    return parent
+
+
 def _run_from_pinned_source(args: argparse.Namespace, previous_sha: str) -> dict[str, object]:
     from tempfile import TemporaryDirectory
-    with TemporaryDirectory(prefix="obsa-stage-source-") as directory:
+    with TemporaryDirectory(prefix="obsa-stage-source-",
+                            dir=_private_temp_parent(stage=args.phase == "stage")) as directory:
         private_root = Path(directory)
         private_root.chmod(0o700)
         package = private_root / "obsidian_automation"

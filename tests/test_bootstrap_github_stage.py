@@ -179,3 +179,38 @@ def test_inspect_cannot_be_misrepresented_as_stage_permission(fake_checkout):
     result = invoke(root, target, "--approve-stage-effects")
     assert result.returncode != 0
     assert "inspect cannot receive Stage-effects approval" in result.stderr
+
+
+def test_bootstrap_rejects_git_replace_ref_before_loading_target(fake_checkout):
+    root, previous, target = fake_checkout
+    git(root, "checkout", "-q", "--detach", target)
+    forged = root / "src/obsidian_automation/github_production_staging.py"
+    forged.write_text("raise RuntimeError('unreviewed replacement source')\n")
+    git(root, "add", ".")
+    git(root, "commit", "-qm", "unreviewed-replacement")
+    other = git(root, "rev-parse", "HEAD")
+    git(root, "checkout", "-q", "main")
+    assert git(root, "rev-parse", "HEAD") == previous
+    git(root, "replace", target, other)
+    # Native Git show silently selects the substituted tree if not hardened.
+    assert "unreviewed replacement" in git(
+        root, "show", target + ":src/obsidian_automation/github_production_staging.py"
+    )
+    result = invoke(root, target)
+    assert result.returncode == 2
+    assert json.loads(result.stderr)["status"] == "blocked"
+    assert git(root, "status", "--porcelain") == ""
+
+
+def test_bootstrap_rejects_rogue_temp_parent_and_sanitizes_git_env(fake_checkout, tmp_path, monkeypatch):
+    root, _, target = fake_checkout
+    attacker_temp = tmp_path / "attacker-temp"
+    attacker_temp.mkdir(mode=0o777)
+    monkeypatch.setenv("TMPDIR", str(attacker_temp))
+    monkeypatch.setenv("GIT_NO_REPLACE_OBJECTS", "0")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.fsmonitor")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "true")
+    result = invoke(root, target)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["status"] == "source_attested_no_effects"

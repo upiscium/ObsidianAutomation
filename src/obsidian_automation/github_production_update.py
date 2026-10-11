@@ -263,7 +263,10 @@ def _managed_unit_sources(app_root: Path) -> tuple[Path, ...]:
 
 
 def _atomic_install_file(source: Path, destination: Path, *, mode: int = 0o644) -> None:
-    data = source.read_bytes()
+    _atomic_install_bytes(source.read_bytes(), destination, mode=mode)
+
+
+def _atomic_install_bytes(data: bytes, destination: Path, *, mode: int = 0o644) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(
         prefix=f".{destination.name}.",
