@@ -54,7 +54,7 @@ def fixture_observer():
             "timer": "obsidian-ai-vault-pull.timer",
             "service": "obsidian-ai-vault-pull.service",
             "schedule": "scheduled", "latest_execution": "succeeded",
-            "health": "healthy",
+            "health": "observed_success",
         }
     ]
 
@@ -68,7 +68,7 @@ def test_is_bound_to_loopback_and_json_observation_only() -> None:
         assert value["authority"] == "observation_only"
         assert value["actions"] == {"start": False, "stop": False, "trigger": False}
         assert len(value["services"]) == 1
-        assert value["services"][0]["health"] == "healthy"
+        assert value["services"][0]["health"] == "observed_success"
         assert value["ai_pipeline"]["freshness"] == "unavailable"
         assert "default-src 'none'" in headers["Content-Security-Policy"]
         assert "frame-ancestors 'none'" in headers["Content-Security-Policy"]
@@ -126,12 +126,12 @@ def test_duplicate_host_header_is_rejected() -> None:
 
 def test_observer_failure_is_redacted_and_not_a_200() -> None:
     def fail():
-        raise RuntimeError("PASSWORD=not-for-client")
+        raise RuntimeError("UNEXPECTED_DIAGNOSTIC_CANARY")
     with serving(fail) as server:
         status, headers, body = response(server)
         assert status == 503
         assert json.loads(body) == {"error": "status_unavailable"}
-        assert b"PASSWORD" not in body
+        assert b"UNEXPECTED_DIAGNOSTIC_CANARY" not in body
 
 
 def test_ai_pipeline_projection_is_sanitized_and_not_a_health_override() -> None:
@@ -140,6 +140,10 @@ def test_ai_pipeline_projection_is_sanitized_and_not_a_health_override() -> None
             "freshness": "fresh", "health": "critical",
             "generated_at": "2026-10-11T11:00:00Z", "age_seconds": 1,
             "review_count": 2, "operational_failures": 3,
+            "transient_retries": 1,
+            "incidents": [
+                {"code": "blocked_generations", "severity": "critical", "affected": 3}
+            ],
             "deterministic_rejections": 4,
             "backpressure": True, "review_reminder_due": False,
         }
@@ -150,7 +154,7 @@ def test_ai_pipeline_projection_is_sanitized_and_not_a_health_override() -> None
         assert data["ai_pipeline"]["health"] == "critical"
         assert data["ai_pipeline"]["review_count"] == 2
         assert data["ai_pipeline"]["operational_failures"] == 3
-        assert data["services"][0]["health"] == "healthy"
+        assert data["services"][0]["health"] == "observed_success"
         assert "Authorization" not in raw.decode("utf-8")
 
 
@@ -186,3 +190,12 @@ def test_invalid_port_rejected() -> None:
         make_server(port=-1)
     with pytest.raises(ValueError):
         make_server(port=65536)
+
+def test_status_javascript_renders_distinct_incident_and_retry_metrics() -> None:
+    from obsidian_automation.admin_dashboard import JS
+    assert 'metric("要対応エラー", value(p.operational_failures))' in JS
+    assert 'metric("一時的な再試行", value(p.transient_retries))' in JS
+    assert 'metric("Validation棄却（正常）", value(p.deterministic_rejections))' in JS
+    assert 'retry_exhausted_generations' in JS
+    assert 'blocked_generations' in JS
+    assert 'innerHTML' not in JS

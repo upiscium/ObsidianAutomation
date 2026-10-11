@@ -48,8 +48,40 @@ The test mocks do not establish actual production systemd health or correct mana
 
 1. AI `pre_review_status` read projection is implemented in this incremental branch; next integrate `mirror_status` and a **dedicated durable GitHub pipeline read model** for independently proven last-success/failure and reasons. The existing systemd display only provides a latest attempt; do not call it a verified remote state or invent a history from it.
 2. Unify the service registry with runtime/provisioning logic instead of maintaining duplicate lists long-term (current prototype duplicates known names deliberately to prevent dynamic command injection).
-3. Add a narrowly scoped local operation broker for approved `pause`, `resume`, `run_once` with idempotency, lock and persistent audit, and do not bypass #294 deployment stage/activate or #287 Human Review.
+3. Add a narrowly scoped local operation broker for approved `pause`, `resume`, `run_once` with idempotency, lock and persistent audit, and do not bypass #294 deployment stage/activate or #309 exact-bound automatic rejection cleanup.
 4. Confirm trustworthy origin when opened from a private WireGuard-connected phone and add real deployment-unit hardening; never silently expand the host bind address.
 5. Carry out independently qualified Security and Correctness review before changing the production profile or merging.
 
 **This document and implementation do not authorize or perform production service activation or Vault writes.**
+
+## Corrected incident and successful-run semantics (subsequent child PR)
+
+The AI status projection must not describe a normal deterministic Validation
+rejection as an incident. Only blocked generations and retry-exhausted
+generations contribute to the actionable operational error count; an in-budget
+retryable_failure is shown separately as transient retry activity. Fixed,
+bounded incident codes and counts are available for blocked and exhausted
+categories, never original model output or raw diagnostic text.
+
+The pre-review status has a redundant aggregate health level and detailed
+state counters. If these contradict each other, the Dashboard returns
+invalid/unknown with hidden counters rather than treating the apparently green
+aggregate as proof of health. A missing or stale source behaves similarly:
+no previous counts are presented as current. An ordinary rejected candidate,
+even if numerous, is not an outage and needs no Human Acknowledge.
+
+A systemd oneshot that succeeded at some unspecified time is now described as
+observed_success (freshness unverified), not healthy. A verified latest run
+failure has priority over an unrelated field that is unknown. The original
+non-mutating five-unit systemctl allowlist, fixed-path read model, and
+localhost-only web server are unchanged.
+
+The prior test's credential-looking PASSWORD assignment was a synthetic
+redaction canary, not a real secret. It is replaced by an explicit nonsecret
+unexpected-field canary so generic secret scanners do not confuse test data
+with live credentials. The historic scan alert may still reference the
+pre-existing commit and does not, by itself, establish credential exposure.
+
+This amendment does not add provider outage monitoring, actual Nextcloud
+cleanup conflict detection, cross-service incident history, service control,
+remote ingress or production deployment. Those remain separate acceptance gates.

@@ -147,16 +147,19 @@ def aggregate_status(*, runner: Runner = subprocess.run) -> list[dict[str, objec
     for spec in SERVICES:
         timer = classify_timer(_run_properties(spec.timer, TIMER_FIELDS, runner=runner))
         service = classify_service(_run_properties(spec.service, SERVICE_FIELDS, runner=runner))
-        if timer == "not_installed" or service == "not_installed":
+        if service == "failed" or timer in {"blocked", "failed"}:
+            # Independently proven failure remains actionable even when
+            # the companion unit is absent or cannot be observed.
+            health = "failed"
+        elif timer == "not_installed" or service == "not_installed":
             health = "not_installed"
         elif timer == "unknown" or service == "unknown":
             health = "unknown"
-        elif service == "failed" or timer in {"blocked", "failed"}:
-            health = "failed"
         elif timer == "paused":
             health = "paused"
         elif timer in {"scheduled", "triggering"} and service == "succeeded":
-            health = "healthy"
+            # systemd's last completed oneshot can be arbitrarily old.
+            health = "observed_success"
         else:
             health = "unverified"
         results.append({

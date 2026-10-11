@@ -28,6 +28,8 @@ def _empty(freshness: str = "unavailable") -> dict[str, object]:
         "age_seconds": None,
         "review_count": None,
         "operational_failures": None,
+        "transient_retries": None,
+        "incidents": [],
         "deterministic_rejections": None,
         "backpressure": None,
         "review_reminder_due": None,
@@ -107,18 +109,38 @@ def load_ai_health(
             "generated_at": parsed.generated_at,
             "age_seconds": age,
         }
-    failures = sum(
-        parsed.states[name]
-        for name in ("retryable_failure", "retry_exhausted", "blocked")
+    # Only verified terminal operational blockers count as actionable errors.
+    # An ordinary Validation rejection is not an outage, and in-budget retry
+    # should be shown as a transient condition rather than a critical incident.
+    counts = parsed.states
+    blocked = counts["blocked"]
+    exhausted = counts["retry_exhausted"]
+    transient = counts["retryable_failure"]
+    expected_health = (
+        "CRITICAL" if blocked or exhausted else "WARNING" if transient else "OK"
     )
+    if parsed.pipeline_health != expected_health:
+        # A syntactically valid but contradictory status is not trustworthy:
+        # do not turn an active blocked job into a green dashboard.
+        return _empty("invalid")
+    incidents = [
+        {"code": code, "severity": "critical", "affected": number}
+        for code, number in (
+            ("blocked_generations", blocked),
+            ("retry_exhausted_generations", exhausted),
+        )
+        if number
+    ]
     return {
         "freshness": "fresh",
-        "health": parsed.pipeline_health.lower(),
+        "health": expected_health.lower(),
         "generated_at": parsed.generated_at,
         "age_seconds": age,
         "review_count": parsed.states["awaiting_human_review"],
-        "operational_failures": failures,
-        "deterministic_rejections": parsed.states["deterministic_reject"],
+        "operational_failures": blocked + exhausted,
+        "transient_retries": transient,
+        "incidents": incidents,
+        "deterministic_rejections": counts["deterministic_reject"],
         "backpressure": parsed.backpressure_active,
         "review_reminder_due": parsed.review_reminder_due,
     }

@@ -119,15 +119,16 @@ def test_aggregate_projections_are_sanitized_and_distinguish_health() -> None:
         assert kw["check"] is False
         fields = TIMER_FIELDS if argv[2].endswith(".timer") else SERVICE_FIELDS
         values = "\n".join(f"{key}={samples[argv[2]][key]}" for key in fields) + "\n"
-        return subprocess.CompletedProcess(argv, 0, values, "PASSWORD=do-not-include")
+        # Synthetic unrequested stderr canary, not an actual credential.
+        return subprocess.CompletedProcess(argv, 0, values, "IGNORED_FIELD=redaction-canary")
     view = aggregate_status(runner=runner)
     assert [s["health"] for s in view] == [
-        "healthy", "paused", "failed", "unverified", "unverified",
+        "observed_success", "paused", "failed", "unverified", "unverified",
     ]
     assert view[1]["latest_execution"] == "not_observed"
     assert view[3]["latest_execution"] == "not_observed"
     assert len(calls) == 10
-    assert "PASSWORD" not in str(view)
+    assert "redaction-canary" not in str(view)
 
 
 
@@ -144,3 +145,43 @@ def test_failed_systemctl_is_unknown_not_healthy() -> None:
     def fail(argv, **kw):
         return subprocess.CompletedProcess(argv, 1, "", "secret-content")
     assert all(x["health"] == "unknown" for x in aggregate_status(runner=fail))
+
+def test_proven_failure_has_priority_over_unknown_timer_substate() -> None:
+    samples = {}
+    for spec in SERVICES:
+        samples[spec.timer] = timer(SubState="not-a-known-state")
+        samples[spec.service] = service(ActiveState="failed", Result="exit-code")
+
+    def runner(argv, **kw):
+        fields = TIMER_FIELDS if argv[2].endswith(".timer") else SERVICE_FIELDS
+        raw = "\n".join(f"{key}={samples[argv[2]][key]}" for key in fields) + "\n"
+        return subprocess.CompletedProcess(argv, 0, raw, "")
+
+    assert all(entry["health"] == "failed" for entry in aggregate_status(runner=runner))
+
+
+def test_observed_success_does_not_claim_current_freshness() -> None:
+    samples = {}
+    for spec in SERVICES:
+        samples[spec.timer] = timer()
+        samples[spec.service] = service()
+
+    def runner(argv, **kw):
+        fields = TIMER_FIELDS if argv[2].endswith(".timer") else SERVICE_FIELDS
+        raw = "\n".join(f"{key}={samples[argv[2]][key]}" for key in fields) + "\n"
+        return subprocess.CompletedProcess(argv, 0, raw, "")
+
+    assert all(entry["health"] == "observed_success" for entry in aggregate_status(runner=runner))
+
+def test_proven_failure_remains_visible_when_companion_unit_missing() -> None:
+    samples = {}
+    for spec in SERVICES:
+        samples[spec.timer] = timer(LoadState="not-found")
+        samples[spec.service] = service(ActiveState="failed", Result="exit-code")
+
+    def runner(argv, **kwargs):
+        fields = TIMER_FIELDS if argv[2].endswith(".timer") else SERVICE_FIELDS
+        raw = "\n".join(f"{key}={samples[argv[2]][key]}" for key in fields) + "\n"
+        return subprocess.CompletedProcess(argv, 0, raw, "")
+
+    assert all(entry["health"] == "failed" for entry in aggregate_status(runner=runner))
