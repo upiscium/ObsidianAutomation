@@ -92,14 +92,21 @@ def classify_timer(props: Mapping[str, str] | None) -> str:
     active = _enum(props.get("ActiveState"), ACTIVE)
     unitfile = _enum(props.get("UnitFileState"), UNIT_FILES)
     state = props.get("SubState")
-    if load == "not-found":
-        return "not_installed"
-    if load == "masked" or unitfile in {"masked", "masked-runtime"}:
-        # Either masked state demonstrates the timer cannot run. Do not
-        # obscure it with the generic unknown-load fallback.
-        return "blocked"
-    if load != "loaded" or active == "unknown" or unitfile == "unknown":
+    if "unknown" in (load, active, unitfile):
+        # A malformed/unrecognized property cannot safely establish either
+        # normal scheduling or an intentional mask.
         return "unknown"
+    if load == "not-found":
+        # Missing + masked is contradictory, not proof of either state.
+        return "unknown" if unitfile in {"masked", "masked-runtime"} else "not_installed"
+    if load not in {"loaded", "masked"}:
+        return "unknown"
+    if load == "masked" or unitfile in {"masked", "masked-runtime"}:
+        # A verified mask blocks recurring execution, but only classify it
+        # when the supporting systemd substate is itself recognizable.
+        if state not in {"dead", "failed", "waiting", "elapsed", "running"}:
+            return "unknown"
+        return "blocked"
     if unitfile == "disabled" and active == "inactive":
         # An unrecognized or contradictory SubState is not proof of a
         # deliberately quiescent timer.

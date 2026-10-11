@@ -234,3 +234,34 @@ def test_masked_timer_remains_visible_when_service_not_observed() -> None:
     assert len(output) == len(SERVICES)
     assert all(item["schedule"] == "blocked" for item in output)
     assert all(item["health"] == "failed" for item in output)
+
+def test_masked_timer_with_invalid_or_contradictory_properties_is_unknown() -> None:
+    assert classify_timer(timer(
+        LoadState="garbage", UnitFileState="masked",
+        ActiveState="inactive", SubState="dead",
+    )) == "unknown"
+    assert classify_timer({
+        "UnitFileState": "masked",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+    }) == "unknown"
+    assert classify_timer(timer(
+        LoadState="not-found", UnitFileState="masked",
+        ActiveState="inactive", SubState="dead",
+    )) == "unknown"
+    assert classify_timer(timer(
+        LoadState="masked", UnitFileState="bad-setting",
+        ActiveState="inactive", SubState="dead",
+    )) == "unknown"
+    assert classify_timer(timer(
+        LoadState="masked", UnitFileState="masked",
+        ActiveState="invalid", SubState="dead",
+    )) == "unknown"
+    assert classify_timer(timer(
+        LoadState="error", UnitFileState="masked",
+        ActiveState="inactive", SubState="dead",
+    )) == "unknown"
+    assert classify_timer(timer(
+        LoadState="masked", UnitFileState="masked",
+        ActiveState="inactive", SubState="malformed",
+    )) == "unknown"

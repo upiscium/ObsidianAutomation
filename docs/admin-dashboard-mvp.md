@@ -96,4 +96,4 @@ AI health while the fixed service observations remain intact.
 
 ## Masked timer observability
 
-A timer with `LoadState=masked` or `UnitFileState=masked` / `masked-runtime` is an observable `blocked` schedule, not an unknown-loading fallback. The fixed-systemd service status aggregates this to a failure rather than hiding a known disabled execution capability. It does not authorize the Dashboard to unmask, start, stop, or otherwise modify any timer. Missing or malformed/unrecognized states remain `unknown`.
+When the required enum fields and timer substate are recognized, a timer with `LoadState=masked` or `UnitFileState=masked` / `masked-runtime` is a verifiable `blocked` schedule, rather than an unknown-loading fallback. The fixed systemd status aggregator reports that condition as a failure without granting authority to unmask or run it. Malformed, missing, or internally contradictory properties—including `LoadState=not-found` paired with a masked unit file—remain `unknown`, not confidently blocked or healthy.
