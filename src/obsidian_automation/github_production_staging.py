@@ -499,13 +499,58 @@ def _controlled_package_install_umask():
         os.umask(original)
 
 
-def _discard_ignored_package_build_artifacts(app_root: Path) -> tuple[str, ...]:
-    """Remove only known derived setuptools output before Stage pip install.
+MAX_IGNORED_BUILD_ENTRIES = 4096
+MAX_IGNORED_BUILD_BYTES = 128 * 1024 * 1024
 
-    Git cleanliness omits build/lib and egg-info. An obsolete removed Python
-    module in build/lib may otherwise contaminate a new wheel. This helper
-    has a fixed path allowlist and rejects any unexpected inode/mountpoint.
-    It must execute only within the authorized, locked Stage transaction.
+
+def _current_mount_points() -> frozenset[Path]:
+    """Include same-device bind mounts, which os.path.ismount may miss.
+
+    Linux mountinfo exposes the mountpoint independently of st_dev. Reject
+    unreadable/ambiguous mount metadata rather than traversing untrusted
+    mount trees during a privileged cleanup.
+    """
+    try:
+        raw = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise legacy.ProductionUpdateError(
+            "cannot inspect build cleanup mount boundaries"
+        ) from exc
+    points: set[Path] = set()
+    for line in raw.splitlines():
+        fields = line.split()
+        if len(fields) < 10 or " - " not in line:
+            raise legacy.ProductionUpdateError(
+                "ambiguous build cleanup mount boundary"
+            )
+        # Linux mountinfo escapes whitespace and backslash as octal sequences.
+        value = fields[4]
+        if re.search(r"\\(?![0-7]{3})", value):
+            raise legacy.ProductionUpdateError(
+                "unrecognized build cleanup mount escape"
+            )
+        name = re.sub(
+            r"\\([0-7]{3})",
+            lambda match: chr(int(match.group(1), 8)),
+            value,
+        )
+        point = Path(name)
+        if not point.is_absolute() or ".." in point.parts:
+            raise legacy.ProductionUpdateError(
+                "invalid build cleanup mount boundary"
+            )
+        points.add(point)
+    if not points:
+        raise legacy.ProductionUpdateError("empty build cleanup mount inventory")
+    return frozenset(points)
+
+
+def _inspect_ignored_package_build_artifacts(app_root: Path) -> tuple[Path, ...]:
+    """Preflight every inode beneath fixed setuptools paths, without deletion.
+
+    A top-level directory check alone is insufficient: rmtree can traverse an
+    unexpected nested mounted filesystem. Refuse symlinks, special files,
+    other owners, insecure directories, and oversize/unbounded artifact trees.
     """
     legacy._require_directory(app_root, label="staged production checkout")
     source = app_root / "src"
@@ -517,27 +562,84 @@ def _discard_ignored_package_build_artifacts(app_root: Path) -> tuple[str, ...]:
         source / "obsidian_automation.egg-info",
     )
     owner_uid = os.geteuid()
-    checkout_device = app_root.stat().st_dev
-    # Validate every candidate before removing any of them; never delete a
-    # symlink or an unexpected owner/mountpoint beneath a trusted checkout.
-    present = []
-    for path in roots:
+    device = app_root.stat().st_dev
+    mounted = _current_mount_points()
+    present: list[Path] = []
+    count = 0
+    size_bytes = 0
+    for root in roots:
         try:
-            info = path.lstat()
+            info = root.lstat()
         except FileNotFoundError:
             continue
         if (not stat.S_ISDIR(info.st_mode) or info.st_uid != owner_uid
-                or info.st_dev != checkout_device or os.path.ismount(path)):
+                or info.st_dev != device or root in mounted
+                or os.path.ismount(root) or info.st_mode & 0o022):
             raise legacy.ProductionUpdateError(
                 "unsafe ignored package build path; requires operator reconciliation"
             )
-        present.append(path)
+        present.append(root)
+        pending = [root]
+        while pending:
+            parent = pending.pop()
+            try:
+                with os.scandir(parent) as stream:
+                    entries = list(stream)
+            except OSError as exc:
+                raise legacy.ProductionUpdateError(
+                    "cannot inspect ignored package build subtree"
+                ) from exc
+            for entry in entries:
+                child = Path(entry.path)
+                try:
+                    status = entry.stat(follow_symlinks=False)
+                except OSError as exc:
+                    raise legacy.ProductionUpdateError(
+                        "ignored package build inode changed during inspection"
+                    ) from exc
+                count += 1
+                if (count > MAX_IGNORED_BUILD_ENTRIES
+                        or status.st_uid != owner_uid
+                        or status.st_dev != device
+                        or child in mounted
+                        or os.path.ismount(child)):
+                    raise legacy.ProductionUpdateError(
+                        "unsafe or oversized ignored package build subtree"
+                    )
+                if stat.S_ISDIR(status.st_mode):
+                    if status.st_mode & 0o022:
+                        raise legacy.ProductionUpdateError(
+                            "insecure ignored package build directory"
+                        )
+                    pending.append(child)
+                elif stat.S_ISREG(status.st_mode):
+                    if status.st_nlink != 1:
+                        raise legacy.ProductionUpdateError(
+                            "hardlinked ignored package build artifact"
+                        )
+                    size_bytes += status.st_size
+                    if size_bytes > MAX_IGNORED_BUILD_BYTES:
+                        raise legacy.ProductionUpdateError(
+                            "oversized ignored package build artifacts"
+                        )
+                else:
+                    raise legacy.ProductionUpdateError(
+                        "unreviewed ignored package build file type"
+                    )
+    return tuple(present)
+
+
+def _discard_ignored_package_build_artifacts(app_root: Path) -> tuple[str, ...]:
+    """Delete ONLY a completely preflighted, fixed, trusted build namespace.
+
+    Called exclusively inside Stage's already-authorized inert timer window.
+    """
+    present = _inspect_ignored_package_build_artifacts(app_root)
     for path in present:
-        # Python shutil.rmtree uses descriptor-safe deletion on Linux.
-        # The candidate directory itself was verified above.
+        # Python shutil.rmtree uses a descriptor-safe implementation on Linux.
+        # Trusted root-owned ancestors must be stable until cleanup completes.
         shutil.rmtree(path)
     return tuple(str(path.relative_to(app_root)) for path in present)
-
 
 
 def _reviewed_service_roles(app_root: Path) -> tuple[str, ...]:
@@ -749,6 +851,9 @@ def stage_update(*, target_sha: str, app_root: Path, venv_root: Path,
         _require_idle_services(runner, systemd_dir)
         timers = _snapshot_timers(runner)
         configs = _config_manifest(config_files)
+        # Reject unsafe ignored build trees before disabling any timer or
+        # writing the durable PREPARING transition marker.
+        _inspect_ignored_package_build_artifacts(app_root)
         _control_write(state, "preparing", target_sha, None)
         try:
             for unit in legacy.MANAGED_TIMER_UNITS:
