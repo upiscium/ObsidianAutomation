@@ -13,6 +13,26 @@ pre-inference `PreboundInferenceIdentity`. If an inference response's metadata
 does not match the prebound identity, it is rejected before publishing resume
 state. The key is never taken from provider-generated content.
 
+The current Ollama /api/chat response reports the requested model name,
+but does not attest the loaded model-manifest digest for that request.
+Pre-resolving an alias and checking the echoed response name alone cannot
+prove that a mutable model tag was not retargeted mid-run. The revised
+ollama-chat-structured-v1-tag-guard adapter therefore re-resolves the
+exact alias/digest immediately before and after each model inference, with
+bounded /api/tags timeout, and fails closed before provenance or resume-pointer
+publication if it observes a change. The adapter version and explicit
+model_tag_trust_boundary enter the prebound cache identity so earlier outputs
+cannot be silently reused under this stronger policy.
+
+Residual assumption: this double-check detects persistent retargeting,
+but it cannot detect an adversarial D1 -> D2 -> D1 substitution entirely
+between checks. Model tags must therefore remain operationally immutable
+for the full run under a trusted Ollama server. The prebound digest is an
+operational trust claim, not cryptographic per-response model attestation.
+If the server owner cannot enforce this assumption, production resume using
+this adapter is not qualified. The client does not invent unverified digest
+syntax for the /api/chat model argument.
+
 Unbound Python Infer callbacks and the current OpenAI-compatible adapter
 **do not use the resume cache**. The latter resolves its identity during the
 response rather than before inference; adding a trusted prebinding would
