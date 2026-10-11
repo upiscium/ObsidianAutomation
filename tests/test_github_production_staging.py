@@ -383,6 +383,90 @@ def test_activate_verifies_postsmoke_timer_states(tmp_path):
     assert runner.enabled is False and runner.active is False
 
 
+
+def test_stage_removes_stale_setuptools_build_and_egg_info(tmp_path):
+    runner, opts = setup(tmp_path)
+    checkout = opts["app_root"]
+    build = checkout / "build" / "lib" / "obsidian_automation"
+    build.mkdir(parents=True)
+    (build / "removed_legacy_module.py").write_text("stale Python module")
+    egg_info = checkout / "src" / "obsidian_automation.egg-info"
+    egg_info.mkdir()
+    (egg_info / "SOURCES.txt").write_text("legacy info")
+    receipt = stage(runner, opts)
+    assert len(receipt) == 64
+    assert not (checkout / "build").exists()
+    assert not egg_info.exists()
+    assert _called(runner, ("--profile", "safe"))
+    assert not _called(runner, ("--profile", "live"))
+    assert runner.enabled is False and runner.daily_enabled is False
+
+
+def test_symlinked_derived_build_path_is_rejected_without_traversal(tmp_path):
+    runner, opts = setup(tmp_path)
+    outside = tmp_path / "operator-files"
+    outside.mkdir()
+    marker = outside / "IMPORTANT.md"
+    marker.write_text("must remain untouched")
+    (opts["app_root"] / "build").symlink_to(outside)
+    with pytest.raises(ProductionUpdateError, match="unsafe ignored package build path"):
+        stage(runner, opts)
+    assert marker.read_text() == "must remain untouched"
+    assert (opts["app_root"] / "build").is_symlink()
+    assert _control(opts)["status"] == "failed"
+    assert runner.enabled is False and runner.daily_enabled is False
+    assert not _called(runner, ("--profile", "live"))
+
+
+
+def _peek_umask():
+    # The tested Stage path is single-threaded; immediately restore the value.
+    current = __import__("os").umask(0o077)
+    __import__("os").umask(current)
+    return current
+
+
+@pytest.mark.parametrize("fail_pip", (False, True))
+def test_stage_pip_has_pinned_umask_and_restores_operator_mask(tmp_path, fail_pip):
+    import os
+    runner, opts = setup(tmp_path, fail_pip=fail_pip)
+    captured = []
+    class UmaskRunner:
+        def __call__(self, argv):
+            if argv and argv[0] == str(opts["venv_root"] / "bin" / "pip"):
+                captured.append(_peek_umask())
+            return runner(argv)
+    opts["runner"] = UmaskRunner()
+    old_mask = os.umask(0o077)
+    try:
+        if fail_pip:
+            with pytest.raises(ProductionUpdateError, match="stage install reviewed package"):
+                stage(runner, opts)
+        else:
+            stage(runner, opts)
+        assert _peek_umask() == 0o077
+    finally:
+        os.umask(old_mask)
+    assert captured == [0o022]
+    assert not _called(runner, ("--profile", "live"))
+
+
+def test_preflight_checks_all_derived_directories_before_cleanup(tmp_path):
+    runner, opts = setup(tmp_path)
+    checkout = opts["app_root"]
+    build = checkout / "build"
+    build.mkdir()
+    (build / "stale").write_text("keep until entire cleanup set validated")
+    external = tmp_path / "outside"
+    external.mkdir()
+    (checkout / "dist").symlink_to(external)
+    with pytest.raises(ProductionUpdateError, match="unsafe ignored package build path"):
+        stage(runner, opts)
+    assert (build / "stale").read_text() == "keep until entire cleanup set validated"
+    assert _control(opts)["status"] == "failed"
+    assert not _called(runner, ("--profile", "live"))
+
+
 def test_automatically_bound_writer_environment_file_drift_blocks_live(tmp_path):
     runner, opts = setup(tmp_path)
     writer_config = tmp_path / "etc" / "writer-config.env"
