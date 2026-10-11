@@ -33,6 +33,24 @@ The remote execution adapter rejected test-user password setup operations. Attem
 
 The earlier [rclone Unix-socket fixture](308-rclone-unix-webdav-fixture.md) proves a synthetic local DAV server can drive a credentialless named rclone remote, and identified a default 5-minute VFS directory cache freshness problem. It **does not** substitute for authenticated Nextcloud testing.
 
+## Existing source regression baseline (not a Gateway test)
+
+The scratch checkout of the proposal's base source passed **92/92 tests (2.60 seconds)** under Nix Python 3.11.17 and pytest 9.1.1, with `PYTHONPATH=src` and no external provider connection:
+
+```text
+tests/test_vault_mirror.py
+tests/test_vault_snapshot.py
+tests/test_vault_snapshot_fidelity.py
+tests/test_vault_snapshot_metrics.py
+tests/test_webdav_create.py
+tests/test_production_io.py
+tests/test_review_intake.py
+tests/test_review_intake_semantic.py
+92 passed in 2.60s
+```
+
+These tests exercise existing contracts and local fixtures, but do **not** validate the proposed credential-consolidation adapter.
+
 ## Remaining evidence necessary for Standard profile acceptance
 
 - Fixture-only Nextcloud test credential provisioned through an approved mechanism; never a production account.
