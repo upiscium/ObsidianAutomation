@@ -11,8 +11,16 @@ from obsidian_automation.admin_dashboard import Handler, JS, make_server
 
 
 @contextmanager
-def serving(observer):
-    server = make_server(port=0, observer=observer)
+def serving(observer, ai_observer=None):
+    if ai_observer is None:
+        ai_observer = lambda: {
+            "freshness": "unavailable", "health": "unknown",
+            "generated_at": None, "age_seconds": None,
+            "review_count": None, "operational_failures": None,
+            "deterministic_rejections": None, "backpressure": None,
+            "review_reminder_due": None,
+        }
+    server = make_server(port=0, observer=observer, ai_observer=ai_observer)
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
     thread.start()
     try:
@@ -61,6 +69,7 @@ def test_is_bound_to_loopback_and_json_observation_only() -> None:
         assert value["actions"] == {"start": False, "stop": False, "trigger": False}
         assert len(value["services"]) == 1
         assert value["services"][0]["health"] == "healthy"
+        assert value["ai_pipeline"]["freshness"] == "unavailable"
         assert "default-src 'none'" in headers["Content-Security-Policy"]
         assert "frame-ancestors 'none'" in headers["Content-Security-Policy"]
         assert headers["Cache-Control"] == "no-store"
@@ -123,6 +132,36 @@ def test_observer_failure_is_redacted_and_not_a_200() -> None:
         assert status == 503
         assert json.loads(body) == {"error": "status_unavailable"}
         assert b"PASSWORD" not in body
+
+
+def test_ai_pipeline_projection_is_sanitized_and_not_a_health_override() -> None:
+    def ai_projection():
+        return {
+            "freshness": "fresh", "health": "critical",
+            "generated_at": "2026-10-11T11:00:00Z", "age_seconds": 1,
+            "review_count": 2, "operational_failures": 3,
+            "deterministic_rejections": 4,
+            "backpressure": True, "review_reminder_due": False,
+        }
+    with serving(fixture_observer, ai_observer=ai_projection) as server:
+        status, _, raw = response(server)
+        data = json.loads(raw)
+        assert status == 200
+        assert data["ai_pipeline"]["health"] == "critical"
+        assert data["ai_pipeline"]["review_count"] == 2
+        assert data["ai_pipeline"]["operational_failures"] == 3
+        assert data["services"][0]["health"] == "healthy"
+        assert "Authorization" not in raw.decode("utf-8")
+
+
+def test_ai_projection_loader_failure_is_redacted() -> None:
+    def ai_failure():
+        raise ValueError("password=secret-token")
+    with serving(fixture_observer, ai_observer=ai_failure) as server:
+        status, _, raw = response(server)
+        assert status == 503
+        assert json.loads(raw) == {"error": "status_unavailable"}
+        assert b"secret-token" not in raw
 
 
 def test_head_no_response_body() -> None:
