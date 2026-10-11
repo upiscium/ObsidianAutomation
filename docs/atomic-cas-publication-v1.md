@@ -158,3 +158,49 @@ Production connectivity is via Adam's direct RDC shell, using existing
 production changes use the existing reviewed, exact-SHA managed updater,
 not direct `git pull`, ad hoc live rsync, Nextcloud writer access, or timer
 restarts.
+
+## Read-only existing Daily CAS metadata admission (#292)
+
+A byte-identical CAS hit in the generic `_store_immutable` helper does not
+guarantee approved mode or effective named-user ACL. The Draft therefore
+includes a separate, **non-mutating** `github_daily_cas_admission` diagnostic
+for the specifically reviewed Daily Summary CAS namespace. It can be invoked
+*after* the exact package version has been independently authorized and
+installed, on a quiescent system, for example:
+
+```sh
+/opt/obsidian-automation/venv/bin/python -I -B -m \
+  obsidian_automation.github_daily_cas_admission \
+  --root /var/lib/obsidian-github-pipeline/daily-progress/20-Summary/github-daily-summary \
+  --owner-name obsidian-github-summarizer \
+  --reader-name obsidian-github-renderer
+```
+
+The command accepts **read-only** absolute-path/role parameters, discovers
+numeric UIDs through system name service, and checks at most 65,536 files.
+It restricts nested directories and canonical SHA-based file suffixes to the
+reviewed Daily Context/Output/Provenance/Final/Resume namespaces. Each regular,
+single-link JSON inode must belong to the dedicated Summarizer UID/GID, have
+exact mode `0640`, a valid Linux POSIX access ACL with **exactly** the two
+approved named users, and effective read-only access for both. It refuses
+unexpected named ACL identities, world/group write permissions, malformed
+ACLs, symlinks, special files, ambiguous file classes, orphan `.tmp` entries,
+and an empty namespace. It uses `fstat` / file-descriptor `getxattr`,
+**never reads source, prompts, model responses, or JSON bodies**, and prints
+only bounded counts/status.
+
+This specific policy follows the 2026-10-11 read-only production observation:
+Summary service `UMask=0027`, a service-owned Summary namespace, a named
+Renderer reader ACL, and 325 canonical JSON files under
+`20-Summary/github-daily-summary` all with the identical expected 0640
+mode/ACL signature. Another related Summary state scope was counted
+separately; do not conflate the file counts.
+
+The diagnostic is **not automatically executed** by the current Stage CLI,
+does not authorize Stage/Activate, does not attest ACL stability after the
+scan, does not validate signed provenance, and intentionally does not change
+the global helper's behavior for other service identities. The operator must
+separately verify trusted parent-namespace control and quiescence, record the
+exact audit receipt at an approved time, and explicitly approve any remediation
+of over-permissive existing objects or orphan files. Never silently chmod,
+delete, or rewrite a published CAS item.
