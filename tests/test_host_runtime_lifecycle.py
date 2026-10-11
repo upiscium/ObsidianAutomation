@@ -36,6 +36,7 @@ class System:
         self.fail = None
         self.elapsed_on_start = set()
         self.no_next_on_start = set()
+        self.next_on_start_overrides = {}
         self.source = None
         self.app = None
         self.deployed = False
@@ -97,7 +98,9 @@ class System:
                     else:
                         self.states[name]["SubState"] = "waiting"
                         self.states[name]["NextElapseUSecMonotonic"] = (
-                            "infinity" if name in self.no_next_on_start else "5min"
+                            self.next_on_start_overrides.get(
+                                name, "infinity" if name in self.no_next_on_start else "5min"
+                            )
                         )
                 else:
                     self.states[name]["SubState"] = "running"
@@ -598,3 +601,32 @@ def test_host_receipt_existing_dir_fsync_failure_blocks_pre_effect(setup, monkey
             complete(kwargs)
     assert not system.commands
     assert not (kwargs["receipt_dir"] / "pending-runtime.json").exists()
+
+
+@pytest.mark.parametrize("value", [
+    "", "0", "infinity", "n/a", "never", "garbage", "1e100s",
+    "1.2.3s", "-2min", "0s 0ms", "10fortnights", "1h  2min",
+])
+def test_host_timer_restore_requires_recognized_positive_monotonic_elapse(
+    setup, value
+):
+    kwargs, system, _ = setup
+    for name in life.TIMERS:
+        system.states[name].update(UnitFileState="enabled", ActiveState="active")
+    system.next_on_start_overrides[life.TIMERS[0]] = value
+    with pytest.raises(life.LifecycleError, match="timer_not_armed_after_restore"):
+        complete(kwargs)
+    assert all(system.states[t]["UnitFileState"] == "disabled" for t in life.TIMERS)
+    assert all(system.states[t]["ActiveState"] == "inactive" for t in life.TIMERS)
+
+
+@pytest.mark.parametrize("value", [
+    "5min", "1h 2min 3.123s", "3w 6d 3h 20min 20.789506s",
+    "1month 2w 5d 13h 51min 2.256ms", "0s 1us",
+    "0s 0ms", "not-a-schedule", "0", "",
+])
+def test_host_and_stage_timer_parsers_remain_equivalent(value):
+    from obsidian_automation.github_production_staging import (
+        _finite_monotonic_elapse as stage_parser,
+    )
+    assert life._finite_monotonic_elapse(value) is stage_parser(value)

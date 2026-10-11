@@ -1054,8 +1054,16 @@ def stage_update(*, target_sha: str, app_root: Path, venv_root: Path,
             if not pip.is_file():
                 raise legacy.ProductionUpdateError("stage pip not installed")
             with _controlled_package_install_umask():
-                legacy._run(runner, (str(pip), "install", "--no-deps", "--force-reinstall", str(app_root)),
-                            label="stage install reviewed package")
+                # Build only with the already provisioned trusted venv backend.
+                # PEP 517 build isolation can fetch arbitrary setuptools>=75
+                # over the network even when the app Git SHA is fully pinned.
+                legacy._run(
+                    runner,
+                    (str(pip), "install", "--no-deps", "--no-index",
+                     "--no-build-isolation", "--no-cache-dir",
+                     "--force-reinstall", str(app_root)),
+                    label="stage install reviewed package",
+                )
             code_manifest = _deployed_code_manifest(app_root, venv_root)
             service_roles = _service_role_package_smoke(
                 app_root, venv_root, code_manifest, runner

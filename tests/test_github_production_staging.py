@@ -1422,3 +1422,21 @@ def test_retry_after_failed_stage_parent_fsync_rechecks_durability(tmp_path, mon
     assert len(stage(runner, opts)) == 64
     assert _control(opts)["status"] == "staged"
     assert not _called(runner, ("--profile", "live"))
+
+
+def test_stage_pip_uses_preprovisioned_offline_build_backend_only(tmp_path):
+    runner, opts = setup(tmp_path)
+    stage(runner, opts)
+    pip_executable = str(opts["venv_root"] / "bin" / "pip")
+    invocations = [call for call in runner.calls if call[:1] == (pip_executable,)]
+    assert len(invocations) == 1
+    argv = invocations[0]
+    assert argv[1:2] == ("install",)
+    assert "--no-index" in argv
+    assert "--no-build-isolation" in argv
+    assert "--no-cache-dir" in argv
+    assert "--no-deps" in argv
+    assert "--force-reinstall" in argv
+    assert argv[-1] == str(opts["app_root"])
+    assert not any(part.startswith(("https://", "http://")) for part in argv)
+    assert not _called(runner, ("--profile", "live"))

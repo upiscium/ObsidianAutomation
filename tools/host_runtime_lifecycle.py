@@ -143,6 +143,31 @@ def _fsync_receipt_parents(path: Path) -> None:
             raise LifecycleError("runtime_receipt_parent_not_durable") from exc
 
 
+_MONOTONIC_ELAPSE_COMPONENT = re.compile(
+    r"(?P<amount>[0-9]{1,12}(?:\.[0-9]{1,6})?)(?:month|min|us|ms|y|w|d|h|s)"
+)
+
+
+def _finite_monotonic_elapse(value: str) -> bool:
+    """Fail closed on unrecognized systemctl-rendered timer timestamps.
+
+    Keep this standalone bootstrap parser consistent with the Stage counterpart.
+    A nonempty arbitrary string is not sufficient evidence of a finite event.
+    """
+    if not isinstance(value, str) or not 0 < len(value) <= 128:
+        return False
+    parts = value.split(" ")
+    if not parts or len(parts) > 16:
+        return False
+    positive = False
+    for part in parts:
+        match = _MONOTONIC_ELAPSE_COMPONENT.fullmatch(part)
+        if match is None:
+            return False
+        positive = positive or any(char in "123456789" for char in match["amount"])
+    return positive
+
+
 def _load_source_module(path: Path, name: str):
     _safe_path(path)
     if not path.is_file():
@@ -502,8 +527,7 @@ class RuntimeTransaction:
                     raise LifecycleError("timer_not_armed_after_restore")
                 if (
                     substate == "waiting"
-                    and after.get("NextElapseUSecMonotonic", "")
-                    in {"", "0", "infinity", "n/a"}
+                    and not _finite_monotonic_elapse(after.get("NextElapseUSecMonotonic", ""))
                 ):
                     raise LifecycleError("timer_not_armed_after_restore")
         self.host_activation = "restored" if any(s["enabled"] or s["active"] for s in self.intent["timers"].values()) else "not_attempted"

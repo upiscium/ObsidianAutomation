@@ -385,7 +385,17 @@ and independent review gates open.
   trusted absolute /usr/bin/git with sanitized Git environment. Stage Git/pip
   subprocesses do not inherit arbitrary pip/Python/dynamic-loader overrides;
   only the exact Adam SSH agent path may be passed as an approved transport
-  capability.
+  capability. Stage's pip install additionally uses
+  `--no-index --no-build-isolation --no-cache-dir --no-deps`: no build
+  backend is fetched from an external package index during privileged Stage.
+  The existing root-owned venv must already contain a reviewed setuptools
+  backend compatible with the pinned pyproject requirement (currently
+  setuptools>=75), plus any build prerequisites. Missing prerequisites fail
+  closed with the managed timers kept inert and manual recovery required.
+  This is an offline invocation constraint, not a cryptographic attestation
+  of the preinstalled backend. The distinct legacy full-live updater is
+  explicitly break-glass and does not inherit Stage's deterministic build
+  admission contract.
 
 BOOTSTRAP: The first Stage bootstrap loads only the pinned three GitHub updater
 modules. Its exact target checkout must include the reciprocal host lifecycle

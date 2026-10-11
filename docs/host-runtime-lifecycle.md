@@ -61,8 +61,11 @@ a fresh initial deadline, while the existing `OnUnitActiveSec=` /
 `OnUnitInactiveSec=` values retain the steady-state cadence after a service run.
 
 Restore acceptance is stronger than `ActiveState=active`. A timer that was
-previously active must return as either `waiting` with a finite
-`NextElapseUSecMonotonic`, or `running` while its trigger service executes.
+previously active must return as either `waiting` with a recognized positive,
+bounded systemctl-rendered monotonic time span in `NextElapseUSecMonotonic`,
+or `running` while its trigger service executes. Unsupported, non-finite or
+zero strings fail closed rather than attesting scheduling; the validation is
+kept equivalent to GitHub Activate's timer check.
 `active/elapsed` is a failed restore. The transaction then uses the ordinary
 fail-closed containment path and leaves all managed recurrence disabled with the
 original intent journal preserved for same-target recovery.
