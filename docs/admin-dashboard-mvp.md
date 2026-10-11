@@ -40,7 +40,7 @@ Then open `http://127.0.0.1:8370/` on that same host. Installers can later use t
 ## Acceptance evidence
 
 Nix-provided Python 3.11 + pytest with `PYTHONPATH=src`, no external services needed:
-- The existing MVP test baseline was **1,181 tests PASS**. With this #300 follow-up, **1,195 tests PASS in 20.55 seconds** on the isolated Adam checkout, including the new bounded AI projection's fresh/stale/future/missing/malformed cases, symlink/hardlink rejection, and HTTP API sanitized read model. This is a source regression result, not a production deployment or independent security review. GitHub CI and integration-branch acceptance remain separate.
+- The existing MVP test baseline was **1,181 tests PASS**. With this #300 follow-up, **1,196 tests PASS in 20.69 seconds** on the isolated Adam checkout, including the new bounded AI projection's fresh/stale/future/missing/malformed cases, symlink/hardlink rejection, and HTTP API sanitized read model. This is a source regression result, not a production deployment or independent security review. GitHub CI and integration-branch acceptance remain separate.
 
 The test mocks do not establish actual production systemd health or correct management of existing live timers. No CI, independent security review, or production deployment acceptance has been claimed.
 

@@ -172,6 +172,15 @@ def test_head_no_response_body() -> None:
         assert int(headers["Content-Length"]) > 0
 
 
+def test_failed_refresh_drops_previous_healthy_observations() -> None:
+    # A request error must not leave the old "healthy" cards as current.
+    error_branch = JS.split("} catch {", 1)[1].split("} finally {", 1)[0]
+    assert '"services").replaceChildren()' in error_branch
+    assert '"pipeline-details").replaceChildren()' in error_branch
+    assert '"pipeline-summary").textContent' in error_branch
+    assert '"updated").textContent = "観測失敗"' in error_branch
+
+
 def test_invalid_port_rejected() -> None:
     with pytest.raises(ValueError):
         make_server(port=-1)

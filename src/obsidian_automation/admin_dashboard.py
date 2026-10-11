@@ -179,6 +179,12 @@ async function refresh() {
     $("updated").textContent = "観測日時: " + data.generated_at;
     $("count").textContent = data.services.length + " services";
   } catch {
+    // Previous observations must never remain visible as current on errors.
+    $("services").replaceChildren();
+    $("pipeline-details").replaceChildren();
+    $("pipeline-summary").textContent = "Pipeline: 現在の状態は未確認";
+    $("updated").textContent = "観測失敗";
+    $("count").textContent = "—";
     $("error").textContent = "状態を取得できませんでした。サーバー側の設定を確認してください。";
   } finally {
     $("refresh").disabled = false;
