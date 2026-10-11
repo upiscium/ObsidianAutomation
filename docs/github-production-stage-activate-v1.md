@@ -74,8 +74,23 @@ This is **documentation, not a command to run before approval**.
 - Saves an fsynced PREPARING marker **before** stopping managed timers.
 - Disables/stops the GitHub Sync and Daily Progress timers and requires both
   disabled/inactive. No Core Promotion timer operation is permitted.
-- Resets only the verified production checkout to SHA, installs package/units
-  and Daily summarizer revision. The installed Python package module inventory
+- Resets only the verified production checkout to SHA. Before installation,
+  it checks a **fixed allowlist** of ignored setuptools build directories
+  (`build/`, `dist/`, and the root/src `obsidian_automation.egg-info/`)
+  for ownership, non-symlink directory type and filesystem boundary; an
+  unexpected inode/mountpoint fails closed. It removes only the validated
+  derived build directories while under the approved Stage lock, preventing
+  stale `build/lib` modules from silently entering the newly installed wheel
+  (related #253). Such cleanup is a local checkout mutation, **not** part
+  of the effect-free preflight; no production cleanup is authorized merely
+  by this document.
+  The pip build/install subprocess inherits an explicit `umask 0022`
+  rather than a restrictive operator shell umask; the updater restores the
+  caller's previous umask on success **and on a pip failure**. This does not
+  replace the separate #254 requirement for safe package import/entrypoint
+  checks under the actual nonroot service roles before timer restoration.
+  Then it installs the package/units and Daily summarizer revision.
+  The installed Python package module inventory
   and each module byte hash must match the exact checked-out source; deployed
   GitHub console-script entrypoints are also SHA-256 bound in the Stage receipt.
   This prevents a clean Git HEAD from concealing installed venv code drift.
