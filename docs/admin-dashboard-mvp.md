@@ -93,3 +93,7 @@ as an unavailable AI observation. It must **not** fail the combined HTTP status
 endpoint or hide independent systemd service results. Local synthetic API
 fixtures exercise these decoder paths and verify HTTP 200 with explicit unknown
 AI health while the fixed service observations remain intact.
+
+## Masked timer observability
+
+A timer with `LoadState=masked` or `UnitFileState=masked` / `masked-runtime` is an observable `blocked` schedule, not an unknown-loading fallback. The fixed-systemd service status aggregates this to a failure rather than hiding a known disabled execution capability. It does not authorize the Dashboard to unmask, start, stop, or otherwise modify any timer. Missing or malformed/unrecognized states remain `unknown`.

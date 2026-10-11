@@ -194,3 +194,43 @@ def test_disabled_timer_with_unknown_substate_is_unknown_not_paused() -> None:
     assert classify_timer(props) == "unknown"
     props["SubState"] = "dead"
     assert classify_timer(props) == "paused"
+
+def test_masked_timer_load_state_is_blocked_not_unknown() -> None:
+    assert classify_timer(timer(
+        LoadState="masked", UnitFileState="masked",
+        ActiveState="inactive", SubState="dead",
+    )) == "blocked"
+    assert classify_timer(timer(
+        LoadState="masked", UnitFileState="enabled",
+        ActiveState="inactive", SubState="dead",
+    )) == "blocked"
+    assert classify_timer(timer(
+        LoadState="loaded", UnitFileState="masked-runtime",
+        ActiveState="inactive", SubState="dead",
+    )) == "blocked"
+
+
+def test_masked_timer_remains_visible_when_service_not_observed() -> None:
+    observations = {}
+    for item in SERVICES:
+        observations[item.timer] = timer(
+            LoadState="masked", UnitFileState="masked",
+            ActiveState="inactive", SubState="dead",
+        )
+        observations[item.service] = service(
+            ExecMainStartTimestampMonotonic="0",
+            ExecMainExitTimestampMonotonic="0",
+            ExecMainCode="0",
+        )
+
+    def runner(argv, **kwargs):
+        fields = TIMER_FIELDS if argv[2].endswith(".timer") else SERVICE_FIELDS
+        values = "\n".join(
+            f"{key}={observations[argv[2]][key]}" for key in fields
+        ) + "\n"
+        return subprocess.CompletedProcess(argv, 0, values, "")
+
+    output = aggregate_status(runner=runner)
+    assert len(output) == len(SERVICES)
+    assert all(item["schedule"] == "blocked" for item in output)
+    assert all(item["health"] == "failed" for item in output)

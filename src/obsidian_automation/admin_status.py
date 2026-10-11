@@ -94,10 +94,12 @@ def classify_timer(props: Mapping[str, str] | None) -> str:
     state = props.get("SubState")
     if load == "not-found":
         return "not_installed"
+    if load == "masked" or unitfile in {"masked", "masked-runtime"}:
+        # Either masked state demonstrates the timer cannot run. Do not
+        # obscure it with the generic unknown-load fallback.
+        return "blocked"
     if load != "loaded" or active == "unknown" or unitfile == "unknown":
         return "unknown"
-    if unitfile in {"masked", "masked-runtime"}:
-        return "blocked"
     if unitfile == "disabled" and active == "inactive":
         # An unrecognized or contradictory SubState is not proof of a
         # deliberately quiescent timer.
