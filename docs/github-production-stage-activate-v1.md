@@ -86,10 +86,19 @@ This is **documentation, not a command to run before approval**.
   by this document.
   The pip build/install subprocess inherits an explicit `umask 0022`
   rather than a restrictive operator shell umask; the updater restores the
-  caller's previous umask on success **and on a pip failure**. This does not
-  replace the separate #254 requirement for safe package import/entrypoint
-  checks under the actual nonroot service roles before timer restoration.
-  Then it installs the package/units and Daily summarizer revision.
+  caller's previous umask on success **and on a pip failure**.
+  After installation, the Stage interpreter reads the exact canonical
+  `PRIMARY_USERS` role inventory from the reviewed authority provisioner
+  **using AST/literal parsing without executing the provisioner**. Every
+  `obsidian-*` identity runs a bounded `runuser` Python `-I -B` smoke
+  to import the installed package and verify that all SHA-bound GitHub
+  console entrypoints are readable/executable. No Writer command is executed.
+  A role permission/import failure leaves Stage failed and timers inert.
+  Before Activate's effect-capable live smoke, the same role import/access
+  test and the recorded role inventory are revalidated. This closes the
+  updater-side #254 read/import permission gate, while actual service unit
+  execution and model inference remain separately authorized tests.
+  Then it installs the units and Daily summarizer revision.
   The installed Python package module inventory
   and each module byte hash must match the exact checked-out source; deployed
   GitHub console-script entrypoints are also SHA-256 bound in the Stage receipt.
