@@ -265,3 +265,21 @@ def test_masked_timer_with_invalid_or_contradictory_properties_is_unknown() -> N
         LoadState="masked", UnitFileState="masked",
         ActiveState="inactive", SubState="malformed",
     )) == "unknown"
+
+def test_masked_timer_may_still_be_active_and_is_not_quiescent_blocked() -> None:
+    assert classify_timer(timer(
+        LoadState="loaded", UnitFileState="masked",
+        ActiveState="active", SubState="waiting",
+    )) == "unknown"
+    assert classify_timer(timer(
+        LoadState="masked", UnitFileState="masked",
+        ActiveState="active", SubState="running",
+    )) == "unknown"
+    assert classify_timer(timer(
+        LoadState="loaded", UnitFileState="masked-runtime",
+        ActiveState="deactivating", SubState="stop",
+    )) == "unknown"
+    assert classify_timer(timer(
+        LoadState="loaded", UnitFileState="masked",
+        ActiveState="failed", SubState="failed",
+    )) == "failed"

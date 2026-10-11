@@ -102,11 +102,12 @@ def classify_timer(props: Mapping[str, str] | None) -> str:
     if load not in {"loaded", "masked"}:
         return "unknown"
     if load == "masked" or unitfile in {"masked", "masked-runtime"}:
-        # A verified mask blocks recurring execution, but only classify it
-        # when the supporting systemd substate is itself recognizable.
-        if state not in {"dead", "failed", "waiting", "elapsed", "running"}:
-            return "unknown"
-        return "blocked"
+        # A mask prevents future activation, but does not necessarily stop
+        # an already active/waiting timer. Do not claim it is quiescent unless
+        # systemd also shows inactive/dead. An explicit failure stays visible.
+        if active == "failed":
+            return "failed"
+        return "blocked" if active == "inactive" and state == "dead" else "unknown"
     if unitfile == "disabled" and active == "inactive":
         # An unrecognized or contradictory SubState is not proof of a
         # deliberately quiescent timer.
