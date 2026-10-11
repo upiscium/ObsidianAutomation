@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import stat
 import sys
 import tempfile
@@ -481,6 +482,62 @@ def _direct_service_input_manifest(
             for path in sorted(paths)}
 
 
+
+
+@contextmanager
+def _controlled_package_install_umask():
+    """Ensure predictable service-readable wheel/install bytes, then restore.
+
+    Stage has a serialized root transaction and does not run any helper
+    threads. Keep this process-global change scoped to the pip subprocess.
+    """
+    original = os.umask(0o022)
+    try:
+        yield
+    finally:
+        os.umask(original)
+
+
+def _discard_ignored_package_build_artifacts(app_root: Path) -> tuple[str, ...]:
+    """Remove only known derived setuptools output before Stage pip install.
+
+    Git cleanliness omits build/lib and egg-info. An obsolete removed Python
+    module in build/lib may otherwise contaminate a new wheel. This helper
+    has a fixed path allowlist and rejects any unexpected inode/mountpoint.
+    It must execute only within the authorized, locked Stage transaction.
+    """
+    legacy._require_directory(app_root, label="staged production checkout")
+    source = app_root / "src"
+    legacy._require_directory(source, label="staged source package root")
+    roots = (
+        app_root / "build",
+        app_root / "dist",
+        app_root / "obsidian_automation.egg-info",
+        source / "obsidian_automation.egg-info",
+    )
+    owner_uid = os.geteuid()
+    checkout_device = app_root.stat().st_dev
+    # Validate every candidate before removing any of them; never delete a
+    # symlink or an unexpected owner/mountpoint beneath a trusted checkout.
+    present = []
+    for path in roots:
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            continue
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != owner_uid
+                or info.st_dev != checkout_device or os.path.ismount(path)):
+            raise legacy.ProductionUpdateError(
+                "unsafe ignored package build path; requires operator reconciliation"
+            )
+        present.append(path)
+    for path in present:
+        # Python shutil.rmtree uses descriptor-safe deletion on Linux.
+        # The candidate directory itself was verified above.
+        shutil.rmtree(path)
+    return tuple(str(path.relative_to(app_root)) for path in present)
+
+
 def _deployed_code_manifest(app_root: Path, venv_root: Path) -> dict[str, str]:
     """Verify installed package bytes against pinned source and bind entrypoints.
 
@@ -619,11 +676,13 @@ def stage_update(*, target_sha: str, app_root: Path, venv_root: Path,
             _require_idle_services(runner, systemd_dir)
             legacy._git(runner, app_root, "reset", "--hard", target_sha, label="stage exact checkout")
             _checkout(app_root, runner, expected=target_sha)
+            _discard_ignored_package_build_artifacts(app_root)
             pip = venv_root / "bin" / "pip"
             if not pip.is_file():
                 raise legacy.ProductionUpdateError("stage pip not installed")
-            legacy._run(runner, (str(pip), "install", "--no-deps", "--force-reinstall", str(app_root)),
-                        label="stage install reviewed package")
+            with _controlled_package_install_umask():
+                legacy._run(runner, (str(pip), "install", "--no-deps", "--force-reinstall", str(app_root)),
+                            label="stage install reviewed package")
             code_manifest = _deployed_code_manifest(app_root, venv_root)
             installed = legacy._install_managed_units(app_root, systemd_dir)
             managed_names = _all_installed_unit_names(systemd_dir)
