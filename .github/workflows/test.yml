@@ -85,9 +85,23 @@ jobs:
 
   authority-fixture:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
+      - name: Refuse fork PR before checkout or privileged authority fixtures
+        if: github.event_name == 'pull_request'
+        env:
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
+        run: |
+          if [ "$HEAD_REPO" != "$BASE_REPO" ]; then
+            echo '::error::Fork PR requires separately reviewed privileged authority fixtures'
+            exit 1
+          fi
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - run: sudo apt-get update && sudo apt-get install -y acl
       - name: Run consolidated authority provisioner twice
         run: |

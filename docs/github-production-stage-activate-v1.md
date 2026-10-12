@@ -488,14 +488,16 @@ selected `require_root=True` Stage/Activate simulations. Each uses ephemeral
 Writer, Vault, Nextcloud or production installed package is touched. The
 simulated installed package is created and modified only inside `tmp_path`.
 The job checks its effective UID and verifies through JUnit output that all
-three cases actually
-executed with zero SKIPs, rather than treating ordinary nonroot CI skips as a
-successful security gate. The normal Python 3.11/3.13 suite remains unprivileged;
+three cases executed with zero SKIPs, rather than treating ordinary nonroot
+CI skips as a successful security gate. The normal Python 3.11/3.13 suite remains unprivileged;
 the root-only job uses an isolated GitHub-hosted runner with checkout credentials
 disabled. Fork-origin PRs are refused by a pre-checkout guard and cannot
 trigger elevated Python tests automatically; such contributions need a
 separately reviewed trusted root-fixture execution rather than a silent SKIP.
-Neither job is a production deployment approval.
+The existing sudo-based `authority-fixture` CI job follows the same pre-checkout
+fork-origin refusal policy and disables checkout credential persistence; neither
+privileged job silently accepts unreviewed fork code. These checks do not make
+an editable CI workflow tamper-proof or authorize a production deployment.
 
 The legacy Stage receipt v1 rejection test also publishes an isolated v1-format
 receipt, switches the temporary durable `staged` control to that v1 digest, and
