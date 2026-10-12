@@ -36,6 +36,7 @@ class System:
         self.fail = None
         self.elapsed_on_start = set()
         self.no_next_on_start = set()
+        self.next_on_start_overrides = {}
         self.source = None
         self.app = None
         self.deployed = False
@@ -97,7 +98,9 @@ class System:
                     else:
                         self.states[name]["SubState"] = "waiting"
                         self.states[name]["NextElapseUSecMonotonic"] = (
-                            "infinity" if name in self.no_next_on_start else "5min"
+                            self.next_on_start_overrides.get(
+                                name, "infinity" if name in self.no_next_on_start else "5min"
+                            )
                         )
                 else:
                     self.states[name]["SubState"] = "running"
@@ -489,3 +492,141 @@ def test_group_writable_runtime_journal_parent_refused(setup):
     with pytest.raises(life.LifecycleError, match="receipt_directory"):
         complete(kwargs)
     assert not system.commands
+
+
+@pytest.mark.parametrize("phase", ["preparing", "staged", "activating", "failed", "missing"])
+def test_consolidated_host_blocks_unresolved_github_stage_before_effects(setup, phase):
+    kwargs, system, _ = setup
+    stage_root = kwargs["receipt_dir"].parent / "github-receipts"
+    state = stage_root / life.STAGED_GITHUB_ROOT
+    state.mkdir(parents=True, mode=0o700)
+    if phase != "missing":
+        marker = state / "control.json"
+        marker.write_text(json.dumps({
+            "record_version": 1,
+            "target_sha": TARGET,
+            "stage_sha256": "a" * 64,
+            "status": phase,
+            "updated_at": "2026-10-11T00:00:00Z",
+        }) + "\n")
+        marker.chmod(0o600)
+    with pytest.raises(life.LifecycleError, match="staged_github_reconciliation_required"):
+        with life.RuntimeTransaction(**kwargs):
+            pytest.fail("host lifecycle admitted unresolved Stage")
+    assert not system.commands
+    assert not (kwargs["receipt_dir"] / "pending-runtime.json").exists()
+
+
+def test_consolidated_host_accepts_only_completed_stage(setup):
+    kwargs, system, _ = setup
+    stage = kwargs["receipt_dir"].parent / "github-receipts" / life.STAGED_GITHUB_ROOT
+    stage.mkdir(parents=True, mode=0o700)
+    marker = stage / "control.json"
+    marker.write_text(json.dumps({
+        "record_version": 1,
+        "target_sha": TARGET,
+        "stage_sha256": "b" * 64,
+        "status": "activated",
+        "updated_at": "2026-10-11T00:00:00Z",
+    }) + "\n")
+    marker.chmod(0o600)
+    with life.RuntimeTransaction(**kwargs):
+        pass
+    assert not system.commands
+
+
+def test_host_runtime_and_github_stage_share_exact_lock_inode(setup):
+    from obsidian_automation import github_production_update as github
+    kwargs, system, _ = setup
+    with github._host_update_guard(kwargs["receipt_dir"], require_root=False):
+        with pytest.raises(BlockingIOError):
+            with life.RuntimeTransaction(**kwargs):
+                pytest.fail("host updater bypassed held GitHub lock")
+    assert not system.commands
+
+
+def test_host_receipt_first_use_ancestors_durable_before_lock_or_effects(
+    setup, tmp_path, monkeypatch
+):
+    kwargs, system, _ = setup
+    kwargs["receipt_dir"] = tmp_path / "outer" / "inner" / "receipts"
+    attempted = []
+    real = life._fsync_directory
+
+    def record_and_fail(directory):
+        attempted.append(directory)
+        if directory == kwargs["receipt_dir"].parent:
+            raise OSError("injected parent fsync failure")
+        return real(directory)
+
+    with monkeypatch.context() as m:
+        m.setattr(life, "_fsync_directory", record_and_fail)
+        with pytest.raises(life.LifecycleError, match="runtime_receipt_parent_not_durable"):
+            with life.RuntimeTransaction(**kwargs):
+                pytest.fail("effects admitted before receipt ancestry became durable")
+    assert kwargs["receipt_dir"].is_dir()
+    assert attempted[0] == kwargs["receipt_dir"].parent
+    assert not system.commands
+    assert not (kwargs["receipt_dir"] / "pending-runtime.json").exists()
+
+    def record_all(directory):
+        attempted.append(directory)
+        return real(directory)
+
+    with monkeypatch.context() as m:
+        m.setattr(life, "_fsync_directory", record_all)
+        with life.RuntimeTransaction(**kwargs):
+            pass
+    # The second attempt must fsync the same parent despite its child existing.
+    assert attempted.count(kwargs["receipt_dir"].parent) == 2
+    assert tmp_path / "outer" in attempted
+    assert tmp_path in attempted
+    assert not system.commands
+    assert not (kwargs["receipt_dir"] / "pending-runtime.json").exists()
+
+
+def test_host_receipt_existing_dir_fsync_failure_blocks_pre_effect(setup, monkeypatch):
+    kwargs, system, _ = setup
+    kwargs["receipt_dir"].mkdir()
+    real = life._fsync_directory
+
+    def refuse_parent(path):
+        if path == kwargs["receipt_dir"].parent:
+            raise OSError("rejected parent durability")
+        return real(path)
+
+    with monkeypatch.context() as m:
+        m.setattr(life, "_fsync_directory", refuse_parent)
+        with pytest.raises(life.LifecycleError, match="runtime_receipt_parent_not_durable"):
+            complete(kwargs)
+    assert not system.commands
+    assert not (kwargs["receipt_dir"] / "pending-runtime.json").exists()
+
+
+@pytest.mark.parametrize("value", [
+    "", "0", "infinity", "n/a", "never", "garbage", "1e100s",
+    "1.2.3s", "-2min", "0s 0ms", "10fortnights", "1h  2min",
+])
+def test_host_timer_restore_requires_recognized_positive_monotonic_elapse(
+    setup, value
+):
+    kwargs, system, _ = setup
+    for name in life.TIMERS:
+        system.states[name].update(UnitFileState="enabled", ActiveState="active")
+    system.next_on_start_overrides[life.TIMERS[0]] = value
+    with pytest.raises(life.LifecycleError, match="timer_not_armed_after_restore"):
+        complete(kwargs)
+    assert all(system.states[t]["UnitFileState"] == "disabled" for t in life.TIMERS)
+    assert all(system.states[t]["ActiveState"] == "inactive" for t in life.TIMERS)
+
+
+@pytest.mark.parametrize("value", [
+    "5min", "1h 2min 3.123s", "3w 6d 3h 20min 20.789506s",
+    "1month 2w 5d 13h 51min 2.256ms", "0s 1us",
+    "0s 0ms", "not-a-schedule", "0", "",
+])
+def test_host_and_stage_timer_parsers_remain_equivalent(value):
+    from obsidian_automation.github_production_staging import (
+        _finite_monotonic_elapse as stage_parser,
+    )
+    assert life._finite_monotonic_elapse(value) is stage_parser(value)

@@ -18,7 +18,7 @@ The target implementation:
 1. Locks a root-owned deployment journal directory against concurrent updates.
 2. Rechecks the clean production `main` checkout and target ancestry.
 3. Acquires the shared refresh-update lock, rechecks the independent
-   enabled/active states of all four managed timers and prepares the restoration
+   enabled/active states of all five managed timers and prepares the restoration
    intent. Capturing the states
    inside the shared lock prevents a concurrent legacy updater's temporary
    stopped state from becoming a new restoration intent.
@@ -49,6 +49,7 @@ Managed recurrence is exactly:
 obsidian-ai-vault-pull.timer
 obsidian-pre-review.timer
 obsidian-github-sync.timer
+obsidian-github-daily-progress.timer
 obsidian-core-promotion.timer
 ```
 
@@ -61,8 +62,11 @@ a fresh initial deadline, while the existing `OnUnitActiveSec=` /
 `OnUnitInactiveSec=` values retain the steady-state cadence after a service run.
 
 Restore acceptance is stronger than `ActiveState=active`. A timer that was
-previously active must return as either `waiting` with a finite
-`NextElapseUSecMonotonic`, or `running` while its trigger service executes.
+previously active must return as either `waiting` with a recognized positive,
+bounded systemctl-rendered monotonic time span in `NextElapseUSecMonotonic`,
+or `running` while its trigger service executes. Unsupported, non-finite or
+zero strings fail closed rather than attesting scheduling; the validation is
+kept equivalent to GitHub Activate's timer check.
 `active/elapsed` is a failed restore. The transaction then uses the ordinary
 fail-closed containment path and leaves all managed recurrence disabled with the
 original intent journal preserved for same-target recovery.
@@ -149,3 +153,28 @@ upgrade. After merge, accept one actual exact-SHA update on the automation host,
 confirm all previously serving timers return to their intended states, and check
 fresh service invocations and downstream results. `Result=success` alone may be
 an old result or an idle worker; it does not establish new work completed.
+
+## Interaction with GitHub two-phase updater (#294 / #295)
+
+The consolidated host lifecycle and GitHub Stage/Activate share the same
+root-owned host receipt directory and exact host-update.lock flock inode.
+On first use, the host updater may create the receipt directory and its missing
+ancestors. Before acquiring the lock or writing a pending intent it fsyncs
+**every parent directory** through filesystem root, including on subsequent
+attempts when directories already exist. A directory left visible by a failed
+fsync does not count as durable; any parent sync failure blocks effects and
+requires revalidation on retry. The pending journal then fsyncs its own file
+and containing directory before any timers are touched. A successful test on
+temporary storage does not itself establish hardware power-loss semantics.
+The host lifecycle rejects any unresolved GitHub Stage control after acquiring
+the shared lock, before any effect. A Stage control directory without a
+complete activated marker requires manual reconciliation, even if a previous
+read-only inspect reports no complete Stage receipt.
+
+In the opposite direction, Stage/Activate and break-glass legacy GitHub update
+refuse any pending host runtime intent and hold the same host-wide lock while
+they change shared code, service Units or timers. This coordinates compliant
+new versions only, not arbitrary privileged actors or stale binaries. At first
+production migration verify the target-owned host lifecycle gate and quiescence
+of pre-gate updater processes. A common lock is not a substitute for operator
+approval or permission to publish Vault/Nextcloud content.
