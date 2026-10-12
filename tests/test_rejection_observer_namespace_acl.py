@@ -34,6 +34,9 @@ path = Path(raw_path)
 try:
     if operation == "read":
         assert path.read_bytes().startswith(b"OBS321")
+    elif operation == "open":
+        with path.open("rb") as stream:
+            assert stream.read(1)
     elif operation == "write":
         with path.open("ab") as stream:
             stream.write(b"FORBIDDEN")
@@ -211,10 +214,13 @@ def _test_in_namespace() -> None:
             _run_uid(OBS, "read", item, allowed=True, package=package)
             _run_uid(OBS, "write", item, allowed=False, package=package)
         for role in ROLES:
-            _run_uid(
-                OBS, "read", requests / role / "original.projection.json",
-                allowed=True, package=package,
-            )
+            path = requests / role / "original.projection.json"
+            _run_uid(OBS, "read", path, allowed=True, package=package)
+            _run_uid(OBS, "write", path, allowed=False, package=package)
+            # The production preflight searches every producer role for a
+            # forbidden later-stage or duplicate original; ACL must permit
+            # listing even where this synthetic sample has no conflict.
+            _run_uid(OBS, "list", requests / role, allowed=True, package=package)
         # A real producer with a separate UID must publish *future* files
         # with a readable effective ACL, not merely old files retrofitted by
         # the bootstrap script. Existing immutable sources use mode=0644.
@@ -281,11 +287,13 @@ def _test_in_namespace() -> None:
         writer_code = """
 import sqlite3, sys
 conn=sqlite3.connect(sys.argv[1], isolation_level=None)
-conn.execute("PRAGMA journal_mode=" + sys.argv[2])
+mode = conn.execute("PRAGMA journal_mode=" + sys.argv[2]).fetchone()[0]
+if mode.upper() != sys.argv[2]:
+    raise AssertionError("SQLite journal mode does not match fixture")
 conn.execute("PRAGMA wal_autocheckpoint=0")
 conn.execute("CREATE TABLE observations(n INTEGER)")
 conn.execute("INSERT INTO observations VALUES(1)")
-print("WRITER_READY", flush=True)
+print("WRITER_READY_" + mode.upper(), flush=True)
 for line in sys.stdin:
     if line.strip() == "update":
         conn.execute("UPDATE observations SET n=2")
@@ -310,8 +318,8 @@ conn.close()
             )
             try:
                 assert writer.stdout is not None
-                assert writer.stdout.readline().strip() == "WRITER_READY", (
-                    f"separate-UID scheduler failed in {journal_mode}"
+                assert writer.stdout.readline().strip() == "WRITER_READY_" + journal_mode, (
+                    f"separate-UID scheduler failed or journal mode changed in {journal_mode}"
                 )
                 suffixes = ("", "-wal", "-shm") if journal_mode == "WAL" else ("",)
                 for suffix in suffixes:
@@ -319,7 +327,19 @@ conn.close()
                     assert candidate.is_file(), (
                         f"live {journal_mode} evidence missing {suffix}"
                     )
+                    # Production's SQLite file is not world-readable; a
+                    # positive sqlite mode=ro result alone would be hollow
+                    # unless the named ACL is genuinely required.
+                    candidate.chmod(0o600)
+                    assert candidate.stat().st_mode & 0o077 == 0
+                    _run_uid(OBS, "open", candidate, allowed=False, package=package)
                     _acl(candidate, OBS, "r--")
+                    file_acl = _run("getfacl", "-cp", str(candidate)).stdout
+                    assert f"user:{OBS}:r--" in file_acl
+                    assert "group::---" in file_acl
+                    assert "other::---" in file_acl
+                    _run_uid(OBS, "open", candidate, allowed=True, package=package)
+                    _run_uid(SYNC, "open", candidate, allowed=False, package=package)
                 _query_db(OBS, db, 1)
                 assert writer.stdin is not None
                 writer.stdin.write("update\n")
@@ -360,22 +380,36 @@ def test_observer_real_uid_acl_and_sqlite_wal_in_disposable_namespace() -> None:
         )
         module.chmod(0o644)
         command = [
-            "unshare", "--map-auto", "--setuid", "0", "--setgid", "0",
+            "unshare", "--fork", "--kill-child",
+            "--map-auto", "--setuid", "0", "--setgid", "0",
             "--", sys.executable, str(script), "--fixture-child",
         ]
-        # A failed scheduler/writer inside a namespace must not leave orphan
-        # test processes running. Kill the entire disposable process group
-        # on timeout, not just the parent unshare helper.
+        # --fork --kill-child ensures the namespace child receives SIGKILL
+        # when the wrapper exits. Combined with a new session and finally,
+        # ordinary errors and interruptions cannot abandon test writers.
         process = subprocess.Popen(
             command, text=True, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, start_new_session=True,
+            env={
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                "LC_ALL": "C.UTF-8", "PYTHONNOUSERSITE": "1",
+            },
         )
         try:
             stdout, stderr = process.communicate(timeout=45)
         except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-            process.communicate(timeout=5)
             pytest.fail("disposable user-namespace ACL fixture timed out")
+        finally:
+            if process.poll() is None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                try:
+                    process.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.communicate(timeout=5)
         assert process.returncode is not None
         result = subprocess.CompletedProcess(
             command, process.returncode, stdout, stderr,
