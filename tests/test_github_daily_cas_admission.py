@@ -241,10 +241,10 @@ def test_daily_cas_max_files_rejects_before_opening_extra_inode(tmp_path, monkey
     assert len(opened_artifact_files) == 1
 
 
-def test_large_valid_daily_final_does_not_fail_metadata_only_admission(
+def test_large_sha_named_daily_final_passes_metadata_only_acl_admission(
     tmp_path, monkeypatch
 ):
-    """A >2 MiB grounded Final is valid under the metadata-only ACL policy."""
+    """A >2 MiB SHA-named, ACL-conforming Final needs no payload validation here."""
     root, existing, uid, reader = _fixture(tmp_path, monkeypatch)
     final_dir = root / "final"
     final_dir.mkdir()
