@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -221,8 +222,19 @@ def test_bootstrap_rejects_rogue_temp_parent_and_sanitizes_git_env(fake_checkout
     assert json.loads(result.stdout)["status"] == "source_attested_no_effects"
 
 
-def test_first_deployment_inspect_loads_actual_target_modules_from_git_without_effects(tmp_path):
+def test_first_deployment_inspect_loads_actual_target_modules_from_git_without_effects(tmp_path, monkeypatch):
     """End-to-end source attestation uses real code, not stub Stage modules."""
+    # Isolate Git fixture operations from ambient repository/index settings and
+    # configured hooks. This scope is restored automatically after the test.
+    for name in tuple(os.environ):
+        if name.startswith("GIT_"):
+            monkeypatch.delenv(name)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.hooksPath")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "/dev/null")
+    monkeypatch.setenv("GIT_NO_REPLACE_OBJECTS", "1")
     app = tmp_path / "app"
     app.mkdir()
     git(app, "init", "-b", "main")
