@@ -489,15 +489,22 @@ Writer, Vault, Nextcloud or production installed package is touched. The
 simulated installed package is created and modified only inside `tmp_path`.
 The job checks its effective UID and verifies through JUnit output that all
 three cases executed with zero SKIPs, rather than treating ordinary nonroot
-CI skips as a successful security gate. The normal Python 3.11/3.13 suite remains unprivileged;
-the root-only job uses an isolated GitHub-hosted runner with checkout credentials
-disabled. Fork-origin PRs are refused by a pre-checkout guard and cannot
-trigger elevated Python tests automatically; such contributions need a
-separately reviewed trusted root-fixture execution rather than a silent SKIP.
-The existing sudo-based `authority-fixture` CI job follows the same pre-checkout
-fork-origin refusal policy and disables checkout credential persistence; neither
-privileged job silently accepts unreviewed fork code. These checks do not make
-an editable CI workflow tamper-proof or authorize a production deployment.
+CI skips as a successful security gate. The Python 3.11/3.13 suite remains
+unprivileged. The root-only job uses an isolated GitHub-hosted runner with
+checkout credential persistence disabled.
+
+**Policy limit:** When the reviewed YAML runs unchanged, external fork PRs
+fail the pre-checkout guard before executing the privileged fixtures; the
+existing sudo-based `authority-fixture` uses the same guard. However, GitHub
+`pull_request` workflows are sourced from the PR merge commit, so an
+adversarial fork may propose changes to this same workflow definition.
+**The in-workflow guards are not an independently enforced trust boundary.**
+Before treating privileged CI as an adversarial fork-security gate, repository
+administrators must enable approval for **all external contributors** and
+enforce trusted review of workflow changes. Do not weaken fork failures into
+green skips merely to satisfy a required check. Separately reviewed trusted
+execution is needed for an external contribution. No CI check grants
+production Stage, Activate, Writer or timer-restoration authority.
 
 The legacy Stage receipt v1 rejection test also publishes an isolated v1-format
 receipt, switches the temporary durable `staged` control to that v1 digest, and
