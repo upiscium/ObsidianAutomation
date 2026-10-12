@@ -78,13 +78,19 @@ producer-sealed projection index/negative witness must replace the broad scan;
 a client-side filename filter is not an ACL. Do not falsely claim exact
 per-case OS enforcement.
 
-**Unresolved SQLite detail:** `pre_review_job._connect_ro` uses
-`sqlite3.connect(file:...?mode=ro)`. WAL and `-shm` behavior must be
-tested with an actual unprivileged observer UID during concurrent writes.
-Do **not** grant observer write access to `02-Orchestration` to make a test
-pass; if true read-only SQLite fails, introduce a writer-sealed, bounded
-generation status snapshot and independent reconciliation instead. Do not
-use `immutable=1` on a live DB and claim it reflects concurrent changes.
+**SQLite concurrency qualification:** Production `pre_review_job._connect_rw`
+currently uses `PRAGMA journal_mode=DELETE`, while `_connect_ro` uses
+`sqlite3.connect(file:...?mode=ro)`. The disposable Linux namespace fixture
+now verifies **distinct mapped Scheduler/Observer UIDs**, observer file
+read-only ACL, and fresh committed observations while Scheduler keeps the DB
+open in both actual **DELETE** journal mode and optional **WAL** mode with
+existing readable `-wal`/`-shm`. The Observer does not write either DB or
+journal files. This is evidence for the scoped Linux fixture—not proof that
+the eventual *actual production systemd UIDs*, directory ACL inheritance,
+Linux mount namespaces or all upgrade/rollback states are qualified. Do
+**not** grant observer directory write permissions to make SQLite work;
+if production read-only SQLite fails, use a writer-sealed bounded snapshot
+and independently reconcile it. Never set `immutable=1` on a live DB.
 
 ## Locking without granting production write authority
 
@@ -160,14 +166,28 @@ any effect-enabled release. Sync must not blindly trust the observer's proof.
 - Build a hermetic temporary state tree and verify same-file lock exclusion,
   noncreation, FIFO/symlink/hardlink/replacement fail-closed and no file edits.
   These are provided as **local functional** tests in the child branch.
-- Later: disposable **distinct actual UIDs** and `getfacl`/systemd sandbox
-  evidence. Confirm all exact allowed reads (including seven role request
-  directories and original receipts), denied Vault/config/Index/secret reads,
-  denied arbitrary write and no Nextcloud credentials, with both Standard and
-  Strict selected configurations.
-- Test read-only SQLite/WAL under simultaneous legitimate writer activity;
-  verify the global lock inode and ownership across restart and upgrade;
-  add cross-process tests that a compromised role cannot forge proofs/effects.
+- Completed in the disposable Linux namespace: **actual mapped distinct
+  Observer (1001), Sync (1002), Scheduler/Producer (1003), and unauthorized
+  (1004) UIDs** with effective named POSIX ACLs. Confirms read-only original
+  sources in all seven request-role directories, denial of writes to sources,
+  Sync read-only proof sharing, unrelated Vault/secret denial, immutable
+  existing lock participation, and live Scheduler SQLite committed updates
+  observed in read-only DELETE and WAL modes. Uses disposable `/tmp` files,
+  never production UID/ACL/DB/service or remote access; tests skip with a
+  visible reason if the CI runner cannot create a subordinate user namespace.
+- A producer-created **new** file with a directory default ACL and creation
+  mode `0644` is readable by the Observer. **Subsequent `chmod 0600` masks
+  this named ACL and revokes Observer access** until the producer/owner
+  explicitly reinstates the named read permission. Provisioning must verify
+  each producer's actual immutable-file creation mode, final chmod, default
+  ACL inheritance and effective masks. A one-time recursive ACL on old files
+  does not qualify future publication; do not indiscriminately chmod existing
+  immutable evidence or broaden its group permissions.
+- Remaining production gates: tests with the intended real **host systemd
+  UIDs** and their namespace hardening, precise Standard/Strict account ACLs,
+  lock inode persistence through restart/upgrade, SQLite rollback/recovery,
+  sealed proof atomic publish and hostile Writer/Reader simulation, no forged
+  cross-role receipts or remote effects.
 - Re-check the exact Phase A `#320` HEAD and its Planner selection binding.
   Current in-flight uncommitted #320 corrections and the older #287 worktree
   must be preserved; none of them are silently ported by this ADR.
