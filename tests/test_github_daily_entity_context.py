@@ -124,11 +124,11 @@ def test_issue_and_pr_same_number_are_distinct_and_unassigned_events_preserved()
     rows = (
         event("issue_created", 7, offset=2),
         event("pull_request_created", 7, offset=3),
-        event("issue_comment", 7, offset=4, text="Approved new contract"),
+        event("pull_request_review_comment", 7, offset=4, text="Approved new contract"),
         event("pull_request_review", 7, offset=5, text="Needs revision"),
         event("default_branch_commit", None, offset=6),
         event("pull_request_commit", 7, offset=7),
-        event("issue_comment", 3, repo=OTHER, offset=8, text="New design"),
+        event("pull_request_review_comment", 3, repo=OTHER, offset=8, text="New design"),
     )
     raw = evidence(*rows)
     first = build_entity_contexts(raw)
@@ -138,7 +138,7 @@ def test_issue_and_pr_same_number_are_distinct_and_unassigned_events_preserved()
     assert {c.key for c in first.contexts} == {
         EntityKey(REPO, "issue", 7),
         EntityKey(REPO, "pull_request", 7),
-        EntityKey(OTHER, "issue", 3),
+        EntityKey(OTHER, "pull_request", 3),
     }
     assert first.excluded_default_commits == 1
     assert first.unverified_pr_commits == 1
@@ -159,7 +159,7 @@ def test_issue_and_pr_same_number_are_distinct_and_unassigned_events_preserved()
 def test_multi_batches_one_entity_are_lossless_and_deterministic():
     entries = [
         event(
-            "issue_comment", 17, offset=idx + 1,
+            "pull_request_review_comment", 17, offset=idx + 1,
             text="A" * 550 + f" meaningful progress step {idx}",
         ) for idx in range(9)
     ]
@@ -167,7 +167,7 @@ def test_multi_batches_one_entity_are_lossless_and_deterministic():
     max_bytes = 1700
     data = build_entity_contexts(raw, max_bytes=max_bytes)
     assert len(data.contexts) > 1
-    assert all(c.key == EntityKey(REPO, "issue", 17) for c in data.contexts)
+    assert all(c.key == EntityKey(REPO, "pull_request", 17) for c in data.contexts)
     assert all(len(c.to_json_bytes()) <= max_bytes for c in data.contexts)
     assert tuple(
         item["evidence_id"] for c in data.contexts for item in c.events
@@ -184,7 +184,7 @@ def test_multi_batches_one_entity_are_lossless_and_deterministic():
 
 
 def test_single_event_exceeding_budget_fails_closed():
-    raw = evidence(event("issue_comment", text="x" * 5000))
+    raw = evidence(event("pull_request_review_comment", text="x" * 5000))
     with pytest.raises(DailyEntityContextError, match="single original Evidence"):
         build_entity_contexts(raw, max_bytes=1024)
 
@@ -205,7 +205,7 @@ def test_context_budget_requires_bounded_integer(bad_budget):
 
 
 def test_event_wrong_github_entity_url_fails_closed():
-    x = event("issue_comment", number=9)
+    x = event("pull_request_review_comment", number=9)
     invalid = replace(x, url=f"https://github.com/{REPO}/issues/10")
     payload = invalid.to_json()
     payload.pop("evidence_id")
@@ -215,7 +215,7 @@ def test_event_wrong_github_entity_url_fails_closed():
 
 
 def test_duplicate_raw_evidence_id_rejected():
-    e = event("issue_comment", number=19)
+    e = event("pull_request_review_comment", number=19)
     # The real collector suppresses duplicate events during production; forge
     # an otherwise well-formed input to exercise the parser's invariant.
     payload = json.loads(evidence(e))
@@ -250,9 +250,9 @@ def test_model_schema_never_exposes_entity_identity_or_merge_state():
     assert "repository" not in json.dumps(schema)
 
 
-def test_normalized_model_claims_bind_only_original_issue_event_ids():
-    first = event("issue_comment", 19, offset=1, text="Decided on ADR")
-    second = event("issue_comment", 19, offset=2, text="Wrote tests")
+def test_normalized_model_claims_bind_only_original_pr_event_ids():
+    first = event("pull_request_review_comment", 19, offset=1, text="Decided on ADR")
+    second = event("pull_request_review_comment", 19, offset=2, text="Wrote tests")
     c = build_entity_contexts(evidence(first, second)).contexts[0]
     payload = model({
         "summary": "設計が確定し、テストが追加されました。",
@@ -260,7 +260,7 @@ def test_normalized_model_claims_bind_only_original_issue_event_ids():
     })
     result = normalize_entity_candidates(c, payload)
     assert result.context_sha256 == c.sha256
-    assert result.key == EntityKey(REPO, "issue", 19)
+    assert result.key == EntityKey(REPO, "pull_request", 19)
     assert result.response_sha256
     assert result.candidates[0].evidence_ids == (
         second.evidence_id, first.evidence_id,
@@ -276,8 +276,8 @@ def test_normalized_model_claims_bind_only_original_issue_event_ids():
 
 
 def test_uncited_and_empty_model_result_cannot_certify_no_progress():
-    a = event("issue_comment", 19, offset=1)
-    b = event("issue_comment", 19, offset=2)
+    a = event("pull_request_review_comment", 19, offset=1)
+    b = event("pull_request_review_comment", 19, offset=2)
     c = build_entity_contexts(evidence(a, b)).contexts[0]
     empty = normalize_entity_candidates(c, model())
     assert empty.candidates == ()
@@ -304,7 +304,7 @@ def test_uncited_and_empty_model_result_cannot_certify_no_progress():
     {"summary": "x" * 2100, "source_refs": [0]},
 ])
 def test_invalid_model_refs_and_prose_are_rejected(candidate):
-    c = build_entity_contexts(evidence(event("issue_comment"))).contexts[0]
+    c = build_entity_contexts(evidence(event("pull_request_review_comment"))).contexts[0]
     with pytest.raises(DailyEntityContextError):
         normalize_entity_candidates(c, model(candidate))
 
@@ -325,10 +325,10 @@ def test_invalid_top_level_model_output_is_rejected(response):
 
 
 def test_wrong_entity_manual_context_cannot_normalize():
-    original = event("issue_comment", 22)
+    original = event("pull_request_review_comment", 22)
     valid = build_entity_contexts(evidence(original)).contexts[0]
     forged = replace(
-        valid, key=EntityKey(REPO, "pull_request", 22),
+        valid, key=EntityKey(REPO, "issue", 22),
     )
     with pytest.raises(DailyEntityContextError, match="unbound entity"):
         normalize_entity_candidates(
@@ -361,7 +361,7 @@ def test_never_exposes_default_commit_as_repositorwide_summary():
     assert result.report()["publication_authorized"] is False
 
 def test_manual_context_with_mutated_original_event_digest_fails_closed():
-    first = event("issue_comment", 10, offset=1, text="Actual change")
+    first = event("pull_request_review_comment", 10, offset=1, text="Actual change")
     c = build_entity_contexts(evidence(first)).contexts[0]
     wrong = dict(c.events[0])
     wrong["actor"] = "attacker"
@@ -373,7 +373,7 @@ def test_manual_context_with_mutated_original_event_digest_fails_closed():
 
 
 def test_manual_context_with_out_of_window_event_fails_even_without_claims():
-    first = event("issue_comment", 10, offset=1)
+    first = event("pull_request_review_comment", 10, offset=1)
     c = build_entity_contexts(evidence(first)).contexts[0]
     wrong = dict(c.events[0])
     wrong["occurred_at"] = "2026-10-13T00:00:00Z"
@@ -384,7 +384,7 @@ def test_manual_context_with_out_of_window_event_fails_even_without_claims():
 
 def test_model_scope_excludes_external_context_ids_and_wrong_batch():
     rows = [
-        event("issue_comment", 90, offset=i + 1, text="X" * 700)
+        event("pull_request_review_comment", 90, offset=i + 1, text="X" * 700)
         for i in range(5)
     ]
     contexts = build_entity_contexts(
@@ -401,7 +401,7 @@ def test_model_scope_excludes_external_context_ids_and_wrong_batch():
 
 
 def test_self_consistent_forged_source_is_not_member_of_original_bundle():
-    first = event("issue_comment", 12, offset=1, text="Correct approved action")
+    first = event("pull_request_review_comment", 12, offset=1, text="Correct approved action")
     raw = evidence(first)
     context = build_entity_contexts(raw).contexts[0]
     # An attacker changes the event AND recomputes the event identity,
@@ -421,10 +421,10 @@ def test_self_consistent_forged_source_is_not_member_of_original_bundle():
 
 
 def test_wrong_raw_bundle_and_tampered_batch_identity_are_not_accepted():
-    a = event("issue_comment", 14, offset=1, text="Original")
+    a = event("pull_request_review_comment", 14, offset=1, text="Original")
     raw = evidence(a)
     context = build_entity_contexts(raw).contexts[0]
-    different = evidence(event("issue_comment", 15, offset=1, text="Other"))
+    different = evidence(event("pull_request_review_comment", 15, offset=1, text="Other"))
     with pytest.raises(DailyEntityContextError, match="original Evidence partition"):
         _normalize_entity_candidates(
             context, model(), original_evidence_bytes=different,
@@ -455,15 +455,15 @@ def test_pr_conversation_comment_with_issue_url_is_unverified():
 
 
 def test_duplicate_candidate_objects_are_rejected():
-    c = build_entity_contexts(evidence(event("issue_comment", 8))).contexts[0]
+    c = build_entity_contexts(evidence(event("pull_request_review_comment", 8))).contexts[0]
     duplicate = {"summary": "進展がありました", "source_refs": [0]}
     with pytest.raises(DailyEntityContextError, match="duplicated entity candidate"):
         normalize_entity_candidates(c, model(duplicate, duplicate))
 
 
 def test_nondefault_context_budget_still_binds_to_original_partition():
-    a = event("issue_comment", 8, offset=1, text="A" * 350)
-    b = event("issue_comment", 8, offset=2, text="B" * 350)
+    a = event("pull_request_review_comment", 8, offset=1, text="A" * 350)
+    b = event("pull_request_review_comment", 8, offset=2, text="B" * 350)
     raw = evidence(a, b)
     contexts = build_entity_contexts(raw, max_bytes=1300).contexts
     assert len(contexts) == 2
@@ -474,3 +474,40 @@ def test_nondefault_context_budget_still_binds_to_original_partition():
             "source_refs": [0],
         }))
         assert response.candidates[0].evidence_ids == context.evidence_ids
+
+def test_ambiguous_issue_comment_cannot_be_mislabelled_pr_progress():
+    # A /issues/N conversation URL does not authenticate that this is an
+    # Issue rather than a PR, even when the v1 collector selected kind=issue.
+    original = event(
+        "issue_comment", number=74, offset=1,
+        text="Material decision in a GitHub issue conversation",
+    )
+    data = build_entity_contexts(evidence(original))
+    assert data.contexts == ()
+    assert data.unverified_issue_comments == 1
+    assert data.report()["unverified_issue_comments"] == 1
+    assert data.report()["requires_human_quality_review"] is True
+    # A strongly typed new Issue lifecycle event still gives a context, but
+    # the ambiguous conversation text is quarantined rather than grafted on.
+    started = event("issue_created", 74, offset=2)
+    data = build_entity_contexts(evidence(original, started))
+    assert len(data.contexts) == 1
+    assert data.contexts[0].evidence_ids == (started.evidence_id,)
+    assert data.unverified_issue_comments == 1
+
+
+def test_percent_encoded_shared_issue_route_is_also_quarantined():
+    pr_comment = event("pull_request_comment", 32, text="Important progress")
+    changed = replace(
+        pr_comment, url=f"https://github.com/{REPO}/%69ssues/32",
+    )
+    payload = changed.to_json()
+    payload.pop("evidence_id")
+    changed = replace(
+        changed, evidence_id=sha256_bytes(_canonical_json_bytes(payload)),
+    )
+    data = build_entity_contexts(evidence(changed))
+    assert not data.contexts
+    assert data.unverified_pr_comments == 1
+    assert data.grouped_event_count == 0
+    assert data.report()["publication_authorized"] is False

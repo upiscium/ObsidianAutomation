@@ -3,7 +3,7 @@
 - **Issue:** [#326](https://github.com/upiscium/ObsidianAutomation/issues/326)
 - **Parent:** [#324](https://github.com/upiscium/ObsidianAutomation/issues/324), [#325](https://github.com/upiscium/ObsidianAutomation/pull/325)
 - **Status:** experimental read-only library, not wired to inference or any Writer
-- **Dependency:** requires #325's immutable evidence entity mapping contract to pass its independent review before integrating or using this code in an active pipeline
+- **Dependencies:** #325's exact entity preview mapping must pass independent review, and [#328](https://github.com/upiscium/ObsidianAutomation/issues/328) must seal GitHub Collector Issue/PR conversation and PR-commit route identity before ambiguous comments or commits can be promoted. Neither is accepted for active publication.
 
 ## Boundary
 
@@ -25,13 +25,18 @@ prose may choose that identity.
 default-branch commits without an attested Issue/PR target are counted and
 left in the original immutable Evidence; PR commits with a /commit/SHA URL
 lack an authenticated /pull/N association in the v1 Evidence payload and are
-also marked unverified/unattributed. PR conversation comments whose GitHub
-URL is /issues/N similarly do not prove Issue-versus-PR identity without
-the collector's source-route witness and are counted as unverified. A future
-immutable collector-route receipt may qualify these cases; **never guess**
-Issue/PR identity from the source's numeric field alone. These quarantined
-events remain in the original lossless Evidence and require human/semantic
-coverage attention rather than being treated as irrelevant.
+also marked unverified/unattributed. GitHub's /issues/N conversation
+route is shared by Issues and PRs. In v1 the collector can even classify a
+PR discussion as kind=issue_comment if its known-PR set is incomplete.
+Consequently **both issue_comment and pull_request_comment carried by a
+validated decoded /issues/N path are quarantined** rather than guessed
+into either entity class. This includes percent-encoded forms of the path.
+A reviewed, immutable, independently verifiable Collector route/classification
+witness ([#328](https://github.com/upiscium/ObsidianAutomation/issues/328))
+is required to restore full Issue-comment progress coverage. Until then
+Issue comment-driven material progress is a **known functional gap**, not
+proof of inactivity. These excluded source events remain in the original
+lossless Evidence, are counted separately and require semantic/human review.
 
 Contexts split deterministically with at most 64 original events and a
 64-KiB **hard safety cap** per input; callers may use a smaller explicit
@@ -96,7 +101,8 @@ to PR #325's identity contract and the future v2 projection reducer.
 1. Complete PR #325's Correctness/Security blockers and accept one shared
    **public** exact entity-resolution function; this prototype currently
    reuses its private event-key validator to prevent two divergent
-   interpretation rules.
+   interpretation rules. Complete #328's Collector route witness before
+   attributing the quarantined Issue/PR comments or PR commits.
 2. Add a real entity-scoped model adapter (exact model/digest/prompt/options
    provenance), separate typed singleton Grounding inputs, reliable
    per-entity evidence/review completeness and independent human

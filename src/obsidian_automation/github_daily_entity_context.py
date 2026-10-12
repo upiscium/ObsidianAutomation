@@ -12,6 +12,7 @@ import re
 from dataclasses import dataclass
 from datetime import date
 from typing import Mapping
+from urllib.parse import unquote, urlsplit
 
 from .artifact_lifecycle import _decode_json_object
 from .github_daily_activity import _date_window
@@ -139,6 +140,7 @@ class EntityContextSet:
     excluded_default_commits: int
     unverified_pr_commits: int
     unverified_pr_comments: int
+    unverified_issue_comments: int
     grouped_event_count: int
 
     def report(self) -> dict[str, object]:
@@ -153,6 +155,7 @@ class EntityContextSet:
             "excluded_default_commits": self.excluded_default_commits,
             "unverified_pr_commits": self.unverified_pr_commits,
             "unverified_pr_comments": self.unverified_pr_comments,
+            "unverified_issue_comments": self.unverified_issue_comments,
             "requires_human_quality_review": True,
             "publication_authorized": False,
         }
@@ -160,7 +163,7 @@ class EntityContextSet:
 
 def _group_validated_events(
     bundle: EvidenceBundle,
-) -> tuple[dict[EntityKey, list[Mapping[str, object]]], int, int, int]:
+) -> tuple[dict[EntityKey, list[Mapping[str, object]]], int, int, int, int]:
     if len(bundle.events) > MAX_EVENTS:
         raise DailyEntityContextError("daily event count exceeds limit")
     start, end = _date_bounds(bundle)
@@ -168,6 +171,7 @@ def _group_validated_events(
     default_count = 0
     pr_commit_count = 0
     pr_comment_count = 0
+    issue_comment_count = 0
     seen: set[str] = set()
     for event in bundle.events:
         try:
@@ -192,17 +196,29 @@ def _group_validated_events(
         if event.get("kind") == _UNVERIFIED_PR_COMMIT:
             pr_commit_count += 1
             continue
-        if (
-            event.get("kind") == "pull_request_comment"
-            and isinstance(event.get("url"), str)
-            and "/issues/" in event["url"]
-        ):
-            # GitHub PR conversation comments may have /issues/N URLs. The
-            # URL does not prove this is a PR rather than an Issue; a sealed
-            # collector route/classification receipt is required to promote
-            # that association. Never infer an entity from its number alone.
-            pr_comment_count += 1
-            continue
+        if event.get("kind") in {"issue_comment", "pull_request_comment"}:
+            # The /issues/N conversation route is shared by Issues and PRs,
+            # and v1 can label PR comments as issue_comment when its known-PR
+            # set is incomplete. The URL therefore does NOT prove either
+            # entity class. Decode the same validated URL path as #325 (a
+            # raw substring check would miss /%69ssues/N). Until a signed
+            # collector-route classification witness exists, quarantine all
+            # ambiguous conversation comments and keep their Evidence.
+            raw_url = event.get("url")
+            if not isinstance(raw_url, str):
+                raise DailyEntityContextError("comment route is absent")
+            route = [
+                unquote(segment)
+                for segment in urlsplit(raw_url).path.split("/") if segment
+            ]
+            if len(route) != 4:
+                raise DailyEntityContextError("comment route is malformed")
+            if route[2] == "issues":
+                if event["kind"] == "pull_request_comment":
+                    pr_comment_count += 1
+                else:
+                    issue_comment_count += 1
+                continue
         if key is None:
             if event.get("kind") != "default_branch_commit":
                 raise DailyEntityContextError("unsupported unassigned event")
@@ -211,7 +227,7 @@ def _group_validated_events(
         grouped.setdefault(key, []).append(event)
         if len(grouped) > MAX_ENTITIES:
             raise DailyEntityContextError("too many distinct Issue/PR entities")
-    return grouped, default_count, pr_commit_count, pr_comment_count
+    return grouped, default_count, pr_commit_count, pr_comment_count, issue_comment_count
 
 
 def build_entity_contexts(
@@ -230,7 +246,9 @@ def build_entity_contexts(
     if type(max_bytes) is not int or not 1024 <= max_bytes <= MAX_CONTEXT_BYTES:
         raise DailyEntityContextError("context size budget is invalid")
     bundle = parse_evidence_bundle(evidence_bytes)
-    grouped, excluded, unverified, pr_comments = _group_validated_events(bundle)
+    grouped, excluded, unverified, pr_comments, issue_comments = (
+        _group_validated_events(bundle)
+    )
 
     # Use a conservative temporary batch-count width. Final encoded contexts
     # are checked again with their exact real batch counts and indexes.
@@ -282,12 +300,16 @@ def build_entity_contexts(
     ]
     if actual_ids != expected_ids or len(set(actual_ids)) != len(actual_ids):
         raise DailyEntityContextError("entity partition lost or reordered Evidence")
-    if len(actual_ids) + excluded + unverified + pr_comments != len(bundle.events):
+    if (
+        len(actual_ids) + excluded + unverified
+        + pr_comments + issue_comments != len(bundle.events)
+    ):
         raise DailyEntityContextError("original Evidence accounting differs")
     return EntityContextSet(
         evidence_bundle_sha256=bundle.sha256, date=bundle.date,
         contexts=contexts, excluded_default_commits=excluded,
         unverified_pr_commits=unverified, unverified_pr_comments=pr_comments,
+        unverified_issue_comments=issue_comments,
         grouped_event_count=len(actual_ids),
     )
 
