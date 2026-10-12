@@ -108,23 +108,24 @@ def _require_safe_directory(path: Path, *, create: bool) -> None:
             path.mkdir(mode=0o755)
         except FileExistsError:
             pass
-        else:
-            # The directory inode can be fsynced later by a CAS writer, but
-            # its *name in the parent* must be durable before we claim that a
-            # subsequent published artifact path survives a power loss.
-            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-            flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
-            parent_fd = os.open(path.parent, flags)
-            try:
-                os.fsync(parent_fd)
-            finally:
-                os.close(parent_fd)
     try:
         path.lstat()
     except FileNotFoundError as exc:
         raise ArtifactLifecycleError(f"required directory does not exist: {path}") from exc
     if path.is_symlink() or not path.is_dir():
         raise ArtifactLifecycleError(f"artifact path is not a safe directory: {path}")
+    if create:
+        # Retry must not mistake a visible directory for a *durable* entry:
+        # an earlier first-use attempt may have failed while fsyncing its
+        # parent, leaving this name present until the next power loss.
+        # Reaffirm parent durability even for an already-existing stage.
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+        parent_fd = os.open(path.parent, flags)
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
 
 
 def ensure_artifact_layout(ai_root: Path) -> ArtifactLayout:

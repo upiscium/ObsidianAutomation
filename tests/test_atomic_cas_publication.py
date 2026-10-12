@@ -431,7 +431,9 @@ def test_first_use_layout_fsyncs_parent_before_artifact_publish(tmp_path, monkey
         assert len(recorded) == 4
         recorded.clear()
         assert cas.ensure_artifact_layout(tmp_path) == layout
-        assert recorded == []
+        # An earlier first-use attempt may have failed to sync the parent
+        # entry. Existing directory names must be re-synced on retries too.
+        assert recorded == [str(tmp_path)] * 4
         cas._store_immutable(layout.untrusted / "first.json", b"fully-committed")
     assert (layout.untrusted / "first.json").read_bytes() == b"fully-committed"
 
@@ -449,3 +451,25 @@ def test_new_directory_parent_fsync_failure_never_reports_success(tmp_path, monk
         with pytest.raises(OSError, match="layout parent fsync failure"):
             cas.ensure_artifact_layout(tmp_path)
     assert not list(tmp_path.rglob("*.json"))
+
+def test_failed_first_parent_fsync_requires_successful_retry(tmp_path, monkeypatch):
+    """Visible first-use directory entries are not proof of durable creation."""
+    original = cas.os.fsync
+    failures = []
+
+    def fail_root_parent(fd):
+        if os.readlink(f"/proc/self/fd/{fd}") == str(tmp_path):
+            failures.append("parent")
+            raise OSError("injected first-use parent durability failure")
+        return original(fd)
+
+    # The first failed fsync leaves the directory visible in the process.
+    # A second call must try to sync it again before accepting any layout.
+    for _ in range(2):
+        with monkeypatch.context() as m:
+            m.setattr(cas.os, "fsync", fail_root_parent)
+            with pytest.raises(OSError, match="injected first-use parent durability"):
+                cas.ensure_artifact_layout(tmp_path)
+        assert (tmp_path / "00-Untrusted").is_dir()
+    assert failures == ["parent", "parent"]
+    assert cas.ensure_artifact_layout(tmp_path).untrusted.is_dir()
