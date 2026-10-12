@@ -12,8 +12,9 @@ import json
 import re
 import urllib.parse
 from dataclasses import dataclass, replace
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import Mapping
+from zoneinfo import ZoneInfo
 
 from . import github_daily_activity as activity
 from . import github_project_watcher as watcher
@@ -30,6 +31,10 @@ MAX_PAGES_PER_PR = 32
 REQUIRES_WITNESS = frozenset({
     "issue_comment", "pull_request_comment",
     "pull_request_commit", "pull_request_review_comment",
+})
+_ALLOWED_COLLECTION_MODES = frozenset({
+    "scheduled_recent_api_reverified",
+    "explicit_historical_reconfirmation",
 })
 _SHA_RE = re.compile(r"^[0-9a-f]{40,64}$")
 _ID_RE = re.compile(r"^[1-9][0-9]{0,18}$")
@@ -51,12 +56,39 @@ def _json(value: Mapping[str, object]) -> bytes:
     return activity._canonical_json_bytes(value)
 
 
+def _utc_now() -> datetime:
+    """Authoritative collector process time; injectable only in tests."""
+    return datetime.now(timezone.utc)
+
+
+def _require_collector_source(
+    config: watcher.WatcherConfig,
+    api: watcher.GitHubClient,
+) -> None:
+    # This v2 provenance contract is deliberately GitHub.com-only.
+    # A general GH Enterprise adapter would require a separate approved
+    # API/public URL authority contract; never treat arbitrary HTTPS as GitHub.
+    configured = getattr(config, "github_api_base", None)
+    source = getattr(api, "api_base", None)
+    if configured != "https://api.github.com" or source != configured:
+        raise DailySourceRouteError("verified route source must be approved GitHub API")
+    token = getattr(api, "token", None)
+    if not isinstance(token, str) or not token.strip():
+        raise DailySourceRouteError("verified GitHub source requires configured authentication")
+    # A test duck client can meet this structural requirement; actual authority
+    # comes only from role-protected execution, not this Python type check.
+    if not callable(getattr(api, "_request_json", None)):
+        raise DailySourceRouteError("verified GitHub client has no response reader")
+
+
 def _api_prefix(api: watcher.GitHubClient) -> str:
     base = getattr(api, "api_base", "https://api.github.com")
     parts = urllib.parse.urlsplit(base)
     if (
-        parts.scheme != "https" or not parts.netloc or parts.username
-        or parts.password or parts.query or parts.fragment
+        base != "https://api.github.com"
+        or parts.scheme != "https" or parts.netloc != "api.github.com"
+        or parts.path not in ("", "/")
+        or parts.username or parts.password or parts.query or parts.fragment
     ):
         raise DailySourceRouteError("invalid trusted GitHub API base")
     return base.rstrip("/")
@@ -176,6 +208,149 @@ def _pr_commits(
     raise DailySourceRouteError("PR commit source exceeded bounded pagination")
 
 
+def _validate_original_evidence_window_and_kinds(bundle) -> None:
+    """Do not mistake a self-hashed v1 event for a typed, in-window event.
+
+    Legacy v1 parse_evidence_bundle validates content hashes and repository
+    presence, but does not enforce all fields/kinds/time windows. The v2 route
+    witness must NOT weaken its own source trust merely because a SHA matches.
+    """
+    try:
+        start = activity._timestamp(bundle.window_start, label="window_start")
+        end = activity._timestamp(bundle.window_end, label="window_end")
+        target = date.fromisoformat(bundle.date)
+        expected_start, expected_end = activity._date_window(target)
+    except (ValueError, activity.GitHubDailyActivityError) as exc:
+        raise DailySourceRouteError("invalid Evidence date window") from exc
+    if (
+        start != expected_start or end != expected_end
+        or bundle.window_start != activity._format_timestamp(start)
+        or bundle.window_end != activity._format_timestamp(end)
+    ):
+        raise DailySourceRouteError("source Evidence JST day boundary mismatch")
+    exact_keys = {
+        "evidence_id", "kind", "repository", "occurred_at", "url", "actor",
+        "entity_type", "number", "source_id", "sha", "state", "draft",
+        "title", "body", "message",
+    }
+    for event in bundle.events:
+        if not isinstance(event, dict) or set(event) != exact_keys:
+            raise DailySourceRouteError("source event schema is not recognized")
+        kind = event["kind"]
+        if not isinstance(kind, str) or kind not in activity._EVENT_KINDS:
+            raise DailySourceRouteError("unknown source event kind")
+        if kind == "default_branch_commit":
+            expected_type, requires_number = "commit", False
+        elif kind == "pull_request_commit":
+            expected_type, requires_number = "commit", True
+        elif kind == "issue_comment":
+            expected_type, requires_number = "issue_comment", True
+        elif kind == "pull_request_comment":
+            expected_type, requires_number = "pull_request_comment", True
+        elif kind == "pull_request_review":
+            expected_type, requires_number = "pull_request_review", True
+        elif kind == "pull_request_review_comment":
+            expected_type, requires_number = "pull_request_review_comment", True
+        elif kind.startswith("pull_request_"):
+            expected_type, requires_number = "pull_request", True
+        else:
+            expected_type, requires_number = "issue", True
+        if event["entity_type"] != expected_type:
+            raise DailySourceRouteError("source event kind/entity_type mismatch")
+        number = event["number"]
+        if (requires_number and (type(number) is not int or number < 1)) or (
+            not requires_number and number is not None
+        ):
+            raise DailySourceRouteError("invalid original event number")
+        if (
+            not isinstance(event["source_id"], str)
+            or not event["source_id"]
+            or event["actor"] is not None and not isinstance(event["actor"], str)
+            or event["state"] is not None and not isinstance(event["state"], str)
+            or event["draft"] is not None and type(event["draft"]) is not bool
+            or event["sha"] is not None and not isinstance(event["sha"], str)
+        ):
+            raise DailySourceRouteError("source event scalar type mismatch")
+        for excerpt in ("title", "body", "message"):
+            item = event[excerpt]
+            if item is not None and (
+                not isinstance(item, dict)
+                or set(item) != {"text", "truncated", "original_bytes", "included_bytes"}
+                or not isinstance(item["text"], str)
+                or type(item["truncated"]) is not bool
+                or type(item["original_bytes"]) is not int
+                or type(item["included_bytes"]) is not int
+                or min(item["original_bytes"], item["included_bytes"]) < 0
+                or item["included_bytes"] != len(item["text"].encode("utf-8"))
+                or item["included_bytes"] > item["original_bytes"]
+            ):
+                raise DailySourceRouteError("source event text excerpt has invalid structure")
+        try:
+            occurred = activity._timestamp(event["occurred_at"], label="event timestamp")
+        except activity.GitHubDailyActivityError as exc:
+            raise DailySourceRouteError("source event timestamp is malformed") from exc
+        if (
+            not start <= occurred < end
+            or event["occurred_at"] != activity._format_timestamp(occurred)
+        ):
+            raise DailySourceRouteError("source event falls outside target JST day")
+        url = event["url"]
+        repo = event["repository"]
+        if not isinstance(url, str) or not isinstance(repo, str):
+            raise DailySourceRouteError("invalid source event repository/URL")
+        try:
+            pieces = urllib.parse.urlsplit(url)
+            host_port = pieces.port
+        except ValueError as exc:
+            raise DailySourceRouteError("malformed original GitHub URL") from exc
+        path = [urllib.parse.unquote(part) for part in pieces.path.split("/") if part]
+        if (
+            pieces.scheme != "https" or pieces.netloc.casefold() != "github.com"
+            or pieces.username or pieces.password or pieces.query
+            or host_port is not None
+            or len(path) < 4
+            or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo)
+            or "/".join(path[:2]).casefold() != repo.casefold()
+            or any(part in (".", "..", "") for part in path)
+        ):
+            raise DailySourceRouteError("source event public URL is not canonical GitHub")
+        suffix = path[2:]
+        number_str = str(number) if requires_number else None
+        if kind in ("issue_comment", "pull_request_comment"):
+            exact = (
+                len(suffix) == 2 and suffix[0] in ("issues", "pull")
+                and suffix[1] == number_str
+                and pieces.fragment == f"issuecomment-{event['source_id']}"
+            )
+        elif kind == "pull_request_review_comment":
+            exact = (
+                suffix == ["pull", number_str]
+                and pieces.fragment == f"discussion_r{event['source_id']}"
+            )
+        elif kind == "pull_request_review":
+            exact = (
+                suffix == ["pull", number_str]
+                and (
+                    not pieces.fragment
+                    or pieces.fragment == f"pullrequestreview-{event['source_id']}"
+                )
+            )
+        elif kind in ("pull_request_commit", "default_branch_commit"):
+            exact = (
+                len(suffix) == 2 and suffix[0] == "commit"
+                and isinstance(event["sha"], str)
+                and _SHA_RE.fullmatch(event["sha"]) is not None
+                and suffix[1] == event["sha"]
+                and not pieces.fragment
+            )
+        else:
+            route = "issue" if expected_type == "issue" else "pull_request"
+            route_path = "issues" if route == "issue" else "pull"
+            exact = suffix == [route_path, number_str] and not pieces.fragment
+        if not exact:
+            raise DailySourceRouteError("source event URL/target entity identity mismatch")
+
+
 def _validate_record(raw: object, event: activity.EvidenceEvent) -> None:
     if not isinstance(raw, dict) or set(raw) != {
         "evidence_id", "kind", "repository", "entity", "number",
@@ -243,15 +418,20 @@ def parse_verified_routes(
     if len(receipt_bytes) > 4 * 1024 * 1024 or len(evidence_bytes) > 32 * 1024 * 1024:
         raise DailySourceRouteError("route receipt or evidence exceeds verification bound")
     bundle = parse_evidence_bundle(evidence_bytes)
+    _validate_original_evidence_window_and_kinds(bundle)
     try:
         raw = json.loads(receipt_bytes)
     except (ValueError, TypeError, UnicodeError) as exc:
         raise DailySourceRouteError("invalid source receipt JSON") from exc
     if (
         not isinstance(raw, dict)
-        or set(raw) != {"record_version", "date", "evidence_sha256", "routes", "collection_mode", "publication_authorized"}
+        or set(raw) != {
+            "record_version", "date", "evidence_sha256", "routes",
+            "collection_mode", "publication_authorized", "captured_at_utc",
+        }
         or type(raw["record_version"]) is not int or raw["record_version"] != RECORD_VERSION
-        or raw["collection_mode"] != "fresh_api_reverified"
+        or raw["collection_mode"] not in _ALLOWED_COLLECTION_MODES
+        or not isinstance(raw["captured_at_utc"], str)
         or raw["publication_authorized"] is not False
         or raw["date"] != bundle.date
         or raw["evidence_sha256"] != bundle.sha256
@@ -261,6 +441,23 @@ def parse_verified_routes(
         raise DailySourceRouteError("route receipt version/evidence binding mismatch")
     if _json(raw) != receipt_bytes:
         raise DailySourceRouteError("noncanonical source receipt")
+    try:
+        observed = activity._timestamp(raw["captured_at_utc"], label="captured_at_utc")
+    except activity.GitHubDailyActivityError as exc:
+        raise DailySourceRouteError("invalid source receipt capture timestamp") from exc
+    if activity._format_timestamp(observed) != raw["captured_at_utc"]:
+        raise DailySourceRouteError("noncanonical capture timestamp")
+    if raw["collection_mode"] == "scheduled_recent_api_reverified":
+        local_date = observed.astimezone(ZoneInfo(activity.CANONICAL_TIMEZONE)).date()
+        target = date.fromisoformat(bundle.date)
+        if target not in (local_date, local_date - timedelta(days=1)):
+            raise DailySourceRouteError("scheduled route receipt targets a historical/future date")
+    route_ids = [
+        record.get("evidence_id") if isinstance(record, dict) else None
+        for record in raw["routes"]
+    ]
+    if route_ids != sorted(route_ids, key=lambda v: v if isinstance(v, str) else ""):
+        raise DailySourceRouteError("route entries are not in canonical source ID order")
     expected_events = {
         str(e["evidence_id"]): e
         for e in bundle.events if e["kind"] in REQUIRES_WITNESS
@@ -299,6 +496,7 @@ def collect_fresh_verified_routes(
     *,
     target_date: date,
     client: watcher.GitHubClient,
+    explicit_historical_reconfirmation: bool = False,
 ) -> FreshRouteCollection:
     """Fresh GitHub API collection + re-verification in one invocation.
 
@@ -306,6 +504,20 @@ def collect_fresh_verified_routes(
     A failed read/rate-limit/changed comment/changed PR route fails closed; no
     original Evidence or local state is persisted by this function.
     """
+    _require_collector_source(config, client)
+    observed = _utc_now()
+    local_today = observed.astimezone(ZoneInfo(activity.CANONICAL_TIMEZONE)).date()
+    if target_date > local_today:
+        raise DailySourceRouteError("future-date source reconfirmation is not allowed")
+    is_recent = target_date in (local_today, local_today - timedelta(days=1))
+    if not is_recent and not explicit_historical_reconfirmation:
+        raise DailySourceRouteError(
+            "historical source reconfirmation requires an explicit nonpublication opt-in"
+        )
+    collection_mode = (
+        "scheduled_recent_api_reverified"
+        if is_recent else "explicit_historical_reconfirmation"
+    )
     original = activity.collect_daily_evidence(config, target_date=target_date, client=client)
     records: list[dict[str, object]] = []
     corrected: list[activity.EvidenceEvent] = []
@@ -427,7 +639,8 @@ def collect_fresh_verified_routes(
         "record_version": RECORD_VERSION,
         "date": updated.target_date,
         "evidence_sha256": updated.sha256,
-        "collection_mode": "fresh_api_reverified",
+        "collection_mode": collection_mode,
+        "captured_at_utc": activity._format_timestamp(observed),
         "publication_authorized": False,
         "routes": records,
     }

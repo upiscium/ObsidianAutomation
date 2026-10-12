@@ -24,8 +24,10 @@ proof that there was no substantive progress.
 
 `github_daily_source_route.collect_fresh_verified_routes` is an
 **explicit opt-in API**, not the existing Daily v1 collector executable.
-It invokes the current collector from the configured source on the requested
-JST day and **rechecks the GitHub source immediately in the same invocation**:
+It requires an explicitly configured **authenticated GitHub.com API** client
+(`https://api.github.com` with a nonempty token) and runs the current
+collector for the requested JST day. It then **rechecks the GitHub source
+immediately in the same invocation**:
 
 - For each Issue/PR discussion comment, fetch the exact API
   `/repos/{owner}/{repo}/issues/comments/{numeric_comment_id}`.
@@ -60,17 +62,24 @@ Evidence and collection identity atomically under an independently reviewed
 CAS/ACL contract before a v2 summary may rely on them.
 
 `parse_verified_routes(receipt_bytes, evidence_bytes)` strictly reparses
-the old Evidence-v1 schema and all original event hashes, then demands
-one matching route entry for every comment/PR-commit event requiring
-independent attribution. Missing, extra, duplicate, incorrect target,
-old-format, noncanonical or mismatched receipt/evidence fail closed.
+the old Evidence-v1 schema and all original event hashes, **validates all
+original event kinds/types, canonical GitHub links, and the exact JST date
+window even against freshly recomputed SHA values**, then demands one
+matching route entry for every comment/PR-commit event requiring independent
+attribution. Missing, extra, duplicate, incorrect target, unsorted, old-format,
+noncanonical or mismatched receipt/evidence fail closed.
 
 **Important compatibility rule:** Existing v1 Evidence (including the
 already published October 7 canary and the October 8 immutable 269-event
 snapshot) is **not retrospectively reclassified** or granted a new witness.
 This helper's output can only describe a **new explicitly fresh-source API
-reconfirmation**. Historical refresh, source availability and any new
-v2 CAS publication require separate explicit design/approval.
+reconfirmation**. A normal invocation is limited to the local JST today or
+yesterday (to support next-day Daily finalize). A previous date requires
+`explicit_historical_reconfirmation=True`, and then the route receipt is
+labelled `explicit_historical_reconfirmation` with its actual UTC capture
+time, **never** as an original historical collection. This opt-in does not
+authorize historical Writer effects or retrospective ref changes. Any new
+v2 CAS publication requires separate explicit design/approval.
 
 ## Bounds and safety
 

@@ -59,6 +59,7 @@ REVIEW_COMMENT = {
 
 class _FakeClient:
     api_base = "https://api.github.com"
+    token = "synthetic-fixture-credential-not-a-real-token"
 
     def __init__(
         self, *,
@@ -142,6 +143,7 @@ def _config(tmp_path: Path) -> WatcherConfig:
 def _collect(tmp_path: Path, **options):
     return collect_fresh_verified_routes(
         _config(tmp_path), target_date=DATE, client=_FakeClient(**options),
+        explicit_historical_reconfirmation=True,
     )
 
 
@@ -186,7 +188,8 @@ def test_source_route_verification_does_not_modify_stored_v1_evidence(tmp_path: 
     from obsidian_automation.github_daily_activity import collect_daily_evidence
     config = _config(tmp_path)
     before = collect_daily_evidence(config, target_date=DATE, client=_FakeClient())
-    after = collect_fresh_verified_routes(config, target_date=DATE, client=_FakeClient())
+    after = collect_fresh_verified_routes(config, target_date=DATE, client=_FakeClient(),
+        explicit_historical_reconfirmation=True)
     assert any(event.kind == "issue_comment" and event.source_id == "33" for event in before.events)
     assert any(event.kind == "pull_request_comment" and event.source_id == "33" for event in after.evidence.events)
     assert after.evidence.sha256 != before.sha256
@@ -205,7 +208,8 @@ def test_changed_comment_or_untrusted_route_fails_closed(tmp_path: Path, bad) ->
     client = _FakeClient()
     client.responses[f"{BASE}/issues/comments/33"].update(bad)
     with pytest.raises(DailySourceRouteError):
-        collect_fresh_verified_routes(_config(tmp_path), target_date=DATE, client=client)
+        collect_fresh_verified_routes(_config(tmp_path), target_date=DATE, client=client,
+            explicit_historical_reconfirmation=True)
 
 
 @pytest.mark.parametrize("bad", [
@@ -219,14 +223,16 @@ def test_wrong_issue_classification_resource_fails_closed(tmp_path: Path, bad) -
     client = _FakeClient()
     client.responses[f"{BASE}/issues/2"].update(bad)
     with pytest.raises(DailySourceRouteError):
-        collect_fresh_verified_routes(_config(tmp_path), target_date=DATE, client=client)
+        collect_fresh_verified_routes(_config(tmp_path), target_date=DATE, client=client,
+            explicit_historical_reconfirmation=True)
 
 
 def test_missing_pr_membership_fails_closed(tmp_path: Path) -> None:
     client = _FakeClient(visible_pr=True, include_commit=True)
     client.responses[f"{BASE}/pulls/2/commits?per_page=100&page=1"] = []
     with pytest.raises(DailySourceRouteError, match="membership"):
-        collect_fresh_verified_routes(_config(tmp_path), target_date=DATE, client=client)
+        collect_fresh_verified_routes(_config(tmp_path), target_date=DATE, client=client,
+            explicit_historical_reconfirmation=True)
 
 
 def test_commit_list_duplicate_or_wrong_public_url_fails_closed(tmp_path: Path) -> None:
@@ -237,7 +243,8 @@ def test_commit_list_duplicate_or_wrong_public_url_fails_closed(tmp_path: Path) 
         client = _FakeClient(visible_pr=True, include_commit=True)
         client.responses[f"{BASE}/pulls/2/commits?per_page=100&page=1"] = entries
         with pytest.raises(DailySourceRouteError):
-            collect_fresh_verified_routes(_config(tmp_path), target_date=DATE, client=client)
+            collect_fresh_verified_routes(_config(tmp_path), target_date=DATE, client=client,
+            explicit_historical_reconfirmation=True)
 
 
 def _canonical(obj) -> bytes:
@@ -282,7 +289,8 @@ def test_api_unavailable_fails_closed_without_persisted_output(tmp_path: Path) -
     client = _FakeClient()
     client.fail_routes.add(f"{BASE}/issues/2")
     with pytest.raises(DailySourceRouteError, match="unavailable"):
-        collect_fresh_verified_routes(_config(tmp_path), target_date=DATE, client=client)
+        collect_fresh_verified_routes(_config(tmp_path), target_date=DATE, client=client,
+            explicit_historical_reconfirmation=True)
     assert not any(tmp_path.rglob("*.github-daily-source-route.json"))
 
 def test_percent_encoded_issue_route_is_matched_by_canonical_api_identity(
@@ -294,7 +302,8 @@ def test_percent_encoded_issue_route_is_matched_by_canonical_api_identity(
     )
     # Encoding of "issues" must be equivalent to the canonical route; this
     # API string is compared but NEVER passed back as a request URL.
-    value = collect_fresh_verified_routes(_config(tmp_path), target_date=DATE, client=client)
+    value = collect_fresh_verified_routes(_config(tmp_path), target_date=DATE, client=client,
+            explicit_historical_reconfirmation=True)
     assert any(e.kind == "pull_request_comment" for e in value.evidence.events)
 
 
@@ -314,7 +323,8 @@ def test_commit_source_cannot_change_between_collection_and_route_verification(
             "commit"
         ]["committer"]["date"] = value
     with pytest.raises(DailySourceRouteError):
-        collect_fresh_verified_routes(_config(tmp_path), target_date=DATE, client=client)
+        collect_fresh_verified_routes(_config(tmp_path), target_date=DATE, client=client,
+            explicit_historical_reconfirmation=True)
 
 
 def test_comment_api_query_or_foreign_repo_is_rejected(tmp_path: Path) -> None:
@@ -327,7 +337,8 @@ def test_comment_api_query_or_foreign_repo_is_rejected(tmp_path: Path) -> None:
         client = _FakeClient()
         client.responses[f"{BASE}/issues/comments/33"]["issue_url"] = url
         with pytest.raises(DailySourceRouteError):
-            collect_fresh_verified_routes(_config(tmp_path), target_date=DATE, client=client)
+            collect_fresh_verified_routes(_config(tmp_path), target_date=DATE, client=client,
+            explicit_historical_reconfirmation=True)
 
 
 def test_receipt_requires_explicit_nonpublication_and_source_mode(tmp_path: Path) -> None:
@@ -355,8 +366,148 @@ def test_source_verification_requests_only_fixed_numeric_api_routes(tmp_path: Pa
         calls.append(path)
         return original(path)
     client._request_json = trace
-    collect_fresh_verified_routes(_config(tmp_path), target_date=DATE, client=client)
+    collect_fresh_verified_routes(_config(tmp_path), target_date=DATE, client=client,
+            explicit_historical_reconfirmation=True)
     assert calls
     assert all(path.startswith(BASE + "/") for path in calls)
     assert all("http" not in path and ".." not in path for path in calls)
     assert all(path in client.responses for path in calls)
+
+def test_default_historical_collection_refused_and_explicitly_labelled(tmp_path: Path) -> None:
+    from obsidian_automation import github_daily_source_route as source
+    client = _FakeClient()
+    # A normally running collector may process today's or yesterday's JST
+    # Evidence only. Old dates must carry their distinct historical label.
+    with pytest.raises(DailySourceRouteError, match="historical"):
+        source.collect_fresh_verified_routes(
+            _config(tmp_path), target_date=DATE, client=client,
+        )
+    authorized_for_readonly_recheck = _collect(tmp_path)
+    raw = json.loads(authorized_for_readonly_recheck.receipt_bytes)
+    assert raw["collection_mode"] == "explicit_historical_reconfirmation"
+    assert raw["publication_authorized"] is False
+    assert isinstance(raw["captured_at_utc"], str) and raw["captured_at_utc"].endswith("Z")
+
+
+def test_scheduled_recent_day_uses_separate_fresh_mode(tmp_path: Path, monkeypatch) -> None:
+    from datetime import datetime, timezone
+    from obsidian_automation import github_daily_source_route as source
+    monkeypatch.setattr(
+        source, "_utc_now",
+        lambda: datetime(2026, 10, 6, 1, 0, tzinfo=timezone.utc),
+    )
+    val = source.collect_fresh_verified_routes(
+        _config(tmp_path), target_date=DATE, client=_FakeClient(),
+    )
+    raw = json.loads(val.receipt_bytes)
+    assert raw["collection_mode"] == "scheduled_recent_api_reverified"
+    assert raw["captured_at_utc"] == "2026-10-06T01:00:00Z"
+    assert len(source.parse_verified_routes(val.receipt_bytes, val.evidence.canonical_bytes)) == 2
+
+
+def test_future_date_cannot_be_reconfirmed_even_with_explicit_history(tmp_path: Path) -> None:
+    from datetime import date
+    with pytest.raises(DailySourceRouteError, match="future"):
+        collect_fresh_verified_routes(
+            _config(tmp_path), target_date=date(2100, 1, 1), client=_FakeClient(),
+            explicit_historical_reconfirmation=True,
+        )
+
+
+def test_source_uses_only_configured_authenticated_github_api(tmp_path: Path) -> None:
+    for api, token in (
+        ("https://mirror.example", "synthetic"),
+        ("http://api.github.com", "synthetic"),
+        ("https://api.github.com.evil.example", "synthetic"),
+        ("https://api.github.com", ""),
+    ):
+        client = _FakeClient()
+        client.api_base, client.token = api, token
+        with pytest.raises(DailySourceRouteError, match="GitHub"):
+            collect_fresh_verified_routes(
+                _config(tmp_path), target_date=DATE, client=client,
+                explicit_historical_reconfirmation=True,
+            )
+
+
+def test_canonical_receipt_rejects_reordered_route_entries(tmp_path: Path) -> None:
+    result = _collect(tmp_path)
+    raw = json.loads(result.receipt_bytes)
+    assert len(raw["routes"]) == 2
+    raw["routes"].reverse()
+    with pytest.raises(DailySourceRouteError, match="canonical source ID order"):
+        parse_verified_routes(_canonical(raw), result.evidence.canonical_bytes)
+
+
+def _rehashed_event_and_receipt(result, *, source_id: str | None, field: str, value):
+    """Attacker supplies entirely self-consistent but semantically invalid SHA."""
+    import hashlib
+    raw = json.loads(result.evidence.canonical_bytes)
+    idx = next(
+        index for index, event in enumerate(raw["events"])
+        if event["source_id"] == source_id
+    )
+    before = raw["events"][idx]["evidence_id"]
+    raw["events"][idx][field] = value
+    without_sha = dict(raw["events"][idx])
+    without_sha.pop("evidence_id")
+    new_id = hashlib.sha256(_canonical(without_sha)).hexdigest()
+    raw["events"][idx]["evidence_id"] = new_id
+    evidence = _canonical(raw)
+    receipt = json.loads(result.receipt_bytes)
+    receipt["evidence_sha256"] = hashlib.sha256(evidence).hexdigest()
+    for entry in receipt["routes"]:
+        if entry["evidence_id"] == before:
+            entry["evidence_id"] = new_id
+    receipt["routes"].sort(key=lambda item: item["evidence_id"])
+    return _canonical(receipt), evidence
+
+
+def test_rehashed_outside_jst_window_comment_is_rejected(tmp_path: Path) -> None:
+    result = _collect(tmp_path)
+    # Outside 2026-10-05 JST: both the event and bundle hashes are recomputed
+    # to emulate a self-consistent but untrusted captured object.
+    receipt, evidence = _rehashed_event_and_receipt(
+        result, source_id="31", field="occurred_at", value="2026-10-04T08:00:00Z",
+    )
+    with pytest.raises(DailySourceRouteError, match="outside target JST day"):
+        parse_verified_routes(receipt, evidence)
+
+
+def test_rehashed_unknown_kind_outside_witness_set_is_rejected(tmp_path: Path) -> None:
+    result = _collect(tmp_path)
+    receipt, evidence = _rehashed_event_and_receipt(
+        result, source_id="issue:1:created:2026-10-05T01:00:00Z",
+        field="kind", value="unrecognized_foreign_kind",
+    )
+    with pytest.raises(DailySourceRouteError, match="unknown source event kind"):
+        parse_verified_routes(receipt, evidence)
+
+
+def test_rehashed_event_entity_type_inconsistency_is_rejected(tmp_path: Path) -> None:
+    result = _collect(tmp_path)
+    receipt, evidence = _rehashed_event_and_receipt(
+        result, source_id="31", field="entity_type", value="pull_request_comment",
+    )
+    with pytest.raises(DailySourceRouteError, match="kind/entity_type"):
+        parse_verified_routes(receipt, evidence)
+
+
+def test_out_of_date_receipt_cannot_fake_scheduled_mode(tmp_path: Path) -> None:
+    result = _collect(tmp_path)
+    raw = json.loads(result.receipt_bytes)
+    raw["collection_mode"] = "scheduled_recent_api_reverified"
+    with pytest.raises(DailySourceRouteError, match="historical"):
+        parse_verified_routes(_canonical(raw), result.evidence.canonical_bytes)
+
+def test_rehashed_wrong_public_kind_url_is_rejected(tmp_path: Path) -> None:
+    result = _collect(tmp_path)
+    # Even when an attacker recalculates the full content-addressed chain,
+    # an Issue creation must not claim a /pull/N URL.
+    receipt, evidence = _rehashed_event_and_receipt(
+        result,
+        source_id="issue:1:created:2026-10-05T01:00:00Z",
+        field="url", value=f"https://github.com/{REPO}/pull/1",
+    )
+    with pytest.raises(DailySourceRouteError, match="URL/target entity"):
+        parse_verified_routes(receipt, evidence)
