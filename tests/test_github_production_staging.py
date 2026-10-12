@@ -1677,7 +1677,19 @@ def test_legacy_v1_stage_receipt_never_authorizes_new_activate(tmp_path):
     (root / f"{v1_digest}.staging-receipt.json").write_bytes(raw)
     with pytest.raises(ProductionUpdateError, match="stage receipt schema differs"):
         staged._receipt_read(root, v1_digest)
+
+    # Model an actual staged control that names a legacy immutable v1 receipt,
+    # not merely an unused malformed file next to a valid v2 receipt.
+    staged._control_write(root, "staged", v1["target_sha"], v1_digest)
+    assert _control(opts)["stage_sha256"] == v1_digest
+    before = list(runner.calls)
+    with pytest.raises(ProductionUpdateError, match="stage receipt schema differs"):
+        activate(v1_digest, opts)
+    assert runner.calls == before
     assert _control(opts)["status"] == "staged"
+    assert _control(opts)["stage_sha256"] == v1_digest
+    assert not runner.enabled and not runner.active
+    assert not runner.daily_enabled and not runner.daily_active
     assert not _called(runner, ("--profile", "live"))
 
 

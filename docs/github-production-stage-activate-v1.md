@@ -479,3 +479,21 @@ These source-level checks cannot replace real-host package and filesystem
 compatibility testing or authenticate a malicious privileged administrator.
 They do not authorize deletion of old transactions, a package reinstall,
 Live Smoke, timer restoration or merge.
+
+## R12 root-mode simulation and v1 refusal acceptance (2026-10-12)
+
+The GitHub Actions `root-stage-fixtures` job runs only three explicitly
+selected `require_root=True` Stage/Activate simulations. Each uses ephemeral
+`tmp_path` fixtures and a FakeRunner; no production checkout, real systemd,
+Writer, Vault, Nextcloud or installed package is touched. The job checks its
+effective UID and verifies through JUnit output that all three cases actually
+executed with zero SKIPs, rather than treating ordinary nonroot CI skips as a
+successful security gate. The normal Python 3.11/3.13 suite remains unprivileged;
+the root-only job uses an isolated GitHub-hosted runner with checkout credentials
+disabled. Neither job is a production deployment approval.
+
+The legacy Stage receipt v1 rejection test also publishes an isolated v1-format
+receipt, switches the temporary durable `staged` control to that v1 digest, and
+invokes Activate with affirmative simulated approval. Activate must reject the
+legacy schema before any live Writer command, preserve the unresolved control,
+and leave both timers inert. No implicit receipt migration is authorized.
