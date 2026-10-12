@@ -539,3 +539,43 @@ def test_preprovisioned_unreadable_parent_preserves_role_isolation(tmp_path, mon
         # If this caller can create entries, it cannot bypass parent fsync.
         with pytest.raises(PermissionError, match="not readable"):
             cas.ensure_artifact_layout(tmp_path)
+
+def test_same_key_collision_fsyncs_staging_cleanup_before_success(tmp_path, monkeypatch):
+    """The losing writer's temp deletion is durable before success returns."""
+    target = tmp_path / "cas.json"
+    payload = b"fully committed fixture data"
+    real_fsync = cas.os.fsync
+    real_unlink = cas.os.unlink
+    events = []
+
+    def concurrent_winner(parent_fd, staged_name, target_name):
+        file_fd = os.open(
+            target_name, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600,
+            dir_fd=parent_fd,
+        )
+        try:
+            os.write(file_fd, payload)
+            real_fsync(file_fd)
+        finally:
+            os.close(file_fd)
+        raise FileExistsError(17, "simulated competing winner", target_name)
+
+    def tracking_unlink(name, *args, **kwargs):
+        if str(name).startswith(".obsidian-cas-"):
+            events.append("temp-unlink")
+        return real_unlink(name, *args, **kwargs)
+
+    def tracking_fsync(fd):
+        if os.readlink(f"/proc/self/fd/{fd}") == str(tmp_path):
+            events.append("parent-fsync")
+        return real_fsync(fd)
+
+    with monkeypatch.context() as m:
+        m.setattr(cas, "_rename_noreplace", concurrent_winner)
+        m.setattr(cas.os, "unlink", tracking_unlink)
+        m.setattr(cas.os, "fsync", tracking_fsync)
+        assert cas._store_immutable(target, payload) == target
+
+    assert target.read_bytes() == payload
+    assert not list(tmp_path.glob(".obsidian-cas-*.tmp"))
+    assert events.index("temp-unlink") < events.index("parent-fsync")

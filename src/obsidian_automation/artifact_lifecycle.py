@@ -317,6 +317,11 @@ def _store_immutable(path: Path, data: bytes) -> Path:
                 raise ArtifactLifecycleError(
                     "immutable artifact already exists with different bytes"
                 ) from exc
+            # A losing same-key writer must remove its uncommitted staging
+            # entry before the final directory fsync; otherwise a crash just
+            # after reporting success can resurrect the orphan temp pathname.
+            os.unlink(staged_name, dir_fd=parent_fd)
+            temp_exists = False
         else:
             temp_exists = False
         os.fsync(parent_fd)
