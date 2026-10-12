@@ -1443,15 +1443,19 @@ def test_stage_pip_uses_preprovisioned_offline_build_backend_only(tmp_path):
     assert not _called(runner, ("--profile", "live"))
 
 
-def _trusted_build_venv_fixture(tmp_path):
-    venv = tmp_path / "build-venv"
+def _trusted_build_venv_fixture(tmp_path, *, venv=None, python_version="python3.13"):
+    venv = (tmp_path / "build-venv") if venv is None else venv
     bin_dir = venv / "bin"
-    site = venv / "lib" / "python3.13" / "site-packages"
-    bin_dir.mkdir(parents=True)
-    site.mkdir(parents=True)
+    site = venv / "lib" / python_version / "site-packages"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    site.mkdir(parents=True, exist_ok=True)
+    (bin_dir / "python").unlink(missing_ok=True)
+    (bin_dir / "python3").unlink(missing_ok=True)
     (bin_dir / "python").symlink_to("/usr/bin/python3")
     (bin_dir / "python3").symlink_to("/usr/bin/python3")
-    (venv / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    (venv / "pyvenv.cfg").write_text(
+        "home = /usr/bin\ninclude-system-site-packages = false\n"
+    )
     pip = bin_dir / "pip"
     pip.write_text(f"#!{bin_dir}/python3\nprint('simulated pip')\n")
     pip.chmod(0o755)
@@ -1462,7 +1466,11 @@ def _trusted_build_venv_fixture(tmp_path):
         metadata = site / f"{project}-{version}.dist-info"
         metadata.mkdir()
         (metadata / "METADATA").write_text(f"Name: {project}\nVersion: {version}\n")
-    (site / "distutils-precedence.pth").write_text("import _distutils_hack\n")
+    (site / "distutils-precedence.pth").write_text(
+        "import os; var = 'SETUPTOOLS_USE_DISTUTILS'; enabled = "
+        "os.environ.get(var, 'local') == 'local'; enabled and "
+        "__import__('_distutils_hack').add_shim(); \n"
+    )
     return venv, site
 
 
@@ -1490,7 +1498,9 @@ def test_stage_trusted_local_pip_backend_preflight_accepts_private_fixture(tmp_p
     "world_writable_pip", "symlinked_pip", "world_writable_backend",
     "symlinked_backend", "hardlinked_module", "writable_pth",
     "missing_setuptools", "old_setuptools", "writable_venv",
-    "untrusted_python_target", "writable_pyvenv_config", "invalid_pip_shebang"
+    "untrusted_python_target", "writable_pyvenv_config", "invalid_pip_shebang",
+    "system_site_packages_enabled", "root_owned_external_pth",
+    "modified_setuptools_pth"
 ))
 def test_untrusted_local_stage_build_source_is_rejected(tmp_path, corruption):
     venv, site = _trusted_build_venv_fixture(tmp_path)
@@ -1523,6 +1533,19 @@ def test_untrusted_local_stage_build_source_is_rejected(tmp_path, corruption):
         (venv / "pyvenv.cfg").chmod(0o666)
     elif corruption == "invalid_pip_shebang":
         pip.write_text("#!/usr/bin/env python3\n")
+    elif corruption == "system_site_packages_enabled":
+        (venv / "pyvenv.cfg").write_text(
+            "home = /usr/bin\ninclude-system-site-packages = true\n"
+        )
+    elif corruption == "root_owned_external_pth":
+        outside = tmp_path / "writable-external-package"
+        outside.mkdir()
+        outside.chmod(0o777)
+        (site / "unreviewed-path.pth").write_text(str(outside) + "\n")
+    elif corruption == "modified_setuptools_pth":
+        (site / "distutils-precedence.pth").write_text(
+            "import os; __import__('malicious_startup')\n"
+        )
     else:
         venv.chmod(0o777)
     with pytest.raises(ProductionUpdateError, match="Stage|stage|venv|build|setuptools"):
@@ -1544,11 +1567,11 @@ def test_trusted_build_manifest_excludes_only_reinstalled_app(tmp_path):
         venv, trusted_uid=os.geteuid()
     )
     assert before == after_install
-    (site / "unexpected-new-startup.pth").write_text("import unknown_module\n")
-    after_startup_drift = staged._assert_trusted_stage_build_venv(
+    (site / "unknown-extra-root-managed.py").write_text("# unexpected import code\n")
+    after_import_drift = staged._assert_trusted_stage_build_venv(
         venv, trusted_uid=os.geteuid()
     )
-    assert before["digest_sha256"] != after_startup_drift["digest_sha256"]
+    assert before["digest_sha256"] != after_import_drift["digest_sha256"]
 
 
 def test_stage_receipt_rejects_untrusted_build_manifest_shape(tmp_path):
@@ -1573,3 +1596,145 @@ def test_stage_receipt_rejects_untrusted_build_manifest_shape(tmp_path):
         (state / f"{sha}.staging-receipt.json").write_bytes(payload)
         with pytest.raises(ProductionUpdateError, match="build provenance"):
             staged._receipt_read(state, sha)
+
+
+@pytest.mark.parametrize("injected_name", (
+    "github_production_staging.cpython-313-x86_64-linux-gnu.so",
+    "github_production_staging.pyd",
+    "unknown-executable.sh",
+))
+def test_stage_rejects_unaccounted_installed_app_executables(tmp_path, injected_name):
+    runner, opts = setup(tmp_path)
+    package = (
+        opts["venv_root"] / "lib" / "python3.12"
+        / "site-packages" / "obsidian_automation"
+    )
+    (package / injected_name).write_bytes(b"unreviewed code bytes")
+    with pytest.raises(ProductionUpdateError, match="unreviewed executable app file"):
+        stage(runner, opts)
+    assert _control(opts)["status"] == "failed"
+    assert not _called(runner, ("--profile", "live"))
+
+
+def test_stage_rejects_orphan_bytecode(tmp_path):
+    runner, opts = setup(tmp_path)
+    package = (
+        opts["venv_root"] / "lib" / "python3.12"
+        / "site-packages" / "obsidian_automation"
+    )
+    cached = package / "__pycache__"
+    cached.mkdir()
+    (cached / "orphan.cpython-312.pyc").write_bytes(b"no source module")
+    with pytest.raises(ProductionUpdateError, match="orphan installed application bytecode"):
+        stage(runner, opts)
+    assert _control(opts)["status"] == "failed"
+    assert not _called(runner, ("--profile", "live"))
+
+
+def test_stage_binds_supported_bytecode_cache_and_blocks_activation_drift(tmp_path):
+    runner, opts = setup(tmp_path)
+    package = (
+        opts["venv_root"] / "lib" / "python3.12"
+        / "site-packages" / "obsidian_automation"
+    )
+    cached = package / "__pycache__"
+    cached.mkdir()
+    file = cached / "github_production_staging.cpython-312.pyc"
+    file.write_bytes(b"trusted review fixture bytes")
+    receipt = stage(runner, opts)
+    record = staged._receipt_read(opts["receipt_dir"] / staged.STAGING_ROOT, receipt)
+    assert len(record["code_manifest"]["bytecode:manifest"]) == 64
+    file.write_bytes(b"changed bytecode after Stage")
+    with pytest.raises(ProductionUpdateError, match="installed package drift"):
+        activate(receipt, opts)
+    assert _control(opts)["status"] == "staged"
+    assert not _called(runner, ("--profile", "live"))
+
+
+def test_stage_receipt_v2_keeps_host_control_v1_compatibility(tmp_path):
+    runner, opts = setup(tmp_path)
+    digest = stage(runner, opts)
+    root = opts["receipt_dir"] / staged.STAGING_ROOT
+    record = staged._receipt_read(root, digest)
+    control = staged._control_read(root)
+    assert record["record_version"] == staged.STAGE_RECEIPT_VERSION == 2
+    assert control["record_version"] == staged.VERSION == 1
+    assert record["build_manifest"] is None  # offline nonroot simulation only
+
+
+def test_legacy_v1_stage_receipt_never_authorizes_new_activate(tmp_path):
+    import hashlib
+
+    runner, opts = setup(tmp_path)
+    digest = stage(runner, opts)
+    root = opts["receipt_dir"] / staged.STAGING_ROOT
+    v2 = staged._receipt_read(root, digest)
+    v1 = dict(v2)
+    v1["record_version"] = 1
+    del v1["build_manifest"]
+    raw = staged._encode(v1)
+    v1_digest = hashlib.sha256(raw).hexdigest()
+    (root / f"{v1_digest}.staging-receipt.json").write_bytes(raw)
+    with pytest.raises(ProductionUpdateError, match="stage receipt schema differs"):
+        staged._receipt_read(root, v1_digest)
+    assert _control(opts)["status"] == "staged"
+    assert not _called(runner, ("--profile", "live"))
+
+
+def _simulated_privileged_stage(tmp_path, monkeypatch):
+    """Run root-mode Stage only inside ephemeral fixture paths (never /opt)."""
+    runner, opts = setup(tmp_path)
+    venv, site = _trusted_build_venv_fixture(
+        tmp_path, venv=opts["venv_root"], python_version="python3.12"
+    )
+    host = tmp_path / "host-receipts"
+    host.mkdir(mode=0o700)
+    monkeypatch.setattr(staged, "PRODUCTION_STAGE_VENV_ROOT", venv)
+    monkeypatch.setattr(staged.legacy, "DEFAULT_RECEIPT_DIR", opts["receipt_dir"])
+    monkeypatch.setattr(staged.legacy, "HOST_RECEIPT_DIR", host)
+    opts["require_root"] = True
+    return runner, opts, site
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="isolated root-mode fixture requires root")
+def test_privileged_stage_receipt_binds_backend_then_rechecks_activation(tmp_path, monkeypatch):
+    runner, opts, site = _simulated_privileged_stage(tmp_path, monkeypatch)
+    digest = stage(runner, opts)
+    root = opts["receipt_dir"] / staged.STAGING_ROOT
+    record = staged._receipt_read(root, digest)
+    assert record["record_version"] == staged.STAGE_RECEIPT_VERSION == 2
+    assert record["build_manifest"]["setuptools"] == "78.1.1"
+    assert len(record["build_manifest"]["digest_sha256"]) == 64
+    (site / "setuptools/__init__.py").write_text("# root fixture changed after Stage\n")
+    with pytest.raises(ProductionUpdateError, match="Stage build environment changed"):
+        activate(digest, opts)
+    assert _control(opts)["status"] == "staged"
+    assert not _called(runner, ("--profile", "live"))
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="isolated root-mode fixture requires root")
+def test_privileged_stage_rejects_root_owned_external_pth_before_effect(tmp_path, monkeypatch):
+    runner, opts, site = _simulated_privileged_stage(tmp_path, monkeypatch)
+    target = tmp_path / "unsafe-external-import"
+    target.mkdir()
+    target.chmod(0o777)
+    (site / "unexpected.pth").write_text(str(target) + "\n")
+    with pytest.raises(ProductionUpdateError, match="unreviewed Stage .pth startup"):
+        stage(runner, opts)
+    assert _control(opts)["status"] == "none"
+    assert not any(c[:2] == ("systemctl", "disable") for c in runner.calls)
+    assert not _called(runner, ("--profile", "live"))
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="isolated root-mode fixture requires root")
+def test_privileged_stage_receipt_activates_only_with_simulated_consent(tmp_path, monkeypatch):
+    runner, opts, _ = _simulated_privileged_stage(tmp_path, monkeypatch)
+    digest = stage(runner, opts)
+    before = list(runner.calls)
+    with pytest.raises(ProductionUpdateError, match="approval"):
+        activate(digest, opts, approve=False)
+    assert before == runner.calls
+    receipt = activate(digest, opts)
+    assert len(receipt) == 64
+    assert _control(opts)["status"] == "activated"
+    assert _called(runner, ("--profile", "live"))  # FakeRunner only; no real Writer

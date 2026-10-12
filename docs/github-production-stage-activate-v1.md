@@ -447,3 +447,35 @@ Negative fixtures cover writable pip/modules/startup files, symlinks,
 unexpected interpreters, hardlinks, missing/old setuptools, and malformed
 build receipts. These isolated tests do not exercise production power-loss
 semantics or grant Stage/Activate authority.
+
+## R11 candidate: import-closure and Stage receipt versioning (2026-10-12)
+
+The v2 Stage receipt is intentionally **not backward-compatible** with the
+earlier Draft-only v1 staging receipt. The host-wide control marker remains
+version 1, preserving its separately reviewed host lifecycle admission
+contract. A v1 Stage receipt without a build manifest cannot authorize the
+new Activate. If an old staged transaction is ever encountered, preserve its
+marker and receipts for manual evidence reconciliation; do not rewrite the old
+receipt, silently retry a Writer or re-run Stage. A newly authorized, reviewed
+Stage after reconciliation must produce a fresh v2 receipt and separate
+explicit Live approval.
+
+Root-owned pyvenv.cfg must declare include-system-site-packages=false
+exactly once. A venv that could import additional system site-packages not
+covered by the build manifest fails before PREPARING. The normal production
+Python launcher symlinks to root-owned /usr/bin/python3.X remain supported.
+
+Installed application import inventory now rejects unreviewed native extension
+modules (.so/.pyd), arbitrary executable/data files, symlinks and orphan
+bytecode. Only source-matched *.py and optional corresponding CPython
+__pycache__ files may exist. Python source bytes still must match the pinned
+Git checkout exactly. A compact SHA-256 aggregate of permitted installed
+bytecode paths and bytes is included in the app code manifest and must match
+after SAFE smoke and before Live Activate. This is a change-detection contract,
+not proof that the bytecode was compiled by an independently verified compiler;
+the trusted root-owned install assumption remains explicit.
+
+These source-level checks cannot replace real-host package and filesystem
+compatibility testing or authenticate a malicious privileged administrator.
+They do not authorize deletion of old transactions, a package reinstall,
+Live Smoke, timer restoration or merge.

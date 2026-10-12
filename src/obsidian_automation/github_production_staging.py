@@ -24,7 +24,13 @@ from typing import Iterable, Mapping, Sequence
 
 from . import github_production_update as legacy
 
-VERSION = 1
+VERSION = 1  # host-compatible control and activation envelope
+STAGE_RECEIPT_VERSION = 2  # build-environment manifest is mandatory in v2
+PRODUCTION_STAGE_VENV_ROOT = Path("/opt/obsidian-automation/venv")
+# The only accepted startup .pth is the root-owned setuptools 78.1.1 wheel's
+# reviewed distutils shim (exact byte digest from the audited production wheel).
+# Any additional .pth, path insertion, or arbitrary startup import is refused.
+REVIEWED_DISTUTILS_PTH_SHA256 = "2638ce9e2500e572a5e0de7faed6661eb569d1b696fcba07b0dd223da5f5d224"
 STAGING_ROOT = "staged-github-production-v1"
 CONTROL_FILE = "control.json"
 SHA_RE = re.compile(r"^[0-9a-f]{40,64}$")
@@ -669,6 +675,17 @@ def _assert_trusted_stage_build_venv(
     if not (pip.stat().st_mode & stat.S_IXUSR):
         raise legacy.ProductionUpdateError("unexecutable Stage build pip")
     check(venv_root / "pyvenv.cfg", directory=False)
+    config_bytes = _read_file(venv_root / "pyvenv.cfg", max_bytes=65536)
+    site_flags = [
+        value.strip().lower()
+        for line in config_bytes.splitlines()
+        for key, sep, value in (line.partition(b"="),)
+        if sep and key.strip().lower() == b"include-system-site-packages"
+    ]
+    if site_flags != [b"false"]:
+        raise legacy.ProductionUpdateError(
+            "Stage venv must disable external system site-packages"
+        )
     # An ordinary virtualenv points bin/python and bin/python3 to the distro
     # interpreter. These expected symlinks are allowed only when they resolve
     # to a root-owned, non-writable binary under the trusted /usr/bin tree.
@@ -748,6 +765,15 @@ def _assert_trusted_stage_build_venv(
         info = path.lstat()
         directory = stat.S_ISDIR(info.st_mode)
         check(path, directory=directory)
+        if path.suffix == ".pth":
+            # Python site initialization executes import statements in .pth,
+            # and path-only lines can redirect imports outside this inventory.
+            # Ownership of the .pth file alone does not protect its targets.
+            # Fail closed to the exact previously audited setuptools shim.
+            if (path != site / "distutils-precedence.pth"
+                    or _digest(_read_file(path, max_bytes=65536))
+                    != REVIEWED_DISTUTILS_PTH_SHA256):
+                raise legacy.ProductionUpdateError("unreviewed Stage .pth startup authority")
         relative = path.relative_to(site).as_posix()
         root_entry = relative.split("/", 1)[0]
         if (relative == "obsidian_automation" or
@@ -1021,7 +1047,41 @@ def _deployed_code_manifest(app_root: Path, venv_root: Path) -> dict[str, str]:
             or set(source_files) != set(installed_files)):
         raise legacy.ProductionUpdateError("installed module inventory differs from pinned source")
 
-    result: dict[str, str] = {}
+    # Python's extension loader may choose a .so/.pyd over a same-named .py.
+    # A source-vs-installed comparison of only *.py is therefore insufficient
+    # to attest executable import inputs. Reject all unsupported file classes;
+    # bind ordinary CPython caches only when backed by the exact reviewed .py.
+    cache_digest = hashlib.sha256(b"installed-app-bytecode-v1\n")
+    observed_count = 0
+    cache_pattern = re.compile(
+        r"^(?P<module>[^/]+)\.cpython-[0-9]{2,3}(?:\.opt-[0-2])?\.pyc$"
+    )
+    for entry in sorted(installed.rglob("*")):
+        observed_count += 1
+        if observed_count > 1024:
+            raise legacy.ProductionUpdateError("installed package inventory exceeds budget")
+        entry_info = entry.lstat()
+        if stat.S_ISDIR(entry_info.st_mode):
+            continue
+        if not stat.S_ISREG(entry_info.st_mode):
+            raise legacy.ProductionUpdateError("unsupported installed application inode")
+        relative = entry.relative_to(installed).as_posix()
+        if relative in installed_files:
+            continue
+        match = cache_pattern.fullmatch(entry.name)
+        if entry.parent.name != "__pycache__" or match is None:
+            raise legacy.ProductionUpdateError("unreviewed executable app file in installed package")
+        backing = entry.parent.parent / (match["module"] + ".py")
+        if backing.relative_to(installed).as_posix() not in source_files:
+            raise legacy.ProductionUpdateError("orphan installed application bytecode")
+        cache_digest.update(relative.encode("utf-8") + b"\x00")
+        cache_digest.update(bytes.fromhex(_digest(_read_file(
+            entry, max_bytes=2 * 1024 * 1024
+        ))))
+
+    # Aggregate hashes rather than storing hundreds of individual .pyc keys:
+    # Stage receipt size stays bounded as the number of reviewed .py grows.
+    result: dict[str, str] = {"bytecode:manifest": cache_digest.hexdigest()}
     for name in sorted(source_files):
         source_sha = _digest(_read_file(source_files[name], max_bytes=2*1024*1024))
         installed_sha = _digest(_read_file(installed_files[name], max_bytes=2*1024*1024))
@@ -1116,7 +1176,7 @@ def _receipt_read(state: Path, sha: str) -> dict[str, object]:
         "timer_states", "config_manifest", "unit_manifest", "env_manifest", "code_manifest", "direct_manifest",
         "build_manifest", "service_role_smoke", "safe_smoke", "daily_safe_smoke", "created_at",
     }
-    if set(obj) != expected or obj["record_version"] != VERSION or obj["stage"] != "staged":
+    if set(obj) != expected or obj["record_version"] != STAGE_RECEIPT_VERSION or obj["stage"] != "staged":
         raise legacy.ProductionUpdateError("stage receipt schema differs")
     for item in ("target_sha", "previous_sha"):
         if not isinstance(obj[item], str) or not SHA_RE.fullmatch(obj[item]):
@@ -1197,7 +1257,7 @@ def stage_update(*, target_sha: str, app_root: Path, venv_root: Path,
         # PREPARING marker/timer effects; test-mode runners use simulated pip.
         build_manifest: dict[str, str] | None = None
         if require_root:
-            if venv_root != Path("/opt/obsidian-automation/venv"):
+            if venv_root != PRODUCTION_STAGE_VENV_ROOT:
                 raise legacy.ProductionUpdateError("unexpected privileged Stage venv root")
             build_manifest = _assert_trusted_stage_build_venv(venv_root)
         # Reject unsafe ignored build trees before disabling any timer or
@@ -1270,7 +1330,7 @@ def stage_update(*, target_sha: str, app_root: Path, venv_root: Path,
             if _direct_service_input_manifest(systemd_dir, managed_names) != direct_files:
                 raise legacy.ProductionUpdateError("direct service file input drift during stage")
             receipt = {
-                "record_version": VERSION, "stage": "staged",
+                "record_version": STAGE_RECEIPT_VERSION, "stage": "staged",
                 "previous_sha": previous_sha, "target_sha": target_sha,
                 "app_root": str(app_root.absolute()), "venv_root": str(venv_root.absolute()),
                 "systemd_dir": str(systemd_dir.absolute()),
@@ -1342,7 +1402,7 @@ def activate_update(*, stage_sha256: str, approve_live_github_writer: bool,
             if receipt[key] != str(path.absolute()):
                 raise legacy.ProductionUpdateError("staged runtime path drift")
         if require_root:
-            if venv_root != Path("/opt/obsidian-automation/venv"):
+            if venv_root != PRODUCTION_STAGE_VENV_ROOT:
                 raise legacy.ProductionUpdateError("unexpected privileged Stage venv root")
             if not isinstance(receipt["build_manifest"], dict):
                 raise legacy.ProductionUpdateError("Stage build provenance receipt missing")
