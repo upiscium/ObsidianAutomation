@@ -18,7 +18,6 @@ from .artifact_lifecycle import (
     ArtifactLifecycleError,
     _canonical_json_bytes,
     _decode_json_object,
-    _read_exact_file,
     _require_safe_directory,
     _require_sha256,
     _store_immutable,
@@ -35,11 +34,11 @@ from .human_projection import (
     _code_fence,
     _inline_code,
     _projection_markdown,
-    _proposal_fields,
     parse_request,
     parse_result,
 )
 from .pre_review_job import _connect_ro
+from .rejection_source_binding import verify_original_producers, proposal_fields
 from .production_io import canonical_io_lock
 
 
@@ -96,6 +95,47 @@ class RejectionCleanupAttestation:
         })
 
 
+MAX_REQUEST_BYTES = 768 * 1024
+MAX_RESULT_BYTES = 64 * 1024
+MAX_ARTIFACT_BYTES = 2 * 1024 * 1024
+
+
+def _bounded_regular_file(path: Path, *, cap: int = MAX_ARTIFACT_BYTES) -> bytes:
+    """Read the same nofollow, nonblocking, fstat-verified regular descriptor.
+
+    A producer can replace a pathname after lstat, including with a FIFO;
+    O_NONBLOCK is essential under a shared canonical I/O lock. Never trust
+    a path precheck to validate a later file descriptor.
+    """
+    flags = os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise RejectionCleanupError("immutable artifact is not safely readable") from exc
+    try:
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or info.st_size < 0
+            or info.st_size > cap
+        ):
+            raise RejectionCleanupError("unsafe artifact type, links or size")
+        content = bytearray()
+        while len(content) <= cap:
+            chunk = os.read(fd, min(65536, cap + 1 - len(content)))
+            if not chunk:
+                break
+            content.extend(chunk)
+        if len(content) > cap:
+            raise RejectionCleanupError("immutable artifact read size exceeds bound")
+        return bytes(content)
+    except OSError as exc:
+        raise RejectionCleanupError("immutable artifact read failed") from exc
+    finally:
+        os.close(fd)
+
+
 def _target(case_id: str, stage: str) -> str:
     if stage not in STAGES:
         raise RejectionCleanupError("cleanup stage is not in the four-path allowlist")
@@ -148,14 +188,15 @@ def parse_attestation(data: bytes) -> RejectionCleanupAttestation:
     return proof
 
 
-def _scheduler_authority(ai_root: Path, case_id: str) -> tuple[str, str]:
+def _scheduler_authority(ai_root: Path, case_id: str) -> tuple[str, str, str, str]:
     """Reject even a genuine published Validation note unless the latest
     authoritative job generation has terminal Validator-reject evidence.
     """
     with closing(_connect_ro(ai_root)) as conn:
         generation = conn.execute(
-            "SELECT generation_id, job_id, generation_index, state "
-            "FROM generations WHERE generation_id = ?",
+            "SELECT g.generation_id, g.job_id, g.generation_index, g.state,"
+            " j.context_sha256 FROM generations g JOIN jobs j ON j.job_id=g.job_id"
+            " WHERE g.generation_id = ?",
             (case_id,),
         ).fetchone()
         if generation is None or generation["state"] != "deterministic_reject":
@@ -192,7 +233,15 @@ def _scheduler_authority(ai_root: Path, case_id: str) -> tuple[str, str]:
             source["output_json"].encode("utf-8"), label="selected generation output"
         )
         proposal = _require_sha256(output.get("proposal_sha256"), label="proposal_sha256")
-        return generation["job_id"], proposal
+        generation_sha = _require_sha256(
+            output.get("generation_sha256"), label="generation_sha256"
+        )
+        return (
+            _require_sha256(generation["job_id"], label="job_id"),
+            _require_sha256(generation["context_sha256"], label="context_sha256"),
+            proposal,
+            generation_sha,
+        )
 
 
 def _published_originals(
@@ -207,7 +256,7 @@ def _published_originals(
     result_root = root / RESULT_STAGE
     _require_safe_directory(result_root, create=False)
 
-    by_stage: dict[str, tuple[str, ProjectionRequest, str]] = {}
+    by_stage: dict[str, tuple[str, ProjectionRequest, str | None]] = {}
     scanned = 0
     for role in ROLE_NAMES:
         directory = request_root / role
@@ -215,20 +264,19 @@ def _published_originals(
         with os.scandir(directory) as it:
             candidates = []
             for entry in it:
-                if not entry.name.endswith(".projection.json"):
-                    continue
+                # Count *all* entries, including hidden/nonmatching, so a
+                # writer cannot monopolize canonical-I/O with junk filenames.
                 scanned += 1
                 if scanned > max_scan:
                     raise RejectionCleanupPending("publication scan bound exceeded")
-                candidates.append(directory / entry.name)
+                if entry.name.endswith(".projection.json"):
+                    candidates.append(directory / entry.name)
         for path in sorted(candidates):
-            metadata = path.lstat()
-            if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
-                raise RejectionCleanupError("projection request is not a regular file")
+            data = _bounded_regular_file(path, cap=MAX_REQUEST_BYTES)
             digest = _require_sha256(
-                path.name.removesuffix(".projection.json"), label="projection request digest",
+                path.name.removesuffix(".projection.json"),
+                label="projection request digest",
             )
-            data = _read_exact_file(path)
             if sha256_bytes(data) != digest:
                 raise RejectionCleanupError("projection request hash mismatch")
             request = parse_request(data)
@@ -242,8 +290,11 @@ def _published_originals(
                 raise RejectionCleanupError("projection role or uniqueness is invalid")
             result_path = result_root / f"{digest}.projection-result.json"
             if not os.path.lexists(result_path):
-                raise RejectionCleanupPending("original projection is awaiting Sync")
-            result_bytes = _read_exact_file(result_path)
+                # Defer Pending until the *whole* bounded scan has checked for
+                # contradictory later-stage/duplicate evidence.
+                by_stage[request.stage] = (digest, request, None)
+                continue
+            result_bytes = _bounded_regular_file(result_path, cap=MAX_RESULT_BYTES)
             result = parse_result(result_bytes)
             if (
                 result.request_sha256 != digest
@@ -255,9 +306,10 @@ def _published_originals(
                     "original projection does not have a matching successful publication"
                 )
             by_stage[request.stage] = (digest, request, sha256_bytes(result_bytes))
-    if set(by_stage) != set(STAGES):
+    if set(by_stage) != set(STAGES) or any(result is None for _, _, result in by_stage.values()):
         raise RejectionCleanupPending("complete four-stage publication is not yet proven")
-    return by_stage
+    return {stage: (digest, request, result) for stage, (digest, request, result)
+            in by_stage.items() if result is not None}
 
 
 def _verify_rejected_record(
@@ -266,8 +318,8 @@ def _verify_rejected_record(
     root = ai_root.absolute()
     validation_dir = root / "10-Validation"
     _require_safe_directory(validation_dir, create=False)
-    data = _read_exact_file(
-        validation_dir / f"{proposal_sha256}.validation.json"
+    data = _bounded_regular_file(
+        validation_dir / f"{proposal_sha256}.validation.json", cap=MAX_RESULT_BYTES
     )
     validation_digest = sha256_bytes(data)
     validation = parse_validation_record(data)
@@ -282,7 +334,7 @@ def _verify_rejected_record(
         or request.created_at != validation.validated_at
     ):
         raise RejectionCleanupError("projection is not bound to rejected Validation")
-    target, _candidate = _proposal_fields(root, proposal_sha256)
+    target, _candidate = proposal_fields(root, proposal_sha256, read=_bounded_regular_file)
     lines = [
         f"Result: **{validation.result}**",
         f"Target: {_inline_code(target)}",
@@ -323,8 +375,14 @@ def prepare_rejection_cleanup(
     try:
         case = _require_sha256(case_id, label="case_id")
         root = ai_root.absolute()
-        job_id, proposal = _scheduler_authority(root, case)
+        job_id, context_sha, proposal, generation_sha = _scheduler_authority(
+            root, case
+        )
         originals = _published_originals(root, case, max_scan=max_scan)
+        verify_original_producers(
+            root, case, context_sha, proposal, generation_sha, originals,
+            read=_bounded_regular_file,
+        )
         validation = _verify_rejected_record(
             root, case, proposal, originals["validation"][1]
         )
@@ -332,8 +390,8 @@ def prepare_rejection_cleanup(
         # tree is scanned. Re-read the authoritative generation before
         # producing the immutable proof; the later Sync executor must still
         # re-verify at its own effect boundary.
-        confirmed_job, confirmed_proposal = _scheduler_authority(root, case)
-        if (confirmed_job, confirmed_proposal) != (job_id, proposal):
+        confirmed = _scheduler_authority(root, case)
+        if confirmed != (job_id, context_sha, proposal, generation_sha):
             raise RejectionCleanupError("generation changed during preflight")
         targets = tuple(
             AttestedTarget(
@@ -401,7 +459,7 @@ def load_rejection_cleanup_attestation(
     path = directory / f"{case}{SUFFIX}"
     if not os.path.lexists(path):
         return None
-    value = parse_attestation(_read_exact_file(path))
+    value = parse_attestation(_bounded_regular_file(path, cap=MAX_RESULT_BYTES))
     if value.case_id != case:
         raise RejectionCleanupError("attestation filename and case are mismatched")
     return value

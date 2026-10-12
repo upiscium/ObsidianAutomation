@@ -96,3 +96,43 @@ files may be deleted. The single-LXC ADR remains Proposed; final merge to
 `main` is separately controlled by integration Draft PR #311. Likewise
 ObsidianCore Review-only PR #221 must not be deployed before the management
 Dashboard truly surfaces provider, cleanup, and pipeline incidents.
+
+## Independent review hardening (Phase A revision)
+
+Initial Correctness and Security reviews of commit `2b946a0` returned
+**BLOCKED**, identifying an insufficient trust binding for the first three
+projection stages and a bounded-scan/unsafe-file-read risk. The amended proof
+therefore verifies:
+
+- Input against the **immutable Selection** record, Context source bindings,
+  selected policy and the original full producer Markdown. Legacy selections
+  are checked against exact Context paths, content SHA and byte size.
+- Context against the job's exact Context SHA, original canonical Context
+  record (legacy or semantic-objective), its producer format and original
+  Markdown. Semantic selection/chunk bindings are also compared to Context.
+- Generation against the **selected Generation SHA in SQLite**, the
+  corresponding hash-verified Generation record, the selected job Context,
+  proposal SHA, semantic objective metadata where applicable, and original
+  producer Markdown.
+- Validation against its immutable rejected Validation record and proposal as
+  before. A request that is correctly signed, published and case-labeled but
+  points to another source is **not** an eligible original.
+- A complete bounded scan of **all** directory entries (including junk names)
+  and all four roles before raising Pending. A missing publication result never
+  masks a later conflicting Review projection or duplicate stage.
+- A nonblocking, `O_NOFOLLOW` reader using `fstat` on the **opened
+  descriptor**, regular-file, one-hardlink and per-artifact byte limits,
+  including request and published-result files. A path swapped to a FIFO,
+  symlink or oversized file must not stall the canonical I/O lock.
+
+These are local tests and source contracts, not proof of production Linux ACLs.
+The existing production roles do not grant one role all Reader/Generator/
+Validator/Sync and orchestration-DB read access. An **independently reviewed,
+least-privilege evidence observer/producer identity and storage path** are
+required before deploying the optional private proof-storing helper. Do not
+grant Validator arbitrary cross-role reads or give Sync unbounded scheduler
+database rights as a shortcut. A local Semantic Deep Planner → Generator → deterministic Validation rejection fixture now exercises the real source-producing chain with a simulated model transport and synthetic publication receipts. Real Nextcloud publication, mixed-role UID/ACL security, and crash/restart under concurrent writers remain required acceptance tests.
+
+Re-validating a proof at a later effect boundary remains mandatory. It
+does not by itself stop another publisher from re-creating a deleted note.
+**No remote deletion is implemented by Phase A.**

@@ -8,18 +8,24 @@ import pytest
 
 from obsidian_automation.artifact_lifecycle import (
     _canonical_json_bytes,
+    _store_immutable,
     ensure_artifact_layout,
     sha256_bytes,
     store_untrusted_proposal,
     store_validation_record,
     validation_record_bytes,
 )
+from obsidian_automation.context_bundle import ContextBundle, ContextSource, store_context_bundle
+from obsidian_automation.generation_artifact import build_generation_record, store_generation_record
 from obsidian_automation.human_projection import (
     ProjectionResult,
     _projection_markdown,
     _store_result,
     build_request,
     emit_validation_projection,
+    emit_input_projection,
+    emit_context_projection,
+    emit_generation_projection,
     parse_request,
     store_request,
 )
@@ -51,6 +57,7 @@ def _state(
     root = tmp_path / "private-ai-root"
     root.mkdir()
     ensure_artifact_layout(root)
+    (root / "05-Context").mkdir()
     publication_root = root / "16-Human-Projection"
     publication_root.mkdir()
     for role in ("reader", "generator", "validator", "evaluator",
@@ -67,6 +74,50 @@ def _state(
         "content": "# Candidate\n",
     })
     proposal_sha, _ = store_untrusted_proposal(root, proposal)
+    source_text = "# Selected Knowledge Source\\n"
+    source_sha = sha256_bytes(source_text.encode("utf-8"))
+    chosen = {
+        "path": "11-Knowledge/Source.md",
+        "source_kind": "knowledge",
+        "content_sha256": source_sha,
+        "byte_size": len(source_text.encode("utf-8")),
+        "project_status": None,
+    }
+    context = ContextBundle(
+        query="Prepare a bounded Knowledge candidate",
+        created_at=NOW,
+        sources=(ContextSource(
+            path=chosen["path"],
+            content_sha256=chosen["content_sha256"],
+            content=source_text,
+        ),),
+    )
+    context_sha, _ = store_context_bundle(root, context)
+    select_data = _canonical_json_bytes({
+        "record_version": 1,
+        "selection_policy": "coverage-shuffle-v0",
+        "objective_policy": "synthesize-v0",
+        "catalog_sha256": "8" * 64,
+        "epoch": 0, "cycle": 0,
+        "seed": "9" * 64,
+        "selected": [chosen],
+    })
+    selection_sha = sha256_bytes(select_data)
+    selection_dir = root / "02-Orchestration" / "input-selections"
+    selection_dir.mkdir(parents=True)
+    _store_immutable(selection_dir / f"{selection_sha}.selection.json", select_data)
+    gen_record = build_generation_record(
+        root, context_sha256=context_sha, proposal_sha256=proposal_sha,
+        implementation_revision="7" * 40,
+        prompt_template_version="knowledge-note-generator-v0",
+        prompt_template_sha256="6" * 64,
+        model_provider="ollama",
+        model_identifier="test:generator",
+        model_revision="identifier:test:generator",
+        model_config={"temperature": 0},
+        generated_at=NOW,
+    )
+    generation_sha, _ = store_generation_record(root, gen_record)
     store_validation_record(
         root,
         proposal_sha256=proposal_sha,
@@ -80,7 +131,7 @@ def _state(
         conn.execute(
             "INSERT INTO jobs(job_id,context_sha256,recipe_sha256,created_at) "
             "VALUES(?,?,?,?)",
-            (JOB, "c" * 64, "d" * 64, NOW),
+            (JOB, context_sha, "d" * 64, NOW),
         )
         conn.execute(
             "INSERT INTO generations(generation_id,job_id,generation_index,"
@@ -105,7 +156,7 @@ def _state(
             "output_json,recorded_at) VALUES(?,?,?,?,?)",
             (CASE, "generation", "f" * 64, json.dumps({
                 "proposal_sha256": proposal_sha,
-                "generation_sha256": "1" * 64,
+                "generation_sha256": generation_sha,
             }), NOW),
         )
         if later_generation:
@@ -118,29 +169,30 @@ def _state(
     finally:
         conn.close()
 
-    # Original producer-specific request and immutable Sync publication
-    # receipt. No Nextcloud credentials, server, or remote effects.
-    for stage, role, source_kind in (
-        ("input", "reader", "input_selection"),
-        ("context", "reader", "context_bundle"),
-        ("generation", "generator", "generation_record"),
-    ):
+    # Original producer-generated requests, bound to the same source
+    # selection, Context and Generation as the durable pre-review job.
+    for stage in ("input", "context", "generation"):
         if stage == skipped_stage:
             continue
-        source = "3" * 64
-        request = build_request(
-            case_id=CASE, stage=stage,
-            source_kind=source_kind,
-            source_sha256=source,
-            content=_projection_markdown(
-                case_id=CASE, stage=stage, source_kind=source_kind,
-                source_sha256=source, created_at=NOW,
-                title="Original producer content",
-                body="Original immutable stage output",
-            ),
-            created_at=NOW,
-        )
-        digest, _ = store_request(root, role=role, request=request)
+        if stage == "input":
+            emitted = emit_input_projection(
+                root, case_id=CASE, selection_sha256=selection_sha,
+                selection_policy="coverage-shuffle-v0",
+                objective_policy="synthesize-v0", epoch=0, cycle=0,
+                selected=[chosen], created_at=NOW,
+            )
+        elif stage == "context":
+            emitted = emit_context_projection(
+                root, case_id=CASE, context_sha256=context_sha, context=context,
+            )
+        else:
+            emitted = emit_generation_projection(
+                root, case_id=CASE, generation_sha256=generation_sha,
+                proposal_sha256=proposal_sha,
+            )
+        assert emitted is not None
+        digest, request_path = emitted
+        request = parse_request(request_path.read_bytes())
         _store_result(root, ProjectionResult(
             request_sha256=digest,
             target_path=request.target_path,
@@ -391,7 +443,7 @@ def test_symlinked_original_request_is_never_attested(tmp_path: Path) -> None:
     original = next(requests.glob("*.projection.json"))
     alias = requests / ("0" * 64 + ".projection.json")
     alias.symlink_to(original)
-    with pytest.raises(RejectionCleanupError, match="not a regular file"):
+    with pytest.raises(RejectionCleanupError, match="not safely readable|unsafe artifact"):
         prepare_rejection_cleanup(root, CASE)
 
 
@@ -409,3 +461,201 @@ def test_stored_attestation_never_authorizes_knowledge_or_other_case(
                 proof.targets[0], path=f"04-AI/50-Review/{CASE}.md",
             ),) + proof.targets[1:],
         ))
+
+
+@pytest.mark.parametrize("stage", ("input", "context", "generation"))
+def test_correctly_published_but_wrong_producer_source_is_blocked(
+    tmp_path: Path, stage: str,
+) -> None:
+    root, _ = _state(tmp_path)
+    proof = prepare_rejection_cleanup(root, CASE)
+    original = next(item for item in proof.targets if item.stage == stage)
+    role = "reader" if stage in {"input", "context"} else "generator"
+    directory = root / "16-Human-Projection" / role
+    original_file = directory / f"{original.request_sha256}.projection.json"
+    original_req = parse_request(original_file.read_bytes())
+
+    # A plausible, published replacement with right case/stage/role and a
+    # matching publication result still must NOT be bound to this generation.
+    fake_sha = "9" * 64
+    assert fake_sha != original_req.source_sha256
+    changed = original_req.content.replace(original_req.source_sha256, fake_sha)
+    assert changed != original_req.content
+    fake = build_request(
+        case_id=CASE, stage=stage, source_kind=original_req.source_kind,
+        source_sha256=fake_sha, content=changed, created_at=original_req.created_at,
+    )
+    original_file.unlink()
+    (
+        root / "17-Human-Projection-Result"
+        / f"{original.request_sha256}.projection-result.json"
+    ).unlink()
+    digest, _ = store_request(root, role=role, request=fake)
+    _store_result(root, ProjectionResult(
+        request_sha256=digest,
+        target_path=fake.target_path,
+        content_sha256=fake.content_sha256,
+        result="created", completed_at=NOW,
+    ))
+    with pytest.raises(RejectionCleanupError):
+        prepare_rejection_cleanup(root, CASE)
+
+
+def test_unpublished_original_does_not_hide_later_review_conflict(
+    tmp_path: Path,
+) -> None:
+    root, _ = _state(tmp_path)
+    proof = prepare_rejection_cleanup(root, CASE)
+    (
+        root / "17-Human-Projection-Result"
+        / f"{proof.targets[0].request_sha256}.projection-result.json"
+    ).unlink()
+    review = build_request(
+        case_id=CASE, stage="review",
+        source_kind="review_request", source_sha256="9" * 64,
+        content="# Bogus review\n", created_at=NOW,
+    )
+    store_request(root, role="reviewer", request=review)
+    with pytest.raises(RejectionCleanupError, match="unexpected later-stage"):
+        prepare_rejection_cleanup(root, CASE)
+
+
+def test_unpublished_original_does_not_hide_duplicate_conflict(
+    tmp_path: Path,
+) -> None:
+    root, _ = _state(tmp_path)
+    proof = prepare_rejection_cleanup(root, CASE)
+    (
+        root / "17-Human-Projection-Result"
+        / f"{proof.targets[0].request_sha256}.projection-result.json"
+    ).unlink()
+    original_file = (
+        root / "16-Human-Projection" / "reader"
+        / f"{proof.targets[0].request_sha256}.projection.json"
+    )
+    original_req = parse_request(original_file.read_bytes())
+    fake = build_request(
+        case_id=CASE, stage="input",
+        source_kind="input_selection", source_sha256="9" * 64,
+        content=original_req.content.replace(original_req.source_sha256, "9" * 64),
+        created_at=NOW,
+    )
+    store_request(root, role="reader", request=fake)
+    with pytest.raises(RejectionCleanupError, match="uniqueness"):
+        prepare_rejection_cleanup(root, CASE)
+
+
+def test_scan_bound_counts_all_nonprojection_directory_entries(
+    tmp_path: Path,
+) -> None:
+    root, _ = _state(tmp_path)
+    for i in range(8):
+        (root / "16-Human-Projection" / "reader" / f"junk-{i}.txt").write_text("x")
+    with pytest.raises(RejectionCleanupPending, match="scan bound"):
+        prepare_rejection_cleanup(root, CASE, max_scan=4)
+
+
+def test_unbounded_or_special_private_source_does_not_block_preflight(
+    tmp_path: Path,
+) -> None:
+    import os
+
+    root, _ = _state(tmp_path)
+    proof = prepare_rejection_cleanup(root, CASE)
+    path = (
+        root / "16-Human-Projection" / "reader"
+        / f"{proof.targets[0].request_sha256}.projection.json"
+    )
+    path.unlink()
+    os.mkfifo(path)
+    with pytest.raises(RejectionCleanupError, match="unsafe artifact"):
+        prepare_rejection_cleanup(root, CASE)
+    path.unlink()
+    path.write_bytes(b"X" * (768 * 1024 + 1))
+    with pytest.raises(RejectionCleanupError, match="size"):
+        prepare_rejection_cleanup(root, CASE)
+
+
+def test_oversized_published_result_is_never_attested(tmp_path: Path) -> None:
+    root, _ = _state(tmp_path)
+    proof = prepare_rejection_cleanup(root, CASE)
+    result = (
+        root / "17-Human-Projection-Result"
+        / f"{proof.targets[0].request_sha256}.projection-result.json"
+    )
+    result.write_bytes(b"x" * (64 * 1024 + 1))
+    with pytest.raises(RejectionCleanupError, match="size"):
+        prepare_rejection_cleanup(root, CASE)
+
+
+def test_real_semantic_deep_producer_chain_can_be_preflight_attested(
+    tmp_path: Path,
+) -> None:
+    """Reuse the real semantic planner/generator fixture, not arbitrary hashes."""
+    from datetime import datetime, timezone
+
+    import test_semantic_deep_production as deep
+    import obsidian_automation.pre_review_worker as worker
+    from obsidian_automation.ai_input_planner import INPUT_MODE_SEMANTIC_DEEP, plan_once
+    from obsidian_automation.pre_review_job import start_attempt, complete_attempt, job_status
+    from obsidian_automation.human_projection import (
+        ROLE_NAMES, parse_request,
+        emit_validation_projection,
+    )
+
+    vault, root, index_sha = deep._semantic_index(tmp_path)
+    request_root = root / "16-Human-Projection"
+    request_root.mkdir()
+    for role in ROLE_NAMES:
+        (request_root / role).mkdir()
+    (root / "17-Human-Projection-Result").mkdir()
+
+    planned = plan_once(
+        root, vault,
+        deployed_revision=deep.REVISION,
+        input_mode=INPUT_MODE_SEMANTIC_DEEP,
+        semantic_index_sha256=index_sha,
+        semantic_selection_policy="semantic-project-distill-v0",
+        generator_model=deep.GEN_MODEL,
+        evaluator_model=deep.EVAL_MODEL,
+        now=datetime(2026, 9, 29, 4, 0, tzinfo=timezone.utc),
+    )
+    assert planned["status"] == "submitted"
+    generated = worker.run_generator_worker(
+        root, base_url="http://127.0.0.1:8000/v1",
+        deployed_revision=deep.REVISION,
+        transport=deep._deep_provider_transport,  # local fixture; no network
+    )
+    assert generated["state"] == "validating"
+    case = str(job_status(root, str(planned["job_id"]))["current_generation"]["generation_id"])
+    proposal_sha = str(generated["output"]["proposal_sha256"])
+    validation = start_attempt(root, case, "validation")
+    store_validation_record(
+        root, proposal_sha256=proposal_sha, result="rejected",
+        reason="deterministic simulated candidate invalid",
+        validated_at="2026-09-29T04:05:00Z",
+    )
+    assert emit_validation_projection(
+        root, case_id=case, proposal_sha256=proposal_sha,
+    ) is not None
+    complete_attempt(
+        root, str(validation["attempt_id"]),
+        outcome="deterministic_reject", reason_code="validation_rejected",
+    )
+
+    for role in ROLE_NAMES:
+        for f in (request_root / role).glob("*.projection.json"):
+            digest = f.name.removesuffix(".projection.json")
+            req = parse_request(f.read_bytes())
+            if req.case_id != case:
+                continue
+            _store_result(root, ProjectionResult(
+                request_sha256=digest,
+                target_path=req.target_path,
+                content_sha256=req.content_sha256,
+                result="created", completed_at="2026-09-29T04:06:00Z",
+            ))
+    proof = prepare_rejection_cleanup(root, case)
+    assert len(proof.targets) == 4
+    assert tuple(row.stage for row in proof.targets) == STAGES
+    verify_rejection_cleanup(root, proof)
