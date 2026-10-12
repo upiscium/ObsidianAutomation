@@ -312,21 +312,24 @@ def _store_immutable(path: Path, data: bytes) -> Path:
         os.fsync(parent_fd)
         return path
     finally:
-        if mode_fd is not None:
-            os.close(mode_fd)
-        if probe_exists:
-            try:
-                os.unlink(mode_probe_name, dir_fd=parent_fd)
-            except FileNotFoundError:
-                pass
-        if fd is not None:
-            os.close(fd)
-        if temp_exists:
-            try:
-                os.unlink(staged_name, dir_fd=parent_fd)
-            except FileNotFoundError:
-                pass
-        os.close(parent_fd)
+        try:
+            if mode_fd is not None:
+                os.close(mode_fd)
+            if probe_exists:
+                try:
+                    os.unlink(mode_probe_name, dir_fd=parent_fd)
+                except FileNotFoundError:
+                    pass
+            if fd is not None:
+                os.close(fd)
+            if temp_exists:
+                try:
+                    os.unlink(staged_name, dir_fd=parent_fd)
+                except FileNotFoundError:
+                    pass
+        finally:
+            # Failed cleanup must not strand the directory descriptor.
+            os.close(parent_fd)
 
 
 def store_untrusted_proposal(ai_root: Path, proposal_bytes: bytes) -> tuple[str, Path]:

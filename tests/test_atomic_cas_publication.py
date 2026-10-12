@@ -473,3 +473,39 @@ def test_failed_first_parent_fsync_requires_successful_retry(tmp_path, monkeypat
         assert (tmp_path / "00-Untrusted").is_dir()
     assert failures == ["parent", "parent"]
     assert cas.ensure_artifact_layout(tmp_path).untrusted.is_dir()
+
+def test_cleanup_failure_still_closes_cas_parent_descriptor(tmp_path, monkeypatch):
+    """An unlink error must not strand the descriptor-bound CAS directory."""
+    parent = tmp_path / "cas"
+    parent.mkdir()
+    destination = parent / "target.json"
+    real_open = cas.os.open
+    real_unlink = cas.os.unlink
+    parent_descriptors = []
+
+    def tracking_open(path, flags, *args, **kwargs):
+        descriptor = real_open(path, flags, *args, **kwargs)
+        if path == parent:
+            parent_descriptors.append(descriptor)
+        return descriptor
+
+    def fail_write(fd, data):
+        raise RuntimeError("injected private staging write failure")
+
+    def fail_cleanup(path, *args, **kwargs):
+        if str(path).startswith(".obsidian-cas-"):
+            raise OSError("injected cleanup unlink failure")
+        return real_unlink(path, *args, **kwargs)
+
+    with monkeypatch.context() as m:
+        m.setattr(cas.os, "open", tracking_open)
+        m.setattr(cas, "_write_all", fail_write)
+        m.setattr(cas.os, "unlink", fail_cleanup)
+        with pytest.raises(OSError, match="injected cleanup unlink failure"):
+            cas._store_immutable(destination, b"unpublished-test-data")
+
+    assert parent_descriptors
+    for descriptor in parent_descriptors:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+    assert not destination.exists()

@@ -196,6 +196,12 @@ def audit_daily_summary_cas(
                                         raise DailyCASAdmissionError(
                                             "CAS has unknown or uncommitted artifact name"
                                         )
+                                    # Stop before opening or examining the first
+                                    # inode beyond the caller's bounded inventory.
+                                    if files >= max_files:
+                                        raise DailyCASAdmissionError(
+                                            "CAS audit size limit exceeded"
+                                        )
                                     flags = (
                                         os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
                                         | getattr(os, "O_NONBLOCK", 0)

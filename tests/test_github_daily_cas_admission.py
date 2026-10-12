@@ -213,3 +213,29 @@ def test_empty_root_and_bounded_files_fail_closed(tmp_path, monkeypatch):
         audit.audit_daily_summary_cas(
             root, owner_name="summarizer", reader_name="renderer", max_files=0
         )
+
+def test_daily_cas_max_files_rejects_before_opening_extra_inode(tmp_path, monkeypatch):
+    """The read-only audit must not open file max_files + 1."""
+    root, first, _, _ = _fixture(tmp_path, monkeypatch)
+    second = first.with_name("b" * 64 + ".github-daily-partial-output.json")
+    previous_mask = os.umask(0o027)
+    try:
+        cas._store_immutable(second, b'{"other":true}\n')
+    finally:
+        os.umask(previous_mask)
+
+    real_open = audit.os.open
+    opened_artifact_files = []
+
+    def tracking_open(path, flags, *args, **kwargs):
+        if isinstance(path, str) and path.endswith(".github-daily-partial-output.json"):
+            opened_artifact_files.append(path)
+        return real_open(path, flags, *args, **kwargs)
+
+    with monkeypatch.context() as m:
+        m.setattr(audit.os, "open", tracking_open)
+        with pytest.raises(audit.DailyCASAdmissionError, match="size limit"):
+            audit.audit_daily_summary_cas(
+                root, owner_name="summarizer", reader_name="renderer", max_files=1
+            )
+    assert len(opened_artifact_files) == 1

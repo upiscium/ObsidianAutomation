@@ -150,7 +150,9 @@ number/bytes of abandoned temp files; escalate if they grow repeatedly.
 - Adversarial crash points: short write, interrupted stage before/after
   file fsync, before and after rename, parent fsync failure; direct FIFOs,
   symlinks, hardlinks, same-key races and conflicting writes.
-- Full Python 3.11, 3.12 and 3.13 regression and authority-fixture CI.
+- GitHub Actions regression on Python 3.11/3.13 and the authority fixture,
+  plus an independently recorded isolated Python 3.12 full-suite run at the
+  exact reviewed head. The current workflow does not run Python 3.12 in CI.
 - A separate security/correctness/compatibility review of the *shared*
   CAS helper and the #291 consumer, including any directory race assumptions.
 - Independent authorized publication, rollout/rollback plan, and protected
