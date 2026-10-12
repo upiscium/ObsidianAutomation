@@ -166,15 +166,20 @@ any effect-enabled release. Sync must not blindly trust the observer's proof.
 - Build a hermetic temporary state tree and verify same-file lock exclusion,
   noncreation, FIFO/symlink/hardlink/replacement fail-closed and no file edits.
   These are provided as **local functional** tests in the child branch.
-- Completed in the disposable Linux namespace: **actual mapped distinct
-  Observer (1001), Sync (1002), Scheduler/Producer (1003), and unauthorized
-  (1004) UIDs** with effective named POSIX ACLs. Confirms read-only original
-  sources in all seven request-role directories, denial of writes to sources,
+- Completed in disposable Linux **user and PID namespaces**: **actual mapped
+  distinct Observer (1001), Sync (1002), Scheduler/Producer (1003), and
+  unauthorized (1004) UIDs** with effective named POSIX ACLs. The fixture
+  requires that its Python child runs as PID 1 of the disposable PID namespace;
+  `unshare --fork --kill-child` and the process-group timeout/exception cleanup
+  ensure a terminated namespace init cannot leave a separate-UID SQLite
+  writer behind. This test has no mount or network namespace, and is not a
+  substitute for systemd sandbox or real host-UID tests. Confirms read-only
+  original sources in all seven request-role directories, denial of writes to sources,
   Sync read-only proof sharing, unrelated Vault/secret denial, immutable
   existing lock participation, and live Scheduler SQLite committed updates
   observed in read-only DELETE and WAL modes. Uses disposable `/tmp` files,
   never production UID/ACL/DB/service or remote access; tests skip with a
-  visible reason if the CI runner cannot create a subordinate user namespace.
+  visible reason if the CI runner cannot create subordinate user/PID namespaces.
 - A producer-created **new** file with a directory default ACL and creation
   mode `0644` is readable by the Observer. **Subsequent `chmod 0600` masks
   this named ACL and revokes Observer access** until the producer/owner

@@ -143,6 +143,10 @@ finally:
 
 
 def _test_in_namespace() -> None:
+    # The Python fixture must be PID 1 in a *disposable PID namespace*.
+    # Linux destroys all remaining descendant processes in this namespace
+    # if PID 1 exits or is killed, including the separate-UID SQLite writer.
+    assert os.getpid() == 1, "PID namespace isolation is required"
     print(CHILD_STARTED, flush=True)
     with tempfile.TemporaryDirectory(prefix="obs321-disposable-acl-", dir="/tmp") as temp:
         base = Path(temp)
@@ -380,13 +384,15 @@ def test_observer_real_uid_acl_and_sqlite_wal_in_disposable_namespace() -> None:
         )
         module.chmod(0o644)
         command = [
-            "unshare", "--fork", "--kill-child",
+            "unshare", "--fork", "--kill-child", "--pid",
             "--map-auto", "--setuid", "0", "--setgid", "0",
             "--", sys.executable, str(script), "--fixture-child",
         ]
-        # --fork --kill-child ensures the namespace child receives SIGKILL
-        # when the wrapper exits. Combined with a new session and finally,
-        # ordinary errors and interruptions cannot abandon test writers.
+        # --fork --kill-child ensures a killed unshare wrapper also kills
+        # namespace PID 1. Linux then forcibly terminates *all* descendants
+        # of PID 1, including the separately mapped-UID SQLite writer.
+        # This closes the orphan-process hole that mere process-group kill
+        # cannot guarantee across subordinate UID mappings.
         process = subprocess.Popen(
             command, text=True, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, start_new_session=True,
