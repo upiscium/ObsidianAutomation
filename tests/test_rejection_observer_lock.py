@@ -39,9 +39,7 @@ def test_observer_opens_existing_lock_readonly_without_creation(
     with canonical_io_lock(root):
         pass
     lock.write_bytes(b"seed")
-    lock.chmod(0o400)
     lock_dir = lock.parent
-    lock_dir.chmod(0o500)
     original_open = os.open
     seen_flags: list[int] = []
 
@@ -52,6 +50,8 @@ def test_observer_opens_existing_lock_readonly_without_creation(
 
     monkeypatch.setattr(production_io.os, "open", traced_open)
     try:
+        lock.chmod(0o400)
+        lock_dir.chmod(0o500)
         before = lock.read_bytes()
         stat_before = lock.stat()
         with canonical_io_lock_observer(root) as path:
@@ -124,3 +124,27 @@ def test_observer_does_not_wrap_errors_from_review_code(tmp_path: Path) -> None:
     with pytest.raises(OSError, match="source-only failure"):
         with canonical_io_lock_observer(root):
             raise OSError("source-only failure")
+
+
+def test_observer_unlock_failure_does_not_mask_original_exception(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, lock = _fixture(tmp_path)
+    lock.touch()
+    original_flock = fcntl.flock
+
+    def fail_unlock(fd: int, operation: int) -> None:
+        if operation == fcntl.LOCK_UN:
+            raise OSError("simulated unlock failure")
+        original_flock(fd, operation)
+
+    monkeypatch.setattr(production_io.fcntl, "flock", fail_unlock)
+    with pytest.raises(ValueError, match="original proof error"):
+        with canonical_io_lock_observer(root):
+            raise ValueError("original proof error")
+    # Final close releases the advisory lock even if explicit unlock failed.
+    probe = os.open(lock, os.O_RDONLY)
+    try:
+        fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    finally:
+        os.close(probe)

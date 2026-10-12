@@ -137,7 +137,13 @@ def canonical_io_lock_observer(ai_root: Path) -> Iterator[Path]:
             _verify_current_inode()
             yield lock_path
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            # Closing the descriptor also drops the advisory lock. An
+            # unsuccessful explicit unlock must not swallow the observer's
+            # original error or falsely report its evidence as valid.
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
     finally:
         os.close(fd)
 

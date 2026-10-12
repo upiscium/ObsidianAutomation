@@ -111,8 +111,15 @@ lock release, or substitute for Phase B durable anti-resurrection guards.
 ### Proof output and immutable storage proposal
 
 The observer writes only under its dedicated `18-Rejection-Preflight/observer`
-directory, with `0700` dir, `0600` files, `UMask=0077`, no default broad
-group ACL, and a narrow Sync read-only ACL. The proof must be:
+directory, with owner-only initial `0700` directory / `0600` file modes,
+`UMask=0077`, no default broad group ACL, and a separately applied narrow
+Sync named-user read-only ACL. **Do not claim the numeric modes remain exactly
+`0700`/`0600` after applying a named ACL:** POSIX ACL masks can change the
+effective group mode bits, and running `chmod 0600` *after* granting Sync
+read access may mask that ACL away. Test effective `getfacl` permissions with
+the real Observer and Sync UIDs and prove all other roles remain denied.
+
+The proof must be:
 
 - separately versioned and keyed to `job_id/generation_id`, selected
   Planner Selection/Context/Generation, rejected Validation SHA and **exact
