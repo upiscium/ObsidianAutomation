@@ -136,3 +136,41 @@ database rights as a shortcut. A local Semantic Deep Planner → Generator → d
 Re-validating a proof at a later effect boundary remains mandatory. It
 does not by itself stop another publisher from re-creating a deleted note.
 **No remote deletion is implemented by Phase A.**
+
+
+## Job-bound Selection proof for new submissions
+
+Independent Correctness review of the preceding amendment identified a remaining
+Legacy identity ambiguity: two immutable Selection records can contain the same
+Context sources but different policies, epochs or cycles. Merely verifying
+source-byte equality does not establish which Selection was actually submitted
+with the job.
+
+The Reader Planner now records a small canonical, **private immutable**
+`<generation>.submitted-selection-binding.json` in its existing
+`16-Human-Projection/reader` request directory when projection generation is
+enabled. The record binds exact job ID, generation ID, Context SHA,
+Selection SHA, and recipe SHA. It is emitted **before** the Input request on
+normal Legacy and Semantic Deep submissions, and on recovery of pending
+submissions. It is *not* a Review note, a Sync publication request, a remote
+delete instruction or a new credential.
+
+Phase A re-reads this binding using the same bounded nofollow reader and
+compares every identity with the latest-generation scheduler state and
+original Input request. Tests verify that a second valid Selection with
+identical Context sources but a different policy/cycle cannot replace the
+**submitted** Input. An existing binding cannot be overwritten with a new
+value via the immutable-store contract.
+
+**Backward compatibility is intentionally fail-closed.** Historic Legacy
+generations without a securely recorded job-to-Selection binding are **Pending**,
+not automatically eligible for cleanup. No heuristic reconstruction, overwrite,
+or silent backfill is performed. Future historical recovery would need
+independent, exact original provenance evidence and a separate accepted
+procedure.
+
+The immutable Planner binding is an **application-level** evidence record,
+not a cryptographic signature or server-enforced immutability guarantee against
+a compromised Reader UID. The new least-privilege evidence observer and
+per-role ACL design is tracked in #321; producer/consumer separation and
+live security qualification remain necessary before Phase B.

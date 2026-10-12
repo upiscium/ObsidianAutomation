@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from obsidian_automation.artifact_lifecycle import (
+    ArtifactLifecycleError,
     _canonical_json_bytes,
     _store_immutable,
     ensure_artifact_layout,
@@ -30,6 +31,7 @@ from obsidian_automation.human_projection import (
     store_request,
 )
 from obsidian_automation.pre_review_job import _connect_rw
+from obsidian_automation.planner_selection_binding import emit_binding
 from obsidian_automation.validation_rejection_cleanup import (
     STAGES,
     RejectionCleanupError,
@@ -168,6 +170,11 @@ def _state(
         conn.commit()
     finally:
         conn.close()
+
+    assert emit_binding(
+        root, case_id=CASE, job_id=JOB, context_sha256=context_sha,
+        selection_sha256=selection_sha, recipe_sha256="d" * 64,
+    ) is not None
 
     # Original producer-generated requests, bound to the same source
     # selection, Context and Generation as the durable pre-review job.
@@ -659,3 +666,94 @@ def test_real_semantic_deep_producer_chain_can_be_preflight_attested(
     assert len(proof.targets) == 4
     assert tuple(row.stage for row in proof.targets) == STAGES
     verify_rejection_cleanup(root, proof)
+
+
+def test_legacy_without_durable_job_selection_assignment_fails_closed(
+    tmp_path: Path,
+) -> None:
+    from obsidian_automation.planner_selection_binding import SUFFIX
+
+    root, _ = _state(tmp_path)
+    original = prepare_rejection_cleanup(root, CASE)
+    assert len(original.targets) == 4
+    (root / "16-Human-Projection" / "reader" / f"{CASE}{SUFFIX}").unlink()
+    with pytest.raises(RejectionCleanupPending, match="assignment missing"):
+        prepare_rejection_cleanup(root, CASE)
+
+
+def test_two_valid_selections_with_same_context_cannot_swap_original_input(
+    tmp_path: Path,
+) -> None:
+    from obsidian_automation.planner_selection_binding import load_binding
+
+    root, _ = _state(tmp_path)
+    old_proof = prepare_rejection_cleanup(root, CASE)
+    binding = load_binding(root, CASE, read=lambda p, cap: Path(p).read_bytes())
+    assert binding is not None
+    selection_dir = root / "02-Orchestration" / "input-selections"
+    source = json.loads((
+        selection_dir / f"{binding.selection_sha256}.selection.json"
+    ).read_bytes())
+    altered = dict(source)
+    altered["selection_policy"] = "random-set-v0"
+    altered["cycle"] = 11
+    altered_data = _canonical_json_bytes(altered)
+    alternative = sha256_bytes(altered_data)
+    assert alternative != binding.selection_sha256
+    _store_immutable(
+        selection_dir / f"{alternative}.selection.json", altered_data,
+    )
+
+    input_old = next(row for row in old_proof.targets if row.stage == "input")
+    (
+        root / "16-Human-Projection" / "reader"
+        / f"{input_old.request_sha256}.projection.json"
+    ).unlink()
+    (
+        root / "17-Human-Projection-Result"
+        / f"{input_old.request_sha256}.projection-result.json"
+    ).unlink()
+
+    emitted = emit_input_projection(
+        root, case_id=CASE,
+        selection_sha256=alternative,
+        selection_policy="random-set-v0",
+        objective_policy=altered["objective_policy"],
+        epoch=altered["epoch"], cycle=altered["cycle"],
+        selected=altered["selected"], created_at=NOW,
+    )
+    assert emitted is not None
+    digest, path = emitted
+    req = parse_request(path.read_bytes())
+    _store_result(root, ProjectionResult(
+        request_sha256=digest, target_path=req.target_path,
+        content_sha256=req.content_sha256,
+        result="created", completed_at=NOW,
+    ))
+
+    # Two fully valid immutable Selections and a legitimate-looking new
+    # published request exist. Only the *submitted* Selection is admissible.
+    with pytest.raises(RejectionCleanupError, match="submitted Selection identity"):
+        prepare_rejection_cleanup(root, CASE)
+
+
+def test_binding_identity_cannot_be_replaced_under_same_case_name(
+    tmp_path: Path,
+) -> None:
+    from obsidian_automation.planner_selection_binding import (
+        SUFFIX, emit_binding,
+    )
+
+    root, _ = _state(tmp_path)
+    proof = prepare_rejection_cleanup(root, CASE)
+    binding_path = root / "16-Human-Projection" / "reader" / f"{CASE}{SUFFIX}"
+    original = binding_path.read_bytes()
+    with pytest.raises(ArtifactLifecycleError):
+        emit_binding(
+            root, case_id=CASE, job_id=JOB,
+            context_sha256="8" * 64,
+            selection_sha256="9" * 64,
+            recipe_sha256="d" * 64,
+        )
+    assert binding_path.read_bytes() == original
+    assert prepare_rejection_cleanup(root, CASE) == proof

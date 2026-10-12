@@ -38,6 +38,7 @@ from .human_projection import (
     parse_result,
 )
 from .pre_review_job import _connect_ro
+from .planner_selection_binding import load_binding
 from .rejection_source_binding import verify_original_producers, proposal_fields
 from .production_io import canonical_io_lock
 
@@ -188,14 +189,14 @@ def parse_attestation(data: bytes) -> RejectionCleanupAttestation:
     return proof
 
 
-def _scheduler_authority(ai_root: Path, case_id: str) -> tuple[str, str, str, str]:
+def _scheduler_authority(ai_root: Path, case_id: str) -> tuple[str, str, str, str, str]:
     """Reject even a genuine published Validation note unless the latest
     authoritative job generation has terminal Validator-reject evidence.
     """
     with closing(_connect_ro(ai_root)) as conn:
         generation = conn.execute(
             "SELECT g.generation_id, g.job_id, g.generation_index, g.state,"
-            " j.context_sha256 FROM generations g JOIN jobs j ON j.job_id=g.job_id"
+            " j.context_sha256, j.recipe_sha256 FROM generations g JOIN jobs j ON j.job_id=g.job_id"
             " WHERE g.generation_id = ?",
             (case_id,),
         ).fetchone()
@@ -239,6 +240,7 @@ def _scheduler_authority(ai_root: Path, case_id: str) -> tuple[str, str, str, st
         return (
             _require_sha256(generation["job_id"], label="job_id"),
             _require_sha256(generation["context_sha256"], label="context_sha256"),
+            _require_sha256(generation["recipe_sha256"], label="recipe_sha256"),
             proposal,
             generation_sha,
         )
@@ -375,10 +377,23 @@ def prepare_rejection_cleanup(
     try:
         case = _require_sha256(case_id, label="case_id")
         root = ai_root.absolute()
-        job_id, context_sha, proposal, generation_sha = _scheduler_authority(
+        job_id, context_sha, recipe_sha, proposal, generation_sha = _scheduler_authority(
             root, case
         )
         originals = _published_originals(root, case, max_scan=max_scan)
+        assignment = load_binding(root, case, read=_bounded_regular_file)
+        if assignment is None:
+            # Old jobs lack an immutable per-generation Selection identity.
+            # Even a valid alternative Selection with matching Context sources
+            # is not proof that it was the one used during submission.
+            raise RejectionCleanupPending("original Planner Selection assignment missing")
+        if (
+            assignment.job_id != job_id
+            or assignment.context_sha256 != context_sha
+            or assignment.recipe_sha256 != recipe_sha
+            or assignment.selection_sha256 != originals["input"][1].source_sha256
+        ):
+            raise RejectionCleanupError("original Planner submitted Selection identity mismatch")
         verify_original_producers(
             root, case, context_sha, proposal, generation_sha, originals,
             read=_bounded_regular_file,
@@ -391,7 +406,7 @@ def prepare_rejection_cleanup(
         # producing the immutable proof; the later Sync executor must still
         # re-verify at its own effect boundary.
         confirmed = _scheduler_authority(root, case)
-        if confirmed != (job_id, context_sha, proposal, generation_sha):
+        if confirmed != (job_id, context_sha, recipe_sha, proposal, generation_sha):
             raise RejectionCleanupError("generation changed during preflight")
         targets = tuple(
             AttestedTarget(
