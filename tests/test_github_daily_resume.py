@@ -376,3 +376,81 @@ def test_intermediate_length_implementation_revision_keeps_existing_contract(tmp
     repeated = MockModel()
     _partials(tmp_path, _bound(repeated), bundle, contexts, revision=revision)
     assert repeated.calls == []
+
+
+def test_native_ollama_tag_change_uses_new_resume_key_and_inference(tmp_path):
+    """Actual /api/tags digest drift cannot select an older cached Partial."""
+    from obsidian_automation.github_daily_summary_generation import ollama_infer
+
+    bundle, contexts = _fixture(1)
+    digest = ["b" * 64]
+    chat_digests = []
+
+    def transport(base_url, *, method, path, payload, timeout):
+        if path == "/api/tags":
+            return {"models": [{"name": "gemma4:12b", "model": "gemma4:12b",
+                                "digest": digest[0]}]}
+        assert path == "/api/chat"
+        assert payload["model"] == "gemma4:12b"
+        chat_digests.append(digest[0])
+        return {"model": "gemma4:12b", "done": True,
+                "message": {"role": "assistant",
+                            "content": json.dumps({"claims": [{
+                                "kind": "implementation",
+                                "summary": "implemented event-0",
+                                "source_refs": [0],
+                            }]})}}
+
+    def actual_adapter():
+        return ollama_infer(
+            base_url="https://ollama.test.invalid",
+            model="gemma4:12b", transport=transport, timeout=30,
+        )
+
+    first, _, provenance_one = _partials(
+        tmp_path, actual_adapter(), bundle, contexts,
+    )
+    assert chat_digests == ["b" * 64]
+    assert len(_pointer_files(tmp_path)) == 1
+
+    digest[0] = "d" * 64
+    second, _, provenance_two = _partials(
+        tmp_path, actual_adapter(), bundle, contexts,
+    )
+    assert chat_digests == ["b" * 64, "d" * 64]
+    assert second[0].sha256 == first[0].sha256
+    assert provenance_one != provenance_two
+    assert len(_pointer_files(tmp_path)) == 2
+
+    replay, _, replay_provenance = _partials(
+        tmp_path, actual_adapter(), bundle, contexts,
+    )
+    assert replay == second
+    assert replay_provenance == provenance_two
+    assert chat_digests == ["b" * 64, "d" * 64]
+
+
+def test_native_ollama_post_chat_alias_drift_creates_no_resume_pointer(tmp_path):
+    """The adapter must reject drift before attesting response provenance."""
+    from obsidian_automation.github_daily_summary_generation import ollama_infer
+
+    bundle, contexts = _fixture(1)
+    digest = ["b" * 64]
+
+    def transport(base_url, *, method, path, payload, timeout):
+        if path == "/api/tags":
+            return {"models": [{"name": "gemma4:12b", "model": "gemma4:12b",
+                                "digest": digest[0]}]}
+        assert path == "/api/chat"
+        digest[0] = "d" * 64
+        return {"model": "gemma4:12b", "done": True,
+                "message": {"role": "assistant", "content": '{"claims": []}'}}
+
+    infer = ollama_infer(
+        base_url="https://ollama.test.invalid",
+        model="gemma4:12b", transport=transport, timeout=30,
+    )
+    with pytest.raises(GitHubDailySummaryError, match="provider=OllamaProviderError"):
+        _partials(tmp_path, infer, bundle, contexts)
+    assert not _pointer_files(tmp_path)
+    assert not list((tmp_path / 'github-daily-summary' / 'provenance').glob('*'))
