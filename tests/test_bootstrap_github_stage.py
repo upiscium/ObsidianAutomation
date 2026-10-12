@@ -219,3 +219,75 @@ def test_bootstrap_rejects_rogue_temp_parent_and_sanitizes_git_env(fake_checkout
     result = invoke(root, target)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["status"] == "source_attested_no_effects"
+
+
+def test_first_deployment_inspect_loads_actual_target_modules_from_git_without_effects(tmp_path):
+    """End-to-end source attestation uses real code, not stub Stage modules."""
+    app = tmp_path / "app"
+    app.mkdir()
+    git(app, "init", "-b", "main")
+    git(app, "config", "user.name", "Isolated Bootstrap Fixture")
+    git(app, "config", "user.email", "fixture@example.invalid")
+    (app / "README.md").write_text("old runtime is installed\n")
+    git(app, "add", ".")
+    git(app, "commit", "-qm", "old-runtime")
+    previous = git(app, "rev-parse", "HEAD")
+
+    # Publish the *real* reviewed bootstrap and its three production modules
+    # into a local Git commit, without importing the installed runtime.
+    root = BOOTSTRAP.parent.parent
+    files = (
+        "tools/bootstrap_github_stage.py",
+        "src/obsidian_automation/__init__.py",
+        "src/obsidian_automation/github_production_update.py",
+        "src/obsidian_automation/github_production_staging.py",
+    )
+    for name in files:
+        destination = app / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes((root / name).read_bytes())
+    git(app, "add", ".")
+    git(app, "commit", "-qm", "synthetic-reviewed-merged-target")
+    target = git(app, "rev-parse", "HEAD")
+    git(app, "update-ref", "refs/remotes/origin/main", target)
+    git(app, "reset", "--hard", previous)
+
+    source = subprocess.run(
+        ["git", "-C", str(app), "show", f"{target}:tools/bootstrap_github_stage.py"],
+        check=True, capture_output=True,
+    ).stdout
+    receipts = tmp_path / "uncreated-receipt-dir"
+    venv = tmp_path / "uncreated-venv"
+    args = [
+        "--target-sha", target,
+        "--app-root", str(app),
+        "--venv-root", str(venv),
+        "--receipt-dir", str(receipts),
+    ]
+    inspected = subprocess.run(
+        [sys.executable, "-I", "-B", "-", "inspect", *args],
+        input=source, capture_output=True, timeout=30,
+    )
+    assert inspected.returncode == 0, inspected.stderr.decode()
+    report = json.loads(inspected.stdout)
+    assert report["status"] == "source_attested_no_effects"
+    assert report["current_sha"] == previous
+    assert report["reviewed_target_sha"] == target
+    assert report["stage_control"] == "none"
+    assert report["stage_effects_authorized"] is False
+    assert report["installed_runtime_verified"] is False
+
+    denied = subprocess.run(
+        [sys.executable, "-I", "-B", "-", "stage", *args],
+        input=source, capture_output=True, timeout=30,
+    )
+    assert denied.returncode == 2
+    assert json.loads(denied.stderr)["status"] == "blocked"
+
+    # All operations happen on an ephemeral synthetic Git checkout and are
+    # read-only from the point of view of the old runtime and Stage state.
+    assert git(app, "branch", "--show-current") == "main"
+    assert git(app, "rev-parse", "HEAD") == previous
+    assert git(app, "status", "--porcelain") == ""
+    assert not receipts.exists()
+    assert not venv.exists()
