@@ -239,3 +239,40 @@ def test_daily_cas_max_files_rejects_before_opening_extra_inode(tmp_path, monkey
                 root, owner_name="summarizer", reader_name="renderer", max_files=1
             )
     assert len(opened_artifact_files) == 1
+
+
+def test_large_valid_daily_final_does_not_fail_metadata_only_admission(
+    tmp_path, monkeypatch
+):
+    """A >2 MiB grounded Final is valid under the metadata-only ACL policy."""
+    root, existing, uid, reader = _fixture(tmp_path, monkeypatch)
+    final_dir = root / "final"
+    final_dir.mkdir()
+    final_dir.chmod(0o750)
+    for default, mask in ((False, "r-x"), (True, "rwx")):
+        _set_acl(
+            final_dir,
+            f"u::rwx,u:{uid}:rwx,u:{reader}:r-x,g::---,m::{mask},o::---",
+            default=default,
+        )
+    payload = b'{"accepted_claims":["' + (b"x" * (2 * 1024 * 1024 + 1)) + b'"],"rejected_claims":[]}\n'
+    digest = cas.sha256_bytes(payload)
+    path = final_dir / (digest + ".github-daily-grounded-summary.json")
+    original_mask = os.umask(0o027)
+    try:
+        cas._store_immutable(path, payload)
+    finally:
+        os.umask(original_mask)
+    assert path.stat().st_size > 2 * 1024 * 1024
+    before = path.stat()
+    report = _audit(root)
+    assert report["status"] == "admitted_at_inspection"
+    assert report["published_files"] == 2
+    assert report["stage_directories"] == 2
+    assert report["files_read"] == 0
+    assert report["files_changed"] == 0
+    assert report["publication_authorized"] is False
+    after = path.stat()
+    assert before.st_mtime_ns == after.st_mtime_ns
+    assert before.st_size == after.st_size
+    assert existing.is_file()

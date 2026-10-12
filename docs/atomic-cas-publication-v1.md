@@ -187,6 +187,11 @@ installed, on a quiescent system, for example:
 
 The command accepts **read-only** absolute-path/role parameters, discovers
 numeric UIDs through system name service, and checks at most 65,536 files.
+There is intentionally no per-file byte-size ceiling: this scan reads inode
+and ACL metadata only, so a fixed 2-MiB metadata admission limit would reject
+otherwise valid large Daily final/Output artifacts without reducing audit I/O.
+It does **not** validate file payload size, JSON schema, hash-to-name integrity
+or publication eligibility; those remain separate producer/consumer gates.
 It restricts nested directories and canonical SHA-based file suffixes to the
 reviewed Daily Context/Output/Provenance/Final/Resume namespaces. Each regular,
 single-link JSON inode must belong to the dedicated Summarizer UID/GID, have

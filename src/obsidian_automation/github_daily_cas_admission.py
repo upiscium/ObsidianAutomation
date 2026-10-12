@@ -17,7 +17,9 @@ from pathlib import Path
 
 VERSION = 1
 MAX_FILES = 65536
-MAX_FILE_BYTES = 2 * 1024 * 1024
+# Metadata-only audit: inode size is not an I/O budget because payload bytes
+# are never read. A fixed data-size limit would reject valid producer artifacts
+# for which there is no corresponding producer-side size cap.
 SHA_FILENAME = re.compile(r"^[0-9a-f]{64}\.github-daily-[a-z0-9-]+\.json$")
 ALLOWED_STAGE_SUFFIXES = {
     "context": frozenset({"partial-context", "reduce-context", "ground-context"}),
@@ -222,7 +224,7 @@ def audit_daily_summary_cas(
                                                 or info.st_uid != owner.pw_uid
                                                 or info.st_gid != owner.pw_gid
                                                 or stat.S_IMODE(info.st_mode) != 0o640
-                                                or not 0 <= info.st_size <= MAX_FILE_BYTES):
+                                                or info.st_size < 0):
                                             raise DailyCASAdmissionError(
                                                 "CAS published inode metadata violates policy"
                                             )
