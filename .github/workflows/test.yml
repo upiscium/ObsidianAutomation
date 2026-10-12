@@ -45,6 +45,16 @@ jobs:
       contents: read
 
     steps:
+      - name: Refuse fork PR before checkout or privileged simulation
+        if: github.event_name == 'pull_request'
+        env:
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
+        run: |
+          if [ "$HEAD_REPO" != "$BASE_REPO" ]; then
+            echo '::error::Fork PR requires a separately reviewed trusted root-fixture run'
+            exit 1
+          fi
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
