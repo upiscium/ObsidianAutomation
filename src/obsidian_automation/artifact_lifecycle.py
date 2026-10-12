@@ -103,9 +103,11 @@ def _require_sha256(value: str, *, label: str) -> str:
 
 
 def _require_safe_directory(path: Path, *, create: bool) -> None:
+    created = False
     if create:
         try:
             path.mkdir(mode=0o755)
+            created = True
         except FileExistsError:
             pass
     try:
@@ -115,17 +117,25 @@ def _require_safe_directory(path: Path, *, create: bool) -> None:
     if path.is_symlink() or not path.is_dir():
         raise ArtifactLifecycleError(f"artifact path is not a safe directory: {path}")
     if create:
-        # Retry must not mistake a visible directory for a *durable* entry:
-        # an earlier first-use attempt may have failed while fsyncing its
-        # parent, leaving this name present until the next power loss.
-        # Reaffirm parent durability even for an already-existing stage.
+        # A failed first-use parent fsync may leave a visible but non-durable
+        # directory, so retry the sync even when mkdir reports EEXIST.
         flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
         flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
-        parent_fd = os.open(path.parent, flags)
         try:
-            os.fsync(parent_fd)
-        finally:
-            os.close(parent_fd)
+            parent_fd = os.open(path.parent, flags)
+        except PermissionError:
+            # Some delegated services can traverse pre-provisioned state
+            # directories but must not read their parent. Accept that explicit
+            # administrative durability boundary ONLY if this directory was
+            # already present and this identity cannot create entries there.
+            # A creator or writable-parent caller must never skip durability.
+            if created or os.access(path.parent, os.W_OK, effective_ids=True):
+                raise
+        else:
+            try:
+                os.fsync(parent_fd)
+            finally:
+                os.close(parent_fd)
 
 
 def ensure_artifact_layout(ai_root: Path) -> ArtifactLayout:

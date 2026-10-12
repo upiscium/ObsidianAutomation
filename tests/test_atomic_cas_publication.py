@@ -509,3 +509,33 @@ def test_cleanup_failure_still_closes_cas_parent_descriptor(tmp_path, monkeypatc
         with pytest.raises(OSError):
             os.fstat(descriptor)
     assert not destination.exists()
+
+def test_preprovisioned_unreadable_parent_preserves_role_isolation(tmp_path, monkeypatch):
+    """Existing layouts owned by the operator remain usable by traverse-only roles."""
+    layout = cas.ensure_artifact_layout(tmp_path)
+    real_open = cas.os.open
+    real_access = cas.os.access
+
+    def deny_parent_open(path, flags, *args, **kwargs):
+        if path == tmp_path:
+            raise PermissionError("parent directory is not readable by service role")
+        return real_open(path, flags, *args, **kwargs)
+
+    def deny_parent_writes(path, mode, *args, **kwargs):
+        if path == tmp_path and mode & os.W_OK:
+            return False
+        return real_access(path, mode, *args, **kwargs)
+
+    with monkeypatch.context() as m:
+        m.setattr(cas.os, "open", deny_parent_open)
+        m.setattr(cas.os, "access", deny_parent_writes)
+        assert cas.ensure_artifact_layout(tmp_path) == layout
+        # The exemption never authorizes freshly created, unsynced entries.
+        with pytest.raises(PermissionError, match="not readable"):
+            cas._require_safe_directory(tmp_path / "new-stage", create=True)
+
+    with monkeypatch.context() as m:
+        m.setattr(cas.os, "open", deny_parent_open)
+        # If this caller can create entries, it cannot bypass parent fsync.
+        with pytest.raises(PermissionError, match="not readable"):
+            cas.ensure_artifact_layout(tmp_path)

@@ -21,12 +21,16 @@ publication.
 ## Publication state machine
 
 1. Require the existing final parent directory to be nonsymlinked.
-   `ensure_artifact_layout` durably syncs the containing directory for every
-   managed artifact subdirectory, **including when it already exists**. A
-   failed first-use parent fsync can leave a directory visible but not proven
-   durable; a retry must therefore repeat the parent fsync before returning
-   a usable layout. The extra directory-sync cost is intentional. No parent
-   fsync failure is accepted as a successful layout.
+   `ensure_artifact_layout` retries parent-directory fsync even when a
+   managed directory already exists: a failed first-use fsync can leave an
+   entry visible without establishing crash durability. New directory creation
+   **always** requires a successful parent fsync. For an already-existing
+   administrator-provisioned directory whose parent refuses read access, a
+   caller with **no write permission to that parent** may rely on the trusted
+   provisioning boundary; a caller who can write the parent must fail closed.
+   This narrow existing-layout exception preserves intentional service-user
+   isolation and is not proof against privileged actors changing directory
+   permissions or namespace durability between attempts.
 2. Open that directory with `O_DIRECTORY|O_NOFOLLOW` where available.
 3. Create a random **zero-byte** `.obsidian-mode-probe-<token>.tmp`
    inode with requested mode `0644` to observe the service umask and
