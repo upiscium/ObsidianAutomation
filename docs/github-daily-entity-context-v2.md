@@ -25,14 +25,20 @@ prose may choose that identity.
 default-branch commits without an attested Issue/PR target are counted and
 left in the original immutable Evidence; PR commits with a /commit/SHA URL
 lack an authenticated /pull/N association in the v1 Evidence payload and are
-also marked unverified/unattributed. A future immutable collector-route
-receipt may qualify these; never guess a PR parent from the source's number
-alone.
+also marked unverified/unattributed. PR conversation comments whose GitHub
+URL is /issues/N similarly do not prove Issue-versus-PR identity without
+the collector's source-route witness and are counted as unverified. A future
+immutable collector-route receipt may qualify these cases; **never guess**
+Issue/PR identity from the source's numeric field alone. These quarantined
+events remain in the original lossless Evidence and require human/semantic
+coverage attention rather than being treated as irrelevant.
 
 Contexts split deterministically with at most 64 original events and a
 64-KiB **hard safety cap** per input; callers may use a smaller explicit
-budget. Each original associated event appears once across the entity's
-contexts, in its original per-entity Evidence order. A single oversized
+budget. The chosen max byte budget is itself part of the content-addressed
+context identity and must be rechecked during normalization. Each original
+associated event appears once across the entity's contexts, in its original
+per-entity Evidence order. A single oversized
 event or too many contexts fails closed rather than truncating it or dropping
 its identity. A context is canonical JSON with exact Evidence SHA, target JST
 date, entity key, batch index/count and all original event fields, and is
@@ -42,7 +48,8 @@ coverage or latency (#290).
 
 ## Model-facing candidate contract
 
-The dynamic `model_candidate_schema(context)` permits only:
+The dynamic `model_candidate_schema(context, original_evidence_bytes=...)`
+permits only:
 
 ```json
 {"candidates":[{"summary":"one plain line", "source_refs":[0,1]}]}
@@ -56,6 +63,14 @@ The dynamic `model_candidate_schema(context)` permits only:
 - Model prose is a **private unverified candidate**, not verified progress.
   It may not appear verbatim in a published Daily without source-by-source
   singleton Grounding, materiality and editorial review.
+- The schema builder and `normalize_entity_candidates` require the **actual
+  original Evidence bytes** at every call. They reparse and reconstruct the
+  entire deterministic entity partition under its recorded budget, verifying
+  the exact original context bytes at the exact batch index/count before
+  accepting even an empty response. A forged in-memory context with freshly
+  self-hashed source events and a borrowed Evidence SHA fails closed.
+  This prototype favors verification over repeated parsing cost until a
+  separately reviewed authenticated context cache is available.
 - The normalizer resolves each integer to the original immutable
   `evidence_id`; candidates bind their context digest, normalized text
   and original cited event identities into a deterministic candidate SHA.

@@ -81,6 +81,7 @@ class EntityPartialContext:
     key: EntityKey
     batch_index: int
     batch_count: int
+    max_context_bytes: int
     events: tuple[Mapping[str, object], ...]
 
     def to_json_bytes(self) -> bytes:
@@ -98,6 +99,8 @@ class EntityPartialContext:
             or type(self.batch_count) is not int
             or not 0 <= self.batch_index < self.batch_count <= MAX_CONTEXT_BATCHES
             or not 1 <= len(self.events) <= MAX_CONTEXT_EVENTS
+            or type(self.max_context_bytes) is not int
+            or not 1024 <= self.max_context_bytes <= MAX_CONTEXT_BYTES
         ):
             raise DailyEntityContextError("context batch bounds are invalid")
         return _canonical_bytes({
@@ -112,6 +115,7 @@ class EntityPartialContext:
             },
             "batch_index": self.batch_index,
             "batch_count": self.batch_count,
+            "max_context_bytes": self.max_context_bytes,
             "events": [dict(event) for event in self.events],
         })
 
@@ -134,6 +138,7 @@ class EntityContextSet:
     contexts: tuple[EntityPartialContext, ...]
     excluded_default_commits: int
     unverified_pr_commits: int
+    unverified_pr_comments: int
     grouped_event_count: int
 
     def report(self) -> dict[str, object]:
@@ -147,6 +152,7 @@ class EntityContextSet:
             "grouped_event_count": self.grouped_event_count,
             "excluded_default_commits": self.excluded_default_commits,
             "unverified_pr_commits": self.unverified_pr_commits,
+            "unverified_pr_comments": self.unverified_pr_comments,
             "requires_human_quality_review": True,
             "publication_authorized": False,
         }
@@ -154,13 +160,14 @@ class EntityContextSet:
 
 def _group_validated_events(
     bundle: EvidenceBundle,
-) -> tuple[dict[EntityKey, list[Mapping[str, object]]], int, int]:
+) -> tuple[dict[EntityKey, list[Mapping[str, object]]], int, int, int]:
     if len(bundle.events) > MAX_EVENTS:
         raise DailyEntityContextError("daily event count exceeds limit")
     start, end = _date_bounds(bundle)
     grouped: dict[EntityKey, list[Mapping[str, object]]] = {}
     default_count = 0
     pr_commit_count = 0
+    pr_comment_count = 0
     seen: set[str] = set()
     for event in bundle.events:
         try:
@@ -185,6 +192,17 @@ def _group_validated_events(
         if event.get("kind") == _UNVERIFIED_PR_COMMIT:
             pr_commit_count += 1
             continue
+        if (
+            event.get("kind") == "pull_request_comment"
+            and isinstance(event.get("url"), str)
+            and "/issues/" in event["url"]
+        ):
+            # GitHub PR conversation comments may have /issues/N URLs. The
+            # URL does not prove this is a PR rather than an Issue; a sealed
+            # collector route/classification receipt is required to promote
+            # that association. Never infer an entity from its number alone.
+            pr_comment_count += 1
+            continue
         if key is None:
             if event.get("kind") != "default_branch_commit":
                 raise DailyEntityContextError("unsupported unassigned event")
@@ -193,7 +211,7 @@ def _group_validated_events(
         grouped.setdefault(key, []).append(event)
         if len(grouped) > MAX_ENTITIES:
             raise DailyEntityContextError("too many distinct Issue/PR entities")
-    return grouped, default_count, pr_commit_count
+    return grouped, default_count, pr_commit_count, pr_comment_count
 
 
 def build_entity_contexts(
@@ -212,7 +230,7 @@ def build_entity_contexts(
     if type(max_bytes) is not int or not 1024 <= max_bytes <= MAX_CONTEXT_BYTES:
         raise DailyEntityContextError("context size budget is invalid")
     bundle = parse_evidence_bundle(evidence_bytes)
-    grouped, excluded, unverified = _group_validated_events(bundle)
+    grouped, excluded, unverified, pr_comments = _group_validated_events(bundle)
 
     # Use a conservative temporary batch-count width. Final encoded contexts
     # are checked again with their exact real batch counts and indexes.
@@ -224,7 +242,7 @@ def build_entity_contexts(
             if len(proposal) <= MAX_CONTEXT_EVENTS:
                 trial = EntityPartialContext(
                     bundle.sha256, bundle.date, key, 0,
-                    MAX_CONTEXT_BATCHES, tuple(proposal),
+                    MAX_CONTEXT_BATCHES, max_bytes, tuple(proposal),
                 )
                 if len(trial.to_json_bytes()) <= max_bytes:
                     current = proposal
@@ -237,7 +255,7 @@ def build_entity_contexts(
             current = [event]
             if len(EntityPartialContext(
                 bundle.sha256, bundle.date, key, 0,
-                MAX_CONTEXT_BATCHES, tuple(current),
+                MAX_CONTEXT_BATCHES, max_bytes, tuple(current),
             ).to_json_bytes()) > max_bytes:
                 raise DailyEntityContextError(
                     "single original Evidence event exceeds context budget"
@@ -249,7 +267,8 @@ def build_entity_contexts(
 
     contexts = tuple(
         EntityPartialContext(
-            bundle.sha256, bundle.date, key, index, len(buckets), events,
+            bundle.sha256, bundle.date, key, index,
+            len(buckets), max_bytes, events,
         )
         for index, (key, events) in enumerate(buckets)
     )
@@ -263,12 +282,13 @@ def build_entity_contexts(
     ]
     if actual_ids != expected_ids or len(set(actual_ids)) != len(actual_ids):
         raise DailyEntityContextError("entity partition lost or reordered Evidence")
-    if len(actual_ids) + excluded + unverified != len(bundle.events):
+    if len(actual_ids) + excluded + unverified + pr_comments != len(bundle.events):
         raise DailyEntityContextError("original Evidence accounting differs")
     return EntityContextSet(
         evidence_bundle_sha256=bundle.sha256, date=bundle.date,
         contexts=contexts, excluded_default_commits=excluded,
-        unverified_pr_commits=unverified, grouped_event_count=len(actual_ids),
+        unverified_pr_commits=unverified, unverified_pr_comments=pr_comments,
+        grouped_event_count=len(actual_ids),
     )
 
 
@@ -300,9 +320,36 @@ def _validate_context_sources(context: EntityPartialContext) -> None:
         seen.add(original_id)
 
 
-def model_candidate_schema(context: EntityPartialContext) -> dict[str, object]:
-    """Constrain integer refs to *one* entity context, not any repository."""
+def _verified_bundle_membership(
+    context: EntityPartialContext, *, original_evidence_bytes: bytes,
+) -> None:
+    """Require the exact original bundle and deterministic partition.
+
+    An in-memory SHA string and self-consistent event hashes alone cannot
+    establish that a context came from the claimed original Evidence.
+    """
     _validate_context_sources(context)
+    rebuilt = build_entity_contexts(
+        original_evidence_bytes, max_bytes=context.max_context_bytes,
+    )
+    if (
+        rebuilt.evidence_bundle_sha256 != context.evidence_bundle_sha256
+        or context.batch_count != len(rebuilt.contexts)
+        or context.batch_index >= len(rebuilt.contexts)
+        or rebuilt.contexts[context.batch_index] != context
+    ):
+        raise DailyEntityContextError(
+            "entity context does not match exact original Evidence partition"
+        )
+
+
+def model_candidate_schema(
+    context: EntityPartialContext, *, original_evidence_bytes: bytes,
+) -> dict[str, object]:
+    """Constrain refs to one entity and recheck original Evidence membership."""
+    _verified_bundle_membership(
+        context, original_evidence_bytes=original_evidence_bytes,
+    )
     if len(context.to_json_bytes()) > MAX_CONTEXT_BYTES:
         raise DailyEntityContextError("invalid model-facing context capacity")
     count = len(context.events)
@@ -390,9 +437,12 @@ def _candidate_event_key(event: Mapping[str, object]) -> EntityKey | None:
 
 def normalize_entity_candidates(
     context: EntityPartialContext, model_bytes: bytes,
+    *, original_evidence_bytes: bytes,
 ) -> EntityCandidateBatch:
-    """Validate untrusted model candidates; this NEVER marks progress proven."""
-    _validate_context_sources(context)
+    """Require original Evidence membership; candidates are NEVER approved."""
+    _verified_bundle_membership(
+        context, original_evidence_bytes=original_evidence_bytes,
+    )
     context_bytes = context.to_json_bytes()
     if len(context_bytes) > MAX_CONTEXT_BYTES:
         raise DailyEntityContextError("source context exceeds byte limit")
@@ -409,6 +459,7 @@ def normalize_entity_candidates(
     context_sha = _sha(context_bytes)
     candidates: list[EntityCandidate] = []
     cited_all: set[str] = set()
+    seen_candidate_ids: set[str] = set()
     for candidate in raw["candidates"]:
         if not isinstance(candidate, dict) or set(candidate) != {"summary", "source_refs"}:
             raise DailyEntityContextError("candidate properties are invalid")
@@ -461,7 +512,11 @@ def normalize_entity_candidates(
             "summary": text,
             "evidence_ids": ids,
         })
-        candidates.append(EntityCandidate(text, tuple(ids), _sha(normalized)))
+        candidate_id = _sha(normalized)
+        if candidate_id in seen_candidate_ids:
+            raise DailyEntityContextError("duplicated entity candidate")
+        seen_candidate_ids.add(candidate_id)
+        candidates.append(EntityCandidate(text, tuple(ids), candidate_id))
     uncited = tuple(eid for eid in context.evidence_ids if eid not in cited_all)
     return EntityCandidateBatch(
         key=context.key, context_sha256=context_sha,

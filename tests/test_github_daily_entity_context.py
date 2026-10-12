@@ -17,7 +17,8 @@ from obsidian_automation.github_daily_activity import (
 from obsidian_automation.github_daily_entity_context import (
     CONTEXT_STAGE, MAX_CONTEXT_BYTES, EntityPartialContext,
     DailyEntityContextError, build_entity_contexts,
-    model_candidate_schema, normalize_entity_candidates,
+    model_candidate_schema as _model_candidate_schema,
+    normalize_entity_candidates as _normalize_entity_candidates,
 )
 from obsidian_automation.github_daily_issue_pr import EntityKey
 from obsidian_automation.github_daily_summary import parse_evidence_bundle
@@ -26,6 +27,26 @@ from obsidian_automation.github_daily_summary import parse_evidence_bundle
 DAY = date(2026, 10, 12)
 REPO = "upiscium/Test"
 OTHER = "upiscium/Other"
+# Tests retain exact original Evidence bytes separately from each
+# self-contained context. These bytes, not the embedded SHA, are the
+# authoritative revalidation input at the model-candidate boundary.
+_ORIGINAL_BUNDLES: dict[str, bytes] = {}
+
+
+def normalize_entity_candidates(context, response):
+    return _normalize_entity_candidates(
+        context, response,
+        original_evidence_bytes=_ORIGINAL_BUNDLES[context.evidence_bundle_sha256],
+    )
+
+
+def model_candidate_schema(context):
+    return _model_candidate_schema(
+        context,
+        original_evidence_bytes=_ORIGINAL_BUNDLES[context.evidence_bundle_sha256],
+    )
+
+
 _PR_KINDS = {
     "pull_request_created", "pull_request_snapshot",
     "pull_request_comment", "pull_request_review",
@@ -76,7 +97,7 @@ def event(
 
 def evidence(*events) -> bytes:
     repos = sorted({item.repository for item in events} or {REPO}, key=str.casefold)
-    return make_daily_evidence_bundle(
+    raw = make_daily_evidence_bundle(
         target_date=DAY,
         projects=[
             ProjectBinding(
@@ -86,6 +107,8 @@ def evidence(*events) -> bytes:
         ],
         events=list(events),
     ).canonical_bytes
+    _ORIGINAL_BUNDLES[sha256_bytes(raw)] = raw
+    return raw
 
 
 def model(*items) -> bytes:
@@ -375,3 +398,79 @@ def test_model_scope_excludes_external_context_ids_and_wrong_batch():
             "summary": "Other context",
             "source_refs": [ref_count],
         }))
+
+
+def test_self_consistent_forged_source_is_not_member_of_original_bundle():
+    first = event("issue_comment", 12, offset=1, text="Correct approved action")
+    raw = evidence(first)
+    context = build_entity_contexts(raw).contexts[0]
+    # An attacker changes the event AND recomputes the event identity,
+    # while falsely retaining the original full-bundle digest.
+    forged_row = dict(context.events[0])
+    forged_row["body"] = _bounded_text(
+        "Completely fabricated progress", limit=8192, label="body",
+    ).to_json()
+    identity = dict(forged_row)
+    identity.pop("evidence_id")
+    forged_row["evidence_id"] = sha256_bytes(_canonical_json_bytes(identity))
+    forged = replace(context, events=(forged_row,))
+    with pytest.raises(DailyEntityContextError, match="original Evidence partition"):
+        normalize_entity_candidates(forged, model())
+    with pytest.raises(DailyEntityContextError, match="original Evidence partition"):
+        model_candidate_schema(forged)
+
+
+def test_wrong_raw_bundle_and_tampered_batch_identity_are_not_accepted():
+    a = event("issue_comment", 14, offset=1, text="Original")
+    raw = evidence(a)
+    context = build_entity_contexts(raw).contexts[0]
+    different = evidence(event("issue_comment", 15, offset=1, text="Other"))
+    with pytest.raises(DailyEntityContextError, match="original Evidence partition"):
+        _normalize_entity_candidates(
+            context, model(), original_evidence_bytes=different,
+        )
+    forged = replace(context, batch_count=2)
+    with pytest.raises(DailyEntityContextError, match="original Evidence partition"):
+        normalize_entity_candidates(forged, model())
+
+
+def test_pr_conversation_comment_with_issue_url_is_unverified():
+    original = event(
+        "pull_request_comment", 32, offset=2,
+        text="Important PR work in a shared GitHub issue conversation",
+    )
+    changed = replace(original, url=f"https://github.com/{REPO}/issues/32")
+    payload = changed.to_json()
+    payload.pop("evidence_id")
+    changed = replace(
+        changed, evidence_id=sha256_bytes(_canonical_json_bytes(payload)),
+    )
+    raw = evidence(changed)
+    result = build_entity_contexts(raw)
+    assert not result.contexts
+    assert result.unverified_pr_comments == 1
+    assert result.grouped_event_count == 0
+    assert result.report()["publication_authorized"] is False
+    assert result.report()["requires_human_quality_review"] is True
+
+
+def test_duplicate_candidate_objects_are_rejected():
+    c = build_entity_contexts(evidence(event("issue_comment", 8))).contexts[0]
+    duplicate = {"summary": "進展がありました", "source_refs": [0]}
+    with pytest.raises(DailyEntityContextError, match="duplicated entity candidate"):
+        normalize_entity_candidates(c, model(duplicate, duplicate))
+
+
+def test_nondefault_context_budget_still_binds_to_original_partition():
+    a = event("issue_comment", 8, offset=1, text="A" * 350)
+    b = event("issue_comment", 8, offset=2, text="B" * 350)
+    raw = evidence(a, b)
+    contexts = build_entity_contexts(raw, max_bytes=1300).contexts
+    assert len(contexts) == 2
+    for context in contexts:
+        assert context.max_context_bytes == 1300
+        response = normalize_entity_candidates(context, model({
+            "summary": "根拠に対応した進捗候補",
+            "source_refs": [0],
+        }))
+        assert response.candidates[0].evidence_ids == context.evidence_ids
