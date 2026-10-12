@@ -75,6 +75,7 @@ from .human_projection import (
     emit_input_projection,
     emit_semantic_objective_context_projection,
 )
+from .planner_selection_binding import emit_binding as emit_submitted_selection_binding
 from .production_io import ProductionIOError, mirror_read_lock
 from .semantic_refresh import (
     SemanticRefreshError,
@@ -1290,6 +1291,13 @@ def _recover_pending_submission(
     _store_pending(ai_root, updated)
 
     case_id = str(submitted["generation_id"])
+    emit_submitted_selection_binding(
+        ai_root, case_id=case_id,
+        job_id=str(submitted["job_id"]),
+        context_sha256=str(updated["context_sha256"]),
+        selection_sha256=str(updated["selection_sha256"]),
+        recipe_sha256=str(updated["recipe_sha256"]),
+    )
     emit_input_projection(
         ai_root,
         case_id=case_id,
@@ -1633,6 +1641,13 @@ def plan_once(
         )
         _store_pending(ai_root, pending)
         case_id = str(submitted["generation_id"])
+        emit_submitted_selection_binding(
+            ai_root, case_id=case_id,
+            job_id=str(submitted["job_id"]),
+            context_sha256=context_sha,
+            selection_sha256=selection_sha,
+            recipe_sha256=recipe_sha,
+        )
         emit_input_projection(
             ai_root,
             case_id=case_id,
@@ -1767,6 +1782,13 @@ def plan_once(
     )
     _store_pending(ai_root, pending)
     case_id = str(submitted["generation_id"])
+    emit_submitted_selection_binding(
+        ai_root, case_id=case_id,
+        job_id=str(submitted["job_id"]),
+        context_sha256=context_sha,
+        selection_sha256=selection_sha,
+        recipe_sha256=recipe_sha,
+    )
     emit_input_projection(
         ai_root,
         case_id=case_id,
