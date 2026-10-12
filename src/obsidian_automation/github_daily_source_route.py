@@ -11,6 +11,8 @@ import hashlib
 import json
 import re
 import urllib.parse
+import urllib.request
+import ssl
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from typing import Mapping
@@ -61,6 +63,76 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class _NeverRedirect(urllib.request.HTTPRedirectHandler):
+    """Do not forward even an Authorization header to a new origin."""
+
+    def redirect_request(self, request, fp, code, message, headers, newurl):
+        return None
+
+
+class _PinnedGitHubClient(watcher.GitHubClient):
+    """GitHub.com-only no-proxy, no-redirect bounded v2 source transport.
+
+    Separate from the v1 GitHubClient so the existing production v1 pipeline
+    retains its behavior until a versioned v2 rollout is approved.
+    """
+
+    _MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+    _MAX_PAGES = 32
+
+    def _urlopen_bytes(self, request: urllib.request.Request, *, context=None) -> bytes:
+        parsed = urllib.parse.urlsplit(request.full_url)
+        if (
+            parsed.scheme != "https"
+            or parsed.netloc != "api.github.com"
+            or parsed.username or parsed.password
+            or parsed.port is not None
+            or not parsed.path.startswith("/repos/")
+        ):
+            raise DailySourceRouteError("verified client cannot fetch an external API URL")
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),
+            urllib.request.HTTPSHandler(context=context),
+            _NeverRedirect(),
+        )
+        # HTTPS redirects now raise urllib HTTPError from the unmodified
+        # GitHubClient._request_json layer and are a fail-closed source error.
+        with opener.open(request, timeout=self.timeout_seconds) as response:
+            if response.geturl() != request.full_url:
+                raise DailySourceRouteError("GitHub API unexpectedly changed destination")
+            data = response.read(self._MAX_RESPONSE_BYTES + 1)
+            if len(data) > self._MAX_RESPONSE_BYTES:
+                raise DailySourceRouteError("GitHub API source response exceeded read bound")
+            return data
+
+    def _paged(self, path: str) -> list[dict[str, object]]:
+        rows: list[dict[str, object]] = []
+        separator = "&" if "?" in path else "?"
+        for page in range(1, self._MAX_PAGES + 1):
+            value = self._request_json(f"{path}{separator}per_page=100&page={page}")
+            if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+                raise DailySourceRouteError("verified API pagination returned invalid rows")
+            rows.extend(value)
+            if len(value) < 100:
+                return rows
+        raise DailySourceRouteError("verified GitHub source pagination exceeded bound")
+
+
+def _pinned_source_client(api: watcher.GitHubClient) -> watcher.GitHubClient:
+    if isinstance(api, _PinnedGitHubClient):
+        # The offline fixture subclasses this transport and only supplies
+        # synthetic API responses; this is not a Python type-based
+        # authentication mechanism for a hostile caller.
+        return api
+    if type(api) is not watcher.GitHubClient:
+        raise DailySourceRouteError("collector client lacks approved transport")
+    return _PinnedGitHubClient(
+        api_base=api.api_base,
+        token=api.token,
+        timeout_seconds=api.timeout_seconds,
+    )
+
+
 def _require_collector_source(
     config: watcher.WatcherConfig,
     api: watcher.GitHubClient,
@@ -77,6 +149,8 @@ def _require_collector_source(
         raise DailySourceRouteError("verified GitHub source requires configured authentication")
     # A test duck client can meet this structural requirement; actual authority
     # comes only from role-protected execution, not this Python type check.
+    if not isinstance(api, (watcher.GitHubClient, _PinnedGitHubClient)):
+        raise DailySourceRouteError("verified GitHub client has no approved transport")
     if not callable(getattr(api, "_request_json", None)):
         raise DailySourceRouteError("verified GitHub client has no response reader")
 
@@ -223,7 +297,8 @@ def _validate_original_evidence_window_and_kinds(bundle) -> None:
     except (ValueError, activity.GitHubDailyActivityError) as exc:
         raise DailySourceRouteError("invalid Evidence date window") from exc
     if (
-        start != expected_start or end != expected_end
+        bundle.date != target.isoformat()
+        or start != expected_start or end != expected_end
         or bundle.window_start != activity._format_timestamp(start)
         or bundle.window_end != activity._format_timestamp(end)
     ):
@@ -317,8 +392,9 @@ def _validate_original_evidence_window_and_kinds(bundle) -> None:
         suffix = path[2:]
         number_str = str(number) if requires_number else None
         if kind in ("issue_comment", "pull_request_comment"):
+            accepted_routes = ("issues",) if kind == "issue_comment" else ("issues", "pull")
             exact = (
-                len(suffix) == 2 and suffix[0] in ("issues", "pull")
+                len(suffix) == 2 and suffix[0] in accepted_routes
                 and suffix[1] == number_str
                 and pieces.fragment == f"issuecomment-{event['source_id']}"
             )
@@ -505,6 +581,7 @@ def collect_fresh_verified_routes(
     original Evidence or local state is persisted by this function.
     """
     _require_collector_source(config, client)
+    client = _pinned_source_client(client)
     observed = _utc_now()
     local_today = observed.astimezone(ZoneInfo(activity.CANONICAL_TIMEZONE)).date()
     if target_date > local_today:

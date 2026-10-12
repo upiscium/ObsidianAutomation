@@ -13,6 +13,8 @@ from obsidian_automation.github_daily_source_route import (
     DailySourceRouteError,
     collect_fresh_verified_routes,
     parse_verified_routes,
+    _PinnedGitHubClient,
+    _NeverRedirect,
 )
 from obsidian_automation.github_project_watcher import WatcherConfig
 from obsidian_automation.github_daily_summary import GitHubDailySummaryError
@@ -57,7 +59,7 @@ REVIEW_COMMENT = {
 }
 
 
-class _FakeClient:
+class _FakeClient(_PinnedGitHubClient):
     api_base = "https://api.github.com"
     token = "synthetic-fixture-credential-not-a-real-token"
 
@@ -511,3 +513,80 @@ def test_rehashed_wrong_public_kind_url_is_rejected(tmp_path: Path) -> None:
     )
     with pytest.raises(DailySourceRouteError, match="URL/target entity"):
         parse_verified_routes(receipt, evidence)
+
+def test_rehashed_issue_comment_may_not_use_a_pull_request_public_route(tmp_path: Path) -> None:
+    result = _collect(tmp_path)
+    receipt, evidence = _rehashed_event_and_receipt(
+        result, source_id="31", field="url",
+        value=f"https://github.com/{REPO}/pull/1#issuecomment-31",
+    )
+    with pytest.raises(DailySourceRouteError, match="URL/target entity"):
+        parse_verified_routes(receipt, evidence)
+
+
+def test_compact_noncanonical_evidence_date_does_not_gain_new_authority(tmp_path: Path) -> None:
+    import hashlib
+    result = _collect(tmp_path)
+    changed = json.loads(result.evidence.canonical_bytes)
+    changed["date"] = "20261005"
+    evidence = _canonical(changed)
+    receipt = json.loads(result.receipt_bytes)
+    receipt["date"] = "20261005"
+    receipt["evidence_sha256"] = hashlib.sha256(evidence).hexdigest()
+    with pytest.raises((DailySourceRouteError, GitHubDailySummaryError)):
+        parse_verified_routes(_canonical(receipt), evidence)
+
+
+def test_redirect_requests_are_never_followed_or_forwarded_to_other_hosts() -> None:
+    from obsidian_automation import github_daily_source_route as route
+    import urllib.request
+    for code in (301, 302, 303, 307, 308):
+        handler = _NeverRedirect()
+        assert handler.redirect_request(
+            None, None, code, "synthetic redirect", {},
+            "https://evil.example/capture-authorization",
+        ) is None
+    api = _PinnedGitHubClient(
+        api_base="https://api.github.com",
+        token="synthetic-token", timeout_seconds=2,
+    )
+    with pytest.raises(DailySourceRouteError, match="external"):
+        api._urlopen_bytes(urllib.request.Request(
+            "https://evil.example/repos/upiscium/Test/issues/1",
+        ))
+    with pytest.raises(DailySourceRouteError, match="external"):
+        api._urlopen_bytes(urllib.request.Request(
+            "http://api.github.com/repos/upiscium/Test/issues/1",
+        ))
+
+
+def test_v2_pinned_client_bounds_collection_source_pagination(monkeypatch) -> None:
+    api = _PinnedGitHubClient(
+        api_base="https://api.github.com",
+        token="synthetic-token", timeout_seconds=2,
+    )
+    pages = []
+    def keep_full(path: str):
+        pages.append(path)
+        return [{"id": 1}] * 100
+    monkeypatch.setattr(api, "_request_json", keep_full)
+    with pytest.raises(DailySourceRouteError, match="pagination"):
+        api._paged("/repos/upiscium/Test/issues")
+    assert len(pages) == api._MAX_PAGES
+    assert pages[0].endswith("page=1")
+    assert pages[-1].endswith(f"page={api._MAX_PAGES}")
+
+
+def test_v2_verifier_rejects_unpinned_duck_client_even_with_fake_token(
+    tmp_path: Path,
+) -> None:
+    class Rogue:
+        api_base = "https://api.github.com"
+        token = "synthetic"
+        def _request_json(self, path):
+            raise AssertionError("must be refused before the network")
+    with pytest.raises(DailySourceRouteError, match="transport"):
+        collect_fresh_verified_routes(
+            _config(tmp_path), target_date=DATE, client=Rogue(),
+            explicit_historical_reconfirmation=True,
+        )

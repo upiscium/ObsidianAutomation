@@ -26,7 +26,12 @@ proof that there was no substantive progress.
 **explicit opt-in API**, not the existing Daily v1 collector executable.
 It requires an explicitly configured **authenticated GitHub.com API** client
 (`https://api.github.com` with a nonempty token) and runs the current
-collector for the requested JST day. It then **rechecks the GitHub source
+collector for the requested JST day through a **v2-only pinned transport**.
+This transport refuses redirects (including credential-bearing redirects to
+foreign origins), disables implicit HTTP proxies, rejects non-GitHub URLs,
+limits each API response to 16 MiB, and caps initial collection API pages at
+32 pages of 100 objects per fixed endpoint. Existing production v1 transport
+behavior is not changed. It then **rechecks the GitHub source
 immediately in the same invocation**:
 
 - For each Issue/PR discussion comment, fetch the exact API
@@ -85,10 +90,11 @@ v2 CAS publication requires separate explicit design/approval.
 
 - At most 2,048 source events needing verification per fresh collection;
   more events fail closed **without silently dropping any original event**.
-- At most 32 pages of 100 commits per PR; exceeded collections fail closed.
-  This opt-in postcollection bound does **not** retrofit a cap on the existing
-  v1 `GitHubClient._paged` traversal. A full-v2 collector must enforce
-  bounded source pagination before collection, not just at verification.
+- At most 32 pages of 100 objects for **every initial v2 API collection
+  endpoint** and 32 pages of 100 PR commits per later membership recheck.
+  The separate opt-in pinned v2 client supplies bounded pagination starting
+  at the **first fetch**. Legacy v1 `GitHubClient._paged` remains unchanged
+  for existing callers; no source events are silently truncated.
 - At most 32 MiB evidence and 4 MiB route receipt for independent read-model
   verification. Violations are errors, not silently truncated data.
 - API target routes are constructed from the scanned allowlisted repository
@@ -111,9 +117,9 @@ v2 CAS publication requires separate explicit design/approval.
 3. Extend v2 #325 / #327 to accept only exact witnessed entity events and
    require a content-addressed sidecar in the same trusted date-scoped
    collection transaction; until then quarantine is correct.
-4. Add a v2 collection pagination budget that counts **all source pages**,
-   not only verified result events, and define an explicit retry/pending state
-   for time-varying or unavailable GitHub sources.
+4. Define an explicit retry/pending state for time-varying or unavailable
+   GitHub sources, including bounded safe recovery when the v2 page/byte
+   budget is exceeded. A failed read must not mean no progress.
 5. Add per-entity Grounding, unresolved/semantic omission calibration #290,
    Japanese final editorial #283, resume/CAS version migrations #291/#293,
    manual human quality acceptance and **separately consented** date-scoped
