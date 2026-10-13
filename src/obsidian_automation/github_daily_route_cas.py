@@ -15,7 +15,9 @@ import pwd
 import re
 import stat
 from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from . import github_daily_source_route as source
 from . import github_daily_route_capture_index as index
@@ -37,6 +39,9 @@ TRUST_ANCHOR = Path("/")  # Tests replace this only for an isolated fixture.
 STAGES = {"evidence": "evidence", "receipt": "source-route", "capture": "capture-index"}
 FILE_LIMITS = {"evidence": 32 * 1024 * 1024, "receipt": 4 * 1024 * 1024,
                "capture": index.MAX_CAPTURE_INDEX_BYTES}
+# This is a bounded wall-clock policy, not a cryptographic same-invocation proof.
+MAX_INITIAL_CAPTURE_AGE = timedelta(hours=1)
+MAX_FUTURE_SKEW = timedelta(seconds=60)
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _DIRECTORY_FLAGS = (os.O_RDONLY | os.O_DIRECTORY
                     | getattr(os, "O_NOFOLLOW", 0)
@@ -244,6 +249,35 @@ def _read_object(stage_fd: int, stage: str, sha256: str, roles: CollectorRoles) 
         os.close(fd)
 
 
+def _utc_now() -> datetime:
+    """Trusted host wall clock for first-commit freshness admission."""
+    return datetime.now(timezone.utc)
+
+
+def _require_initial_freshness(record: index.CaptureIndex) -> None:
+    """Never first-commit an old capture as though source recheck just ran.
+
+    A local clock bound supplements, but does not authenticate, the Collector
+    invocation. Already fully committed identical captures may be replayed.
+    """
+    try:
+        captured = datetime.fromisoformat(
+            record.captured_at_utc.replace("Z", "+00:00")
+        ).astimezone(timezone.utc)
+        now = _utc_now().astimezone(timezone.utc)
+        age = now - captured
+        if age < -MAX_FUTURE_SKEW or age > MAX_INITIAL_CAPTURE_AGE:
+            raise DailyRouteCASError("Collector source capture is too old or in the future")
+        if record.collection_mode == "scheduled_recent_api_reverified":
+            today = now.astimezone(ZoneInfo(source.activity.CANONICAL_TIMEZONE)).date()
+            if date.fromisoformat(record.date) not in (today, today - timedelta(days=1)):
+                raise DailyRouteCASError("scheduled source capture no longer targets a recent JST day")
+    except DailyRouteCASError:
+        raise
+    except (TypeError, ValueError, OverflowError):
+        raise DailyRouteCASError("Collector capture time could not be admitted") from None
+
+
 def publish_fresh_capture(collection: source.FreshRouteCollection) -> PublishedCapture:
     """Collector-only. Publish exact Evidence + receipt first, index *last*.
 
@@ -264,6 +298,25 @@ def publish_fresh_capture(collection: source.FreshRouteCollection) -> PublishedC
     # byte identities, never from remote API URLs or untrusted model text.
     handles = _directory_handles(roles)
     try:
+        # A completed, hash-identical capture may be replayed much later.
+        # But a first-time commit must use a recently reverified source.
+        manifest_name = _filename("capture", record.sha256)
+        try:
+            os.stat(manifest_name, dir_fd=handles["capture"], follow_symlinks=False)
+        except FileNotFoundError:
+            _require_initial_freshness(record)
+        except OSError:
+            raise DailyRouteCASError("source CAS manifest lookup failed") from None
+        else:
+            existing = read_verified_capture(record.sha256)
+            if (existing.capture_index != record
+                    or existing.evidence_bytes != collection.evidence.canonical_bytes
+                    or existing.receipt_bytes != collection.receipt_bytes):
+                raise DailyRouteCASError("stored source capture does not match retry")
+            return PublishedCapture(
+                index_sha256=record.sha256, evidence_sha256=record.evidence_sha256,
+                receipt_sha256=record.route_receipt_sha256,
+            )
         for stage, sha256, data in (
             ("evidence", record.evidence_sha256, collection.evidence.canonical_bytes),
             ("receipt", record.route_receipt_sha256, collection.receipt_bytes),

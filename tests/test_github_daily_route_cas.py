@@ -5,7 +5,9 @@ import os
 import stat
 import struct
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import hashlib
 
 import pytest
 
@@ -91,7 +93,7 @@ def test_atomic_publication_and_verified_reader_with_real_named_acl(tmp_path, sa
         assert stat.S_IMODE(object_path.stat().st_mode) == 0o640
 
 
-@pytest.mark.parametrize("fail_at", [1, 2])
+@pytest.mark.parametrize("fail_at", [1, 2, 3])
 def test_partial_publication_never_commits_manifest(tmp_path, safe_layout, monkeypatch, fail_at):
     root, _ = safe_layout
     collected = _collect(tmp_path)
@@ -289,3 +291,130 @@ def test_account_resolution_disallows_root_shared_or_missing_roles(monkeypatch):
     with pytest.raises(cas.DailyRouteCASError, match="unavailable"):
         cas._roles()
     monkeypatch.setattr(cas.pwd, "getpwnam", original)
+
+
+def _capture_utc(collected):
+    import json
+    return datetime.fromisoformat(
+        json.loads(collected.receipt_bytes)["captured_at_utc"].replace("Z", "+00:00")
+    )
+
+
+def test_stale_first_publication_is_rejected_before_any_cas_write(
+    tmp_path, safe_layout, monkeypatch
+):
+    root, _ = safe_layout
+    collection = _collect(tmp_path)
+    monkeypatch.setattr(cas, "_utc_now", lambda: _capture_utc(collection) + timedelta(days=3))
+    with pytest.raises(cas.DailyRouteCASError, match="too old"):
+        cas.publish_fresh_capture(collection)
+    assert not _snapshot(root)
+
+
+def test_future_dated_first_publication_is_rejected(
+    tmp_path, safe_layout, monkeypatch
+):
+    root, _ = safe_layout
+    collection = _collect(tmp_path)
+    monkeypatch.setattr(cas, "_utc_now", lambda: _capture_utc(collection) - timedelta(minutes=4))
+    with pytest.raises(cas.DailyRouteCASError, match="future"):
+        cas.publish_fresh_capture(collection)
+    assert not _snapshot(root)
+
+
+def test_stale_exact_byte_replay_of_already_committed_capture_is_idempotent(
+    tmp_path, safe_layout, monkeypatch
+):
+    root, _ = safe_layout
+    collection = _collect(tmp_path)
+    published = cas.publish_fresh_capture(collection)
+    before = _snapshot(root)
+    monkeypatch.setattr(cas, "_utc_now", lambda: _capture_utc(collection) + timedelta(days=10))
+    assert cas.publish_fresh_capture(collection) == published
+    assert _snapshot(root) == before
+    assert cas.read_verified_capture(published.index_sha256).routes
+
+
+def test_stale_partial_pair_never_receives_first_manifest(
+    tmp_path, safe_layout, monkeypatch
+):
+    root, _ = safe_layout
+    collection = _collect(tmp_path)
+    published = cas.publish_fresh_capture(collection)
+    _capture_path(root, published.index_sha256).unlink()
+    monkeypatch.setattr(cas, "_utc_now", lambda: _capture_utc(collection) + timedelta(days=4))
+    with pytest.raises(cas.DailyRouteCASError, match="too old"):
+        cas.publish_fresh_capture(collection)
+    assert not _capture_path(root, published.index_sha256).exists()
+
+
+def test_crash_after_completed_manifest_can_recover_as_exact_retry(
+    tmp_path, safe_layout, monkeypatch
+):
+    root, _ = safe_layout
+    collection = _collect(tmp_path)
+    import obsidian_automation.artifact_lifecycle as storage
+    genuine = storage._store_immutable
+
+    def lose_ack(path, data):
+        result = genuine(path, data)
+        if path.parent.name == "capture":
+            raise lifecycle.ArtifactLifecycleError("synthetic host lost acknowledgement")
+        return result
+
+    monkeypatch.setattr(storage, "_store_immutable", lose_ack)
+    with pytest.raises(cas.DailyRouteCASError, match="atomic"):
+        cas.publish_fresh_capture(collection)
+    monkeypatch.setattr(storage, "_store_immutable", genuine)
+    expected = cas.index.build_capture_index(collection)
+    assert cas.read_verified_capture(expected.sha256).routes
+    monkeypatch.setattr(cas, "_utc_now", lambda: _capture_utc(collection) + timedelta(days=3))
+    recovered = cas.publish_fresh_capture(collection)
+    assert recovered.index_sha256 == expected.sha256
+
+
+def test_missing_manifest_after_publication_is_unavailable(tmp_path, safe_layout):
+    root, _ = safe_layout
+    collection = _collect(tmp_path)
+    published = cas.publish_fresh_capture(collection)
+    _capture_path(root, published.index_sha256).unlink()
+    with pytest.raises(cas.DailyRouteCASError, match="unavailable"):
+        cas.read_verified_capture(published.index_sha256)
+
+
+def test_correctly_sha_named_but_malformed_manifest_cannot_be_read(
+    tmp_path, safe_layout
+):
+    root, _ = safe_layout
+    raw = b'{"not":"a canonical capture index"}\n'
+    digest = hashlib.sha256(raw).hexdigest()
+    lifecycle._store_immutable(root / "capture" / cas._filename("capture", digest), raw)
+    with pytest.raises(cas.DailyRouteCASError, match="schema"):
+        cas.read_verified_capture(digest)
+
+
+@pytest.mark.parametrize("captured_at,published_at,diagnostic", [
+    # A forged or replayed scheduled collection from eight days ago cannot
+    # acquire an initially committed manifest in today's Collector namespace.
+    (datetime(2026, 10, 5, 14, 0, tzinfo=timezone.utc),
+     datetime(2026, 10, 13, 6, 0, tzinfo=timezone.utc), "too old"),
+    # A short interval can nevertheless cross JST midnight: Oct 5 is no
+    # longer today/yesterday once local day becomes Oct 7.
+    (datetime(2026, 10, 6, 14, 55, tzinfo=timezone.utc),
+     datetime(2026, 10, 6, 15, 5, tzinfo=timezone.utc), "JST day"),
+])
+def test_scheduled_capture_freshness_is_checked_at_first_publish(
+    tmp_path, safe_layout, monkeypatch, captured_at, published_at, diagnostic
+):
+    root, _ = safe_layout
+    from obsidian_automation import github_daily_source_route as route
+    from test_github_daily_source_route import DATE, _FakeClient, _config
+    monkeypatch.setattr(route, "_utc_now", lambda: captured_at)
+    collection = route.collect_fresh_verified_routes(
+        _config(tmp_path), target_date=DATE, client=_FakeClient(),
+    )
+    assert b'"collection_mode":"scheduled_recent_api_reverified"' in collection.receipt_bytes
+    monkeypatch.setattr(cas, "_utc_now", lambda: published_at)
+    with pytest.raises(cas.DailyRouteCASError, match=diagnostic):
+        cas.publish_fresh_capture(collection)
+    assert not _snapshot(root)

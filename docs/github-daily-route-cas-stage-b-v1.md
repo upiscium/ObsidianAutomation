@@ -48,10 +48,12 @@ Linux POSIX named ACL xattrs. They do **not** prove live role isolation.
 
 ## Crash-consistent write protocol
 
-1. Require a completed `FreshRouteCollection` from the same authenticated
-   source re-verification invocation, and reconstruct its versioned
-   `CaptureIndex` from exact source bytes. Revalidate the full source-route
-   closure and timestamp, mode, SHA, date, count and byte budgets before I/O.
+1. Require a completed `FreshRouteCollection` from the authenticated
+   source verification path, and reconstruct its versioned `CaptureIndex`
+   from exact source bytes. Revalidate the full route closure and recorded
+   capture time, mode, SHA, date, count and byte budgets before I/O.
+   This is an operational assertion about a trusted Collector process, not
+   cryptographic proof that Python objects came from one invocation.
 2. Check the actual Collector eUID/egid and open all fixed CAS ancestor and
    stage directory descriptors with `O_DIRECTORY|O_NOFOLLOW`, checking owner,
    mode and effective ACL. A compromised same-UID writer or privileged root
@@ -70,6 +72,21 @@ Linux POSIX named ACL xattrs. They do **not** prove live role isolation.
 5. Read back every published object via its pinned directory descriptor and
    check type, ACL, content SHA and byte identity. A duplicate exact-byte
    retry is idempotent. Hash/name collisions with differing bytes reject.
+
+**First-publication freshness:** Before writing any blob, the Collector checks
+whether the exact Capture Index SHA already exists. If it does, it reopens
+and verifies the entire index/receipt/Evidence triplet; only an exact-byte
+match may be retried at any later time. If it does not exist, the captured UTC
+time recorded by the source receipt must be no more than **one hour** old and
+at most **60 seconds in the future**, relative to the host's current UTC
+clock. A scheduled recent capture must still target the host's current or
+previous JST date at *publication* time. An older first publication, including
+a partial Evidence/Receipt pair left by an earlier crash, is blocked rather
+than silently promoted. Explicit historical reconfirmation may target an older
+day, but its own re-verification must still be fresh. This bounded wall-clock
+gate cannot authenticate the source process or prevent a compromised same-UID
+Collector from forging a timestamp. A legitimately longer capture must be
+collected again; do not silently extend these limits based on a stale receipt.
 
 A crash *during* index publication may make a complete index visible but
 not durable until a successful directory `fsync`. On host recovery a full
@@ -95,6 +112,10 @@ on-host identity/ACL/inode checks pass. It still has
 `daily_publication_authorized=false`: neither verified local storage nor
 the SHA of a payload alone authenticates GitHub against a compromised
 Collector UID, calibrates progress semantics or permits the Daily Writer.
+This ordinary Python dataclass and its Boolean flag are **not** an unforgeable
+capability: later consumers must perform their own trusted CAS lookup and
+readback, not accept an object or attestation flag supplied by a model or
+untrusted caller.
 
 There is no “scan latest file” operation; an already trusted scheduler must
 supply the exact index digest it previously accepted. No v1 historical
