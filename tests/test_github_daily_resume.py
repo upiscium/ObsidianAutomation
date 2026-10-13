@@ -642,3 +642,87 @@ def test_crashed_pipeline_releases_kernel_lock_without_stale_marker(tmp_path):
     with _exclusive_summary_pipeline_root(tmp_path):
         pass
     assert not (tmp_path / "github-daily-summary").exists()
+
+
+def test_timeout_retry_success_publishes_one_verified_resume_pointer(tmp_path):
+    from obsidian_automation.github_daily_summary import SummaryRetryPolicy
+    from obsidian_automation.ollama_generator import OllamaProviderError
+
+    bundle, contexts = _fixture(1)
+    normal = MockModel()
+    calls = []
+
+    def infer(prompt, context):
+        calls.append((context.stage, context.batch_index))
+        if len(calls) == 1:
+            try:
+                raise TimeoutError("simulated client timeout")
+            except TimeoutError as exc:
+                raise OllamaProviderError("Ollama HTTP request failed") from exc
+        return normal(prompt, context)
+
+    stored, _, _ = _run_claim_stage(
+        tmp_path, bundle, contexts,
+        infer=_bound(infer), implementation_revision=REV,
+        retry_policy=SummaryRetryPolicy(max_transient_retries=1),
+    )
+    assert calls == [(PARTIAL_STAGE, 0), (PARTIAL_STAGE, 0)]
+    assert len(stored) == 1
+    assert len(_pointer_files(tmp_path)) == 1
+
+    replay = MockModel()
+    output, _, _ = _run_claim_stage(
+        tmp_path, bundle, contexts,
+        infer=_bound(replay), implementation_revision=REV,
+        retry_policy=SummaryRetryPolicy(max_transient_retries=1),
+    )
+    assert replay.calls == []
+    assert output == stored
+
+
+def test_grounding_timeout_retry_preserves_singleton_resume_identity(tmp_path):
+    from obsidian_automation.github_daily_summary import SummaryRetryPolicy
+    from obsidian_automation.ollama_generator import OllamaProviderError
+
+    bundle, contexts = _fixture(1)
+    event = contexts[0].events[0]
+    source_id = str(event["evidence_id"])
+    claim = _normalized_claim(
+        kind="implementation", summary="implemented event-0",
+        repository="upiscium/Test", evidence_ids=[source_id],
+        allowed_evidence_ids={source_id}, events_by_id=bundle.events_by_id,
+    )
+    ground = SummaryContext(
+        stage=GROUND_STAGE, evidence_bundle_sha256=bundle.sha256,
+        batch_index=0, batch_count=1,
+        source_output_sha256s=("e" * 64,), events=(event,), claims=(claim,),
+    )
+    model = MockModel()
+    calls = 0
+
+    def transient(prompt, context):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            try:
+                raise TimeoutError("simulated ground timeout")
+            except TimeoutError as exc:
+                raise OllamaProviderError("Ollama HTTP request failed") from exc
+        return model(prompt, context)
+
+    first = _run_ground_stage(
+        tmp_path, (ground,), infer=_bound(transient),
+        implementation_revision=REV,
+        retry_policy=SummaryRetryPolicy(max_transient_retries=1),
+    )
+    assert calls == 2
+    assert model.calls == [(GROUND_STAGE, 0)]
+    assert len(_pointer_files(tmp_path)) == 1
+
+    replay = MockModel()
+    second = _run_ground_stage(
+        tmp_path, (ground,), infer=_bound(replay),
+        implementation_revision=REV,
+    )
+    assert replay.calls == []
+    assert first == second

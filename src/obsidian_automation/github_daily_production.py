@@ -48,6 +48,7 @@ from .github_daily_summary_generation import (
     openai_compatible_infer,
 )
 from .github_daily_summary import (
+    SummaryRetryPolicy,
     _exclusive_summary_pipeline_root,
     _run_pipeline_unlocked,
 )
@@ -437,6 +438,7 @@ def summarize_pending(
     implementation_revision: str,
     timeout: float = 120.0,
     api_key: str | None = None,
+    retry_policy: SummaryRetryPolicy | None = None,
 ) -> tuple[str, ...]:
     if (
         not isinstance(implementation_revision, str)
@@ -481,6 +483,7 @@ def summarize_pending(
                 state_root=summary_root,
                 infer=infer,
                 implementation_revision=implementation_revision,
+                retry_policy=retry_policy,
             )
             if result.evidence_bundle_sha256 != evidence_sha:
                 raise DailyProductionError(
@@ -876,10 +879,16 @@ def summary_main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--model", required=True)
     parser.add_argument("--implementation-revision", required=True)
     parser.add_argument("--timeout", type=float, default=120.0)
+    parser.add_argument("--transient-retries", type=int, default=0)
+    parser.add_argument("--retry-backoff-seconds", type=float, default=0.0)
     args = parser.parse_args(
         list(argv) if argv is not None else None
     )
     try:
+        policy = SummaryRetryPolicy(
+            max_transient_retries=args.transient_retries,
+            backoff_seconds=args.retry_backoff_seconds,
+        )
         completed = summarize_pending(
             root=args.root,
             provider=args.provider,
@@ -888,6 +897,7 @@ def summary_main(argv: Iterable[str] | None = None) -> int:
             implementation_revision=args.implementation_revision,
             timeout=args.timeout,
             api_key=os.environ.get("OPENAI_API_KEY"),
+            retry_policy=policy,
         )
     except (
         DailyProductionError,

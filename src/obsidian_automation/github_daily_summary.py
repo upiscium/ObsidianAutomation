@@ -4,9 +4,12 @@ import errno
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import stat
+import time
+from urllib.error import URLError
 from contextlib import contextmanager
 from types import MappingProxyType
 from dataclasses import dataclass, field
@@ -102,6 +105,23 @@ identifiers, lists, or additional properties. Be conservative about support."""
 
 class GitHubDailySummaryError(ArtifactLifecycleError):
     """Raised when Daily Project Progress summarization violates its contract."""
+
+
+@dataclass(frozen=True)
+class SummaryRetryPolicy:
+    """Opt-in, strictly bounded retry on identified provider timeouts only."""
+
+    max_transient_retries: int = 0
+    backoff_seconds: float = 0.0
+
+    def __post_init__(self) -> None:
+        if type(self.max_transient_retries) is not int or not 0 <= self.max_transient_retries <= 2:
+            raise GitHubDailySummaryError("transient retries must be an integer from 0 to 2")
+        if (isinstance(self.backoff_seconds, bool)
+                or not isinstance(self.backoff_seconds, (int, float))
+                or not math.isfinite(self.backoff_seconds)
+                or not 0 <= self.backoff_seconds <= 30):
+            raise GitHubDailySummaryError("retry backoff must be finite and within 0..30 seconds")
 
 
 @dataclass(frozen=True)
@@ -1663,26 +1683,65 @@ def _load_verified_resume(
     return output, output_sha, provenance_sha
 
 
-def _invoke_model_stage(
-    infer: Infer, prompt: PromptSpec, context: SummaryContext,
-) -> InferenceResponse:
-    """Expose bounded stage/timing metadata, never exception text or sources."""
-    from time import monotonic
+def _is_retryable_transport_timeout(exc: BaseException) -> bool:
+    """Only identifiable transport timeouts qualify; never retry integrity errors.
 
+    The upstream provider wrappers preserve the original network exception as
+    __cause__. The no-cause response-reader *deadline* messages are explicit
+    fixed internal contracts, not arbitrary model-supplied error text.
+    """
     from .ollama_generator import OllamaProviderError
     from .openai_compatible import OpenAICompatibleProviderError
 
-    started = monotonic()
-    try:
-        return infer(prompt, context)
-    except (OllamaProviderError, OpenAICompatibleProviderError, TimeoutError) as exc:
-        elapsed = monotonic() - started
-        cause = type(exc.__cause__).__name__ if exc.__cause__ is not None else "none"
-        raise GitHubDailySummaryError(
-            f"{context.stage} batch {context.batch_index + 1}/"
-            f"{context.batch_count}: provider={type(exc).__name__}, "
-            f"cause={cause}, elapsed_seconds={elapsed:.3f}"
-        ) from exc
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while isinstance(current, BaseException) and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, TimeoutError):
+            return True
+        if isinstance(current, OllamaProviderError) and (
+            str(current) == "Ollama response read exceeded request timeout"
+        ):
+            return True
+        if isinstance(current, OpenAICompatibleProviderError) and (
+            str(current) == "OpenAI-compatible response read exceeded request timeout"
+        ):
+            return True
+        if isinstance(current, URLError) and isinstance(current.reason, BaseException):
+            current = current.reason
+        else:
+            current = current.__cause__
+    return False
+
+
+def _invoke_model_stage(
+    infer: Infer, prompt: PromptSpec, context: SummaryContext, *,
+    retry_policy: SummaryRetryPolicy | None = None,
+) -> InferenceResponse:
+    """Retry *timeouts only*, with bounded attempts and content-free diagnostics."""
+    from .ollama_generator import OllamaProviderError
+    from .openai_compatible import OpenAICompatibleProviderError
+
+    policy = retry_policy if retry_policy is not None else SummaryRetryPolicy()
+    if not isinstance(policy, SummaryRetryPolicy):
+        raise GitHubDailySummaryError("invalid Daily Summary retry policy")
+    started = time.monotonic()
+    for attempt in range(policy.max_transient_retries + 1):
+        try:
+            return infer(prompt, context)
+        except (OllamaProviderError, OpenAICompatibleProviderError, TimeoutError) as exc:
+            if attempt < policy.max_transient_retries and _is_retryable_transport_timeout(exc):
+                if policy.backoff_seconds:
+                    time.sleep(policy.backoff_seconds * (attempt + 1))
+                continue
+            elapsed = time.monotonic() - started
+            cause = type(exc.__cause__).__name__ if exc.__cause__ is not None else "none"
+            raise GitHubDailySummaryError(
+                f"{context.stage} batch {context.batch_index + 1}/"
+                f"{context.batch_count}: provider={type(exc).__name__}, "
+                f"cause={cause}, attempts={attempt + 1}, elapsed_seconds={elapsed:.3f}"
+            ) from exc
+    raise AssertionError("retry loop exhausted without result")
 
 
 def _run_claim_stage(
@@ -1692,6 +1751,7 @@ def _run_claim_stage(
     *,
     infer: Infer,
     implementation_revision: str,
+    retry_policy: SummaryRetryPolicy | None = None,
 ) -> tuple[
     tuple[StoredClaimOutput, ...],
     tuple[str, ...],
@@ -1730,7 +1790,9 @@ def _run_claim_stage(
             provenance_shas.append(provenance_sha)
             continue
 
-        response = _invoke_model_stage(infer, prompt, context)
+        response = _invoke_model_stage(
+            infer, prompt, context, retry_policy=retry_policy,
+        )
         try:
             output = _parse_model_claim_output(
                 response.content,
@@ -1829,6 +1891,7 @@ def _run_ground_stage(
     *,
     infer: Infer,
     implementation_revision: str,
+    retry_policy: SummaryRetryPolicy | None = None,
 ) -> tuple[
     tuple[StoredGroundOutput, ...],
     tuple[str, ...],
@@ -1867,7 +1930,9 @@ def _run_ground_stage(
             provenance_shas.append(provenance_sha)
             continue
 
-        response = _invoke_model_stage(infer, prompt, context)
+        response = _invoke_model_stage(
+            infer, prompt, context, retry_policy=retry_policy,
+        )
         try:
             output = _parse_model_ground_output(
                 response.content,
@@ -1944,6 +2009,7 @@ def run_pipeline(
     partial_context_bytes: int = MAX_PARTIAL_CONTEXT_BYTES,
     reduce_context_bytes: int = MAX_REDUCE_CONTEXT_BYTES,
     ground_context_bytes: int = MAX_GROUND_CONTEXT_BYTES,
+    retry_policy: SummaryRetryPolicy | None = None,
 ) -> PipelineResult:
     with _exclusive_summary_pipeline_root(state_root):
         return _run_pipeline_unlocked(
@@ -1954,6 +2020,7 @@ def run_pipeline(
             partial_context_bytes=partial_context_bytes,
             reduce_context_bytes=reduce_context_bytes,
             ground_context_bytes=ground_context_bytes,
+            retry_policy=retry_policy,
         )
 
 
@@ -1966,6 +2033,7 @@ def _run_pipeline_unlocked(
     partial_context_bytes: int = MAX_PARTIAL_CONTEXT_BYTES,
     reduce_context_bytes: int = MAX_REDUCE_CONTEXT_BYTES,
     ground_context_bytes: int = MAX_GROUND_CONTEXT_BYTES,
+    retry_policy: SummaryRetryPolicy | None = None,
 ) -> PipelineResult:
     bundle = load_evidence_bundle(evidence_path)
     partial_contexts = partition_evidence(
@@ -1979,6 +2047,7 @@ def _run_pipeline_unlocked(
             partial_contexts,
             infer=infer,
             implementation_revision=implementation_revision,
+            retry_policy=retry_policy,
         )
     )
 
@@ -2010,6 +2079,7 @@ def _run_pipeline_unlocked(
             ground_contexts,
             infer=infer,
             implementation_revision=implementation_revision,
+            retry_policy=retry_policy,
         )
     )
 
