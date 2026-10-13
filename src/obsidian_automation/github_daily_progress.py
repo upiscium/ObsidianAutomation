@@ -18,9 +18,11 @@ from .artifact_lifecycle import (
     _canonical_json_bytes,
     _decode_json_object,
     _read_exact_file,
+    _require_safe_directory,
     _store_immutable,
     sha256_bytes,
 )
+from .github_daily_resume import _read_bounded as _read_bounded_receipt
 from .core_promotion_transport import (
     HTTPResponse,
     PromotionTransportNetworkError,
@@ -60,6 +62,7 @@ MAX_REJECTED_CLAIMS = 4096
 MAX_GROUNDING_OUTPUTS = 4096
 MAX_REASON_CHARS = 2048
 MAX_REASON_BYTES = 8 * 1024
+MAX_TRANSPORT_RESULT_BYTES = 64 * 1024  # fixed transport receipt metadata only
 
 _KIND_ORDER = {
     "decision": 0,
@@ -1038,7 +1041,12 @@ def apply_projection(
     password: str,
     timeout: float = 30.0,
     transport: HTTPTransport | None = None,
+    expected_after_content_sha256: str | None = None,
 ) -> DailyProgressTransportResult:
+    # A prior immutable receipt fixes exact desired full-note bytes. Validate
+    # this bound before any remote observation or possible Writer mutation.
+    if expected_after_content_sha256 is not None:
+        _require_sha(expected_after_content_sha256, label="receipt desired after SHA")
     if not username:
         raise DailyProgressError("WebDAV username must not be empty")
     if not password:
@@ -1056,10 +1064,31 @@ def apply_projection(
         timeout=timeout,
         transport=transport,
     )
+    if (
+        expected_after_content_sha256 is not None
+        and sha256_bytes(before.content) != expected_after_content_sha256
+    ):
+        # A committed receipt already proves a previous effect. On replay,
+        # permit observation only; never issue a new PUT to rewrite a Daily
+        # that has changed since the first committed receipt.
+        raise DailyProgressConflict(
+            "remote Daily bytes differ from immutable transport receipt",
+            reason_code="transport_receipt_remote_drift",
+        )
     disposition, desired = prepare_daily_update(
         projection,
         before.content,
     )
+    if (
+        expected_after_content_sha256 is not None
+        and sha256_bytes(desired) != expected_after_content_sha256
+    ):
+        # Stop before PUT even if the remote Daily's unrelated sections
+        # changed since the previous committed Transport Result.
+        raise DailyProgressConflict(
+            "desired Daily bytes differ from immutable transport receipt",
+            reason_code="transport_receipt_desired_drift",
+        )
     if disposition == "already_desired":
         return _result(
             projection,
@@ -1158,73 +1187,171 @@ def apply_projection(
     )
 
 
-def _safe_regular_file(path: Path, *, label: str) -> bytes:
+def parse_transport_result(data: bytes) -> DailyProgressTransportResult:
+    """Strictly validate a committed immutable Transport Result receipt."""
+    if not isinstance(data, bytes) or not 0 < len(data) <= MAX_TRANSPORT_RESULT_BYTES:
+        raise DailyProgressError("transport result is not bounded receipt metadata")
     try:
-        info = path.lstat()
-    except FileNotFoundError as exc:
-        raise DailyProgressError(f"{label} does not exist") from exc
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
-        raise DailyProgressError(
-            f"{label} must be a regular non-symlink file"
-        )
+        value = _decode_json_object(data, label="Daily Progress transport result")
+    except ArtifactLifecycleError as exc:
+        raise DailyProgressError("transport result is not valid JSON") from exc
+
+    required = {
+        "record_version", "stage", "projection_sha256", "date", "target_path",
+        "evidence_bundle_sha256", "grounded_summary_sha256", "section_body_sha256",
+        "outcome", "before_content_sha256", "after_content_sha256", "completed_at",
+    }
+    if (
+        set(value) != required
+        or type(value.get("record_version")) is not int
+        or value["record_version"] != TRANSPORT_RESULT_VERSION
+        or value.get("stage") != TRANSPORT_STAGE
+        or not isinstance(value.get("outcome"), str)
+        or value["outcome"] not in {"applied", "recovered", "already_desired"}
+    ):
+        raise DailyProgressError("transport result has invalid schema or outcome")
+    for name in (
+        "projection_sha256", "evidence_bundle_sha256",
+        "grounded_summary_sha256", "section_body_sha256",
+        "before_content_sha256", "after_content_sha256",
+    ):
+        _require_sha(value[name], label=f"transport {name}")
     try:
-        return path.read_bytes()
-    except OSError as exc:
-        raise DailyProgressError(f"cannot read {label}") from exc
+        if (
+            not isinstance(value["date"], str)
+            or date.fromisoformat(value["date"]).isoformat() != value["date"]
+            or not isinstance(value["target_path"], str)
+            or not 0 < len(value["target_path"]) <= 4096
+            or value["target_path"] != value["target_path"].strip()
+            or "\n" in value["target_path"] or "\r" in value["target_path"]
+            or not isinstance(value["completed_at"], str)
+            or not 0 < len(value["completed_at"]) <= 64
+            or not value["completed_at"].endswith("Z")
+            or datetime.fromisoformat(value["completed_at"].replace("Z", "+00:00")).utcoffset().total_seconds() != 0
+        ):
+            raise DailyProgressError("transport result metadata is malformed")
+        receipt = DailyProgressTransportResult(**{
+            key: value[key] for key in required
+            if key not in {"record_version", "stage"}
+        })
+        if receipt.to_json_bytes() != data:
+            raise DailyProgressError("transport result is not canonical JSON")
+    except (ValueError, TypeError, AttributeError, UnicodeError, ArtifactLifecycleError) as exc:
+        raise DailyProgressError("transport result has malformed metadata") from exc
+    return receipt
+
+
+def _validate_receipt_replay(
+    stored: DailyProgressTransportResult,
+    observed: DailyProgressTransportResult,
+) -> None:
+    """First valid receipt is immutable; later verified desired-state observations may differ.
+
+    A repeat CAS attempt can observe already_desired after the initial applied
+    receipt was committed. A receipt may be reused ONLY if its after-content
+    and all projection/date/target bindings match the newly observed result.
+    The historical outcome, before-hash, and timestamp remain unchanged.
+    """
+    for name in (
+        "projection_sha256", "date", "target_path", "evidence_bundle_sha256",
+        "grounded_summary_sha256", "section_body_sha256", "after_content_sha256",
+    ):
+        if getattr(stored, name) != getattr(observed, name):
+            raise DailyProgressConflict("existing transport result binding differs")
+
+
+def inspect_published_transport_result(path: Path) -> DailyProgressTransportResult:
+    """Fail closed on unsafe/corrupt preexisting receipt before any remote CAS.
+
+    Re-fsync a valid existing published receipt's directory to reaffirm the
+    naming boundary after a prior post-rename fsync failure.
+    """
+    try:
+        raw = _read_bounded_receipt(path, max_bytes=MAX_TRANSPORT_RESULT_BYTES)
+    except ArtifactLifecycleError as exc:
+        raise DailyProgressError("existing transport result cannot be safely read") from exc
+    receipt = parse_transport_result(raw)
+    try:
+        _store_immutable(path, raw)
+    except (ArtifactLifecycleError, OSError) as exc:
+        raise DailyProgressError("existing transport result not yet durable") from exc
+    return receipt
+
+
+def preflight_transport_result(
+    path: Path, projection: DailyProgressProjection,
+) -> DailyProgressTransportResult | None:
+    """Validate an already-published receipt against the exact projection.
+
+    Call *inside* canonical_io_lock before any remote read/PUT so concurrent
+    accepted writers cannot change the receipt between preflight and effect.
+    """
+    if not os.path.lexists(path):
+        return None
+    receipt = inspect_published_transport_result(path)
+    for name, wanted in (
+        ("projection_sha256", projection.sha256),
+        ("date", projection.date),
+        ("target_path", projection.target_path),
+        ("evidence_bundle_sha256", projection.evidence_bundle_sha256),
+        ("grounded_summary_sha256", projection.grounded_summary_sha256),
+        ("section_body_sha256", projection.section_body_sha256),
+    ):
+        if getattr(receipt, name) != wanted:
+            raise DailyProgressConflict("existing transport result projection binding mismatch")
+    return receipt
+
+
+def _reaffirm_existing_transport_result(
+    path: Path, observed: DailyProgressTransportResult,
+) -> bytes:
+    try:
+        raw = _read_bounded_receipt(path, max_bytes=MAX_TRANSPORT_RESULT_BYTES)
+    except ArtifactLifecycleError as exc:
+        raise DailyProgressError("existing transport result cannot be safely read") from exc
+    stored = parse_transport_result(raw)
+    _validate_receipt_replay(stored, observed)
+    # A previous publisher may have renamed the complete inode but failed
+    # fsync(parent). Recheck exact bytes and re-fsync that directory before
+    # permitting Stage Ref publication; never silently rewrite the receipt.
+    try:
+        _store_immutable(path, raw)
+    except (ArtifactLifecycleError, OSError) as exc:
+        raise DailyProgressError("existing transport result not yet durable") from exc
+    return raw
 
 
 def persist_transport_result(
     path: Path,
     result: DailyProgressTransportResult,
 ) -> bytes:
-    data = result.to_json_bytes()
-    if path.exists() or path.is_symlink():
-        existing = _safe_regular_file(
-            path,
-            label="Daily Progress transport result",
-        )
-        try:
-            value = json.loads(existing)
-        except json.JSONDecodeError as exc:
-            raise DailyProgressError(
-                "existing Daily Progress transport result is invalid JSON"
-            ) from exc
-        if (
-            not isinstance(value, dict)
-            or value.get("projection_sha256")
-            != result.projection_sha256
-        ):
-            raise DailyProgressConflict(
-                "transport result path belongs to another projection"
-            )
-        return existing
+    """Atomically publish or safely reuse the first immutable receipt.
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    if hasattr(os, "O_CLOEXEC"):
-        flags |= os.O_CLOEXEC
+    No partially written final pathname is permitted. Same-projection
+    replays can retain the first receipt's outcome when the remote desired
+    content is reconfirmed, even if the new observation says already_desired.
+    """
+    data = result.to_json_bytes()
+    normalized = parse_transport_result(data)
+    if normalized != result:
+        raise DailyProgressError("transport result canonical roundtrip mismatch")
     try:
-        fd = os.open(path, flags, 0o640)
-    except FileExistsError:
-        return persist_transport_result(path, result)
-    except OSError as exc:
-        raise DailyProgressError(
-            "cannot create Daily Progress transport result"
-        ) from exc
+        _require_safe_directory(path.parent, create=True)
+    except (ArtifactLifecycleError, OSError) as exc:
+        raise DailyProgressError("transport result parent is not safe") from exc
+
+    if os.path.lexists(path):
+        return _reaffirm_existing_transport_result(path, result)
     try:
-        view = memoryview(data)
-        while view:
-            written = os.write(fd, view)
-            if written <= 0:
-                raise DailyProgressError(
-                    "short write while persisting transport result"
-                )
-            view = view[written:]
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+        _store_immutable(path, data)
+    except (ArtifactLifecycleError, OSError) as exc:
+        # Same-key concurrent producers may race with different valid
+        # observations (applied vs already_desired). Only re-admit an exact,
+        # safely read, fully validated published receipt under the original
+        # projection/desired-content binding. Otherwise fail closed.
+        if os.path.lexists(path):
+            return _reaffirm_existing_transport_result(path, result)
+        raise DailyProgressError("transport result atomic publication failed") from exc
     return data
 
 
@@ -1307,12 +1434,16 @@ def apply_main(argv: Iterable[str] | None = None) -> int:
         projection = load_projection(args.projection)
         password = _read_password(args.password_file)
         with canonical_io_lock(args.state_root):
+            existing = preflight_transport_result(args.result, projection)
             result = apply_projection(
                 projection,
                 base_url=args.base_url,
                 username=args.username,
                 password=password,
                 timeout=args.timeout,
+                expected_after_content_sha256=(
+                    existing.after_content_sha256 if existing is not None else None
+                ),
             )
             persisted = persist_transport_result(
                 args.result,
@@ -1337,14 +1468,15 @@ def apply_main(argv: Iterable[str] | None = None) -> int:
         print(_error_event(wrapped), file=sys.stderr)
         return 2
 
+    committed_receipt = parse_transport_result(persisted)
     print(
         json.dumps(
             {
                 "event": "github-daily-progress-applied",
-                "projection_sha256": result.projection_sha256,
-                "date": result.date,
-                "target_path": result.target_path,
-                "outcome": result.outcome,
+                "projection_sha256": committed_receipt.projection_sha256,
+                "date": committed_receipt.date,
+                "target_path": committed_receipt.target_path,
+                "outcome": committed_receipt.outcome,
                 "transport_result_sha256": sha256_bytes(persisted),
                 "result_path": str(args.result),
             },

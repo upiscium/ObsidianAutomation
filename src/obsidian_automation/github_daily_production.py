@@ -36,6 +36,8 @@ from .github_daily_progress import (
     load_projection,
     make_projection,
     persist_transport_result,
+    parse_transport_result,
+    preflight_transport_result,
     store_projection,
 )
 from .github_daily_summary import (
@@ -603,12 +605,19 @@ def apply_pending(
         )
         try:
             with canonical_io_lock(pipeline_root):
+                # A valid prior receipt is admitted under the Writer I/O lock.
+                # Compare the desired full-note hash before PUT rather than
+                # discovering external state drift after a remote CAS effect.
+                existing = preflight_transport_result(result_path, projection)
                 result = apply_projection(
                     projection,
                     base_url=base_url,
                     username=username,
                     password=password,
                     timeout=timeout,
+                    expected_after_content_sha256=(
+                        existing.after_content_sha256 if existing is not None else None
+                    ),
                 )
                 result_bytes = persist_transport_result(
                     result_path,
@@ -628,6 +637,13 @@ def apply_pending(
             raise
 
         result_sha = sha256_bytes(result_bytes)
+        # The immutable receipt's historical outcome is authoritative. A
+        # crash after an "applied" receipt but before Stage Ref publication
+        # can legitimately replay as "already_desired"; do not write a ref
+        # pairing the old receipt SHA with the newer runtime outcome.
+        persisted_receipt = parse_transport_result(result_bytes)
+        if persisted_receipt.projection_sha256 != projection_sha:
+            raise DailyProductionError("transport receipt projection binding mismatch")
         _write_ref(
             _ref_path(transport_dir, target),
             {
@@ -636,7 +652,7 @@ def apply_pending(
                 "date": target,
                 "projection_sha256": projection_sha,
                 "transport_result_sha256": result_sha,
-                "outcome": result.outcome,
+                "outcome": persisted_receipt.outcome,
             },
         )
         completed.append(target)
@@ -747,11 +763,10 @@ def live_status(root: Path, target_date: str) -> dict[str, object]:
         "transport_result_sha256",
     )
     outcome = transport_ref.get("outcome")
-    if outcome not in {
-        "applied",
-        "recovered",
-        "already_desired",
-    }:
+    if (
+        not isinstance(outcome, str)
+        or outcome not in {"applied", "recovered", "already_desired"}
+    ):
         raise DailyProductionError(
             "transport ref has unsupported outcome"
         )
@@ -772,15 +787,21 @@ def live_status(root: Path, target_date: str) -> dict[str, object]:
             "live canary transport result SHA mismatch"
         )
     try:
-        result_value = json.loads(result_data)
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        # The SHA by itself only binds some bytes; it does not attest a
+        # complete, schema-valid Transport Result or its upstream identity.
+        result = parse_transport_result(result_data)
+    except DailyProgressError as exc:
         raise DailyProductionError(
-            "live canary transport result is invalid JSON"
+            "live canary transport result is invalid receipt"
         ) from exc
     if (
-        not isinstance(result_value, dict)
-        or result_value.get("projection_sha256") != projection_sha
-        or result_value.get("outcome") != outcome
+        result.projection_sha256 != projection_sha
+        or result.date != target
+        or result.target_path != projection.target_path
+        or result.evidence_bundle_sha256 != evidence_sha
+        or result.grounded_summary_sha256 != summary_sha
+        or result.section_body_sha256 != projection.section_body_sha256
+        or result.outcome != outcome
     ):
         raise DailyProductionError(
             "live canary transport result binding mismatch"
