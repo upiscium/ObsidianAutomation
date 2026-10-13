@@ -1040,7 +1040,12 @@ def apply_projection(
     password: str,
     timeout: float = 30.0,
     transport: HTTPTransport | None = None,
+    expected_after_content_sha256: str | None = None,
 ) -> DailyProgressTransportResult:
+    # A prior immutable receipt fixes exact desired full-note bytes. Validate
+    # this bound before any remote observation or possible Writer mutation.
+    if expected_after_content_sha256 is not None:
+        _require_sha(expected_after_content_sha256, label="receipt desired after SHA")
     if not username:
         raise DailyProgressError("WebDAV username must not be empty")
     if not password:
@@ -1058,10 +1063,31 @@ def apply_projection(
         timeout=timeout,
         transport=transport,
     )
+    if (
+        expected_after_content_sha256 is not None
+        and sha256_bytes(before.content) != expected_after_content_sha256
+    ):
+        # A committed receipt already proves a previous effect. On replay,
+        # permit observation only; never issue a new PUT to rewrite a Daily
+        # that has changed since the first committed receipt.
+        raise DailyProgressConflict(
+            "remote Daily bytes differ from immutable transport receipt",
+            reason_code="transport_receipt_remote_drift",
+        )
     disposition, desired = prepare_daily_update(
         projection,
         before.content,
     )
+    if (
+        expected_after_content_sha256 is not None
+        and sha256_bytes(desired) != expected_after_content_sha256
+    ):
+        # Stop before PUT even if the remote Daily's unrelated sections
+        # changed since the previous committed Transport Result.
+        raise DailyProgressConflict(
+            "desired Daily bytes differ from immutable transport receipt",
+            reason_code="transport_receipt_desired_drift",
+        )
     if disposition == "already_desired":
         return _result(
             projection,
@@ -1250,6 +1276,30 @@ def inspect_published_transport_result(path: Path) -> DailyProgressTransportResu
     return receipt
 
 
+def preflight_transport_result(
+    path: Path, projection: DailyProgressProjection,
+) -> DailyProgressTransportResult | None:
+    """Validate an already-published receipt against the exact projection.
+
+    Call *inside* canonical_io_lock before any remote read/PUT so concurrent
+    accepted writers cannot change the receipt between preflight and effect.
+    """
+    if not os.path.lexists(path):
+        return None
+    receipt = inspect_published_transport_result(path)
+    for name, wanted in (
+        ("projection_sha256", projection.sha256),
+        ("date", projection.date),
+        ("target_path", projection.target_path),
+        ("evidence_bundle_sha256", projection.evidence_bundle_sha256),
+        ("grounded_summary_sha256", projection.grounded_summary_sha256),
+        ("section_body_sha256", projection.section_body_sha256),
+    ):
+        if getattr(receipt, name) != wanted:
+            raise DailyProgressConflict("existing transport result projection binding mismatch")
+    return receipt
+
+
 def _reaffirm_existing_transport_result(
     path: Path, observed: DailyProgressTransportResult,
 ) -> bytes:
@@ -1382,12 +1432,16 @@ def apply_main(argv: Iterable[str] | None = None) -> int:
         projection = load_projection(args.projection)
         password = _read_password(args.password_file)
         with canonical_io_lock(args.state_root):
+            existing = preflight_transport_result(args.result, projection)
             result = apply_projection(
                 projection,
                 base_url=args.base_url,
                 username=args.username,
                 password=password,
                 timeout=args.timeout,
+                expected_after_content_sha256=(
+                    existing.after_content_sha256 if existing is not None else None
+                ),
             )
             persisted = persist_transport_result(
                 args.result,
@@ -1412,14 +1466,15 @@ def apply_main(argv: Iterable[str] | None = None) -> int:
         print(_error_event(wrapped), file=sys.stderr)
         return 2
 
+    committed_receipt = parse_transport_result(persisted)
     print(
         json.dumps(
             {
                 "event": "github-daily-progress-applied",
-                "projection_sha256": result.projection_sha256,
-                "date": result.date,
-                "target_path": result.target_path,
-                "outcome": result.outcome,
+                "projection_sha256": committed_receipt.projection_sha256,
+                "date": committed_receipt.date,
+                "target_path": committed_receipt.target_path,
+                "outcome": committed_receipt.outcome,
                 "transport_result_sha256": sha256_bytes(persisted),
                 "result_path": str(args.result),
             },

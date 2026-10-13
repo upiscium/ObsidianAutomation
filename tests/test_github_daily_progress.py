@@ -533,3 +533,81 @@ def test_transport_result_is_idempotent_for_same_projection(
     assert first == second
     value = json.loads(first)
     assert value["projection_sha256"] == projection.sha256
+
+
+def test_existing_receipt_desired_hash_drift_blocks_cas_put_before_external_effect():
+    """P2: new unrelated Daily edits cannot be overwritten on a receipt replay."""
+    _, projection = _projection()
+    remote = _WebDAV(_daily("# Project Progress\nOld.\n"))
+    first = apply_projection(
+        projection,
+        base_url="https://nextcloud.example/remote.php/dav/files/writer",
+        username="writer", password="secret", transport=remote,
+    )
+    assert first.outcome == "applied"
+    assert remote.puts == 1
+
+    # Simulate intervening unrelated remote edits and a stale Progress section,
+    # making the prospective new full-note desired bytes differ from the first
+    # immutable receipt. A normal apply would otherwise issue a second PUT.
+    remote.content = _daily("# Project Progress\nOld.\n") + (
+        b"\n# Independently edited daily section\nDo not overwrite.\n"
+    )
+    remote.etag = '"edited"'
+    with pytest.raises(
+        DailyProgressConflict,
+        match="differ from immutable transport receipt",
+    ) as exc:
+        apply_projection(
+            projection,
+            base_url="https://nextcloud.example/remote.php/dav/files/writer",
+            username="writer", password="secret", transport=remote,
+            expected_after_content_sha256=first.after_content_sha256,
+        )
+    assert exc.value.reason_code == "transport_receipt_remote_drift"
+    assert remote.puts == 1
+    assert remote.calls[-1][0] == "GET"
+
+
+def test_prior_receipt_refuses_to_rewrite_even_when_desired_sha_would_match():
+    """Receipt replay is observational: an edited Progress section is not PUT over."""
+    _, projection = _projection()
+    remote = _WebDAV(_daily("# Project Progress\nOld.\n"))
+    original = apply_projection(
+        projection, base_url="https://nextcloud.example/remote.php/dav/files/writer",
+        username="writer", password="secret", transport=remote,
+    )
+    assert original.outcome == "applied"
+    assert remote.puts == 1
+
+    # The remote progress was reverted; prepare_daily_update would produce
+    # exactly the previously committed after bytes. Replaying to repair a
+    # first receipt must still NOT mutate externally changed remote content.
+    remote.content = _daily("# Project Progress\nOld.\n")
+    remote.etag = '"changed"'
+    with pytest.raises(DailyProgressConflict, match="remote Daily bytes differ"):
+        apply_projection(
+            projection, base_url="https://nextcloud.example/remote.php/dav/files/writer",
+            username="writer", password="secret", transport=remote,
+            expected_after_content_sha256=original.after_content_sha256,
+        )
+    assert remote.puts == 1
+    assert remote.calls[-1][0] == "GET"
+
+
+def test_prior_receipt_replay_when_remote_is_still_desired_never_puts():
+    _, projection = _projection()
+    remote = _WebDAV(_daily("# Project Progress\nOld.\n"))
+    original = apply_projection(
+        projection, base_url="https://nextcloud.example/remote.php/dav/files/writer",
+        username="writer", password="secret", transport=remote,
+    )
+    assert original.outcome == "applied"
+    replay = apply_projection(
+        projection, base_url="https://nextcloud.example/remote.php/dav/files/writer",
+        username="writer", password="secret", transport=remote,
+        expected_after_content_sha256=original.after_content_sha256,
+    )
+    assert replay.outcome == "already_desired"
+    assert replay.after_content_sha256 == original.after_content_sha256
+    assert remote.puts == 1

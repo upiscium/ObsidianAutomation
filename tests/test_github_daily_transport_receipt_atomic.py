@@ -181,6 +181,8 @@ def test_stage_ref_binds_persisted_receipt_not_new_runtime_outcome(tmp_path, mon
         lambda *_: (
             projection_sha, tmp_path / "projection.json",
             SimpleNamespace(
+                sha256=original.projection_sha256,
+                date=original.date,
                 target_path=original.target_path,
                 evidence_bundle_sha256=original.evidence_bundle_sha256,
                 grounded_summary_sha256=original.grounded_summary_sha256,
@@ -275,6 +277,8 @@ def test_invalid_existing_receipt_preflight_blocks_remote_writer(tmp_path, monke
         persist_transport_result(result_path, replace(prior, date="2026-10-06"))
 
     projection = SimpleNamespace(
+        sha256=prior.projection_sha256,
+        date=prior.date,
         target_path=prior.target_path,
         evidence_bundle_sha256=prior.evidence_bundle_sha256,
         grounded_summary_sha256=prior.grounded_summary_sha256,
@@ -298,3 +302,80 @@ def test_invalid_existing_receipt_preflight_blocks_remote_writer(tmp_path, monke
         )
     assert contacted == []
     assert not production._ref_path(stage_dir, "2026-10-05").exists()
+
+
+def _projection_for_receipt(receipt):
+    return SimpleNamespace(
+        sha256=receipt.projection_sha256, date=receipt.date,
+        target_path=receipt.target_path,
+        evidence_bundle_sha256=receipt.evidence_bundle_sha256,
+        grounded_summary_sha256=receipt.grounded_summary_sha256,
+        section_body_sha256=receipt.section_body_sha256,
+    )
+
+
+def _cli_args(tmp_path, result_path):
+    return [
+        "--projection", str(tmp_path / "unused-projection.json"),
+        "--state-root", str(tmp_path),
+        "--base-url", "https://unused.example",
+        "--username", "synthetic",
+        "--password-file", str(tmp_path / "unused-password"),
+        "--result", str(result_path),
+    ]
+
+
+def test_standalone_apply_cli_refuses_corrupt_receipt_before_remote_call(
+    tmp_path, monkeypatch, capsys,
+):
+    from obsidian_automation import github_daily_progress as progress
+
+    path = tmp_path / "receipt.json"
+    path.write_bytes(b'{"record_version":')
+    model = _projection_for_receipt(_receipt())
+    monkeypatch.setattr(progress, "load_projection", lambda *_: model)
+    monkeypatch.setattr(progress, "_read_password", lambda *_: "synthetic-password")
+    monkeypatch.setattr(progress, "canonical_io_lock", lambda *_: nullcontext())
+    invoked = []
+    monkeypatch.setattr(
+        progress, "apply_projection",
+        lambda *_args, **_kwargs: invoked.append(True),
+    )
+    assert progress.apply_main(_cli_args(tmp_path, path)) == 2
+    assert invoked == []
+    assert path.read_bytes() == b'{"record_version":'
+    diagnostic = json.loads(capsys.readouterr().err)
+    assert diagnostic["reason_code"] == "daily_progress_error"
+    assert "not valid JSON" in diagnostic["message"]
+
+
+def test_standalone_apply_cli_event_outcome_matches_immutable_receipt(
+    tmp_path, monkeypatch, capsys,
+):
+    from obsidian_automation import github_daily_progress as progress
+
+    path = tmp_path / "receipt.json"
+    first = _receipt(outcome="applied")
+    prior = persist_transport_result(path, first)
+    current = replace(
+        first, outcome="already_desired",
+        before_content_sha256=first.after_content_sha256,
+        completed_at="2026-10-13T00:01:00Z",
+    )
+    model = _projection_for_receipt(first)
+    monkeypatch.setattr(progress, "load_projection", lambda *_: model)
+    monkeypatch.setattr(progress, "_read_password", lambda *_: "synthetic-password")
+    monkeypatch.setattr(progress, "canonical_io_lock", lambda *_: nullcontext())
+    seen_expected = []
+
+    def observe(*_args, **kwargs):
+        seen_expected.append(kwargs["expected_after_content_sha256"])
+        return current
+
+    monkeypatch.setattr(progress, "apply_projection", observe)
+    assert progress.apply_main(_cli_args(tmp_path, path)) == 0
+    event = json.loads(capsys.readouterr().out)
+    assert seen_expected == [first.after_content_sha256]
+    assert event["outcome"] == "applied"
+    assert event["transport_result_sha256"] == progress.sha256_bytes(prior)
+    assert path.read_bytes() == prior

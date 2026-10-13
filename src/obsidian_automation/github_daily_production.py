@@ -37,7 +37,7 @@ from .github_daily_progress import (
     make_projection,
     persist_transport_result,
     parse_transport_result,
-    inspect_published_transport_result,
+    preflight_transport_result,
     store_projection,
 )
 from .github_daily_summary import (
@@ -604,29 +604,20 @@ def apply_pending(
             / f"{projection_sha}.github-daily-progress.transport-result.json"
         )
         try:
-            # A committed receipt can outlive a crash before Stage Ref publish.
-            # Validate its schema, inode, exact projection/date/target bindings
-            # and durability *before* contacting Writer/Nextcloud again.
-            if os.path.lexists(result_path):
-                existing = inspect_published_transport_result(result_path)
-                if (
-                    existing.projection_sha256 != projection_sha
-                    or existing.date != target
-                    or existing.target_path != projection.target_path
-                    or existing.evidence_bundle_sha256 != projection.evidence_bundle_sha256
-                    or existing.grounded_summary_sha256 != projection.grounded_summary_sha256
-                    or existing.section_body_sha256 != projection.section_body_sha256
-                ):
-                    raise DailyProductionError(
-                        "existing transport result projection binding mismatch"
-                    )
             with canonical_io_lock(pipeline_root):
+                # A valid prior receipt is admitted under the Writer I/O lock.
+                # Compare the desired full-note hash before PUT rather than
+                # discovering external state drift after a remote CAS effect.
+                existing = preflight_transport_result(result_path, projection)
                 result = apply_projection(
                     projection,
                     base_url=base_url,
                     username=username,
                     password=password,
                     timeout=timeout,
+                    expected_after_content_sha256=(
+                        existing.after_content_sha256 if existing is not None else None
+                    ),
                 )
                 result_bytes = persist_transport_result(
                     result_path,

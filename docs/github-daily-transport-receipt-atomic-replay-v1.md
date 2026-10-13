@@ -18,9 +18,19 @@ an uncommitted orphan, not a cache hit or automatic repair candidate.
 
 Before any new external CAS attempt, an existing receipt is admitted through
 bounded/no-follow schema and exact Projection/date/target verification, and
-its parent directory is fsynced. A corrupt or contradictory prior receipt
-therefore fails before a new Writer operation, rather than allowing an
-avoidable external effect before discovering the local corruption.
+its parent directory is fsynced under the Writer's canonical I/O lock.
+The stored `after_content_sha256` also constrains **both the currently
+observed remote full-note bytes and the proposed desired bytes**. On any
+replay with an existing receipt, the remote GET must already match the
+receipt's exact after-hash; this execution may **never PUT** to repair an
+existing receipt. A corrupt, contradictory or stale prior receipt therefore
+fails before a new Writer mutation. This intentionally refuses to overwrite
+unrelated or Progress-section edits made since the previous completed CAS
+effect, even if a prospective PUT would reproduce the original desired bytes.
+The existing receipt remains immutable.
+Both production `apply_pending` and standalone `apply_main` use this gate;
+standalone success metadata also reports the saved immutable receipt's
+outcome instead of a later different runtime observation.
 
 The transport stage can crash **after the Writer's external compare-and-swap
 effect** or after the receipt but before publishing its date-scoped Stage Ref.
@@ -46,7 +56,11 @@ This does not authorize overwriting old published receipts, bypassing remote
 ETag CAS, treating corrupt published records as misses, or assuming that
 `already_desired` proves a previously attempted Writer succeeded. The
 existing external state observation must still be correct and bound to the
-same target. Conflicts remain explicit and fail closed.
+same target. The trusted, service-owned Transport directory must exclude
+other uncoordinated writers; canonical I/O locks serialize only cooperating
+producers and are not a security boundary against a malicious actor with
+write access to the receipt parent. This ACL assumption requires independent
+production admission. Conflicts remain explicit and fail closed.
 
 ## Acceptance boundaries
 
