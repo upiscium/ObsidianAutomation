@@ -726,3 +726,71 @@ def test_grounding_timeout_retry_preserves_singleton_resume_identity(tmp_path):
     )
     assert replay.calls == []
     assert first == second
+
+
+def _child_hang_after_six_complete_partial_pointers(root: str, peer) -> None:
+    """Scratch-only deterministic analogue of the live Batch-7 timeout."""
+    import time
+    from obsidian_automation.github_daily_summary import _exclusive_summary_pipeline_root
+
+    bundle, contexts = _fixture(7)
+    model = MockModel()
+
+    def blocked_seventh(prompt, context):
+        if context.stage == PARTIAL_STAGE and context.batch_index == 6:
+            peer.send("six durable contexts")
+            time.sleep(3600)  # parent will SIGKILL this child
+            raise AssertionError("supervised child was not killed")
+        return model(prompt, context)
+
+    with _exclusive_summary_pipeline_root(Path(root)):
+        _partials(Path(root), _bound(blocked_seventh), bundle, contexts)
+
+
+def test_sigkill_after_six_partials_allows_verified_resume_and_releases_lock(tmp_path):
+    """A hard service timeout must not require inventing or rewriting any ref."""
+    import multiprocessing
+    import os
+    import signal
+    from obsidian_automation.github_daily_summary import _exclusive_summary_pipeline_root
+
+    bundle, contexts = _fixture(7)
+    mp = multiprocessing.get_context("fork")
+    parent, child = mp.Pipe(duplex=False)
+    process = mp.Process(
+        target=_child_hang_after_six_complete_partial_pointers,
+        args=(str(tmp_path), child),
+    )
+    process.start()
+    child.close()
+    try:
+        assert parent.poll(8), "timed out before the sixth pointer committed"
+        assert parent.recv() == "six durable contexts"
+        assert len(_pointer_files(tmp_path)) == 6
+        with pytest.raises(GitHubDailySummaryError, match="already active"):
+            with _exclusive_summary_pipeline_root(tmp_path):
+                pass
+
+        os.kill(process.pid, signal.SIGKILL)
+        process.join(timeout=5)
+        assert process.exitcode == -signal.SIGKILL
+        assert len(_pointer_files(tmp_path)) == 6
+
+        with _exclusive_summary_pipeline_root(tmp_path):
+            recovered = MockModel()
+            outputs, context_shas, provenance_shas = _partials(
+                tmp_path, _bound(recovered), bundle, contexts,
+            )
+        assert recovered.calls == [(PARTIAL_STAGE, 6)]
+        assert len(outputs) == len(context_shas) == len(provenance_shas) == 7
+        assert len(_pointer_files(tmp_path)) == 7
+        # Partial-only interruption does not publish a date-scoped Summary
+        # or create any downstream Projection/Transport publication authority.
+        assert not list(tmp_path.glob("20-Summary/*.ref.json"))
+        assert not (tmp_path / "30-Projection").exists()
+        assert not (tmp_path / "40-Transport").exists()
+    finally:
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=5)
+        parent.close()

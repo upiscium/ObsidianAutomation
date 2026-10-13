@@ -6,6 +6,16 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+# Hard per-invocation Summary limit. A oneshot service otherwise has no
+# default start timeout; RuntimeMaxSec does not apply to Type=oneshot.
+# Timers must stay operator-gated until full date-scoped quality acceptance.
+TimeoutStartSec=20min
+# Do not wait an additional stop-grace interval at the deadline: SIGKILL
+# models a power/process crash and leaves #291's verified Resume to recover.
+TimeoutStartFailureMode=kill
+KillMode=control-group
+SendSIGKILL=yes
+Restart=no
 User=obsidian-github-summarizer
 Group=obsidian-github-summarizer
 UMask=0027
