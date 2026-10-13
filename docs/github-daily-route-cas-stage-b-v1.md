@@ -141,8 +141,9 @@ ambiguous or unavailable source remains BLOCKED/PENDING — never an empty Day.
 Synthetic offline test coverage includes complete transaction, same-key retry,
 early failure between objects, manifest-last ordering, forged index/source,
 legacy unsafe CAS helper rejection, wrong process identity, invalid digest,
-symlink/hardlink/FIFO, content mutation, missing receipt, unexpected ACL/mode
-and trusted layout failure. Tests exercise actual file xattrs where the
+symlink/hardlink/FIFO, content mutation, missing receipt, unexpected ACL/mode,
+both mismatched old-digest mutations and **correctly SHA-readdressed canonical
+manifests forging publication/producer authority**, and trusted layout failure. Tests exercise actual file xattrs where the
 filesystem supports POSIX ACLs. They never access GitHub, production Vault,
 Nextcloud or a live service account.
 

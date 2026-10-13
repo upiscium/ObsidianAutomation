@@ -223,7 +223,7 @@ def test_bad_acl_and_directory_mode_are_fail_closed(tmp_path, safe_layout):
         cas.read_verified_capture(result.index_sha256)
 
 
-def test_corrupt_rehashed_manifest_is_not_authorized(tmp_path, safe_layout):
+def test_corrupt_manifest_with_old_digest_is_rejected(tmp_path, safe_layout):
     root, _ = safe_layout
     collected = _collect(tmp_path)
     result = cas.publish_fresh_capture(collected)
@@ -231,8 +231,39 @@ def test_corrupt_rehashed_manifest_is_not_authorized(tmp_path, safe_layout):
     data = manifest.read_bytes().replace(b'"publication_authorized":false', b'"publication_authorized":true ')
     assert data != manifest.read_bytes()
     manifest.write_bytes(data)
-    with pytest.raises(cas.DailyRouteCASError):
+    with pytest.raises(cas.DailyRouteCASError, match="content hash"):
         cas.read_verified_capture(result.index_sha256)
+
+
+@pytest.mark.parametrize("claim", [
+    "publication_authorized",
+    "producer_attestation_verified",
+])
+def test_hash_valid_manifest_cannot_self_grant_authority(
+    tmp_path, safe_layout, claim
+):
+    import json
+
+    root, _ = safe_layout
+    collected = _collect(tmp_path)
+    result = cas.publish_fresh_capture(collected)
+    original = _capture_path(root, result.index_sha256).read_bytes()
+    payload = json.loads(original)
+    assert payload[claim] is False
+    payload[claim] = True
+    forged = (
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        + "\n"
+    ).encode("utf-8")
+    forged_digest = hashlib.sha256(forged).hexdigest()
+    assert forged_digest != result.index_sha256
+    forged_path = _capture_path(root, forged_digest)
+    lifecycle._store_immutable(forged_path, forged)
+    assert forged_path.read_bytes() == forged
+    # This is NOT merely the SHA mismatch case. CAS storage and digest pass;
+    # the Reader must reject unauthorized semantic flags before using source.
+    with pytest.raises(cas.DailyRouteCASError, match="schema mismatch"):
+        cas.read_verified_capture(forged_digest)
 
 
 def test_missing_or_untrusted_storage_prevents_all_effects(tmp_path, safe_layout, monkeypatch):
