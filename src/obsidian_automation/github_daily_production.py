@@ -49,6 +49,7 @@ from .github_daily_summary_generation import (
 )
 from .github_daily_summary import (
     SummaryRetryPolicy,
+    _admit_retry_policy,
     _exclusive_summary_pipeline_root,
     _run_pipeline_unlocked,
 )
@@ -447,6 +448,7 @@ def summarize_pending(
         raise DailyProductionError(
             "implementation revision must be lowercase 40..64 hex"
         )
+    retry_policy = _admit_retry_policy(retry_policy)
     summary_root = _stage_dir(root, SUMMARY_DIR)
     if provider == "ollama":
         infer = ollama_infer(

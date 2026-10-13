@@ -124,6 +124,15 @@ class SummaryRetryPolicy:
             raise GitHubDailySummaryError("retry backoff must be finite and within 0..30 seconds")
 
 
+def _admit_retry_policy(value: SummaryRetryPolicy | None) -> SummaryRetryPolicy:
+    """Reject invalid API configuration before Evidence/Provider/CAS effects."""
+    if value is None:
+        return SummaryRetryPolicy()
+    if type(value) is not SummaryRetryPolicy:
+        raise GitHubDailySummaryError("invalid Daily Summary retry policy")
+    return value
+
+
 @dataclass(frozen=True)
 class EvidenceBundle:
     sha256: str
@@ -1722,9 +1731,7 @@ def _invoke_model_stage(
     from .ollama_generator import OllamaProviderError
     from .openai_compatible import OpenAICompatibleProviderError
 
-    policy = retry_policy if retry_policy is not None else SummaryRetryPolicy()
-    if not isinstance(policy, SummaryRetryPolicy):
-        raise GitHubDailySummaryError("invalid Daily Summary retry policy")
+    policy = _admit_retry_policy(retry_policy)
     started = time.monotonic()
     for attempt in range(policy.max_transient_retries + 1):
         try:
@@ -1757,6 +1764,7 @@ def _run_claim_stage(
     tuple[str, ...],
     tuple[str, ...],
 ]:
+    retry_policy = _admit_retry_policy(retry_policy)
     stored: list[StoredClaimOutput] = []
     context_shas: list[str] = []
     provenance_shas: list[str] = []
@@ -1897,6 +1905,7 @@ def _run_ground_stage(
     tuple[str, ...],
     tuple[str, ...],
 ]:
+    retry_policy = _admit_retry_policy(retry_policy)
     stored: list[StoredGroundOutput] = []
     context_shas: list[str] = []
     provenance_shas: list[str] = []
@@ -2011,6 +2020,7 @@ def run_pipeline(
     ground_context_bytes: int = MAX_GROUND_CONTEXT_BYTES,
     retry_policy: SummaryRetryPolicy | None = None,
 ) -> PipelineResult:
+    retry_policy = _admit_retry_policy(retry_policy)
     with _exclusive_summary_pipeline_root(state_root):
         return _run_pipeline_unlocked(
             evidence_path=evidence_path,
@@ -2035,6 +2045,7 @@ def _run_pipeline_unlocked(
     ground_context_bytes: int = MAX_GROUND_CONTEXT_BYTES,
     retry_policy: SummaryRetryPolicy | None = None,
 ) -> PipelineResult:
+    retry_policy = _admit_retry_policy(retry_policy)
     bundle = load_evidence_bundle(evidence_path)
     partial_contexts = partition_evidence(
         bundle,

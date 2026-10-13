@@ -176,3 +176,53 @@ def test_unbound_raw_timeout_is_bounded_without_leaking_error_text():
         )
     assert calls == 2
     assert "SECRET" not in str(err.value)
+
+
+def test_invalid_public_pipeline_policy_precedes_any_filesystem_access(tmp_path):
+    from obsidian_automation.github_daily_summary import run_pipeline
+
+    missing_root = tmp_path / "no-state-root"
+    with pytest.raises(GitHubDailySummaryError, match="invalid Daily Summary retry policy"):
+        run_pipeline(
+            evidence_path=tmp_path / "missing-evidence.json",
+            state_root=missing_root,
+            infer=lambda *_: pytest.fail("must not invoke model"),
+            implementation_revision="a" * 40,
+            retry_policy=object(),
+        )
+    assert not missing_root.exists()
+
+
+def test_invalid_production_api_policy_precedes_provider_preflight(tmp_path, monkeypatch):
+    from obsidian_automation import github_daily_production as production
+
+    contacted = []
+    monkeypatch.setattr(
+        production, "ollama_infer",
+        lambda **_: contacted.append(True),
+    )
+    with pytest.raises(GitHubDailySummaryError, match="invalid Daily Summary retry policy"):
+        production.summarize_pending(
+            root=tmp_path / "missing-daily",
+            provider="ollama",
+            base_url="https://provider.invalid",
+            model="model",
+            implementation_revision="a" * 40,
+            retry_policy=object(),
+        )
+    assert contacted == []
+
+
+def test_invalid_internal_stage_policy_precedes_context_cas(tmp_path):
+    from obsidian_automation.github_daily_summary import _run_claim_stage
+
+    with pytest.raises(GitHubDailySummaryError, match="invalid Daily Summary retry policy"):
+        _run_claim_stage(
+            tmp_path,
+            bundle=None,
+            contexts=(),
+            infer=lambda *_: pytest.fail("must not infer"),
+            implementation_revision="a" * 40,
+            retry_policy=object(),
+        )
+    assert list(tmp_path.iterdir()) == []
