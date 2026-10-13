@@ -37,9 +37,18 @@ partial; partial replies at most 64 KiB, Grounding replies at most 8 KiB;
 combined incoming bytes at most 32 MiB; canonical private rollup at most
 16 MiB. Oversized output raises an error instead of truncating entities or
 sources. These are data/work-cardinality bounds, not a hard runtime deadline.
-The current implementation repeatedly reconstructs the full source partition
-through existing admission APIs; large-day performance still needs profiling
-before any production wiring. No cache may bypass source/identity admission.
+Repeated full-partition work is also checked before any per-partial or
+per-verdict normalization. The conservative C1a-rebuild count is
+`1 + 5 * partial_count + 3 * grounding_count` and may not exceed 512;
+this count gate runs before CAS access. After the initial trusted source read,
+that planned count multiplied by the combined Evidence/Receipt/Index byte size
+must not exceed 256 MiB. A regression test instruments the actual C1a build
+calls to detect an increased dependency multiplier. Either quota failure is a
+typed whole-request error, never a partially complete rollup. These deliberately
+conservative limits can reject large legitimate days; production profiling and
+a separately reviewed bounded replay design are still required. They bound
+amplified reconstruction work, not wall-clock time or arbitrary filesystem
+latency. No cache bypasses source/identity admission.
 
 ## One row per entity, without confusing completeness with inactivity
 

@@ -22,6 +22,19 @@ RECORD_VERSION = 3
 STAGE = "github_daily_witnessed_entity_rollup_v3"
 MAX_INPUT_BYTES = 32 * 1024 * 1024
 MAX_ROLLUP_BYTES = 16 * 1024 * 1024
+# Conservative whole-partition replay budget, independent of reply byte size.
+MAX_SOURCE_RECONSTRUCTIONS = 512
+MAX_SOURCE_WORK_BYTES = 256 * 1024 * 1024
+
+
+def _reconstruction_budget(partial_count: int, ground_count: int) -> int:
+    # Initial C1a build + (C1b: 2, C2a build: 3) per partial + 3 per
+    # supplied verdict. Dependency changes must update the call-count test.
+    planned = 1 + 5 * partial_count + 3 * ground_count
+    if planned > MAX_SOURCE_RECONSTRUCTIONS:
+        raise DailyWitnessedRollupError("rollup reconstruction-count budget exhausted")
+    return planned
+
 MAX_PARTIAL_REPLIES = c1a.previous.MAX_CONTEXT_BATCHES
 MAX_GROUND_REPLIES = MAX_PARTIAL_REPLIES * c1b.MAX_CANDIDATES
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
@@ -137,8 +150,9 @@ def build_witnessed_entity_rollup(
     )
     if partial_size + ground_size > MAX_INPUT_BYTES:
         raise DailyWitnessedRollupError("combined model replies exceed byte budget")
+    planned = _reconstruction_budget(len(partials), len(grounds))
     try:
-        return _build(capture_sha256, partials, grounds, max_context_bytes)
+        return _build(capture_sha256, partials, grounds, max_context_bytes, planned)
     except DailyWitnessedRollupError:
         raise
     except (GitHubDailySummaryError, ArtifactLifecycleError,
@@ -148,9 +162,13 @@ def build_witnessed_entity_rollup(
 
 
 def _build(capture: str, partials: dict[str, bytes], grounds: dict[str, bytes],
-           budget: int) -> WitnessedEntityRollup:
+           budget: int, planned_rebuilds: int) -> WitnessedEntityRollup:
     source = c1a.build_witnessed_entity_contexts(capture, max_bytes=budget)
     original = cas.read_verified_capture(capture)
+    source_bytes = (len(original.evidence_bytes) + len(original.receipt_bytes)
+                    + len(original.capture_index.canonical_bytes))
+    if source_bytes * planned_rebuilds > MAX_SOURCE_WORK_BYTES:
+        raise DailyWitnessedRollupError("rollup source-work byte budget exhausted")
     bundle = parse_evidence_bundle(original.evidence_bytes)
     if (source.capture_sha256 != capture or original.index_sha256 != capture
             or original.collector_storage_attested is not True
