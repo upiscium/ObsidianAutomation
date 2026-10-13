@@ -763,11 +763,10 @@ def live_status(root: Path, target_date: str) -> dict[str, object]:
         "transport_result_sha256",
     )
     outcome = transport_ref.get("outcome")
-    if outcome not in {
-        "applied",
-        "recovered",
-        "already_desired",
-    }:
+    if (
+        not isinstance(outcome, str)
+        or outcome not in {"applied", "recovered", "already_desired"}
+    ):
         raise DailyProductionError(
             "transport ref has unsupported outcome"
         )

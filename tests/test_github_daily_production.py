@@ -496,6 +496,30 @@ def test_live_status_distinguishes_pending_and_complete(
         for name in ref_dirs
     }
 
+    # A canonical but corrupt Transport Stage Ref cannot escape Live Smoke as
+    # a raw TypeError if outcome is a JSON array/object rather than a string.
+    transport_path = production._ref_path(
+        root / production.TRANSPORT_DIR, "2026-10-05"
+    )
+    for invalid_outcome in ([], {}, ["applied"], {"kind": "applied"}, True, 1):
+        transport_path.unlink()
+        production._write_ref(transport_path, {
+            "record_version": 1,
+            "stage": "transport",
+            "date": "2026-10-05",
+            "projection_sha256": "c" * 64,
+            "transport_result_sha256": result_sha,
+            "outcome": invalid_outcome,
+        })
+        with pytest.raises(
+            production.DailyProductionError, match="unsupported outcome"
+        ):
+            production.live_status(root, "2026-10-05")
+        assert production.smoke_main([
+            "--profile", "live", "--root", str(root),
+            "--date", "2026-10-05",
+        ]) == 2
+
     # An otherwise hash-bound but invalid UTF-8 transport artifact must be
     # reported as managed invalid JSON, never escape as UnicodeDecodeError.
     bad_result = b"\xff"
