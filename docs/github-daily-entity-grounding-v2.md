@@ -33,7 +33,8 @@ SingletonEntityGroundContext v2
    v
 EntityGroundingAssessment v2
    source candidate ID and original source identity inherited,
-   verdict supported|unsupported, bounded reason, model response SHA
+   verdict supported|unsupported, bounded reason SHA-256 only,
+   original model response SHA-256 (never raw explanation prose)
    PUBLICATION_AUTHORIZED = FALSE
    REQUIRES_HUMAN_QUALITY_REVIEW = TRUE
 ```
