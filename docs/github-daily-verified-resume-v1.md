@@ -96,6 +96,20 @@ directory durability alone do not attest access-control compatibility.
 These guarantees do not bypass independent date-scoped Writer/Nextcloud
 CAS acceptance.
 
+The date-scoped **Live Smoke / status acceptance** path validates the
+Schedule ref and each prerequisite Evidence, Summary, Projection and
+Transport stage ref, reaffirming each parent-directory fsync **before**
+reporting `complete: true`. It refuses a completed outcome if any directory
+durability check fails, even when an immutable ref is visible and its JSON is
+valid. Stage-presence fields in a `complete: false` report are observational,
+not an independent durability/validity certificate for unvisited later stages.
+This is a
+local **durability barrier**, not a claim of a completely side-effect-free
+filesystem status read; it does not change ref contents, run a model, issue a
+Writer/Nextcloud request, or authorize transport publication. A read of
+published metadata and a directory fsync cannot replace the independent
+historical ref ACL admission or date-scoped Writer acceptance.
+
 On a cache hit, all pointer and bound CAS files are read with bounded
 no-follow regular-file access, checked against exact expected hashes, and
 validated for exact schema and canonical serialization. Provenance must

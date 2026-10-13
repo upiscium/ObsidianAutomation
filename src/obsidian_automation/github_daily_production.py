@@ -137,7 +137,13 @@ def _read_ref(
     stage: str,
     target_date: str,
 ) -> dict[str, object]:
-    data = _read_exact_file(path)
+    try:
+        data = _read_exact_file(path)
+    except ArtifactLifecycleError as exc:
+        # The no-follow reader can reject dangling symlinks and non-regular
+        # inodes. Translate to the production CLI's fail-closed error type,
+        # rather than escaping with a raw traceback from pending-date scans.
+        raise DailyProductionError("stage ref cannot be safely read") from exc
     try:
         value = json.loads(data)
     except json.JSONDecodeError as exc:
@@ -622,13 +628,16 @@ def apply_pending(
 def live_status(root: Path, target_date: str) -> dict[str, object]:
     target = _canonical_date(target_date)
     schedule = _stage_dir(root, SCHEDULE_DIR)
-    if not _ref_path(schedule, target).exists():
+    if not os.path.lexists(_ref_path(schedule, target)):
         raise DailyProductionError("live canary date is not scheduled")
     _read_ref(
         _ref_path(schedule, target),
         stage="schedule",
         target_date=target,
     )
+    # Live acceptance must not infer durable completion from a visible name:
+    # a prior publisher may have returned after a failed parent fsync.
+    _reaffirm_ref_directory_durable(schedule)
 
     evidence_dir = _stage_dir(root, EVIDENCE_DIR)
     summary_dir = _stage_dir(root, SUMMARY_DIR)
@@ -643,13 +652,14 @@ def live_status(root: Path, target_date: str) -> dict[str, object]:
     }
     state: dict[str, object] = {}
     for name, path in stage_paths.items():
-        state[name] = "completed" if path.exists() else "pending"
+        state[name] = "completed" if os.path.lexists(path) else "pending"
 
     if state["evidence"] == "completed":
         evidence_sha, _evidence_path, bundle = _evidence_for_date(
             root,
             target,
         )
+        _reaffirm_ref_directory_durable(evidence_dir)
     else:
         return {
             "record_version": RECORD_VERSION,
@@ -664,6 +674,7 @@ def live_status(root: Path, target_date: str) -> dict[str, object]:
             target,
             bundle=bundle,
         )
+        _reaffirm_ref_directory_durable(summary_dir)
     else:
         return {
             "record_version": RECORD_VERSION,
@@ -683,6 +694,7 @@ def live_status(root: Path, target_date: str) -> dict[str, object]:
             raise DailyProductionError(
                 "live canary projection upstream binding mismatch"
             )
+        _reaffirm_ref_directory_durable(projection_dir)
     else:
         return {
             "record_version": RECORD_VERSION,
@@ -747,6 +759,9 @@ def live_status(root: Path, target_date: str) -> dict[str, object]:
         raise DailyProductionError(
             "live canary transport result binding mismatch"
         )
+    # Only report transport-complete after all four stage-ref parent entries
+    # and the scheduled-date entry have passed durability revalidation.
+    _reaffirm_ref_directory_durable(transport_dir)
     state["transport_outcome"] = outcome
     return {
         "record_version": RECORD_VERSION,
@@ -999,8 +1014,14 @@ def smoke_main(argv: Iterable[str] | None = None) -> int:
                 raise DailyProductionError(
                     "live canary is not transport-complete"
                 )
-    except (DailyProductionError, OSError) as exc:
-        print(f"github-daily-smoke: {exc}", file=sys.stderr)
+    except (
+        DailyProductionError, ArtifactLifecycleError,
+        GitHubDailySummaryError, DailyProgressError, OSError,
+    ) as exc:
+        # Preserve actionable, reviewed production failure reasons while
+        # suppressing arbitrary lower-layer exception text or source paths.
+        reason = str(exc) if isinstance(exc, DailyProductionError) else type(exc).__name__
+        print(f"github-daily-smoke: {reason}", file=sys.stderr)
         return 2
     print(json.dumps(result, sort_keys=True))
     return 0

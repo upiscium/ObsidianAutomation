@@ -427,9 +427,61 @@ def test_live_status_distinguishes_pending_and_complete(
         },
     )
 
-    complete = production.live_status(root, "2026-10-05")
+    # Ref publication can leave a complete visible pathname after its parent
+    # directory fsync failed. No stage may be reported transport-complete
+    # until every validated ref parent is successfully reaffirmed.
+    import os
+    real_fsync = os.fsync
+    ref_dirs = (
+        production.SCHEDULE_DIR, production.EVIDENCE_DIR,
+        production.SUMMARY_DIR, production.PROJECTION_DIR,
+        production.TRANSPORT_DIR,
+    )
+    before = {
+        name: production._ref_path(root / name, "2026-10-05").read_bytes()
+        for name in ref_dirs
+    }
+    for name in ref_dirs:
+        affected = root / name
+        errors = []
+
+        def refuse_one_parent(fd):
+            if os.readlink(f"/proc/self/fd/{fd}") == str(affected):
+                errors.append("ref-parent-fsync-failed")
+                raise OSError("simulated incomplete ref directory commit")
+            return real_fsync(fd)
+
+        with monkeypatch.context() as m:
+            m.setattr(production.os, "fsync", refuse_one_parent)
+            with pytest.raises(
+                production.DailyProductionError,
+                match="existing stage refs are not durable",
+            ):
+                production.live_status(root, "2026-10-05")
+            assert production.smoke_main([
+                "--profile", "live", "--root", str(root),
+                "--date", "2026-10-05",
+            ]) == 2
+        assert errors == ["ref-parent-fsync-failed"] * 2
+
+    # Live status becomes true only after revalidation and a real fsync in
+    # every stage, not after rewriting or re-generating a published object.
+    durable = []
+    def record_ref_parent_fsync(fd):
+        path = os.readlink(f"/proc/self/fd/{fd}")
+        if path in {str(root / name) for name in ref_dirs}:
+            durable.append(path)
+        return real_fsync(fd)
+    with monkeypatch.context() as m:
+        m.setattr(production.os, "fsync", record_ref_parent_fsync)
+        complete = production.live_status(root, "2026-10-05")
     assert complete["complete"] is True
     assert complete["stages"]["transport_outcome"] == "recovered"
+    assert durable == [str(root / name) for name in ref_dirs]
+    assert before == {
+        name: production._ref_path(root / name, "2026-10-05").read_bytes()
+        for name in ref_dirs
+    }
 
 
 def test_stage_ref_publishes_complete_inode_at_exact_0640_mode(
@@ -700,8 +752,9 @@ def test_pending_stage_rejects_dangling_symlink_ref_before_reinfer(tmp_path):
         root / production.SUMMARY_DIR, "2026-10-05"
     )
     pointer.symlink_to(root / "missing-summary-ref")
-    from obsidian_automation.artifact_lifecycle import ArtifactLifecycleError
-    with pytest.raises(ArtifactLifecycleError):
+    with pytest.raises(
+        production.DailyProductionError, match="stage ref cannot be safely read"
+    ):
         production._pending_dates(root, "summary", production.SUMMARY_DIR)
     assert pointer.is_symlink()
 
@@ -734,3 +787,22 @@ def test_schedule_read_reaffirms_parent_directory_on_retry(tmp_path, monkeypatch
         m.setattr(production.os, "fsync", record_sync)
         assert production.scheduled_dates(root) == ("2026-10-05",)
     assert evidence == ["failed-schedule-parent-fsync", "reaffirmed-schedule-parent"]
+
+
+def test_live_smoke_rejects_dangling_symlink_ref_without_unhandled_error(
+    tmp_path, capsys
+):
+    root = _root(tmp_path)
+    production.enqueue_date(root, "2026-10-05")
+    damaged = production._ref_path(
+        root / production.EVIDENCE_DIR, "2026-10-05"
+    )
+    damaged.symlink_to(root / "missing-evidence-ref")
+    assert production.smoke_main([
+        "--profile", "live", "--root", str(root), "--date", "2026-10-05"
+    ]) == 2
+    out = capsys.readouterr()
+    assert "stage ref cannot be safely read" in out.err
+    assert "Traceback" not in out.err
+    assert out.out == ""
+    assert damaged.is_symlink()
