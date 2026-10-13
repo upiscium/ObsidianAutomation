@@ -82,11 +82,19 @@ at most **60 seconds in the future**, relative to the host's current UTC
 clock. A scheduled recent capture must still target the host's current or
 previous JST date at *publication* time. An older first publication, including
 a partial Evidence/Receipt pair left by an earlier crash, is blocked rather
-than silently promoted. Explicit historical reconfirmation may target an older
-day, but its own re-verification must still be fresh. This bounded wall-clock
-gate cannot authenticate the source process or prevent a compromised same-UID
-Collector from forging a timestamp. A legitimately longer capture must be
-collected again; do not silently extend these limits based on a stale receipt.
+than silently promoted. The same age and JST-date checks are repeated **after**
+the two source blob writes, immediately before invoking the final atomic CAS
+Capture Index writer; a slow source-object write cannot silently turn a
+once-fresh capture into a stale first commit. Explicit historical reconfirmation
+may target an older day, but its own re-verification must still be fresh.
+This bounded wall-clock gate cannot authenticate the source process or prevent
+a compromised same-UID Collector from forging a timestamp. There remains a
+small but unbounded OS scheduling/fsync interval *inside* the existing #293
+final-index writer after this last check and before its atomic rename;
+therefore do not claim an indivisible clock-and-filesystem transaction.
+Any downstream publication decision must independently check its own date
+and eligibility. A legitimately longer capture must be recollected rather
+than silently extending these limits based on a stale receipt.
 
 A crash *during* index publication may make a complete index visible but
 not durable until a successful directory `fsync`. On host recovery a full

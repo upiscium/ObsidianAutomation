@@ -418,3 +418,56 @@ def test_scheduled_capture_freshness_is_checked_at_first_publish(
     with pytest.raises(cas.DailyRouteCASError, match=diagnostic):
         cas.publish_fresh_capture(collection)
     assert not _snapshot(root)
+
+
+def test_capture_cannot_commit_if_clock_ages_during_source_cas_writes(
+    tmp_path, safe_layout, monkeypatch
+):
+    root, _ = safe_layout
+    collection = _collect(tmp_path)
+    captured = _capture_utc(collection)
+    state = {"time": captured + timedelta(minutes=1)}
+    monkeypatch.setattr(cas, "_utc_now", lambda: state["time"])
+    genuine = lifecycle._store_immutable
+
+    def slow_receipt(path, data):
+        result = genuine(path, data)
+        if path.parent.name == "receipt":
+            state["time"] = captured + timedelta(hours=2)
+        return result
+
+    monkeypatch.setattr(lifecycle, "_store_immutable", slow_receipt)
+    with pytest.raises(cas.DailyRouteCASError, match="too old"):
+        cas.publish_fresh_capture(collection)
+    record = cas.index.build_capture_index(collection)
+    assert not _capture_path(root, record.sha256).exists()
+    assert (root / "evidence" / cas._filename("evidence", record.evidence_sha256)).is_file()
+    assert (root / "receipt" / cas._filename("receipt", record.route_receipt_sha256)).is_file()
+
+
+def test_capture_rechecks_jst_day_after_receipt_storage(
+    tmp_path, safe_layout, monkeypatch
+):
+    root, _ = safe_layout
+    from obsidian_automation import github_daily_source_route as route
+    from test_github_daily_source_route import DATE, _FakeClient, _config
+    captured = datetime(2026, 10, 6, 14, 55, tzinfo=timezone.utc)
+    monkeypatch.setattr(route, "_utc_now", lambda: captured)
+    collection = route.collect_fresh_verified_routes(
+        _config(tmp_path), target_date=DATE, client=_FakeClient(),
+    )
+    state = {"time": captured + timedelta(minutes=1)}
+    monkeypatch.setattr(cas, "_utc_now", lambda: state["time"])
+    genuine = lifecycle._store_immutable
+
+    def cross_midnight(path, data):
+        result = genuine(path, data)
+        if path.parent.name == "receipt":
+            state["time"] = datetime(2026, 10, 6, 15, 5, tzinfo=timezone.utc)
+        return result
+
+    monkeypatch.setattr(lifecycle, "_store_immutable", cross_midnight)
+    with pytest.raises(cas.DailyRouteCASError, match="JST day"):
+        cas.publish_fresh_capture(collection)
+    record = cas.index.build_capture_index(collection)
+    assert not _capture_path(root, record.sha256).exists()

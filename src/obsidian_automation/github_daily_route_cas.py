@@ -322,6 +322,10 @@ def publish_fresh_capture(collection: source.FreshRouteCollection) -> PublishedC
             ("receipt", record.route_receipt_sha256, collection.receipt_bytes),
             ("capture", record.sha256, record.canonical_bytes),
         ):
+            if stage == "capture":
+                # Source may become stale while the first two CAS objects are
+                # fsynced. Check again immediately before final index write.
+                _require_initial_freshness(record)
             # Reuse atomic, no-overwrite CAS from merged main #293. Refuse a
             # branch/installation still carrying the old direct-final O_EXCL.
             from . import artifact_lifecycle as lifecycle
