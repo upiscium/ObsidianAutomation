@@ -50,9 +50,9 @@ def _validated_index(evidence_bytes: bytes, receipt_bytes: bytes) -> CaptureInde
     # Issue/PR source witness, exact date and canonical source-route receipt.
     try:
         routes = route.parse_verified_routes(receipt_bytes, evidence_bytes)
-    except (route.DailySourceRouteError, GitHubDailySummaryError, ArtifactLifecycleError, ValueError, TypeError) as exc:
+        receipt = json.loads(receipt_bytes)
+    except (route.DailySourceRouteError, GitHubDailySummaryError, ArtifactLifecycleError, ValueError, TypeError, RecursionError) as exc:
         raise DailyCaptureIndexError("capture sources failed route verification") from exc
-    receipt = json.loads(receipt_bytes)
     payload = {
         "record_version": CAPTURE_INDEX_VERSION,
         "source_receipt_version": route.RECORD_VERSION,
@@ -85,8 +85,11 @@ def build_capture_index(collection: route.FreshRouteCollection) -> CaptureIndex:
     if not isinstance(collection, route.FreshRouteCollection):
         raise DailyCaptureIndexError("fresh source collection is required")
     original = collection.evidence
+    if not isinstance(original, activity.DailyEvidenceBundle):
+        raise DailyCaptureIndexError("collection evidence must be a DailyEvidenceBundle")
     if (
-        type(original.canonical_bytes) is not bytes
+        type(collection.route_count) is not int
+        or type(original.canonical_bytes) is not bytes
         or original.sha256 != _sha(original.canonical_bytes)
         or type(collection.receipt_bytes) is not bytes
         or collection.receipt_sha256 != _sha(collection.receipt_bytes)
@@ -110,7 +113,7 @@ def parse_capture_index(
         raise DailyCaptureIndexError("invalid capture index byte envelope")
     try:
         expected = _validated_index(evidence_bytes, receipt_bytes)
-    except (ValueError, TypeError) as exc:
+    except (ValueError, TypeError, RecursionError) as exc:
         if isinstance(exc, DailyCaptureIndexError):
             raise
         raise DailyCaptureIndexError("invalid capture source inputs") from exc

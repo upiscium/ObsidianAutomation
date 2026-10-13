@@ -139,3 +139,39 @@ def test_capture_index_does_not_persist_files_or_invoke_remote_sources(tmp_path,
     index = build_capture_index(capture)
     parse_capture_index(index.canonical_bytes, capture.evidence.canonical_bytes, capture.receipt_bytes)
     assert before == {p.relative_to(tmp_path) for p in tmp_path.rglob("*")}
+
+
+def test_boolean_route_count_is_not_valid_integer_even_with_one_route(tmp_path):
+    from obsidian_automation.github_daily_source_route import collect_fresh_verified_routes
+    from test_github_daily_source_route import _FakeClient, _config, DATE
+
+    class SingleComment(_FakeClient):
+        def _paged(self, path):
+            values = super()._paged(path)
+            return values[:1] if "/issues/comments?" in path else values
+
+    collection = collect_fresh_verified_routes(
+        _config(tmp_path), target_date=DATE, client=SingleComment(),
+        explicit_historical_reconfirmation=True,
+    )
+    assert collection.route_count == 1
+    with pytest.raises(DailyCaptureIndexError, match="collection payload hash mismatch"):
+        build_capture_index(replace(collection, route_count=True))
+
+
+@pytest.mark.parametrize("bad", [None, object(), "evidence", b"not-an-object"])
+def test_invalid_nested_evidence_uses_typed_error(tmp_path, bad):
+    collection, _ = _capture(tmp_path)
+    with pytest.raises(DailyCaptureIndexError, match="DailyEvidenceBundle"):
+        build_capture_index(replace(collection, evidence=bad))
+
+
+def test_deep_source_json_recursion_is_typed_rejection(tmp_path):
+    collection, index = _capture(tmp_path)
+    recursive = b"[" * 1300 + b"0" + b"]" * 1300
+    for evidence, receipt in (
+        (recursive, collection.receipt_bytes),
+        (collection.evidence.canonical_bytes, recursive),
+    ):
+        with pytest.raises(DailyCaptureIndexError):
+            parse_capture_index(index.canonical_bytes, evidence, receipt)
