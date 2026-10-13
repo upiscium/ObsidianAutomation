@@ -90,18 +90,70 @@ class WitnessedCandidateBatch:
         return raw
 
 
+@dataclass(frozen=True)
+class _VerifiedCandidateInput:
+    """Owned scalar snapshot; never retain caller-controlled event containers."""
+
+    capture_sha256: str
+    route_receipt_sha256: str
+    evidence_sha256: str
+    closure_sha256: str
+    context_sha256: str
+    repository: str
+    entity_type: str
+    number: int
+    evidence_ids: tuple[str, ...]
+
+
 def _verify(
     context: c1a.WitnessedEntityContext, *, capture_sha256: str,
-) -> str:
-    # The Context SHA is not a capability. The parent API opens the exact
-    # Collector CAS and reconstructs the *entire* partition at each use.
+) -> _VerifiedCandidateInput:
+    # Verifying a caller object does not make its later indexing safe. Keep
+    # only scalar selection parameters, reopen CAS, and consume rebuilt data.
     try:
-        return c1a.verify_witnessed_entity_context(
+        if (
+            type(context) is not c1a.WitnessedEntityContext
+            or type(capture_sha256) is not str
+        ):
+            raise ValueError("invalid Context envelope")
+        batch_index = context.batch_index
+        batch_count = context.batch_count
+        max_bytes = context.max_context_bytes
+        if (
+            type(batch_index) is not int or type(batch_count) is not int
+            or not 0 <= batch_index < batch_count <= prior.MAX_CONTEXT_BATCHES
+            or type(max_bytes) is not int
+            or not 1024 <= max_bytes <= c1a.MAX_CONTEXT_BYTES
+        ):
+            raise ValueError("invalid Context selection")
+        verified_sha = c1a.verify_witnessed_entity_context(
             context, capture_sha256=capture_sha256,
+        )
+        # The parent verifier returns a hash, not owned source data. A second
+        # trusted reconstruction supplies the data actually used below; no
+        # caller Context/event/key is accessed after this verification point.
+        rebuilt = c1a.build_witnessed_entity_contexts(
+            capture_sha256, max_bytes=max_bytes,
+        )
+        if len(rebuilt.contexts) != batch_count:
+            raise ValueError("verified partition changed")
+        trusted = rebuilt.contexts[batch_index]
+        if trusted.capture_sha256 != capture_sha256 or trusted.sha256 != verified_sha:
+            raise ValueError("verified Context changed")
+        return _VerifiedCandidateInput(
+            capture_sha256=trusted.capture_sha256,
+            route_receipt_sha256=trusted.route_receipt_sha256,
+            evidence_sha256=trusted.evidence_sha256,
+            closure_sha256=trusted.closure_sha256,
+            context_sha256=verified_sha,
+            repository=trusted.key.repository,
+            entity_type=trusted.key.entity_type,
+            number=trusted.key.number,
+            evidence_ids=tuple(part.original["evidence_id"] for part in trusted.events),
         )
     except (
         c1a.DailyWitnessedContextError, ValueError, TypeError,
-        AttributeError, RecursionError,
+        AttributeError, KeyError, IndexError, OverflowError, RecursionError,
     ):
         raise DailyWitnessedCandidateError(
             "witnessed Context cannot be verified against Collector CAS"
@@ -112,8 +164,8 @@ def witnessed_model_candidate_schema(
     context: c1a.WitnessedEntityContext, *, capture_sha256: str,
 ) -> dict[str, object]:
     """Restrict the model to private source refs within exactly one v3 entity."""
-    _verify(context, capture_sha256=capture_sha256)
-    count = len(context.events)
+    source = _verify(context, capture_sha256=capture_sha256)
+    count = len(source.evidence_ids)
     return {
         "type": "object",
         "additionalProperties": False,
@@ -159,7 +211,8 @@ def normalize_witnessed_entity_candidates(
     before any singleton Grounding; this v3 batch must not be passed to the
     old Evidence-only #331 Grounding API as if it were its v2 candidate.
     """
-    context_sha = _verify(context, capture_sha256=capture_sha256)
+    source = _verify(context, capture_sha256=capture_sha256)
+    context_sha = source.context_sha256
     if type(model_response_bytes) is not bytes or not (
         0 < len(model_response_bytes) <= MAX_MODEL_REPLY_BYTES
     ):
@@ -197,25 +250,25 @@ def normalize_witnessed_entity_candidates(
         refs = candidate["source_refs"]
         if (
             type(refs) is not list
-            or not 1 <= len(refs) <= min(MAX_REFS_PER_CANDIDATE, len(context.events))
+            or not 1 <= len(refs) <= min(MAX_REFS_PER_CANDIDATE, len(source.evidence_ids))
             or any(type(i) is not int for i in refs)
             or len(set(refs)) != len(refs)
-            or any(i < 0 or i >= len(context.events) for i in refs)
+            or any(i < 0 or i >= len(source.evidence_ids) for i in refs)
         ):
             raise DailyWitnessedCandidateError("model source refs are unbound")
-        ids = tuple(context.events[i].original["evidence_id"] for i in refs)
+        ids = tuple(source.evidence_ids[i] for i in refs)
         cited.update(ids)
         candidate_data = prior._canonical_bytes({
             "record_version": c1a.RECORD_VERSION,
             "capture_sha256": capture_sha256,
-            "route_receipt_sha256": context.route_receipt_sha256,
-            "evidence_sha256": context.evidence_sha256,
-            "closure_sha256": context.closure_sha256,
+            "route_receipt_sha256": source.route_receipt_sha256,
+            "evidence_sha256": source.evidence_sha256,
+            "closure_sha256": source.closure_sha256,
             "context_sha256": context_sha,
             "entity": {
-                "repository": context.key.repository,
-                "entity_type": context.key.entity_type,
-                "number": context.key.number,
+                "repository": source.repository,
+                "entity_type": source.entity_type,
+                "number": source.number,
             },
             "summary": summary,
             "evidence_ids": list(ids),
@@ -227,17 +280,17 @@ def normalize_witnessed_entity_candidates(
         result.append(WitnessedCandidate(summary, ids, candidate_sha))
     normalized = WitnessedCandidateBatch(
         capture_sha256=capture_sha256,
-        route_receipt_sha256=context.route_receipt_sha256,
-        evidence_sha256=context.evidence_sha256,
-        closure_sha256=context.closure_sha256,
+        route_receipt_sha256=source.route_receipt_sha256,
+        evidence_sha256=source.evidence_sha256,
+        closure_sha256=source.closure_sha256,
         context_sha256=context_sha,
         response_sha256=_sha(model_response_bytes),
-        repository=context.key.repository,
-        entity_type=context.key.entity_type,
-        number=context.key.number,
+        repository=source.repository,
+        entity_type=source.entity_type,
+        number=source.number,
         candidates=tuple(result),
         uncited_evidence_ids=tuple(
-            eid for eid in context.evidence_ids if eid not in cited
+            eid for eid in source.evidence_ids if eid not in cited
         ),
     )
     normalized.to_json_bytes()  # exact bounded private output, no effect
