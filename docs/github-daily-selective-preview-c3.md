@@ -36,7 +36,9 @@ Actual same-day lifecycle events (create/close/reopen/merge/readiness/draft) and
 human PR approvals/changes requested supply fixed Japanese status wording from
 original Evidence, not model summaries. Same-day PR merges always qualify as
 an entity item even with no candidate reply; later or conflicting lifecycle
-records cause qualified wording, not an invented final state. Each entity is
+records cause qualified wording, not an invented final state. Chronology and
+latest-title selection compare parsed UTC datetimes, not ISO strings whose
+fractional-second precision can differ. Each entity is
 one `(repository, issue|pull_request, positive number)` item, and repositories
 with no selected item have no heading. No repository-wide narrative is added.
 A public `/issues/N` comment does not become an Issue merely from the path.
@@ -68,7 +70,8 @@ SHA and rendered Markdown SHA. It retains selected entity IDs, lifecycle
 Evidence IDs, selected candidate IDs and unresolved/source-coverage diagnostics.
 It copies no original comment bodies, model summaries or model reason prose.
 Source titles remain private label text; markup, HTML and Obsidian brackets are
-escaped for Markdown. A diagnostic title is not a verified progress assertion.
+escaped for Markdown. Markdown escaping precedes HTML entity generation;
+Obsidian comment delimiters (`%%`) are emitted as literal entities. A diagnostic title is not a verified progress assertion.
 Very long titles may be visually shortened; original Evidence remains intact.
 Limits are 4 MiB JSON and 2 MiB Markdown, with fail-closed overflow, no silent
 item cap and no partial-success preview.

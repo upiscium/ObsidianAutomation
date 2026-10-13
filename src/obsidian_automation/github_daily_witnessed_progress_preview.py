@@ -109,6 +109,19 @@ def _routine(event: dict) -> bool:
     return _routine_comment(event)
 
 
+def _event_time(event: dict) -> datetime:
+    # ISO UTC strings can legally have different fractional-second precision.
+    # They were already checked against the target JST window by the builder.
+    return datetime.fromisoformat(event["occurred_at"].replace("Z", "+00:00"))
+
+
+def _latest_title(events: list[dict], key: EntityKey) -> str:
+    titles = [(_event_time(e), e["evidence_id"], _title_for([e], key))
+              for e in events if e["kind"] in {"issue_created", "issue_snapshot",
+              "pull_request_created", "pull_request_snapshot"} and e.get("title") is not None]
+    return max(titles)[2] if titles else _title_for([], key)
+
+
 def _status(events: list[dict]) -> tuple[str, tuple[str, ...]]:
     changes = [e for e in events if e["kind"] in _LIFECYCLE or (
         e["kind"] == "pull_request_review" and _structural_signal(e))]
@@ -116,14 +129,14 @@ def _status(events: list[dict]) -> tuple[str, tuple[str, ...]]:
         return "", ()
     merges = [e for e in changes if e["kind"] == "pull_request_merged"]
     if merges:
-        at = max(e["occurred_at"] for e in merges)
+        at = max(_event_time(e) for e in merges)
         contradictory = any(e["kind"] in _STATE_KINDS - {"pull_request_merged"}
-                            and e["occurred_at"] >= at for e in changes)
+                            and _event_time(e) >= at for e in changes)
         text = ("当日にマージの記録があります（後続・同時刻の状態は要確認）。"
                 if contradictory else "PRがマージされました。")
     else:
-        at = max(e["occurred_at"] for e in changes)
-        latest = [e for e in changes if e["occurred_at"] == at]
+        at = max(_event_time(e) for e in changes)
+        latest = [e for e in changes if _event_time(e) == at]
         labels = {_structural_signal(e) for e in latest}
         text = labels.pop() if len(labels) == 1 else "状態遷移の記録があります（同時刻の最終状態は要確認）。"
     return text, tuple(e["evidence_id"] for e in changes)
@@ -133,8 +146,8 @@ def _escape(text: str) -> str:
     # Source titles are labels, not Markdown/HTML/Obsidian instructions.
     clean = " ".join("".join(c if c.isprintable() else " " for c in text).split())
     clean = clean[:180] + ("…" if len(clean) > 180 else "")
-    clean = html.escape(clean, quote=True)
-    return re.sub(r"([\\`*_{}\[\]()#!|~])", r"\\\1", clean)
+    clean = re.sub(r"([\\`*_{}\[\]()#!|~])", r"\\\1", clean)
+    return html.escape(clean, quote=True).replace("%", "&#37;")
 
 
 def build_witnessed_progress_preview(
@@ -220,7 +233,7 @@ def build_witnessed_progress_preview(
                 text += f"実質的進展として選択された候補が{len(progress)}件あります（内容・重要度は未承認）。"
             if included:
                 selected.append({"entity": identity, "url": key.github_url(),
-                    "title": _title_for(events, key), "summary_ja": text,
+                    "title": _latest_title(events, key), "summary_ja": text,
                     "selection_basis": "source_transition" if transitions else "advisory_materiality",
                     "transition_evidence_ids": list(transitions), "selected_candidate_sha256s": progress})
             diagnostics.append({"entity": identity, "selected": included,

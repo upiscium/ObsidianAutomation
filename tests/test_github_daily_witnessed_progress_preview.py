@@ -296,3 +296,35 @@ def test_source_chain_change_after_rollup_rejected(tmp_path,safe_layout,monkeypa
     monkeypatch.setattr(roll,"build_witnessed_entity_rollup",finish)
     with pytest.raises(preview.DailyProgressPreviewError,match="source differ"):
         run(cap)
+
+
+def test_source_title_cannot_emit_obsidian_comment_delimiters(tmp_path,safe_layout):
+    _,cap=saved(tmp_path,PreviewClient(title="%% hide following review notice",
+                  lifecycle=(("merged","2026-10-05T10:00:00Z"),)))
+    out=run(cap)
+    assert "%%" not in out.markdown
+    assert "&#37;&#37;" in out.markdown
+    assert "未承認" in out.markdown
+
+
+@pytest.mark.parametrize('raw,escaped', [("'",'&#x27;'), ('"','&quot;'), ('%%','&#37;&#37;')])
+def test_title_escape_does_not_break_its_own_html_entities(raw,escaped):
+    assert preview._escape(raw)==escaped
+
+
+@pytest.mark.parametrize('first,last,expected', [
+    ('merged','reopened','後続・同時刻の状態は要確認'),
+    ('reopened','closed','PRがクローズされました（マージ未確認）。'),
+])
+def test_mixed_precision_same_second_lifecycle_uses_actual_time(tmp_path,safe_layout,first,last,expected):
+    _,cap=saved(tmp_path,PreviewClient(lifecycle=((first,'2026-10-05T10:00:00Z'),
+                                                 (last,'2026-10-05T10:00:00.100000Z'))))
+    out=run(cap)
+    assert expected in out.markdown
+    if first=='merged': assert 'PRがマージされました。' not in out.markdown
+
+
+def test_latest_title_uses_real_time_not_string_order():
+    events=[dict(kind='issue_snapshot',occurred_at='2026-10-05T10:00:00Z',evidence_id='a'*64,title={'text':'old'}),
+            dict(kind='issue_snapshot',occurred_at='2026-10-05T10:00:00.100000Z',evidence_id='b'*64,title={'text':'new'})]
+    assert preview._latest_title(events,preview.EntityKey('upiscium/Test','issue',1))=='new'
