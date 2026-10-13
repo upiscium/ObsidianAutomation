@@ -894,3 +894,34 @@ def test_invalid_utf8_stage_ref_is_a_managed_cli_failure(tmp_path, capsys):
     assert "stage ref is invalid JSON" in result.err
     assert "Traceback" not in result.err
     assert result.out == ""
+
+
+
+def test_escaped_lone_surrogate_stage_ref_has_managed_failure(tmp_path, capsys):
+    import json
+    root = _root(tmp_path)
+    ref = production.enqueue_date(root, "2026-10-05")
+    # json.loads intentionally accepts this escaped lone surrogate as a Python
+    # string, but canonical UTF-8 serialization must reject it fail-closed.
+    bad = {
+        "record_version": 1,
+        "stage": "schedule",
+        "date": "2026-10-05",
+        "note": chr(0xD800),
+    }
+    raw = json.dumps(
+        bad, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8") + b"\n"
+    assert b"\\ud800" in raw
+    ref.write_bytes(raw)
+    with pytest.raises(
+        production.DailyProductionError, match="stage ref is not canonical JSON"
+    ):
+        production.scheduled_dates(root)
+    assert production.smoke_main([
+        "--profile", "live", "--root", str(root), "--date", "2026-10-05",
+    ]) == 2
+    observed = capsys.readouterr()
+    assert "stage ref is not canonical JSON" in observed.err
+    assert "Traceback" not in observed.err
+    assert observed.out == ""

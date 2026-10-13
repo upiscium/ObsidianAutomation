@@ -160,7 +160,14 @@ def _read_ref(
         raise DailyProductionError("stage ref kind does not match path")
     if value.get("date") != _canonical_date(target_date):
         raise DailyProductionError("stage ref date does not match path")
-    if _canonical_json_bytes(value) != data:
+    try:
+        canonical = _canonical_json_bytes(value)
+    except UnicodeError as exc:
+        # json.loads accepts escaped lone surrogates, but strict UTF-8
+        # canonicalization cannot encode them. Refuse as a managed invalid
+        # stage ref rather than leaking a raw UnicodeEncodeError traceback.
+        raise DailyProductionError("stage ref is not canonical JSON") from exc
+    if canonical != data:
         raise DailyProductionError("stage ref is not canonical JSON")
     return value
 
