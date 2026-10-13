@@ -611,3 +611,17 @@ def test_prior_receipt_replay_when_remote_is_still_desired_never_puts():
     assert replay.outcome == "already_desired"
     assert replay.after_content_sha256 == original.after_content_sha256
     assert remote.puts == 1
+
+
+
+def test_store_projection_safe_directory_validation_has_required_stat_import(tmp_path):
+    """Restore import lost when deleting the superseded receipt inode reader."""
+    from obsidian_automation.github_daily_progress import store_projection
+
+    _, projection = _projection()
+    output_dir = tmp_path / "projection-output"
+    output_dir.mkdir()
+    first = store_projection(output_dir, projection)
+    second = store_projection(output_dir, projection)
+    assert first == second
+    assert first.read_bytes() == projection.canonical_bytes

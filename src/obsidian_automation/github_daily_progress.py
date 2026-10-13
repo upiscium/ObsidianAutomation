@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import sys
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -1205,7 +1206,8 @@ def parse_transport_result(data: bytes) -> DailyProgressTransportResult:
         or type(value.get("record_version")) is not int
         or value["record_version"] != TRANSPORT_RESULT_VERSION
         or value.get("stage") != TRANSPORT_STAGE
-        or value.get("outcome") not in {"applied", "recovered", "already_desired"}
+        or not isinstance(value.get("outcome"), str)
+        or value["outcome"] not in {"applied", "recovered", "already_desired"}
     ):
         raise DailyProgressError("transport result has invalid schema or outcome")
     for name in (

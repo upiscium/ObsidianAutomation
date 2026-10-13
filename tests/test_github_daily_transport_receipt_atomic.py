@@ -379,3 +379,27 @@ def test_standalone_apply_cli_event_outcome_matches_immutable_receipt(
     assert event["outcome"] == "applied"
     assert event["transport_result_sha256"] == progress.sha256_bytes(prior)
     assert path.read_bytes() == prior
+
+
+
+@pytest.mark.parametrize(
+    "malformed_outcome",
+    [[], {}, ["applied"], {"kind": "applied"}, None, True, 1],
+)
+def test_unhashable_or_nonstring_receipt_outcome_is_managed_failure(
+    tmp_path, malformed_outcome,
+):
+    """A JSON collection must not raise TypeError before our fail-closed gate."""
+    from obsidian_automation.artifact_lifecycle import _canonical_json_bytes
+
+    payload = json.loads(_receipt().to_json_bytes())
+    payload["outcome"] = malformed_outcome
+    corrupt_bytes = _canonical_json_bytes(payload)
+    with pytest.raises(DailyProgressError, match="invalid schema or outcome"):
+        parse_transport_result(corrupt_bytes)
+
+    path = tmp_path / "existing-transport.json"
+    path.write_bytes(corrupt_bytes)
+    with pytest.raises(DailyProgressError):
+        persist_transport_result(path, _receipt())
+    assert path.read_bytes() == corrupt_bytes
