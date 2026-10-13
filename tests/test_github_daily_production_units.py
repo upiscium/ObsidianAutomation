@@ -111,3 +111,47 @@ def test_schedule_and_renderer_do_not_need_network() -> None:
     assert "PrivateNetwork=true" in _read(
         "obsidian-github-daily-render.service"
     )
+
+
+def test_summary_oneshot_has_hard_deadline_and_fail_closed_chain() -> None:
+    """The managed Summary job cannot run indefinitely across timer windows."""
+    summary = _read("obsidian-github-daily-summary.service")
+    render = _read("obsidian-github-daily-render.service")
+    apply = _read("obsidian-github-daily-apply.service")
+    timer = _read("obsidian-github-daily-progress.timer")
+
+    assert "Type=oneshot" in summary
+    # systemd.service: for Type=oneshot, RuntimeMaxSec is ineffective,
+    # and default TimeoutStartSec is disabled. Use an explicit start bound.
+    assert "TimeoutStartSec=20min" in summary
+    assert "TimeoutStartFailureMode=kill" in summary
+    assert "KillMode=control-group" in summary
+    assert "SendSIGKILL=yes" in summary
+    assert "Restart=no" in summary
+    assert not any(
+        line.startswith("RuntimeMaxSec=")
+        for line in summary.splitlines()
+    )
+    # Minimum nominal timer start separation is 30 minutes. Other pipeline
+    # stages consume time, so this does NOT guarantee no overlap.
+    assert "OnCalendar=*-*-* *:40:00 Asia/Tokyo" in timer
+    assert "OnCalendar=*-*-* 00:10:00 Asia/Tokyo" in timer
+    assert "Requires=obsidian-github-daily-summary.service" in render
+    assert "After=obsidian-github-daily-summary.service" in render
+    assert "Requires=obsidian-github-daily-render.service" in apply
+    assert "After=network-online.target obsidian-github-daily-render.service" in apply
+
+
+def test_summary_runtime_guard_is_limited_to_summary_service() -> None:
+    summary = _read("obsidian-github-daily-summary.service")
+    assert "User=obsidian-github-summarizer" in summary
+    assert "ReadWritePaths=/var/lib/obsidian-github-pipeline/daily-progress/20-Summary" in summary
+    assert "ReadOnlyPaths=/etc/obsidian-github-summarizer" in summary
+    assert "InaccessiblePaths=/etc/obsidian-github-sync" in summary
+    for name in (
+        "obsidian-github-daily-schedule.service",
+        "obsidian-github-daily-collect.service",
+        "obsidian-github-daily-render.service",
+        "obsidian-github-daily-apply.service",
+    ):
+        assert "TimeoutStartFailureMode=kill" not in _read(name)
