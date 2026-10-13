@@ -356,6 +356,8 @@ def test_live_status_distinguishes_pending_and_complete(
         date="2026-10-05",
         evidence_bundle_sha256="a" * 64,
         grounded_summary_sha256="b" * 64,
+        target_path="00-DailyNote/2026-10-05.md",
+        section_body_sha256="d" * 64,
     )
     monkeypatch.setattr(
         production,
@@ -410,11 +412,19 @@ def test_live_status_distinguishes_pending_and_complete(
             },
         )
 
-    result_data = (
-        '{"outcome":"recovered","projection_sha256":"'
-        + "c" * 64
-        + '"}\n'
-    ).encode()
+    valid_receipt = DailyProgressTransportResult(
+        projection_sha256="c" * 64,
+        date="2026-10-05",
+        target_path=fake_projection.target_path,
+        evidence_bundle_sha256="a" * 64,
+        grounded_summary_sha256="b" * 64,
+        section_body_sha256=fake_projection.section_body_sha256,
+        outcome="recovered",
+        before_content_sha256="e" * 64,
+        after_content_sha256="f" * 64,
+        completed_at="2026-10-13T00:00:00Z",
+    )
+    result_data = valid_receipt.to_json_bytes()
     result_sha = production.sha256_bytes(result_data)
     result_path = (
         root
@@ -520,6 +530,41 @@ def test_live_status_distinguishes_pending_and_complete(
             "--date", "2026-10-05",
         ]) == 2
 
+    # A receipt is not valid merely because its bytes match the Stage Ref's
+    # hash and its two old key fields. Refuse missing schema fields and stale
+    # date/path/Evidence/Section upstream metadata before complete=True.
+    minimal = {
+        "outcome": "recovered",
+        "projection_sha256": "c" * 64,
+    }
+    for receipt_value in (
+        minimal,
+        {**production.json.loads(result_data), "date": "2026-10-06"},
+        {**production.json.loads(result_data), "target_path": "00-DailyNote/stale.md"},
+        {**production.json.loads(result_data), "evidence_bundle_sha256": "0" * 64},
+        {**production.json.loads(result_data), "section_body_sha256": "0" * 64},
+    ):
+        corrupt_result = production._canonical_json_bytes(receipt_value)
+        result_path.write_bytes(corrupt_result)
+        transport_path.unlink()
+        production._write_ref(transport_path, {
+            "record_version": 1,
+            "stage": "transport",
+            "date": "2026-10-05",
+            "projection_sha256": "c" * 64,
+            "transport_result_sha256": production.sha256_bytes(corrupt_result),
+            "outcome": "recovered",
+        })
+        with pytest.raises(
+            production.DailyProductionError,
+            match="(invalid receipt|binding mismatch)",
+        ):
+            production.live_status(root, "2026-10-05")
+        assert production.smoke_main([
+            "--profile", "live", "--root", str(root),
+            "--date", "2026-10-05",
+        ]) == 2
+
     # An otherwise hash-bound but invalid UTF-8 transport artifact must be
     # reported as managed invalid JSON, never escape as UnicodeDecodeError.
     bad_result = b"\xff"
@@ -539,7 +584,7 @@ def test_live_status_distinguishes_pending_and_complete(
     })
     with pytest.raises(
         production.DailyProductionError,
-        match="live canary transport result is invalid JSON",
+        match="live canary transport result is invalid receipt",
     ):
         production.live_status(root, "2026-10-05")
 

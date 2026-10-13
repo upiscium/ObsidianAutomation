@@ -787,15 +787,21 @@ def live_status(root: Path, target_date: str) -> dict[str, object]:
             "live canary transport result SHA mismatch"
         )
     try:
-        result_value = json.loads(result_data)
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        # The SHA by itself only binds some bytes; it does not attest a
+        # complete, schema-valid Transport Result or its upstream identity.
+        result = parse_transport_result(result_data)
+    except DailyProgressError as exc:
         raise DailyProductionError(
-            "live canary transport result is invalid JSON"
+            "live canary transport result is invalid receipt"
         ) from exc
     if (
-        not isinstance(result_value, dict)
-        or result_value.get("projection_sha256") != projection_sha
-        or result_value.get("outcome") != outcome
+        result.projection_sha256 != projection_sha
+        or result.date != target
+        or result.target_path != projection.target_path
+        or result.evidence_bundle_sha256 != evidence_sha
+        or result.grounded_summary_sha256 != summary_sha
+        or result.section_body_sha256 != projection.section_body_sha256
+        or result.outcome != outcome
     ):
         raise DailyProductionError(
             "live canary transport result binding mismatch"
