@@ -37,8 +37,8 @@ class SourceRouteBinding:
     number: int
     source_id: str
     occurred_at: str
-    verified_api_path: str
-    entity_api_path: str
+    verified_api_path: str  # Source endpoint fetched by the Collector.
+    linked_entity_api_path: str  # Linked identity, not necessarily fetched.
     remote_id: str
 
     def to_json(self) -> dict[str, object]:
@@ -51,7 +51,7 @@ class SourceRouteBinding:
             "source_id": self.source_id,
             "occurred_at": self.occurred_at,
             "verified_api_path": self.verified_api_path,
-            "entity_api_path": self.entity_api_path,
+            "linked_entity_api_path": self.linked_entity_api_path,
             "remote_id": self.remote_id,
         }
 
@@ -157,7 +157,7 @@ def _closure_from_trusted_cas(digest: str) -> VerifiedSourceClosure:
             source_id=event["source_id"],
             occurred_at=event["occurred_at"],
             verified_api_path=record["route"],
-            entity_api_path=record["verification_route"],
+            linked_entity_api_path=record["verification_route"],
             remote_id=record["remote_id"],
         ))
     if len(bindings) != sum(

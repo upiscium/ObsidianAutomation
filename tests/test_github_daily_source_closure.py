@@ -77,7 +77,7 @@ def test_c0_pr_conversation_route_is_api_proven_not_guessed_from_issues_url(
         "pull_request_comment", "pull_request", 2,
     )
     assert pr.verified_api_path.endswith("/issues/comments/33")
-    assert pr.entity_api_path.endswith("/issues/2")
+    assert pr.linked_entity_api_path.endswith("/issues/2")
     assert pr.remote_id == "1002"
     assert issue.remote_id == "1001"
     assert any(
@@ -96,7 +96,7 @@ def test_c0_pr_commit_membership_is_exact_not_a_public_commit_link(
     assert commit.entity_type == "pull_request"
     assert commit.number == 2
     assert commit.verified_api_path.endswith("/pulls/2/commits")
-    assert commit.entity_api_path.endswith("/pulls/2")
+    assert commit.linked_entity_api_path.endswith("/pulls/2")
     assert commit.source_id == commit.remote_id
     assert len(commit.source_id) == 40
     review = next(
@@ -106,6 +106,8 @@ def test_c0_pr_commit_membership_is_exact_not_a_public_commit_link(
     assert review.entity_type == "pull_request"
     assert review.number == 2
     assert review.verified_api_path.endswith("/pulls/comments/51")
+    assert review.linked_entity_api_path.endswith("/pulls/2")
+    assert review.verified_api_path != review.linked_entity_api_path
 
 
 @pytest.mark.parametrize("invalid", [
@@ -244,3 +246,5 @@ def test_read_only_api_does_not_expose_freeform_metadata_or_paths(
     assert b"/var/lib/" not in result.canonical_bytes
     assert "source_id" in data["routes"][0]
     assert "verified_api_path" in data["routes"][0]
+    assert "linked_entity_api_path" in data["routes"][0]
+    assert "entity_api_path" not in data["routes"][0]

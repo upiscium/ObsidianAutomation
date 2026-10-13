@@ -16,11 +16,17 @@ public `/commit/SHA` URLs. Neither public path proves the actual Issue/PR
 route.
 
 Collector `collect_fresh_verified_routes` (#329) independently checks exact
-GitHub API comment IDs, the linked Issue or PR record, and bounded PR-commit
-membership, issuing an Evidence-v1 bundle with new canonical event IDs and a
-matching Route Receipt-v2. #336's Stage A Capture Index binds the exact source
-bytes; Stage B #341 stores those under the dedicated Collector UID with
-independent OS-principal/ACL/inode/hash validation and manifest-last CAS.
+GitHub API comment IDs, the GitHub `/issues/N` resource for Issue/PR
+discussion classification, PR review-comment linkage, and bounded
+`/pulls/N/commits` membership, issuing an Evidence-v1 bundle with new
+canonical event IDs and a matching Route Receipt-v2. **Per-kind proofs are
+not identical:** discussion comments fetch their `/issues/N` entity record;
+review comments fetch `/pulls/comments/ID` and verify the returned
+`pull_request_url`; PR commits fetch the bounded `/pulls/N/commits` list and
+verify the exact SHA. The latter two paths do **not** separately fetch the
+canonical `/pulls/N` entity resource. #336's Stage A Capture Index binds the
+exact source bytes; Stage B #341 stores those under the dedicated Collector UID
+with independent OS-principal/ACL/inode/hash validation and manifest-last CAS.
 
 C0 provides only:
 
@@ -74,8 +80,12 @@ does not certify producer identity. Output contains exactly:
 
 Each witnessed record includes the exact original `evidence_id`, event
 `source_kind`, `repository`, verified `entity_type` (Issue or PR),
-positive `number`, `source_id`, `occurred_at`, fixed authenticated
-`verified_api_path`, `entity_api_path` and `remote_id`. No source body,
+positive `number`, `source_id`, `occurred_at`, `verified_api_path`
+(the fixed GitHub source endpoint actually fetched),
+`linked_entity_api_path` (a canonical entity reference, **not necessarily a
+separately fetched resource**) and `remote_id`. C1 must respect the per-kind
+proof limitations described above; the linked `/pulls/N` path for review
+comments and PR commits is **not evidence of another GET**. No source body,
 private comment text, raw model output, GitHub authentication secret,
 untrusted filesystem path, or publish/deploy assertion is included.
 
