@@ -7,7 +7,6 @@ Grounding results. Human verdicts are not inferred from model advisories.
 from __future__ import annotations
 
 import re
-import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Sequence
@@ -208,20 +207,28 @@ def verified_partition_report(
     if (type(max_partial_context_bytes) is not int
             or not 1 <= max_partial_context_bytes <= MAX_EVIDENCE_INPUT_BYTES):
         raise CoverageError("Partial context limit is invalid")
+    # One fd, one inode admission: never lstat then reopen the path through
+    # load_evidence_bundle(), whose generic reader has no O_NONBLOCK/byte cap.
+    # A rename to a FIFO between those two operations could otherwise hang.
+    from .artifact_lifecycle import ArtifactLifecycleError, _canonical_json_bytes, sha256_bytes
+    from .github_daily_resume import _read_bounded
+    from .github_daily_summary import parse_evidence_bundle, partition_evidence
+
+    suffix = ".github-daily-evidence.json"
+    if not evidence_file.name.endswith(suffix):
+        raise CoverageError("canonical Evidence filename is invalid")
     try:
-        info = evidence_file.lstat()
-    except OSError as exc:
-        raise CoverageError("canonical Evidence file unavailable") from exc
-    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
-            or info.st_size <= 0 or info.st_size > MAX_EVIDENCE_INPUT_BYTES):
+        data = _read_bounded(evidence_file, max_bytes=MAX_EVIDENCE_INPUT_BYTES)
+    except (ArtifactLifecycleError, OSError) as exc:
+        raise CoverageError("canonical Evidence inode is not safely bounded") from exc
+    if not data:
         raise CoverageError("canonical Evidence inode is not safely bounded")
-
-    # load_evidence_bundle verifies the canonical content bytes and SHA-named
-    # file identity, and rederives each original event's own SHA before use.
-    from .artifact_lifecycle import _canonical_json_bytes, sha256_bytes
-    from .github_daily_summary import load_evidence_bundle, partition_evidence
-
-    bundle = load_evidence_bundle(evidence_file)
+    # Reusing the production parser checks canonical JSON, original event
+    # identities, repository closure and immutable SHA binding, but never
+    # reopens the original path after the fstat-validated read.
+    bundle = parse_evidence_bundle(data)
+    if evidence_file.name[:-len(suffix)] != bundle.sha256:
+        raise CoverageError("canonical Evidence filename does not match content SHA")
     contexts = partition_evidence(bundle, max_bytes=max_partial_context_bytes)
 
     original_repos: dict[str, list[str]] = {}

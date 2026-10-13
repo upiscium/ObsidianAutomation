@@ -90,3 +90,52 @@ def test_evidence_file_size_guard_precedes_content_read(tmp_path):
         out.truncate(16 * 1024 * 1024 + 1)
     with pytest.raises(CoverageError, match="bounded"):
         verified_partition_report(path, max_partial_context_bytes=5000)
+
+
+def test_canonical_evidence_fifo_cannot_block_metadata_report(tmp_path):
+    """Opening a FIFO with O_RDONLY alone would hang before inode validation."""
+    import os
+    import time
+
+    path, _ = _evidence_file(tmp_path)
+    path.unlink()
+    os.mkfifo(path, 0o600)
+    start = time.monotonic()
+    with pytest.raises(CoverageError, match="bounded"):
+        verified_partition_report(path, max_partial_context_bytes=5000)
+    assert time.monotonic() - start < 2.0
+
+
+def test_canonical_evidence_hardlink_cannot_bypass_inode_admission(tmp_path):
+    import os
+
+    path, _ = _evidence_file(tmp_path)
+    os.link(path, tmp_path / "second-link")
+    with pytest.raises(CoverageError, match="bounded"):
+        verified_partition_report(path, max_partial_context_bytes=5000)
+
+
+def test_canonical_evidence_replaced_with_fifo_before_open_fails_nonblocking(
+    tmp_path, monkeypatch,
+):
+    """A pathname swap exactly at read admission cannot create FIFO deadlock."""
+    import os
+    import time
+    from obsidian_automation import github_daily_resume as resume
+
+    path, _ = _evidence_file(tmp_path)
+    original_reader = resume._read_bounded
+    calls = []
+
+    def change_path_then_open(value, *, max_bytes):
+        calls.append(value)
+        path.unlink()
+        os.mkfifo(path, 0o600)
+        return original_reader(value, max_bytes=max_bytes)
+
+    monkeypatch.setattr(resume, "_read_bounded", change_path_then_open)
+    start = time.monotonic()
+    with pytest.raises(CoverageError, match="bounded"):
+        verified_partition_report(path, max_partial_context_bytes=5000)
+    assert calls == [path]
+    assert time.monotonic() - start < 2.0
