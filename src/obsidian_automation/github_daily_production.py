@@ -83,6 +83,10 @@ _REF_SUFFIX = ".ref.json"
 # Stage refs are fixed-shape metadata records, not arbitrary model outputs.
 # A conservative 64-KiB cap bounds all CLI readers and prevents FIFO DoS.
 MAX_STAGE_REF_BYTES = 64 * 1024
+# Transport receipts are fixed-schema metadata (hashes, status and timestamps)
+# rather than full Daily content. Do not let Live Smoke read unbounded or
+# blocking payloads from a claimed completed transport result.
+MAX_TRANSPORT_RESULT_BYTES = 64 * 1024
 _DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 _GIT_REV_RE = re.compile(r"^[0-9a-f]{40,64}$")
@@ -750,7 +754,14 @@ def live_status(root: Path, target_date: str) -> dict[str, object]:
         transport_dir
         / f"{projection_sha}.github-daily-progress.transport-result.json"
     )
-    result_data = _read_exact_file(result_path)
+    try:
+        result_data = _read_bounded_stage_ref(
+            result_path, max_bytes=MAX_TRANSPORT_RESULT_BYTES
+        )
+    except ArtifactLifecycleError as exc:
+        raise DailyProductionError(
+            "live canary transport result cannot be safely read"
+        ) from exc
     if sha256_bytes(result_data) != result_sha:
         raise DailyProductionError(
             "live canary transport result SHA mismatch"

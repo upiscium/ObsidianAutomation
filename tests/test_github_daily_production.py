@@ -506,6 +506,53 @@ def test_live_status_distinguishes_pending_and_complete(
     ):
         production.live_status(root, "2026-10-05")
 
+    # A final transport receipt is also an input to Live Smoke. A FIFO must
+    # not block before the inode-type check, even when the upstream stage refs
+    # and all their durability attestations are already present.
+    import multiprocessing
+    result_path.unlink()
+    os.mkfifo(result_path, 0o640)
+    fork = multiprocessing.get_context("fork")
+    worker = fork.Process(
+        target=_probe_live_transport_result_in_child,
+        args=(str(root),),
+    )
+    worker.start()
+    worker.join(timeout=3)
+    if worker.is_alive():
+        worker.terminate()
+        worker.join(timeout=2)
+        pytest.fail("Live Smoke blocked on special-inode transport result")
+    assert worker.exitcode == 0
+
+    # Other noncanonical final inodes fail before reading/hash comparison too.
+    result_path.unlink()
+    result_path.write_bytes(result_data)
+    sibling = result_path.with_name("extra-hardlink")
+    os.link(result_path, sibling)
+    with pytest.raises(
+        production.DailyProductionError,
+        match="transport result cannot be safely read",
+    ):
+        production.live_status(root, "2026-10-05")
+    sibling.unlink()
+    result_path.write_bytes(b"x" * (production.MAX_TRANSPORT_RESULT_BYTES + 1))
+    with pytest.raises(
+        production.DailyProductionError,
+        match="transport result cannot be safely read",
+    ):
+        production.live_status(root, "2026-10-05")
+
+
+def _probe_live_transport_result_in_child(root: str) -> None:
+    import os
+    try:
+        production.live_status(Path(root), "2026-10-05")
+    except production.DailyProductionError as exc:
+        if "transport result cannot be safely read" in str(exc):
+            os._exit(0)
+    os._exit(81)
+
 
 def test_stage_ref_publishes_complete_inode_at_exact_0640_mode(
     tmp_path, monkeypatch

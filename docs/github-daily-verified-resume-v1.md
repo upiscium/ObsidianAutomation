@@ -116,6 +116,14 @@ This is a metadata-ref compatibility limit, not a size limit on immutable
 model outputs or the separately accepted Grounded Summary content. Legacy
 refs must be read-only inventoried against the bound before deployment.
 
+The separately hash-bound **Transport Result** consumed by Live Smoke is
+fixed-schema receipt metadata rather than user-authored Daily Note content.
+Its reader now uses the same nonblocking, no-follow, bounded single-link
+regular-file admission, with an independent 64-KiB receipt limit. A FIFO,
+symlink, hardlink or oversized transport result must fail before hashing or
+JSON parsing; this does not change transport publication or impose a bound on
+model outputs, source Evidence or the Daily Note body.
+
 A read of published metadata and a directory fsync cannot replace
 independent historical ref ACL admission or date-scoped Writer acceptance.
 
