@@ -31,7 +31,7 @@ def test_source_size_work_refused_before_per_reply_normalization(capture, monkey
     stored = cas.read_verified_capture(capture[1].index_sha256)
     size = len(stored.evidence_bytes) + len(stored.receipt_bytes) + len(stored.capture_index.canonical_bytes)
     planned = 1 + 5*len(partials) + 3*len(grounds)
-    monkeypatch.setattr(roll, "MAX_SOURCE_WORK_BYTES", size*planned - 1)
+    monkeypatch.setattr(roll, "MAX_SOURCE_WORK_BYTES", size*(2*planned+1) - 1)
     rebuild = c1a.build_witnessed_entity_contexts
     calls = []
     def count_build(*args, **kwargs):
@@ -53,7 +53,7 @@ def test_exact_work_boundary_and_dependency_multiplier(capture, monkeypatch):
     size = len(stored.evidence_bytes) + len(stored.receipt_bytes) + len(stored.capture_index.canonical_bytes)
     planned = 1 + 5*len(partials) + 3*len(grounds)
     expected = build(capture, partials, grounds)
-    monkeypatch.setattr(roll, "MAX_SOURCE_WORK_BYTES", size*planned)
+    monkeypatch.setattr(roll, "MAX_SOURCE_WORK_BYTES", size*(2*planned+1))
     monkeypatch.setattr(roll, "MAX_SOURCE_RECONSTRUCTIONS", planned)
     rebuild = c1a.build_witnessed_entity_contexts
     calls = []
@@ -61,8 +61,15 @@ def test_exact_work_boundary_and_dependency_multiplier(capture, monkeypatch):
         calls.append(1)
         return rebuild(*args, **kwargs)
     monkeypatch.setattr(c1a, "build_witnessed_entity_contexts", count_build)
+    read = cas.read_verified_capture
+    reads = []
+    def count_read(*args, **kwargs):
+        reads.append(1)
+        return read(*args, **kwargs)
+    monkeypatch.setattr(cas, "read_verified_capture", count_read)
     assert build(capture, partials, grounds) == expected
     assert len(calls) == planned, "update replay budget if dependency call graph changes"
+    assert len(reads) == 2*planned+1, "source-work quota must include every CAS triplet read"
 
 
 def test_valid_changed_ground_reply_binds_exact_raw_and_assessment_hash(capture):
@@ -101,3 +108,18 @@ def test_reissued_partial_and_new_groundings_bind_both_raw_reply_hashes(capture)
     assert row["ground_assessment_sha256"] != before["ground_assessment_sha256"]
     assert data["response_set_complete"] is True
     assert data["publication_authorized"] is False
+
+
+def test_old_build_only_byte_budget_cannot_admit_double_cas_reads(capture, monkeypatch):
+    partials, grounds = replies(capture)
+    stored = cas.read_verified_capture(capture[1].index_sha256)
+    size = len(stored.evidence_bytes) + len(stored.receipt_bytes) + len(stored.capture_index.canonical_bytes)
+    planned = 1 + 5*len(partials) + 3*len(grounds)
+    # This is exactly the prior incorrect accounting boundary: it passed
+    # when each C1a build's second CAS read was omitted from the estimate.
+    monkeypatch.setattr(roll, "MAX_SOURCE_WORK_BYTES", size*planned)
+    def forbidden(*args, **kwargs):
+        raise AssertionError("must reject amplification before candidate normalization")
+    monkeypatch.setattr(c1b, "normalize_witnessed_entity_candidates", forbidden)
+    with pytest.raises(roll.DailyWitnessedRollupError, match="source-work"):
+        build(capture, partials, grounds)

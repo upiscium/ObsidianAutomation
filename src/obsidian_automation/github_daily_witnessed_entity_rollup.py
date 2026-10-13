@@ -167,7 +167,10 @@ def _build(capture: str, partials: dict[str, bytes], grounds: dict[str, bytes],
     original = cas.read_verified_capture(capture)
     source_bytes = (len(original.evidence_bytes) + len(original.receipt_bytes)
                     + len(original.capture_index.canonical_bytes))
-    if source_bytes * planned_rebuilds > MAX_SOURCE_WORK_BYTES:
+    # Each C1a build reads the triplet through C0 and directly; this
+    # rollup also makes the independent direct read above.
+    planned_triplet_reads = 2 * planned_rebuilds + 1
+    if source_bytes * planned_triplet_reads > MAX_SOURCE_WORK_BYTES:
         raise DailyWitnessedRollupError("rollup source-work byte budget exhausted")
     bundle = parse_evidence_bundle(original.evidence_bytes)
     if (source.capture_sha256 != capture or original.index_sha256 != capture

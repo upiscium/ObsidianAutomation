@@ -41,9 +41,12 @@ Repeated full-partition work is also checked before any per-partial or
 per-verdict normalization. The conservative C1a-rebuild count is
 `1 + 5 * partial_count + 3 * grounding_count` and may not exceed 512;
 this count gate runs before CAS access. After the initial trusted source read,
-that planned count multiplied by the combined Evidence/Receipt/Index byte size
-must not exceed 256 MiB. A regression test instruments the actual C1a build
-calls to detect an increased dependency multiplier. Either quota failure is a
+the actual planned triplet-read count is `2 * planned_rebuilds + 1`, or
+`3 + 10 * partial_count + 6 * grounding_count`: each C1a reconstruction reads
+through C0 and directly, and the rollup performs one additional direct read.
+This triplet-read count multiplied by combined Evidence/Receipt/Index bytes
+must not exceed 256 MiB. Regression instrumentation checks both C1a build calls
+and `cas.read_verified_capture` calls to detect a changed dependency multiplier. Either quota failure is a
 typed whole-request error, never a partially complete rollup. These deliberately
 conservative limits can reject large legitimate days; production profiling and
 a separately reviewed bounded replay design are still required. They bound
