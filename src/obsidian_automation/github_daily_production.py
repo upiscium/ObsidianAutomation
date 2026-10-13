@@ -42,6 +42,7 @@ from .github_daily_summary import (
     GitHubDailySummaryError,
     load_evidence_bundle,
 )
+from .github_daily_resume import _read_bounded as _read_bounded_stage_ref
 from .github_daily_summary_generation import (
     ollama_infer,
     openai_compatible_infer,
@@ -79,6 +80,9 @@ PROJECTION_DIR = "30-Projection"
 TRANSPORT_DIR = "40-Transport"
 
 _REF_SUFFIX = ".ref.json"
+# Stage refs are fixed-shape metadata records, not arbitrary model outputs.
+# A conservative 64-KiB cap bounds all CLI readers and prevents FIFO DoS.
+MAX_STAGE_REF_BYTES = 64 * 1024
 _DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 _GIT_REV_RE = re.compile(r"^[0-9a-f]{40,64}$")
@@ -138,15 +142,14 @@ def _read_ref(
     target_date: str,
 ) -> dict[str, object]:
     try:
-        data = _read_exact_file(path)
+        # Resume's bounded/no-follow/nonblocking reader refuses FIFO, symlink,
+        # hardlink and oversized metadata before parsing any JSON.
+        data = _read_bounded_stage_ref(path, max_bytes=MAX_STAGE_REF_BYTES)
     except ArtifactLifecycleError as exc:
-        # The no-follow reader can reject dangling symlinks and non-regular
-        # inodes. Translate to the production CLI's fail-closed error type,
-        # rather than escaping with a raw traceback from pending-date scans.
         raise DailyProductionError("stage ref cannot be safely read") from exc
     try:
         value = json.loads(data)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise DailyProductionError("stage ref is invalid JSON") from exc
     if not isinstance(value, dict):
         raise DailyProductionError("stage ref must be an object")
@@ -747,7 +750,7 @@ def live_status(root: Path, target_date: str) -> dict[str, object]:
         )
     try:
         result_value = json.loads(result_data)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise DailyProductionError(
             "live canary transport result is invalid JSON"
         ) from exc

@@ -103,12 +103,21 @@ reporting `complete: true`. It refuses a completed outcome if any directory
 durability check fails, even when an immutable ref is visible and its JSON is
 valid. Stage-presence fields in a `complete: false` report are observational,
 not an independent durability/validity certificate for unvisited later stages.
-This is a
-local **durability barrier**, not a claim of a completely side-effect-free
-filesystem status read; it does not change ref contents, run a model, issue a
-Writer/Nextcloud request, or authorize transport publication. A read of
-published metadata and a directory fsync cannot replace the independent
-historical ref ACL admission or date-scoped Writer acceptance.
+This is a local **durability barrier**, not a claim of a completely
+side-effect-free filesystem status read; it does not change ref contents, run
+a model, issue a Writer/Nextcloud request, or authorize transport publication.
+
+Every existing Daily stage `.ref.json` is read through the bounded,
+nonblocking, no-follow regular-file reader shared with verified Resume.
+The maximum ref size is 64 KiB; FIFO and other special inodes, hardlinks,
+dangling symlinks, oversized refs, malformed UTF-8, and noncanonical JSON
+fail closed without hanging a stage worker or exposing raw traceback text.
+This is a metadata-ref compatibility limit, not a size limit on immutable
+model outputs or the separately accepted Grounded Summary content. Legacy
+refs must be read-only inventoried against the bound before deployment.
+
+A read of published metadata and a directory fsync cannot replace
+independent historical ref ACL admission or date-scoped Writer acceptance.
 
 On a cache hit, all pointer and bound CAS files are read with bounded
 no-follow regular-file access, checked against exact expected hashes, and

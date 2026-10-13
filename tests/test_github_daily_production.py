@@ -483,6 +483,29 @@ def test_live_status_distinguishes_pending_and_complete(
         for name in ref_dirs
     }
 
+    # An otherwise hash-bound but invalid UTF-8 transport artifact must be
+    # reported as managed invalid JSON, never escape as UnicodeDecodeError.
+    bad_result = b"\xff"
+    bad_sha = production.sha256_bytes(bad_result)
+    result_path.write_bytes(bad_result)
+    transport_path = production._ref_path(
+        root / production.TRANSPORT_DIR, "2026-10-05"
+    )
+    transport_path.unlink()  # isolated corruption fixture only
+    production._write_ref(transport_path, {
+        "record_version": 1,
+        "stage": "transport",
+        "date": "2026-10-05",
+        "projection_sha256": "c" * 64,
+        "transport_result_sha256": bad_sha,
+        "outcome": "recovered",
+    })
+    with pytest.raises(
+        production.DailyProductionError,
+        match="live canary transport result is invalid JSON",
+    ):
+        production.live_status(root, "2026-10-05")
+
 
 def test_stage_ref_publishes_complete_inode_at_exact_0640_mode(
     tmp_path, monkeypatch
@@ -806,3 +829,68 @@ def test_live_smoke_rejects_dangling_symlink_ref_without_unhandled_error(
     assert "Traceback" not in out.err
     assert out.out == ""
     assert damaged.is_symlink()
+
+
+def _probe_bounded_stage_ref_reader_in_child(root: str) -> None:
+    """Exit immediately on managed failure; the parent enforces a timeout."""
+    import os
+    try:
+        production._pending_dates(
+            Path(root), "summary", production.SUMMARY_DIR
+        )
+    except production.DailyProductionError:
+        os._exit(0)
+    os._exit(85)
+
+
+def test_fifo_stage_ref_refuses_without_blocking(tmp_path):
+    import multiprocessing
+    import os
+    root = _root(tmp_path)
+    production.enqueue_date(root, "2026-10-05")
+    fifo = production._ref_path(
+        root / production.SUMMARY_DIR, "2026-10-05"
+    )
+    os.mkfifo(fifo, 0o640)
+    process = multiprocessing.get_context("fork").Process(
+        target=_probe_bounded_stage_ref_reader_in_child,
+        args=(str(root),),
+    )
+    process.start()
+    process.join(timeout=3)
+    if process.is_alive():
+        process.terminate()
+        process.join(timeout=2)
+        pytest.fail("Daily stage-ref reader blocked on a FIFO")
+    assert process.exitcode == 0
+    assert fifo.is_fifo()
+
+
+def test_oversized_and_hardlinked_stage_refs_fail_closed(tmp_path):
+    import os
+    root = _root(tmp_path)
+    stage = root / production.SUMMARY_DIR
+    path = production._ref_path(stage, "2026-10-05")
+    path.write_bytes(b'+' + b'x' * production.MAX_STAGE_REF_BYTES)
+    with pytest.raises(production.DailyProductionError, match="cannot be safely read"):
+        production._read_ref(path, stage="summary", target_date="2026-10-05")
+    path.unlink()
+    production._write_ref(path, {
+        "record_version": 1, "stage": "summary", "date": "2026-10-05"
+    })
+    os.link(path, stage / "extra-reference")
+    with pytest.raises(production.DailyProductionError, match="cannot be safely read"):
+        production._read_ref(path, stage="summary", target_date="2026-10-05")
+
+
+def test_invalid_utf8_stage_ref_is_a_managed_cli_failure(tmp_path, capsys):
+    root = _root(tmp_path)
+    path = production.enqueue_date(root, "2026-10-05")
+    path.write_bytes(b"\xff")
+    assert production.smoke_main([
+        "--profile", "live", "--root", str(root), "--date", "2026-10-05",
+    ]) == 2
+    result = capsys.readouterr()
+    assert "stage ref is invalid JSON" in result.err
+    assert "Traceback" not in result.err
+    assert result.out == ""
