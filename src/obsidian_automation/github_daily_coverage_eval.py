@@ -192,6 +192,71 @@ def evaluate_coverage(inp: CoverageInput) -> dict[str, object]:
 MAX_EVIDENCE_INPUT_BYTES = 16 * 1024 * 1024
 
 
+def _verify_collector_event_shape(event: dict[str, object]) -> None:
+    """Check original Evidence uses the producer's complete event format.
+
+    A self-hashed object with just repository/evidence_id must not be treated
+    as an authentic producer-shaped event in the structural report. This
+    verifies structure only; it does NOT cryptographically sign collector
+    provenance or assert the reported GitHub facts are truthful.
+    """
+    from datetime import datetime, timedelta
+    from .github_daily_activity import EvidenceEvent, _ENTITY_TYPES, _EVENT_KINDS
+
+    if set(event) != set(EvidenceEvent.__dataclass_fields__):
+        raise CoverageError("original Evidence event fields do not match Collector schema")
+    if (
+        not isinstance(event["kind"], str) or event["kind"] not in _EVENT_KINDS
+        or not isinstance(event["entity_type"], str)
+        or event["entity_type"] not in _ENTITY_TYPES
+        or not isinstance(event["url"], str) or not event["url"]
+        or not isinstance(event["source_id"], str) or not event["source_id"]
+        or event["actor"] is not None and not isinstance(event["actor"], str)
+        or event["sha"] is not None and not isinstance(event["sha"], str)
+        or event["state"] is not None and not isinstance(event["state"], str)
+        or event["draft"] is not None and type(event["draft"]) is not bool
+        or event["number"] is not None
+        and (type(event["number"]) is not int or event["number"] < 1)
+    ):
+        raise CoverageError("original Evidence event has invalid Collector field types")
+    timestamp = event["occurred_at"]
+    if not isinstance(timestamp, str) or not timestamp.endswith("Z"):
+        raise CoverageError("original Evidence event timestamp is invalid")
+    try:
+        parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise CoverageError("original Evidence event timestamp is invalid") from exc
+    if (
+        parsed.utcoffset() != timedelta(0)
+        or parsed.isoformat().replace("+00:00", "Z") != timestamp
+    ):
+        raise CoverageError("original Evidence event timestamp is not canonical")
+    for label in ("title", "body", "message"):
+        excerpt = event[label]
+        if excerpt is None:
+            continue
+        if (
+            not isinstance(excerpt, dict)
+            or set(excerpt) != {"text", "truncated", "original_bytes", "included_bytes"}
+            or not isinstance(excerpt["text"], str)
+            or type(excerpt["truncated"]) is not bool
+            or type(excerpt["original_bytes"]) is not int
+            or type(excerpt["included_bytes"]) is not int
+            or not 0 <= excerpt["included_bytes"] <= excerpt["original_bytes"]
+        ):
+            raise CoverageError("original Evidence text excerpt has invalid Collector shape")
+        try:
+            included = len(excerpt["text"].encode("utf-8"))
+        except UnicodeError as exc:
+            raise CoverageError("original Evidence text excerpt cannot be encoded") from exc
+        if (
+            included != excerpt["included_bytes"]
+            or (not excerpt["truncated"] and included != excerpt["original_bytes"])
+            or (excerpt["truncated"] and included >= excerpt["original_bytes"])
+        ):
+            raise CoverageError("original Evidence text excerpt byte counts mismatch")
+
+
 def verified_partition_report(
     evidence_file: Path, *, max_partial_context_bytes: int,
 ) -> dict[str, object]:
@@ -210,7 +275,10 @@ def verified_partition_report(
     # One fd, one inode admission: never lstat then reopen the path through
     # load_evidence_bundle(), whose generic reader has no O_NONBLOCK/byte cap.
     # A rename to a FIFO between those two operations could otherwise hang.
-    from .artifact_lifecycle import ArtifactLifecycleError, _canonical_json_bytes, sha256_bytes
+    from .artifact_lifecycle import (
+        ArtifactLifecycleError, _canonical_json_bytes,
+        _decode_json_object, sha256_bytes,
+    )
     from .github_daily_resume import _read_bounded
     from .github_daily_summary import parse_evidence_bundle, partition_evidence
 
@@ -223,12 +291,24 @@ def verified_partition_report(
         raise CoverageError("canonical Evidence inode is not safely bounded") from exc
     if not data:
         raise CoverageError("canonical Evidence inode is not safely bounded")
-    # Reusing the production parser checks canonical JSON, original event
-    # identities, repository closure and immutable SHA binding, but never
-    # reopens the original path after the fstat-validated read.
+    # The producer emits exact sorted compact JSON with one newline. A
+    # different serialization may be self-hashed, but is not canonical
+    # original Collector Evidence and must not be reported as such.
+    try:
+        decoded = _decode_json_object(data, label="canonical Evidence")
+        if _canonical_json_bytes(decoded) != data:
+            raise CoverageError("original Evidence JSON is not canonical")
+    except (ArtifactLifecycleError, UnicodeError) as exc:
+        raise CoverageError("original Evidence JSON is not canonical") from exc
+
+    # Reusing the production parser checks event self-hashes, repository
+    # closure and immutable SHA identity, without reopening the path. A
+    # second structural gate requires every event's complete Collector shape.
     bundle = parse_evidence_bundle(data)
     if evidence_file.name[:-len(suffix)] != bundle.sha256:
         raise CoverageError("canonical Evidence filename does not match content SHA")
+    for event in bundle.events:
+        _verify_collector_event_shape(dict(event))
     contexts = partition_evidence(bundle, max_bytes=max_partial_context_bytes)
 
     original_repos: dict[str, list[str]] = {}

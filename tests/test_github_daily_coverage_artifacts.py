@@ -139,3 +139,65 @@ def test_canonical_evidence_replaced_with_fifo_before_open_fails_nonblocking(
         verified_partition_report(path, max_partial_context_bytes=5000)
     assert calls == [path]
     assert time.monotonic() - start < 2.0
+
+
+def _rewritten_evidence(tmp_path, original_path, *, make_event=None, pretty=False):
+    import hashlib
+    import json
+    from obsidian_automation.artifact_lifecycle import _canonical_json_bytes
+
+    raw = json.loads(original_path.read_bytes())
+    if make_event is not None:
+        event = make_event(dict(raw["events"][0]))
+        unhashed = {key: value for key, value in event.items() if key != "evidence_id"}
+        event["evidence_id"] = hashlib.sha256(_canonical_json_bytes(unhashed)).hexdigest()
+        raw["events"][0] = event
+    if pretty:
+        data = (json.dumps(raw, indent=2, ensure_ascii=False, sort_keys=True) + "\n").encode()
+    else:
+        data = _canonical_json_bytes(raw)
+    path = tmp_path / (
+        hashlib.sha256(data).hexdigest() + ".github-daily-evidence.json"
+    )
+    path.write_bytes(data)
+    return path
+
+
+def test_rehashed_minimal_event_does_not_count_as_collector_evidence(tmp_path):
+    original_path, _ = _evidence_file(tmp_path)
+    path = _rewritten_evidence(
+        tmp_path, original_path,
+        make_event=lambda event: {"repository": event["repository"]},
+    )
+    with pytest.raises(CoverageError, match="Collector schema"):
+        verified_partition_report(path, max_partial_context_bytes=5000)
+
+
+def test_rehashed_wrong_event_type_is_rejected_despite_valid_self_hash(tmp_path):
+    original_path, _ = _evidence_file(tmp_path)
+    path = _rewritten_evidence(
+        tmp_path, original_path,
+        make_event=lambda event: {**event, "number": True},
+    )
+    with pytest.raises(CoverageError, match="field types"):
+        verified_partition_report(path, max_partial_context_bytes=5000)
+
+
+def test_rehashed_invalid_text_excerpt_is_rejected(tmp_path):
+    original_path, _ = _evidence_file(tmp_path)
+    path = _rewritten_evidence(
+        tmp_path, original_path,
+        make_event=lambda event: {**event, "message": {
+            "text": "arbitrary", "truncated": [],
+            "included_bytes": 9, "original_bytes": 9,
+        }},
+    )
+    with pytest.raises(CoverageError, match="text excerpt"):
+        verified_partition_report(path, max_partial_context_bytes=5000)
+
+
+def test_self_hashed_noncanonical_json_is_not_accepted_as_original_evidence(tmp_path):
+    original_path, _ = _evidence_file(tmp_path)
+    path = _rewritten_evidence(tmp_path, original_path, pretty=True)
+    with pytest.raises(CoverageError, match="not canonical"):
+        verified_partition_report(path, max_partial_context_bytes=5000)
