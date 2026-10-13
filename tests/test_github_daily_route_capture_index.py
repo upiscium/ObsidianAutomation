@@ -175,3 +175,17 @@ def test_deep_source_json_recursion_is_typed_rejection(tmp_path):
     ):
         with pytest.raises(DailyCaptureIndexError):
             parse_capture_index(index.canonical_bytes, evidence, receipt)
+
+
+def test_malformed_source_capture_time_has_constant_typed_diagnostic(tmp_path):
+    collected, index = _capture(tmp_path)
+    payload = json.loads(collected.receipt_bytes)
+    payload["captured_at_utc"] = "NOT_A_TIMESTAMP_PRIVATE_TOKEN"
+    with pytest.raises(DailyCaptureIndexError) as ex:
+        parse_capture_index(
+            index.canonical_bytes,
+            collected.evidence.canonical_bytes,
+            _canonical(payload),
+        )
+    assert str(ex.value) == "capture sources failed route verification"
+    assert ex.value.__cause__ is None

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 from . import github_daily_activity as activity
 from . import github_daily_source_route as route
+from . import github_project_watcher as watcher
 from .artifact_lifecycle import ArtifactLifecycleError
 from .github_daily_summary import GitHubDailySummaryError
 
@@ -51,8 +52,14 @@ def _validated_index(evidence_bytes: bytes, receipt_bytes: bytes) -> CaptureInde
     try:
         routes = route.parse_verified_routes(receipt_bytes, evidence_bytes)
         receipt = json.loads(receipt_bytes)
-    except (route.DailySourceRouteError, GitHubDailySummaryError, ArtifactLifecycleError, ValueError, TypeError, RecursionError) as exc:
-        raise DailyCaptureIndexError("capture sources failed route verification") from exc
+    except (
+        route.DailySourceRouteError, watcher.GitHubProjectWatcherError,
+        GitHubDailySummaryError, ArtifactLifecycleError,
+        ValueError, TypeError, OverflowError, RecursionError,
+    ):
+        # A lower-level timestamp error may contain untrusted source text.
+        # Preserve a constant diagnostic without surfacing that exception.
+        raise DailyCaptureIndexError("capture sources failed route verification") from None
     payload = {
         "record_version": CAPTURE_INDEX_VERSION,
         "source_receipt_version": route.RECORD_VERSION,
