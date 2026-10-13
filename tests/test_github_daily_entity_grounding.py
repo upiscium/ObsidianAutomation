@@ -265,3 +265,34 @@ def test_multiline_long_reason_and_model_metadata_rejected():
         _normalize(contexts[0], _model(reason="x" * 2049), raw, part, candidate)
     with pytest.raises(DailyEntityGroundingError):
         _normalize(contexts[0], _model(reason="x\ty"), raw, part, candidate)
+
+
+@pytest.mark.parametrize("separator", [
+    "\u2028",  # Unicode line separator
+    "\u2029",  # Unicode paragraph separator
+    "\u0085",  # Unicode next-line control
+    "\u200b",  # zero-width formatting character
+])
+def test_unicode_line_and_format_controls_fail_closed(separator):
+    raw, part, candidate, contexts = _case(_event("issue_created", 30))
+    with pytest.raises(DailyEntityGroundingError, match="reason invalid"):
+        _normalize(contexts[0], _model(reason="before" + separator + "after"),
+                   raw, part, candidate)
+
+
+def test_untrusted_reason_text_never_leaks_into_attested_result():
+    raw, part, candidate, contexts = _case(_event("pull_request_created", 42))
+    untrusted = (
+        "PR #999 was merged and deployed: "
+        "https://github.com/malicious/other/pull/999"
+    )
+    result = _normalize(
+        contexts[0], _model(reason=untrusted), raw, part, candidate,
+    )
+    from hashlib import sha256
+    assert result.reason_sha256 == sha256(untrusted.encode("utf-8")).hexdigest()
+    assert "reason" not in result.report()
+    assert "reason_sha256" in result.report()
+    assert "999" not in result.to_json_bytes().decode("utf-8")
+    assert "malicious" not in result.to_json_bytes().decode("utf-8")
+    assert result.report()["publication_authorized"] is False

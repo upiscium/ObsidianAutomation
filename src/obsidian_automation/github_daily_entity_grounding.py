@@ -131,7 +131,7 @@ class EntityGroundingAssessment:
     candidate_sha256: str
     evidence_ids: tuple[str, ...]
     verdict: str
-    reason: str
+    reason_sha256: str
     raw_response_sha256: str
 
     def report(self) -> dict[str, object]:
@@ -147,7 +147,10 @@ class EntityGroundingAssessment:
             "candidate_sha256": self.candidate_sha256,
             "evidence_ids": list(self.evidence_ids),
             "verdict": self.verdict,
-            "reason": self.reason,
+            # The model reason can contain fabricated URLs, Issue numbers or
+            # merged/deployed assertions. Never copy that prose to a result
+            # which an editorial renderer might later treat as trusted.
+            "reason_sha256": self.reason_sha256,
             "raw_response_sha256": self.raw_response_sha256,
             "model_verdict_is_advisory": True,
             "requires_human_quality_review": True,
@@ -259,7 +262,7 @@ def normalize_entity_grounding_verdict(
     if (
         not reason or reason != reason.strip()
         or len(reason) > MAX_REASON_CHARS or size > MAX_REASON_BYTES
-        or any(ord(char) < 32 or ord(char) == 127 for char in reason)
+        or not reason.isprintable() or len(reason.splitlines()) != 1
     ):
         raise DailyEntityGroundingError("model grounding reason invalid")
     output = EntityGroundingAssessment(
@@ -269,7 +272,7 @@ def normalize_entity_grounding_verdict(
         ground_context_sha256=ground_context.sha256,
         candidate_sha256=ground_context.candidate_sha256,
         evidence_ids=ground_context.evidence_ids,
-        verdict=value["verdict"], reason=reason,
+        verdict=value["verdict"], reason_sha256=_sha(reason.encode("utf-8")),
         raw_response_sha256=_sha(model_response_bytes),
     )
     output.to_json_bytes()

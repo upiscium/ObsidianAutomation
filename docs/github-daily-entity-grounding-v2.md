@@ -51,10 +51,17 @@ EntityGroundingAssessment v2
 - Input serializations are versioned, sorted-key canonical JSON with bounded
   source count and byte budgets (256 KiB max Grounding input, 8 KiB reply).
   Unexpected model fields, duplicate JSON keys, bad encoding, wrong verdict
-  or multiline / control-character / oversized reasons fail closed.
+  or multiline (including Unicode line/paragraph separators), invisible
+  formatting/control characters or oversized reasons fail closed.
 - Grounding model schema permits **only** `verdict` and `reason`. A
   `supported` response is a **model advisory assessment**, not proof that a
   genuinely material issue advanced or that its status is merged/deployed.
+  The raw free-text reason is validated and immediately reduced to a SHA-256
+  digest; it is **not copied into the normalized assessment**. A model could
+  fabricate an Issue number, URL or merge assertion in its explanatory text,
+  so that free text must never reach the user-visible Daily or an operations
+  API. The typed verdict and original source bindings are the only carried
+  information.
   Unsupported candidates cannot become user-facing progress by themselves.
 - The response retains exact Grounding context SHA and original candidate
   SHA; identical original inputs and verdict bytes yield identical results.
