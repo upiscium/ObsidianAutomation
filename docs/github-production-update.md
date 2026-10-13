@@ -5,13 +5,21 @@
 Repeated production deployments of the Obsidian GitHub integration use a single
 reviewed target commit instead of an implicit "latest main" update.
 
-The normal operator entrypoint is:
+The **preferred staged deployment** is described in
+[GitHub Production Two-Phase Deployment v1](github-production-stage-activate-v1.md).
+Its `stage` operation runs safe-only smoke and keeps managed timers inert;
+`activate` requires distinct exact-stage and live effect approval.
+
+The historic **single-transaction live deployment** remains available only
+with explicit permission to perform the live GitHub Writer/Sync smoke:
 
 ```bash
 obsidian-github-production-update \
-  --target-sha <reviewed-merge-commit>
+  --target-sha <reviewed-merge-commit> \
+  --approve-legacy-live-effects
 ```
 
+Do not use this full transaction as a side-effect-free staging operation.
 The target SHA is mandatory. The updater fetches `origin/main`, requires the
 exact commit to exist, and requires that commit to be reachable from
 `origin/main`. It never substitutes `origin/main` for the requested target.
