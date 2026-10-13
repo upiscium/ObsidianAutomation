@@ -201,3 +201,65 @@ def test_self_hashed_noncanonical_json_is_not_accepted_as_original_evidence(tmp_
     path = _rewritten_evidence(tmp_path, original_path, pretty=True)
     with pytest.raises(CoverageError, match="not canonical"):
         verified_partition_report(path, max_partial_context_bytes=5000)
+
+
+
+@pytest.mark.parametrize(
+    "field,limit", [
+        ("title", 2048),
+        ("body", 16384),
+        ("message", 4096),
+    ],
+)
+def test_self_hashed_untruncated_oversize_excerpt_refused(tmp_path, field, limit):
+    original, _ = _evidence_file(tmp_path)
+    def oversized(event):
+        event[field] = {
+            "text": "x" * (limit + 1), "truncated": False,
+            "included_bytes": limit + 1, "original_bytes": limit + 1,
+        }
+        return event
+    path = _rewritten_evidence(tmp_path, original, make_event=oversized)
+    with pytest.raises(CoverageError, match="byte limit"):
+        verified_partition_report(path, max_partial_context_bytes=65536)
+
+
+def test_self_hashed_tiny_truncated_excerpt_refused(tmp_path):
+    original, _ = _evidence_file(tmp_path)
+    def pretend_truncated(event):
+        event["message"] = {
+            "text": "x" * 20, "truncated": True,
+            "included_bytes": 20, "original_bytes": 6000,
+        }
+        return event
+    path = _rewritten_evidence(tmp_path, original, make_event=pretend_truncated)
+    with pytest.raises(CoverageError, match="byte limit"):
+        verified_partition_report(path, max_partial_context_bytes=6000)
+
+
+def test_self_hashed_truncated_flag_not_allowed_if_original_within_limit(tmp_path):
+    original, _ = _evidence_file(tmp_path)
+    def pretend_truncated(event):
+        event["message"] = {
+            "text": "a" * 4093, "truncated": True,
+            "included_bytes": 4093, "original_bytes": 4094,
+        }
+        return event
+    path = _rewritten_evidence(tmp_path, original, make_event=pretend_truncated)
+    with pytest.raises(CoverageError, match="byte limit"):
+        verified_partition_report(path, max_partial_context_bytes=65536)
+
+
+def test_legitimate_producer_unicode_truncation_passes_collector_shape(tmp_path):
+    from obsidian_automation.github_daily_activity import _bounded_text
+    original, _ = _evidence_file(tmp_path)
+    excerpt = _bounded_text("x" * 4094 + "🌿" * 3, limit=4096, label="message")
+    assert excerpt.truncated is True
+    assert excerpt.included_bytes == 4094
+    def producer_excerpt(event):
+        event["message"] = excerpt.to_json()
+        return event
+    path = _rewritten_evidence(tmp_path, original, make_event=producer_excerpt)
+    report = verified_partition_report(path, max_partial_context_bytes=65536)
+    assert report["original_event_count"] == 4
+    assert report["publication_authorized"] is False

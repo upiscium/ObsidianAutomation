@@ -201,7 +201,11 @@ def _verify_collector_event_shape(event: dict[str, object]) -> None:
     provenance or assert the reported GitHub facts are truthful.
     """
     from datetime import datetime, timedelta
-    from .github_daily_activity import EvidenceEvent, _ENTITY_TYPES, _EVENT_KINDS
+    from .github_daily_activity import (
+        EvidenceEvent, _ENTITY_TYPES, _EVENT_KINDS,
+        TITLE_MAX_BYTES, BODY_MAX_BYTES, COMMENT_MAX_BYTES,
+        REVIEW_MAX_BYTES, COMMIT_MESSAGE_MAX_BYTES,
+    )
 
     if set(event) != set(EvidenceEvent.__dataclass_fields__):
         raise CoverageError("original Evidence event fields do not match Collector schema")
@@ -231,7 +235,22 @@ def _verify_collector_event_shape(event: dict[str, object]) -> None:
         or parsed.isoformat().replace("+00:00", "Z") != timestamp
     ):
         raise CoverageError("original Evidence event timestamp is not canonical")
-    for label in ("title", "body", "message"):
+    # Byte limits are part of the Collector's event-specific contract, not
+    # just self-consistent excerpt bookkeeping. A 3KiB untruncated title is
+    # impossible for the producer even if its SHA is recomputed to match.
+    body_limit = (
+        REVIEW_MAX_BYTES if event["kind"] == "pull_request_review"
+        else COMMENT_MAX_BYTES if event["kind"] in {
+            "issue_comment", "pull_request_comment", "pull_request_review_comment",
+        }
+        else BODY_MAX_BYTES
+    )
+    excerpt_limits = {
+        "title": TITLE_MAX_BYTES,
+        "body": body_limit,
+        "message": COMMIT_MESSAGE_MAX_BYTES,
+    }
+    for label, limit in excerpt_limits.items():
         excerpt = event[label]
         if excerpt is None:
             continue
@@ -251,10 +270,18 @@ def _verify_collector_event_shape(event: dict[str, object]) -> None:
             raise CoverageError("original Evidence text excerpt cannot be encoded") from exc
         if (
             included != excerpt["included_bytes"]
+            or included > limit
             or (not excerpt["truncated"] and included != excerpt["original_bytes"])
-            or (excerpt["truncated"] and included >= excerpt["original_bytes"])
+            or (excerpt["truncated"] and (
+                excerpt["original_bytes"] <= limit
+                or included >= excerpt["original_bytes"]
+                # The producer truncates at limit raw UTF-8 bytes and strips
+                # only the (0..3)-byte partial final codepoint. Shortened
+                # excerpts far below the cap cannot be producer output.
+                or included < limit - 3
+            ))
         ):
-            raise CoverageError("original Evidence text excerpt byte counts mismatch")
+            raise CoverageError("original Evidence text excerpt violates Collector byte limit")
 
 
 def verified_partition_report(
