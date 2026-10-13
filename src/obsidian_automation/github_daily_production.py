@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import re
+import secrets
 import stat
 import sys
 from datetime import date, datetime, timedelta
@@ -11,7 +12,16 @@ from pathlib import Path
 from typing import Iterable, Mapping
 from zoneinfo import ZoneInfo
 
-from .artifact_lifecycle import _canonical_json_bytes, _read_exact_file, sha256_bytes
+from .artifact_lifecycle import (
+    ArtifactLifecycleError,
+    _canonical_json_bytes,
+    _read_exact_file,
+    _rename_noreplace,
+    _require_safe_directory,
+    _same_immutable_bytes,
+    _write_all,
+    sha256_bytes,
+)
 from .github_daily_activity import (
     GitHubDailyActivityError,
     collect_daily_evidence,
@@ -36,7 +46,10 @@ from .github_daily_summary_generation import (
     ollama_infer,
     openai_compatible_infer,
 )
-from .github_daily_summary import run_pipeline
+from .github_daily_summary import (
+    _exclusive_summary_pipeline_root,
+    _run_pipeline_unlocked,
+)
 from .github_project_watcher import (
     GitHubClient,
     GitHubProjectWatcherError,
@@ -131,7 +144,8 @@ def _read_ref(
         raise DailyProductionError("stage ref is invalid JSON") from exc
     if not isinstance(value, dict):
         raise DailyProductionError("stage ref must be an object")
-    if value.get("record_version") != RECORD_VERSION:
+    if (type(value.get("record_version")) is not int
+            or value["record_version"] != RECORD_VERSION):
         raise DailyProductionError("stage ref version is unsupported")
     if value.get("stage") != stage:
         raise DailyProductionError("stage ref kind does not match path")
@@ -146,44 +160,78 @@ def _write_ref(
     path: Path,
     payload: Mapping[str, object],
 ) -> bytes:
-    data = _canonical_json_bytes(payload)
-    if path.exists() or path.is_symlink():
-        existing = _read_exact_file(path)
-        if existing != data:
-            raise DailyProductionError(
-                "stage ref already exists with different bytes"
-            )
-        return existing
+    """Publish a complete immutable stage ref, never an in-progress final file.
 
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    if hasattr(os, "O_CLOEXEC"):
-        flags |= os.O_CLOEXEC
+    The CAS rename primitive from merged #293 provides no-overwrite semantics,
+    but stage refs retain their legacy explicit 0640 mode regardless of the
+    invoking shell's umask. Payload bytes remain owner-only until fully fsynced.
+    """
+    data = _canonical_json_bytes(payload)
+    _require_safe_directory(path.parent, create=True)
+    parent_flags = (
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        | getattr(os, "O_CLOEXEC", 0)
+    )
     try:
-        fd = os.open(path, flags, 0o640)
-    except FileExistsError:
-        return _write_ref(path, payload)
+        parent_fd = os.open(path.parent, parent_flags)
     except OSError as exc:
-        raise DailyProductionError("cannot create stage ref") from exc
+        raise DailyProductionError("stage ref parent is not safely readable") from exc
+    staged_name = f".obsidian-daily-ref-{secrets.token_hex(16)}.tmp"
+    temp_exists = False
+    fd: int | None = None
     try:
-        view = memoryview(data)
-        while view:
-            written = os.write(fd, view)
-            if written <= 0:
+        try:
+            os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            if not _same_immutable_bytes(parent_fd, path.name, data):
                 raise DailyProductionError(
-                    "short write while persisting stage ref"
+                    "stage ref already exists with different bytes"
                 )
-            view = view[written:]
+            os.fsync(parent_fd)
+            return data
+
+        flags = (
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        fd = os.open(staged_name, flags, 0o600, dir_fd=parent_fd)
+        temp_exists = True
+        os.fchmod(fd, 0o600)
+        _write_all(fd, data)
         os.fsync(fd)
-    finally:
+        # Do not make any payload bytes group-readable before the full fsync.
+        os.fchmod(fd, 0o640)
+        os.fsync(fd)
         os.close(fd)
-    dir_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(dir_fd)
+        fd = None
+        try:
+            _rename_noreplace(parent_fd, staged_name, path.name)
+        except FileExistsError as exc:
+            if not _same_immutable_bytes(parent_fd, path.name, data):
+                raise DailyProductionError(
+                    "stage ref already exists with different bytes"
+                ) from exc
+            os.unlink(staged_name, dir_fd=parent_fd)
+            temp_exists = False
+        else:
+            temp_exists = False
+        os.fsync(parent_fd)
+        return data
+    except (OSError, ArtifactLifecycleError) as exc:
+        raise DailyProductionError("stage ref atomic publication failed") from exc
     finally:
-        os.close(dir_fd)
-    return data
+        try:
+            if fd is not None:
+                os.close(fd)
+            if temp_exists:
+                try:
+                    os.unlink(staged_name, dir_fd=parent_fd)
+                except FileNotFoundError:
+                    pass
+        finally:
+            os.close(parent_fd)
 
 
 def enqueue_date(
@@ -363,34 +411,42 @@ def summarize_pending(
         raise DailyProductionError("unsupported Daily summary provider")
 
     completed: list[str] = []
-    for target in _pending_dates(root, "summary", SUMMARY_DIR):
-        evidence_sha, evidence_path, _bundle = _evidence_for_date(
-            root,
-            target,
-        )
-        result = run_pipeline(
-            evidence_path=evidence_path,
-            state_root=summary_root,
-            infer=infer,
-            implementation_revision=implementation_revision,
-        )
-        if result.evidence_bundle_sha256 != evidence_sha:
-            raise DailyProductionError(
-                "summary result evidence binding mismatch"
+    # A date's Summary ref must be committed under the same admission lock
+    # as its model inference and CAS writes. Otherwise another runner can
+    # select the same pending date after run_pipeline returns but before
+    # _write_ref completes. This is a trusted, local inode lock; direct
+    # read-only scanners and other stage producers have distinct authority.
+    with _exclusive_summary_pipeline_root(summary_root):
+        for target in _pending_dates(root, "summary", SUMMARY_DIR):
+            evidence_sha, evidence_path, _bundle = _evidence_for_date(
+                root,
+                target,
             )
-        _write_ref(
-            _ref_path(summary_root, target),
-            {
-                "record_version": RECORD_VERSION,
-                "stage": "summary",
-                "date": target,
-                "evidence_sha256": evidence_sha,
-                "grounded_summary_sha256": (
-                    result.grounded_summary_sha256
-                ),
-            },
-        )
-        completed.append(target)
+            # The outer production transaction owns the lock across ref
+            # publication; avoid recursively taking the nonblocking lock.
+            result = _run_pipeline_unlocked(
+                evidence_path=evidence_path,
+                state_root=summary_root,
+                infer=infer,
+                implementation_revision=implementation_revision,
+            )
+            if result.evidence_bundle_sha256 != evidence_sha:
+                raise DailyProductionError(
+                    "summary result evidence binding mismatch"
+                )
+            _write_ref(
+                _ref_path(summary_root, target),
+                {
+                    "record_version": RECORD_VERSION,
+                    "stage": "summary",
+                    "date": target,
+                    "evidence_sha256": evidence_sha,
+                    "grounded_summary_sha256": (
+                        result.grounded_summary_sha256
+                    ),
+                },
+            )
+            completed.append(target)
     return tuple(completed)
 
 

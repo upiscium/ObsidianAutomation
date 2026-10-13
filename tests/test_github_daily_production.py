@@ -173,7 +173,7 @@ def test_provider_failure_leaves_summary_stage_retryable(
 
     monkeypatch.setattr(
         production,
-        "run_pipeline",
+        "_run_pipeline_unlocked",
         fail_then_pass,
     )
 
@@ -430,3 +430,200 @@ def test_live_status_distinguishes_pending_and_complete(
     complete = production.live_status(root, "2026-10-05")
     assert complete["complete"] is True
     assert complete["stages"]["transport_outcome"] == "recovered"
+
+
+def test_stage_ref_publishes_complete_inode_at_exact_0640_mode(
+    tmp_path, monkeypatch
+):
+    import os
+    import stat
+    root = _root(tmp_path)
+    path = production._ref_path(root / production.SUMMARY_DIR, "2026-10-05")
+    payload = {"record_version": 1, "stage": "summary", "date": "2026-10-05"}
+    expected = production._canonical_json_bytes(payload)
+    original_rename = production._rename_noreplace
+    observed = []
+
+    def validate_before_rename(parent_fd, staged_name, target_name):
+        assert target_name == path.name
+        assert not path.exists()
+        assert os.stat(staged_name, dir_fd=parent_fd).st_size == len(expected)
+        assert stat.S_IMODE(os.stat(staged_name, dir_fd=parent_fd).st_mode) == 0o640
+        observed.append("complete-before-rename")
+        return original_rename(parent_fd, staged_name, target_name)
+
+    with monkeypatch.context() as m:
+        m.setattr(production, "_rename_noreplace", validate_before_rename)
+        old_mask = os.umask(0o022)
+        try:
+            assert production._write_ref(path, payload) == expected
+        finally:
+            os.umask(old_mask)
+    assert observed == ["complete-before-rename"]
+    assert path.read_bytes() == expected
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+    assert list(path.parent.glob(".obsidian-daily-ref-*.tmp")) == []
+    assert production._write_ref(path, payload) == expected
+
+
+def test_stage_ref_publish_error_leaves_no_partial_final(tmp_path, monkeypatch):
+    root = _root(tmp_path)
+    path = production._ref_path(root / production.SUMMARY_DIR, "2026-10-05")
+    payload = {"record_version": 1, "stage": "summary", "date": "2026-10-05"}
+    with monkeypatch.context() as m:
+        def refuse_rename(*_args):
+            raise OSError("injected pre-publication fault")
+        m.setattr(production, "_rename_noreplace", refuse_rename)
+        with pytest.raises(production.DailyProductionError, match="atomic publication failed"):
+            production._write_ref(path, payload)
+    assert not path.exists()
+    assert list(path.parent.glob(".obsidian-daily-ref-*.tmp")) == []
+    assert production._write_ref(path, payload) == production._canonical_json_bytes(payload)
+
+
+def test_summary_ref_is_committed_while_pipeline_root_lock_held(tmp_path, monkeypatch):
+    root = _root(tmp_path)
+    production.enqueue_date(root, "2026-10-05")
+    monkeypatch.setattr(production, "ollama_infer", lambda **_kwargs: object())
+    monkeypatch.setattr(
+        production, "_evidence_for_date",
+        lambda _root, _target: ("a" * 64, tmp_path / "unused.json", object()),
+    )
+    monkeypatch.setattr(
+        production, "_run_pipeline_unlocked",
+        lambda **_kwargs: SimpleNamespace(
+            evidence_bundle_sha256="a" * 64,
+            grounded_summary_sha256="b" * 64,
+        ),
+    )
+    original_write = production._write_ref
+    calls = []
+
+    def check_locked(path, payload):
+        from obsidian_automation.github_daily_summary import _exclusive_summary_pipeline_root
+        with pytest.raises(production.GitHubDailySummaryError, match="already active"):
+            with _exclusive_summary_pipeline_root(root / production.SUMMARY_DIR):
+                pass
+        calls.append("under-lock")
+        return original_write(path, payload)
+
+    monkeypatch.setattr(production, "_write_ref", check_locked)
+    result = production.summarize_pending(
+        root=root, provider="ollama", base_url="http://unused.local",
+        model="test", implementation_revision="a" * 40,
+    )
+    assert result == ("2026-10-05",)
+    assert calls == ["under-lock"]
+    assert production._pending_dates(root, "summary", production.SUMMARY_DIR) == ()
+
+
+def test_parallel_summary_producer_does_not_select_or_infer(tmp_path, monkeypatch):
+    from obsidian_automation.github_daily_summary import _exclusive_summary_pipeline_root
+    root = _root(tmp_path)
+    production.enqueue_date(root, "2026-10-05")
+    monkeypatch.setattr(production, "ollama_infer", lambda **_kwargs: object())
+    def invalid_date_selection(*_args):
+        raise AssertionError("date selection must occur after exclusive lock")
+    monkeypatch.setattr(production, "_pending_dates", invalid_date_selection)
+    with _exclusive_summary_pipeline_root(root / production.SUMMARY_DIR):
+        with pytest.raises(production.GitHubDailySummaryError, match="already active"):
+            production.summarize_pending(
+                root=root, provider="ollama", base_url="http://unused.local",
+                model="test", implementation_revision="a" * 40,
+            )
+
+
+@pytest.mark.parametrize("bad_version", [True, 1.0])
+def test_daily_stage_ref_rejects_noninteger_version(tmp_path, bad_version):
+    root = _root(tmp_path)
+    path = production._ref_path(root / production.SUMMARY_DIR, "2026-10-05")
+    obj = {"record_version": bad_version, "stage": "summary", "date": "2026-10-05"}
+    path.write_bytes(production._canonical_json_bytes(obj))
+    with pytest.raises(production.DailyProductionError, match="version is unsupported"):
+        production._read_ref(path, stage="summary", target_date="2026-10-05")
+
+
+def test_stage_ref_parent_fsync_failure_never_exposes_partial_ref(
+    tmp_path, monkeypatch
+):
+    import os
+    import stat
+    root = _root(tmp_path)
+    path = production._ref_path(root / production.SUMMARY_DIR, "2026-10-05")
+    payload = {"record_version": 1, "stage": "summary", "date": "2026-10-05"}
+    expected = production._canonical_json_bytes(payload)
+    actual_fsync = os.fsync
+    rejected = []
+
+    def fail_at_parent(fd):
+        if os.readlink(f"/proc/self/fd/{fd}") == str(path.parent):
+            rejected.append("post-rename-parent-fsync")
+            raise OSError("injected parent durability failure")
+        return actual_fsync(fd)
+
+    with monkeypatch.context() as m:
+        m.setattr(production.os, "fsync", fail_at_parent)
+        with pytest.raises(
+            production.DailyProductionError, match="atomic publication failed"
+        ):
+            production._write_ref(path, payload)
+    assert rejected == ["post-rename-parent-fsync"]
+    assert path.read_bytes() == expected
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+    assert path.stat().st_nlink == 1
+    assert list(path.parent.glob(".obsidian-daily-ref-*.tmp")) == []
+    assert production._write_ref(path, payload) == expected
+
+
+@pytest.mark.parametrize("bad_version", [True, 1.0])
+def test_daily_evidence_rejects_noninteger_version(bad_version):
+    from obsidian_automation.github_daily_summary import (
+        GitHubDailySummaryError, parse_evidence_bundle,
+    )
+    obj = {
+        "record_version": bad_version, "date": "2026-10-05",
+        "timezone": "Asia/Tokyo", "window_start": "2026-10-04T15:00:00Z",
+        "window_end": "2026-10-05T15:00:00Z", "projects": [],
+        "repositories": [], "events": [],
+    }
+    with pytest.raises(
+        GitHubDailySummaryError, match="evidence bundle properties"
+    ):
+        parse_evidence_bundle(production._canonical_json_bytes(obj))
+
+
+@pytest.mark.parametrize("bad_version", [True, 1.0])
+def test_daily_grounded_summary_rejects_noninteger_version(bad_version):
+    from obsidian_automation.github_daily_progress import (
+        DailyProgressError, parse_grounded_summary,
+    )
+    obj = {
+        "record_version": bad_version, "stage": "grounded_summary",
+        "evidence_bundle_sha256": "a" * 64, "claims": [],
+        "rejected_claims": [], "grounding_output_sha256s": [],
+    }
+    with pytest.raises(
+        DailyProgressError, match="grounded summary properties"
+    ):
+        parse_grounded_summary(
+            production._canonical_json_bytes(obj),
+            bundle=SimpleNamespace(sha256="a" * 64),
+        )
+
+
+@pytest.mark.parametrize("bad_version", [True, 1.0])
+def test_daily_projection_rejects_noninteger_version(bad_version):
+    from obsidian_automation.github_daily_progress import (
+        DailyProgressError, PROJECTION_STAGE, parse_projection,
+    )
+    obj = {
+        "record_version": bad_version, "stage": PROJECTION_STAGE,
+        "date": "2026-10-05", "target_path": "00-DailyNote/2026-10-05.md",
+        "evidence_bundle_sha256": "a" * 64,
+        "grounded_summary_sha256": "b" * 64,
+        "section_body_sha256": "c" * 64, "section_body": "",
+    }
+    with pytest.raises(
+        DailyProgressError, match="projection properties do not match contract"
+    ):
+        parse_projection(production._canonical_json_bytes(obj))

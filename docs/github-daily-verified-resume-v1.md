@@ -66,11 +66,23 @@ Evidence, calling a model or creating any Summary CAS entries. Concurrent
 pipelines using the same state directory fail before inference. The kernel
 releases this lock on process exit or crash, so a later invocation can verify
 and reuse the first pipeline's completed pointers. This avoids competing
-nondeterministic provenance/pointer writes. Low-level internal stage helpers
-do not independently provide the cross-process admission gate; callers must
-enter through `run_pipeline`. Trusted local-filesystem inode stability is
-required, and old runtimes not participating in this lock must be quiesced
-before an upgrade. No lock file is written into the strict CAS namespace.
+nondeterministic provenance/pointer writes. The production `summarize_pending` entrypoint holds **the same lock**
+across pending-date selection, internal pipeline execution, and the immutable
+Summary stage-ref publication. It uses the internal unlocked pipeline only
+while its own outer lock is held; no second lock is acquired recursively.
+Low-level internal stage helpers do not independently provide cross-process
+admission. Trusted local-filesystem inode stability is required, and old
+runtimes not participating in this lock must be quiesced before an upgrade.
+No lock file is written into the strict CAS namespace.
+
+Daily stage references are now published using private owner-only temporary
+inodes, complete-data fsync, exact 0640 final-mode restoration, and the
+merged #293 Linux atomic no-overwrite rename primitive. A final stage-ref
+pathname never exposes a partial JSON record. Conflicting immutable refs fail
+closed; a matching ref can be revalidated and its containing directory fsynced
+after a previous crash. An interrupted attempt can leave only an uncommitted
+private temp entry, requiring separately reviewed cleanup. These guarantees
+do not bypass the independent date-scoped Writer/Nextcloud CAS acceptance.
 
 On a cache hit, all pointer and bound CAS files are read with bounded
 no-follow regular-file access, checked against exact expected hashes, and

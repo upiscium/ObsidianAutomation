@@ -504,7 +504,9 @@ def parse_evidence_bundle(data: bytes) -> EvidenceBundle:
         "repositories",
         "events",
     }
-    if set(value) != required or value.get("record_version") != RECORD_VERSION:
+    if (set(value) != required
+            or type(value.get("record_version")) is not int
+            or value["record_version"] != RECORD_VERSION):
         raise GitHubDailySummaryError(
             "GitHub Daily evidence bundle properties do not match contract"
         )
