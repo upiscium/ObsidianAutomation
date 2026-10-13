@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import urllib.error
 import urllib.parse
 import urllib.request
 import ssl
@@ -95,15 +96,41 @@ class _PinnedGitHubClient(watcher.GitHubClient):
             urllib.request.HTTPSHandler(context=context),
             _NeverRedirect(),
         )
-        # HTTPS redirects now raise urllib HTTPError from the unmodified
-        # GitHubClient._request_json layer and are a fail-closed source error.
-        with opener.open(request, timeout=self.timeout_seconds) as response:
-            if response.geturl() != request.full_url:
-                raise DailySourceRouteError("GitHub API unexpectedly changed destination")
-            data = response.read(self._MAX_RESPONSE_BYTES + 1)
-            if len(data) > self._MAX_RESPONSE_BYTES:
-                raise DailySourceRouteError("GitHub API source response exceeded read bound")
-            return data
+        try:
+            with opener.open(request, timeout=self.timeout_seconds) as response:
+                if response.geturl() != request.full_url:
+                    raise DailySourceRouteError("GitHub API unexpectedly changed destination")
+                data = response.read(self._MAX_RESPONSE_BYTES + 1)
+                if len(data) > self._MAX_RESPONSE_BYTES:
+                    raise DailySourceRouteError("GitHub API source response exceeded read bound")
+                return data
+        except urllib.error.HTTPError as exc:
+            # Base GitHubClient._request_json reads exc.read() without a
+            # bound before truncating the decoded error text. That also
+            # affects a refused HTTPS redirect and the TLS 1.2 fallback.
+            # Never read remote HTTP error bytes: close the body, preserve
+            # only finite status and the validated nonsecret API path, and
+            # raise a typed exception that the inherited handler cannot
+            # accidentally read again.
+            status = exc.code
+            try:
+                exc.close()
+            except Exception:
+                # A hostile or broken error stream must not leak its text
+                # through a close() exception. Fail closed even if cleanup
+                # could not finish; never attempt a body read as recovery.
+                raise DailySourceRouteError(
+                    "verified source HTTP error stream close failed"
+                ) from None
+            if type(status) is not int or not 300 <= status <= 599:
+                raise DailySourceRouteError("verified source HTTP status invalid") from None
+            # No response-provided message, Location or URL is logged.
+            # In particular, do not expose arbitrary server text.
+            raise watcher.GitHubAPIHTTPError(
+                status=status,
+                path=parsed.path,
+                detail="source HTTP response rejected without body read",
+            ) from None
 
     def _paged(self, path: str) -> list[dict[str, object]]:
         rows: list[dict[str, object]] = []
