@@ -29,9 +29,22 @@ It requires an explicitly configured **authenticated GitHub.com API** client
 collector for the requested JST day through a **v2-only pinned transport**.
 This transport refuses redirects (including credential-bearing redirects to
 foreign origins), disables implicit HTTP proxies, rejects non-GitHub URLs,
-limits each API response to 16 MiB, and caps initial collection API pages at
-32 pages of 100 objects per fixed endpoint. Existing production v1 transport
-behavior is not changed. It then **rechecks the GitHub source
+limits **successful** API response bytes to 16 MiB, and caps initial
+collection API pages at 32 pages of 100 objects per fixed endpoint. Unlike
+the inherited v1 `GitHubClient._request_json`, this pinned v2 transport
+also handles **HTTP error responses with zero error-body reads**:
+`_urlopen_bytes` closes the error stream and raises an explicit typed
+`GitHubAPIHTTPError` carrying only the HTTP status and prevalidated source
+path, with a constant diagnostic. Refused HTTP 3xx redirects, 401/403/404,
+429, and the TLS-1.2 retry path have the same zero-read behavior. Even if
+closing the error stream fails, no untrusted error body or exception message
+is admitted into result/log text; collection fails closed. This fixes the
+otherwise unbounded `HTTPError.read()` inherited from the v1 JSON helper.
+The v1 transport is deliberately **not changed**. Independent zero-network
+fixtures in `test_github_daily_route_error_bound.py` exercise both paths.
+This is a bounded-memory contract at the transport response-body level, not a
+bound on all API collection work or a production source-attestation approval.
+It then **rechecks the GitHub source
 immediately in the same invocation**:
 
 - For each Issue/PR discussion comment, fetch the exact API
