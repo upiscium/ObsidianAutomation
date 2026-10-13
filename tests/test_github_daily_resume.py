@@ -454,3 +454,191 @@ def test_native_ollama_post_chat_alias_drift_creates_no_resume_pointer(tmp_path)
         _partials(tmp_path, infer, bundle, contexts)
     assert not _pointer_files(tmp_path)
     assert not list((tmp_path / 'github-daily-summary' / 'provenance').glob('*'))
+
+
+@pytest.mark.parametrize("invalid_version", [True, 1.0])
+def test_resume_pointer_rejects_noninteger_json_schema_version(
+    tmp_path, invalid_version
+):
+    from obsidian_automation.artifact_lifecycle import _canonical_json_bytes
+    bundle, contexts = _fixture(1)
+    _partials(tmp_path, _bound(MockModel()), bundle, contexts)
+    pointer = _pointer_files(tmp_path)[0]
+    modified = json.loads(pointer.read_bytes())
+    modified["record_version"] = invalid_version
+    pointer.write_bytes(_canonical_json_bytes(modified))
+    second = MockModel()
+    with pytest.raises(GitHubDailySummaryError, match="untrusted resume"):
+        _partials(tmp_path, _bound(second), bundle, contexts)
+    assert second.calls == []
+
+
+@pytest.mark.parametrize("invalid_version", [True, 1.0])
+def test_resume_provenance_rejects_noninteger_json_schema_version(
+    tmp_path, invalid_version
+):
+    from obsidian_automation.artifact_lifecycle import (
+        _canonical_json_bytes, sha256_bytes
+    )
+    bundle, contexts = _fixture(1)
+    _partials(tmp_path, _bound(MockModel()), bundle, contexts)
+    pointer = _pointer_files(tmp_path)[0]
+    manifest = json.loads(pointer.read_bytes())
+    provenance_dir = tmp_path / "github-daily-summary" / "provenance"
+    previous = provenance_dir / (
+        manifest["provenance_sha256"] + ".github-daily-inference.json"
+    )
+    forged = json.loads(previous.read_bytes())
+    forged["record_version"] = invalid_version
+    payload = _canonical_json_bytes(forged)
+    digest = sha256_bytes(payload)
+    (provenance_dir / (digest + ".github-daily-inference.json")).write_bytes(payload)
+    manifest["provenance_sha256"] = digest
+    pointer.write_bytes(_canonical_json_bytes(manifest))
+    second = MockModel()
+    with pytest.raises(GitHubDailySummaryError, match="untrusted resume"):
+        _partials(tmp_path, _bound(second), bundle, contexts)
+    assert second.calls == []
+
+
+def test_pipeline_root_lock_rejects_duplicate_before_model_or_cas(tmp_path):
+    from obsidian_automation.github_daily_summary import (
+        _exclusive_summary_pipeline_root, run_pipeline,
+    )
+    model = MockModel()
+    with _exclusive_summary_pipeline_root(tmp_path):
+        with pytest.raises(GitHubDailySummaryError, match="already active"):
+            run_pipeline(
+                evidence_path=tmp_path / "unread-evidence.json",
+                state_root=tmp_path, infer=_bound(model),
+                implementation_revision=REV,
+            )
+        assert model.calls == []
+        assert not (tmp_path / "github-daily-summary").exists()
+    with _exclusive_summary_pipeline_root(tmp_path):
+        pass
+
+
+def _child_holds_pipeline_inode_lock(root, peer):
+    from obsidian_automation.github_daily_summary import _exclusive_summary_pipeline_root
+    with _exclusive_summary_pipeline_root(Path(root)):
+        peer.send("locked")
+        assert peer.recv() == "release"
+
+
+def test_pipeline_root_lock_serializes_independent_processes(tmp_path):
+    import multiprocessing
+    from obsidian_automation.github_daily_summary import _exclusive_summary_pipeline_root
+    ctx = multiprocessing.get_context("fork")
+    parent, child = ctx.Pipe()
+    process = ctx.Process(
+        target=_child_holds_pipeline_inode_lock,
+        args=(str(tmp_path), child),
+    )
+    process.start()
+    try:
+        assert parent.poll(5), "child did not acquire Daily Summary inode lock"
+        assert parent.recv() == "locked"
+        with pytest.raises(GitHubDailySummaryError, match="already active"):
+            with _exclusive_summary_pipeline_root(tmp_path):
+                pass
+        parent.send("release")
+        process.join(timeout=5)
+        assert process.exitcode == 0
+    finally:
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=5)
+        parent.close()
+        child.close()
+    with _exclusive_summary_pipeline_root(tmp_path):
+        pass
+
+
+@pytest.mark.parametrize("invalid_version", [True, 1.0])
+def test_resumed_partial_output_rejects_noninteger_schema_version(
+    tmp_path, invalid_version
+):
+    from obsidian_automation.artifact_lifecycle import _canonical_json_bytes
+    from obsidian_automation.github_daily_summary import _resume_claim_output
+    bundle, contexts = _fixture(1)
+    stored, context_shas, _ = _partials(tmp_path, _bound(MockModel()), bundle, contexts)
+    original_path = (
+        tmp_path / "github-daily-summary" / "output"
+        / (stored[0].sha256 + ".github-daily-partial-output.json")
+    )
+    original = json.loads(original_path.read_bytes())
+    assert original["record_version"] == 1
+    original["record_version"] = invalid_version
+    with pytest.raises(GitHubDailySummaryError, match="resumed Partial output binding"):
+        _resume_claim_output(
+            _canonical_json_bytes(original), context=contexts[0],
+            context_sha=context_shas[0], events_by_id=bundle.events_by_id,
+        )
+
+
+@pytest.mark.parametrize("invalid_version", [True, 1.0])
+def test_resumed_ground_output_rejects_noninteger_schema_version(
+    tmp_path, invalid_version
+):
+    from obsidian_automation.artifact_lifecycle import _canonical_json_bytes
+    from obsidian_automation.github_daily_summary import _resume_ground_output
+    bundle, contexts = _fixture(1)
+    event = contexts[0].events[0]
+    source_id = str(event["evidence_id"])
+    claim = _normalized_claim(
+        kind="implementation", summary="implemented event-0",
+        repository="upiscium/Test", evidence_ids=[source_id],
+        allowed_evidence_ids={source_id},
+        events_by_id=bundle.events_by_id,
+    )
+    ground = SummaryContext(
+        stage=GROUND_STAGE, evidence_bundle_sha256=bundle.sha256,
+        batch_index=0, batch_count=1,
+        source_output_sha256s=("e" * 64,), events=(event,), claims=(claim,),
+    )
+    stored, context_shas, _ = _run_ground_stage(
+        tmp_path, (ground,), infer=_bound(MockModel()), implementation_revision=REV,
+    )
+    original_path = (
+        tmp_path / "github-daily-summary" / "output"
+        / (stored[0].sha256 + ".github-daily-ground-output.json")
+    )
+    original = json.loads(original_path.read_bytes())
+    assert original["record_version"] == 1
+    original["record_version"] = invalid_version
+    with pytest.raises(GitHubDailySummaryError, match="resumed Ground output binding"):
+        _resume_ground_output(
+            _canonical_json_bytes(original), context=ground,
+            context_sha=context_shas[0],
+        )
+
+
+def test_crashed_pipeline_releases_kernel_lock_without_stale_marker(tmp_path):
+    import multiprocessing
+    from obsidian_automation.github_daily_summary import _exclusive_summary_pipeline_root
+    ctx = multiprocessing.get_context("fork")
+    parent, child = ctx.Pipe()
+    process = ctx.Process(
+        target=_child_holds_pipeline_inode_lock,
+        args=(str(tmp_path), child),
+    )
+    process.start()
+    try:
+        assert parent.poll(5), "child did not acquire Daily Summary lock"
+        assert parent.recv() == "locked"
+        with pytest.raises(GitHubDailySummaryError, match="already active"):
+            with _exclusive_summary_pipeline_root(tmp_path):
+                pass
+        process.terminate()
+        process.join(timeout=5)
+        assert process.exitcode is not None
+    finally:
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=5)
+        parent.close()
+        child.close()
+    with _exclusive_summary_pipeline_root(tmp_path):
+        pass
+    assert not (tmp_path / "github-daily-summary").exists()

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import errno
+import fcntl
 import hashlib
 import json
+import os
 import re
 import stat
+from contextlib import contextmanager
 from types import MappingProxyType
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -1516,7 +1520,8 @@ def _verified_resume_provenance(
         "implementation_revision", "prompt_template_version",
         "prompt_template_sha256", "model", "model_config", "generated_at",
     }
-    if set(value) != required or value["record_version"] != RECORD_VERSION:
+    if (set(value) != required or type(value["record_version"]) is not int
+            or value["record_version"] != RECORD_VERSION):
         raise GitHubDailySummaryError("resumed provenance record properties differ")
     expected = {
         "stage": request["stage"],
@@ -1561,6 +1566,7 @@ def _resume_claim_output(
     obj = _decode_json_object(data, label="resumed Partial output")
     if (
         set(obj) != {"record_version", "stage", "input_context_sha256", "claims"}
+        or type(obj["record_version"]) is not int
         or obj["record_version"] != RECORD_VERSION
         or obj["stage"] != PARTIAL_STAGE
         or obj["input_context_sha256"] != context_sha
@@ -1591,6 +1597,7 @@ def _resume_ground_output(
     obj = _decode_json_object(data, label="resumed Ground output")
     if (
         set(obj) != {"record_version", "stage", "input_context_sha256", "assessments"}
+        or type(obj["record_version"]) is not int
         or obj["record_version"] != RECORD_VERSION
         or obj["stage"] != GROUND_STAGE
         or obj["input_context_sha256"] != context_sha
@@ -1891,7 +1898,64 @@ def _run_ground_stage(
     return tuple(stored), tuple(context_shas), tuple(provenance_shas)
 
 
+@contextmanager
+def _exclusive_summary_pipeline_root(state_root: Path):
+    """Serialize the whole Daily inference/resume transaction per state inode.
+
+    Lock the *existing directory inode* rather than creating a lockfile inside
+    the strict CAS namespace. A second runner fails before inference or CAS
+    mutation; the kernel releases this lock on crash/exit. This is a trusted
+    local-filesystem admission boundary, not distributed coordination.
+    """
+    root = state_root.absolute()
+    _require_safe_directory(root, create=False)
+    flags = (
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    try:
+        fd = os.open(root, flags)
+    except OSError as exc:
+        raise GitHubDailySummaryError("Daily Summary root lock cannot be opened") from exc
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno in {errno.EAGAIN, errno.EWOULDBLOCK}:
+                raise GitHubDailySummaryError(
+                    "Daily Summary pipeline already active"
+                ) from exc
+            raise GitHubDailySummaryError(
+                "Daily Summary root lock could not be acquired"
+            ) from exc
+        yield
+    finally:
+        os.close(fd)
+
+
 def run_pipeline(
+    *,
+    evidence_path: Path,
+    state_root: Path,
+    infer: Infer,
+    implementation_revision: str,
+    partial_context_bytes: int = MAX_PARTIAL_CONTEXT_BYTES,
+    reduce_context_bytes: int = MAX_REDUCE_CONTEXT_BYTES,
+    ground_context_bytes: int = MAX_GROUND_CONTEXT_BYTES,
+) -> PipelineResult:
+    with _exclusive_summary_pipeline_root(state_root):
+        return _run_pipeline_unlocked(
+            evidence_path=evidence_path,
+            state_root=state_root,
+            infer=infer,
+            implementation_revision=implementation_revision,
+            partial_context_bytes=partial_context_bytes,
+            reduce_context_bytes=reduce_context_bytes,
+            ground_context_bytes=ground_context_bytes,
+        )
+
+
+def _run_pipeline_unlocked(
     *,
     evidence_path: Path,
     state_root: Path,

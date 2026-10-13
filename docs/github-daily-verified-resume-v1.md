@@ -54,11 +54,23 @@ Each key covers all the following properties:
 The SHA-256 of a canonical JSON key locates a **single immutable pointer**
 under `github-daily-summary/resume/`. The pointer binds the normalized
 Output SHA-256 and the corresponding Inference Provenance SHA-256. A pointer
-is published with the existing atomic no-overwrite helper only **after**
-both bound CAS artifacts are persisted and re-read/checked. If a process
-crashes beforehand, the request safely becomes a miss, rather than adopting
-an unindexed artifact or selecting an arbitrary similar output. A valid
-empty Partial output is cacheable.
+is published through the atomic no-overwrite CAS helper from merged #293
+**only after** both bound CAS artifacts are persisted and re-read/checked.
+A process interrupted before pointer publication leaves no partial *final*
+pointer; uncommitted temporary files are not automatically adopted or
+deleted. A valid empty Partial output is cacheable.
+
+The public `run_pipeline` entrypoint takes a **nonblocking advisory exclusive
+lock on the existing, local `state_root` directory inode** before reading
+Evidence, calling a model or creating any Summary CAS entries. Concurrent
+pipelines using the same state directory fail before inference. The kernel
+releases this lock on process exit or crash, so a later invocation can verify
+and reuse the first pipeline's completed pointers. This avoids competing
+nondeterministic provenance/pointer writes. Low-level internal stage helpers
+do not independently provide the cross-process admission gate; callers must
+enter through `run_pipeline`. Trusted local-filesystem inode stability is
+required, and old runtimes not participating in this lock must be quiesced
+before an upgrade. No lock file is written into the strict CAS namespace.
 
 On a cache hit, all pointer and bound CAS files are read with bounded
 no-follow regular-file access, checked against exact expected hashes, and
@@ -96,25 +108,17 @@ remain fail closed, and the next invocation recovers only prior verified
 contexts. Model error logging must never include source text, prompts,
 response bodies, model summaries, tokens/credentials or bearer headers.
 
-## Operational SSH/deployment transport
+## Operational deployment boundary
 
-For future **separately approved** ObsidianAutomation deployments, use
-Adam's direct RDC-launched terminal rather than relying on the tmux
-SSH environment. The existing SSH agent lives at
-`/run/user/1000/ssh-agent`. The verified route is:
+Private hostnames, network endpoints, SSH-agent locations and deployment
+identities belong in separately access-controlled operator runbooks, **not**
+in this public repository. Operators must independently verify host-key trust,
+the installed checkout revision and drift, exact reviewed target SHA, release
+receipts and authorized service identity before using the managed, staged
+deployment path.
 
-```sh
-SSH_AUTH_SOCK=/run/user/1000/ssh-agent \
-  ssh -o BatchMode=yes -o StrictHostKeyChecking=yes \
-  obsidian-automation 'hostname; id -un'
-```
-
-On Adam, the `obsidian-automation` alias resolves to `10.12.2.10`;
-`obsidian-snapshot-taker` resolves to `10.12.2.11`. Recheck host-key
-trust, service identity, current deployment HEAD, drift, test receipts
-and exact SHA before using existing pinned/managed production updater
-mechanisms. SSH transport permission is **not** publication approval.
-Preserve original immutable Evidence and stage refs; do not directly
-edit the live Vault, restart Writer, enable timers or bypass the
-Nextcloud CAS/approval gates. Use read-only source inspection and
-SHA-256-matched transfer for diagnostics.
+SSH transport permission is **not** Stage, Activate, Writer or publication
+approval. Preserve all previously accepted immutable Evidence and stage refs.
+Do not directly edit the live Vault, restart Writer, enable timers, or bypass
+Nextcloud CAS/approval gates. Only separately approved, exact-SHA operations
+may be performed on the production environment.

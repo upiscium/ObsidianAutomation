@@ -149,7 +149,8 @@ def load_resume(
     if set(value) != {"record_version", "request", "output_sha256", "provenance_sha256"}:
         raise ArtifactLifecycleError("Daily resume pointer has invalid fields")
     if (
-        value["record_version"] != VERSION
+        type(value["record_version"]) is not int
+        or value["record_version"] != VERSION
         or _canonical_json_bytes({"record_version": VERSION, "request": value["request"]}) != request_bytes
         or _canonical_json_bytes(value) != raw
     ):
