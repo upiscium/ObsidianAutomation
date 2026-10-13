@@ -627,3 +627,110 @@ def test_daily_projection_rejects_noninteger_version(bad_version):
         DailyProgressError, match="projection properties do not match contract"
     ):
         parse_projection(production._canonical_json_bytes(obj))
+
+
+def test_summary_retry_reaffirms_existing_ref_after_failed_parent_fsync(
+    tmp_path, monkeypatch
+):
+    import os
+    root = _root(tmp_path)
+    production.enqueue_date(root, "2026-10-05")
+    summary_dir = root / production.SUMMARY_DIR
+    path = production._ref_path(summary_dir, "2026-10-05")
+    payload = {
+        "record_version": 1, "stage": "summary", "date": "2026-10-05",
+        "evidence_sha256": "a" * 64,
+        "grounded_summary_sha256": "b" * 64,
+    }
+    real_fsync = os.fsync
+    durability_observed = []
+
+    def refuse_summary_durability(fd):
+        if os.readlink(f"/proc/self/fd/{fd}") == str(summary_dir):
+            durability_observed.append("failed-summary-directory-sync")
+            raise OSError("injected summary directory-fsync failure")
+        return real_fsync(fd)
+
+    with monkeypatch.context() as m:
+        m.setattr(production.os, "fsync", refuse_summary_durability)
+        with pytest.raises(production.DailyProductionError, match="atomic publication failed"):
+            production._write_ref(path, payload)
+    assert durability_observed == ["failed-summary-directory-sync"]
+    assert path.read_bytes() == production._canonical_json_bytes(payload)
+
+    def no_inference(**_args):
+        raise AssertionError("already-published summary must not invoke inference")
+
+    monkeypatch.setattr(production, "ollama_infer", lambda **_kwargs: object())
+    monkeypatch.setattr(production, "_run_pipeline_unlocked", no_inference)
+    # A repeat fsync failure must refuse the entire attempt, *not* report
+    # the date complete while its ref's durability remains uncertain.
+    with monkeypatch.context() as m:
+        m.setattr(production.os, "fsync", refuse_summary_durability)
+        with pytest.raises(
+            production.DailyProductionError,
+            match="existing stage refs are not durable",
+        ):
+            production.summarize_pending(
+                root=root, provider="ollama", base_url="http://fixture.invalid",
+                model="test", implementation_revision="a" * 40,
+            )
+    assert len(durability_observed) == 2
+
+    syncs = []
+    def record_sync(fd):
+        value = os.readlink(f"/proc/self/fd/{fd}")
+        if value == str(summary_dir):
+            syncs.append("reaffirmed-summary-entry")
+        return real_fsync(fd)
+    with monkeypatch.context() as m:
+        m.setattr(production.os, "fsync", record_sync)
+        assert production.summarize_pending(
+            root=root, provider="ollama", base_url="http://fixture.invalid",
+            model="test", implementation_revision="a" * 40,
+        ) == ()
+    assert syncs == ["reaffirmed-summary-entry"]
+    assert production._pending_dates(root, "summary", production.SUMMARY_DIR) == ()
+
+
+def test_pending_stage_rejects_dangling_symlink_ref_before_reinfer(tmp_path):
+    root = _root(tmp_path)
+    production.enqueue_date(root, "2026-10-05")
+    pointer = production._ref_path(
+        root / production.SUMMARY_DIR, "2026-10-05"
+    )
+    pointer.symlink_to(root / "missing-summary-ref")
+    from obsidian_automation.artifact_lifecycle import ArtifactLifecycleError
+    with pytest.raises(ArtifactLifecycleError):
+        production._pending_dates(root, "summary", production.SUMMARY_DIR)
+    assert pointer.is_symlink()
+
+
+def test_schedule_read_reaffirms_parent_directory_on_retry(tmp_path, monkeypatch):
+    import os
+    root = _root(tmp_path)
+    schedule_dir = root / production.SCHEDULE_DIR
+    real_fsync = os.fsync
+    evidence = []
+    def fail_once(fd):
+        if os.readlink(f"/proc/self/fd/{fd}") == str(schedule_dir):
+            evidence.append("failed-schedule-parent-fsync")
+            raise OSError("injected schedule metadata fsync failure")
+        return real_fsync(fd)
+    with monkeypatch.context() as m:
+        m.setattr(production.os, "fsync", fail_once)
+        with pytest.raises(production.DailyProductionError, match="atomic publication failed"):
+            production.enqueue_date(root, "2026-10-05")
+    ref = production._ref_path(schedule_dir, "2026-10-05")
+    assert ref.exists()
+    assert ref.read_bytes() == production._canonical_json_bytes({
+        "record_version": 1, "stage": "schedule", "date": "2026-10-05",
+    })
+    def record_sync(fd):
+        if os.readlink(f"/proc/self/fd/{fd}") == str(schedule_dir):
+            evidence.append("reaffirmed-schedule-parent")
+        return real_fsync(fd)
+    with monkeypatch.context() as m:
+        m.setattr(production.os, "fsync", record_sync)
+        assert production.scheduled_dates(root) == ("2026-10-05",)
+    assert evidence == ["failed-schedule-parent-fsync", "reaffirmed-schedule-parent"]

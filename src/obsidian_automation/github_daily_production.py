@@ -252,6 +252,27 @@ def enqueue_date(
     return path
 
 
+def _reaffirm_ref_directory_durable(directory: Path) -> None:
+    """Re-commit validated existing ref names before declaring stages complete.
+
+    A prior writer may have atomically published a complete ref then failed
+    fsync(parent). Merely observing its pathname on retry does NOT prove its
+    directory entry survived a later crash. This retries the missing boundary.
+    """
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    try:
+        fd = os.open(directory, flags)
+    except OSError as exc:
+        raise DailyProductionError("cannot open stage-ref durability boundary") from exc
+    try:
+        try:
+            os.fsync(fd)
+        except OSError as exc:
+            raise DailyProductionError("existing stage refs are not durable") from exc
+    finally:
+        os.close(fd)
+
+
 def scheduled_dates(root: Path) -> tuple[str, ...]:
     schedule = _stage_dir(root, SCHEDULE_DIR)
     rows: list[str] = []
@@ -260,6 +281,11 @@ def scheduled_dates(root: Path) -> tuple[str, ...]:
         target = _canonical_date(name)
         _read_ref(path, stage="schedule", target_date=target)
         rows.append(target)
+    if rows:
+        # A previous schedule publication may have committed data but failed
+        # the directory fsync. Never enqueue later stages on such a ref until
+        # the directory entry is durably revalidated.
+        _reaffirm_ref_directory_durable(schedule)
     return tuple(sorted(set(rows)))
 
 
@@ -280,12 +306,18 @@ def _pending_dates(
 ) -> tuple[str, ...]:
     directory = _stage_dir(root, completed_dir)
     pending: list[str] = []
+    found_complete = False
     for target in scheduled_dates(root):
         path = _ref_path(directory, target)
-        if not path.exists():
+        if not os.path.lexists(path):
             pending.append(target)
             continue
+        # Also reject dangling symlink refs rather than treating them as
+        # missing and initiating a potentially expensive fresh model call.
         _read_ref(path, stage=completed_stage, target_date=target)
+        found_complete = True
+    if found_complete:
+        _reaffirm_ref_directory_durable(directory)
     return tuple(pending)
 
 

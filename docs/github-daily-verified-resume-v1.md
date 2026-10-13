@@ -66,9 +66,10 @@ Evidence, calling a model or creating any Summary CAS entries. Concurrent
 pipelines using the same state directory fail before inference. The kernel
 releases this lock on process exit or crash, so a later invocation can verify
 and reuse the first pipeline's completed pointers. This avoids competing
-nondeterministic provenance/pointer writes. The production `summarize_pending` entrypoint holds **the same lock**
-across pending-date selection, internal pipeline execution, and the immutable
-Summary stage-ref publication. It uses the internal unlocked pipeline only
+nondeterministic provenance/pointer writes. The production
+`summarize_pending` entrypoint holds **the same lock** across pending-date
+selection, internal pipeline execution, and immutable Summary stage-ref
+publication. It uses the internal unlocked pipeline only
 while its own outer lock is held; no second lock is acquired recursively.
 Low-level internal stage helpers do not independently provide cross-process
 admission. Trusted local-filesystem inode stability is required, and old
@@ -80,9 +81,20 @@ inodes, complete-data fsync, exact 0640 final-mode restoration, and the
 merged #293 Linux atomic no-overwrite rename primitive. A final stage-ref
 pathname never exposes a partial JSON record. Conflicting immutable refs fail
 closed; a matching ref can be revalidated and its containing directory fsynced
-after a previous crash. An interrupted attempt can leave only an uncommitted
-private temp entry, requiring separately reviewed cleanup. These guarantees
-do not bypass the independent date-scoped Writer/Nextcloud CAS acceptance.
+after a previous crash. The normal pending-date selection itself now
+revalidates existing completed stage refs and **fsyncs the containing
+directory before skipping the date**. Scheduled date refs have the same
+recovery check. A failed directory sync refuses completion and inference; a
+following attempt must repeat it rather than assuming that visible means
+durable. An interrupted attempt can leave only an uncommitted private temp
+entry, requiring separately reviewed cleanup.
+
+The exact `0640` mode guarantee applies to **newly staged refs**. Existing
+historical byte-identical refs are not implicitly chmod-ed, so operators must
+inspect their metadata/ACL policy at rollout; a matching ref's content and
+directory durability alone do not attest access-control compatibility.
+These guarantees do not bypass independent date-scoped Writer/Nextcloud
+CAS acceptance.
 
 On a cache hit, all pointer and bound CAS files are read with bounded
 no-follow regular-file access, checked against exact expected hashes, and
