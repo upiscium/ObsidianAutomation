@@ -15,6 +15,7 @@ from .github_daily_summary import (
     REDUCE_STAGE,
     BoundInfer,
     GitHubDailySummaryError,
+    SummaryRetryPolicy,
     InferenceResponse,
     PreboundInferenceIdentity,
     PromptSpec,
@@ -310,12 +311,18 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--implementation-revision", required=True)
     parser.add_argument("--options-file", type=Path)
     parser.add_argument("--timeout", type=float, default=120.0)
+    parser.add_argument("--transient-retries", type=int, default=0)
+    parser.add_argument("--retry-backoff-seconds", type=float, default=0.0)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
+        policy = SummaryRetryPolicy(
+            max_transient_retries=args.transient_retries,
+            backoff_seconds=args.retry_backoff_seconds,
+        )
         options = _load_options(args.options_file)
         if args.provider == "ollama":
             revision = validated_ollama_revision(
@@ -343,6 +350,7 @@ def main(argv: list[str] | None = None) -> int:
             state_root=args.state_root,
             infer=infer,
             implementation_revision=revision,
+            retry_policy=policy,
         )
     except (
         ArtifactLifecycleError,
