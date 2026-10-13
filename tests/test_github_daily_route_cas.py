@@ -471,3 +471,46 @@ def test_capture_rechecks_jst_day_after_receipt_storage(
         cas.publish_fresh_capture(collection)
     record = cas.index.build_capture_index(collection)
     assert not _capture_path(root, record.sha256).exists()
+
+
+def test_existing_manifest_replay_resyncs_parent_after_failed_original_fsync(
+    tmp_path, safe_layout, monkeypatch
+):
+    root, _ = safe_layout
+    collection = _collect(tmp_path)
+    capture_dir = root / "capture"
+    capture_inode = capture_dir.stat().st_ino
+    real_fsync = os.fsync
+    state = {"fail_capture": 1, "capture_attempts": 0}
+
+    def injected_fsync(fd):
+        st = os.fstat(fd)
+        if stat.S_ISDIR(st.st_mode) and st.st_ino == capture_inode:
+            state["capture_attempts"] += 1
+            if state["fail_capture"]:
+                raise OSError("synthetic parent fsync failure")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", injected_fsync)
+    with pytest.raises(cas.DailyRouteCASError, match="atomic"):
+        cas.publish_fresh_capture(collection)
+    record = cas.index.build_capture_index(collection)
+    # The rename completed, but its directory durability was not confirmed.
+    assert _capture_path(root, record.sha256).is_file()
+    assert cas.read_verified_capture(record.sha256).routes
+
+    # An exact replay days later must attempt a new directory fsync. A
+    # second injected fsync failure must not be reported as success.
+    monkeypatch.setattr(
+        cas, "_utc_now", lambda: _capture_utc(collection) + timedelta(days=5)
+    )
+    before = state["capture_attempts"]
+    with pytest.raises(cas.DailyRouteCASError, match="durability unconfirmed"):
+        cas.publish_fresh_capture(collection)
+    assert state["capture_attempts"] == before + 1
+
+    state["fail_capture"] = 0
+    published = cas.publish_fresh_capture(collection)
+    assert published.index_sha256 == record.sha256
+    assert state["capture_attempts"] == before + 2
+    assert cas.read_verified_capture(record.sha256).routes

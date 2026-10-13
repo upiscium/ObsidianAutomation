@@ -313,6 +313,15 @@ def publish_fresh_capture(collection: source.FreshRouteCollection) -> PublishedC
                     or existing.evidence_bytes != collection.evidence.canonical_bytes
                     or existing.receipt_bytes != collection.receipt_bytes):
                 raise DailyRouteCASError("stored source capture does not match retry")
+            # The final atomic rename may have succeeded even if the original
+            # parent-directory fsync failed. Re-establish durability on the
+            # pinned capture directory before reporting a successful replay.
+            try:
+                os.fsync(handles["capture"])
+            except OSError:
+                raise DailyRouteCASError(
+                    "existing source CAS manifest directory durability unconfirmed"
+                ) from None
             return PublishedCapture(
                 index_sha256=record.sha256, evidence_sha256=record.evidence_sha256,
                 receipt_sha256=record.route_receipt_sha256,

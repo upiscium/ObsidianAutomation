@@ -76,8 +76,13 @@ Linux POSIX named ACL xattrs. They do **not** prove live role isolation.
 **First-publication freshness:** Before writing any blob, the Collector checks
 whether the exact Capture Index SHA already exists. If it does, it reopens
 and verifies the entire index/receipt/Evidence triplet; only an exact-byte
-match may be retried at any later time. If it does not exist, the captured UTC
-time recorded by the source receipt must be no more than **one hour** old and
+match may be retried at any later time. On that verified-replay path,
+the Collector **fsyncs the pinned Capture Index parent directory again before
+returning success**: a prior rename may have succeeded while its parent
+directory fsync failed, leaving a visible but not yet durable manifest.
+A failed replay fsync is also a hard error; correct bytes alone do not prove
+durability. If the index does not exist, the captured UTC time recorded by the
+source receipt must be no more than **one hour** old and
 at most **60 seconds in the future**, relative to the host's current UTC
 clock. A scheduled recent capture must still target the host's current or
 previous JST date at *publication* time. An older first publication, including
