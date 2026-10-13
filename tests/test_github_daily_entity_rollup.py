@@ -20,6 +20,7 @@ from obsidian_automation.github_daily_entity_grounding import (
     build_entity_grounding_contexts,
 )
 from obsidian_automation.github_daily_entity_rollup import (
+    BoundModelResponse, PARTIAL_REPLY_STAGE, GROUND_REPLY_STAGE,
     DailyEntityRollupError, build_entity_rollup_preview,
     render_entity_rollup_preview,
 )
@@ -77,6 +78,13 @@ def _json(value: object) -> bytes:
     return _canonical_json_bytes(value)
 
 
+def _bound(stage: str, context_sha: str, response: bytes) -> BoundModelResponse:
+    from hashlib import sha256
+    return BoundModelResponse(
+        stage, context_sha, sha256(response).hexdigest(), response,
+    )
+
+
 def _responses(
     evidence: bytes,
     *,
@@ -88,13 +96,17 @@ def _responses(
     grounds = {}
     for context in grouped.contexts:
         model_partial = _json({"candidates":partial(context)})
-        partials[context.sha256] = model_partial
+        partials[context.sha256] = _bound(
+            PARTIAL_REPLY_STAGE, context.sha256, model_partial,
+        )
         for single in build_entity_grounding_contexts(
             context, model_partial, original_evidence_bytes=evidence,
         ):
-            grounds[single.sha256] = _json({
-                "verdict":ground(single), "reason":"元Evidenceが支持している候補です。"
-            })
+            grounds[single.sha256] = _bound(
+                GROUND_REPLY_STAGE, single.sha256, _json({
+                    "verdict":ground(single), "reason":"元Evidenceが支持している候補です。"
+                }),
+            )
     return partials, grounds
 
 
@@ -150,7 +162,7 @@ def test_many_events_crossing_entity_context_boundary_one_item_without_source_lo
     assert len(outcome.items) == 1
     assert outcome.processed_context_count == 2
     assert outcome.processed_ground_count == 2
-    assert len(outcome.items[0].model_supported_candidates) == 2
+    assert len(outcome.items[0].supported_candidate_sha256s) == 2
     assert outcome.items[0].key.number == 28
     assert outcome.incomplete
     assert len(outcome.items[0].unresolved_source_ids) > 0
@@ -164,11 +176,16 @@ def test_exact_input_map_completeness_fails_closed(which):
     if which == "partial_missing":
         partials.clear()
     if which == "partial_extra":
-        partials["a" * 64] = _json({"candidates":[]})
+        partials["a" * 64] = _bound(
+            PARTIAL_REPLY_STAGE, "a" * 64, _json({"candidates":[]}),
+        )
     if which == "ground_missing":
         grounds.clear()
     if which == "ground_extra":
-        grounds["a" * 64] = _json({"verdict":"supported","reason":"Valid"})
+        grounds["a" * 64] = _bound(
+            GROUND_REPLY_STAGE, "a" * 64,
+            _json({"verdict":"supported","reason":"Valid"}),
+        )
     with pytest.raises(DailyEntityRollupError, match="missing, extra or swapped"):
         build_entity_rollup_preview(
             original, partial_responses_by_context_sha256=partials,
@@ -191,7 +208,10 @@ def test_invalid_model_response_or_wrong_ground_context_fails_closed():
     original = _original(_event("issue_created", 13))
     partials, grounds = _responses(original)
     target = next(iter(grounds))
-    grounds[target] = b'{"verdict":"supported","reason":"ok","merged":true}'
+    grounds[target] = _bound(
+        GROUND_REPLY_STAGE, target,
+        b'{"verdict":"supported","reason":"ok","merged":true}',
+    )
     with pytest.raises(DailyEntityContextError):
         build_entity_rollup_preview(
             original, partial_responses_by_context_sha256=partials,
@@ -199,22 +219,35 @@ def test_invalid_model_response_or_wrong_ground_context_fails_closed():
         )
 
 
-def test_unverified_merge_statement_from_model_is_not_progress():
+@pytest.mark.parametrize("summary", [
+    "PRがマージされました。", "PR #31 をマージしました。",
+    "PR #31 has been merged.", "Merge completed for PR 31."
+])
+def test_unverified_model_merge_wording_is_never_displayed(summary):
     original = _original(_event("pull_request_created", 31))
-    with pytest.raises(DailyEntityRollupError, match="unverified merge"):
-        _preview(original, partial=lambda ctx:[
-            {"summary":"PRがマージされました。","source_refs":[0]}
-        ])
+    report = _preview(original, partial=lambda ctx:[
+        {"summary":summary,"source_refs":[0]}
+    ])
+    assert not report.items[0].verified_merge_event
+    assert report.items[0].status_event == "pull_request_created"
+    assert report.items[0].supported_candidate_sha256s
+    assert summary not in render_entity_rollup_preview(report)
+    assert summary not in report.to_json_bytes().decode("utf-8")
+    assert "PRが作成されました" in render_entity_rollup_preview(report)
 
 
 @pytest.mark.parametrize("summary", [
     "Production deployed.", "See https://evil.invalid/pr/5",
     "PR #999 implementation was accepted."
 ])
-def test_model_deployment_url_other_issue_rejected(summary):
+def test_fabricated_model_deployment_link_and_other_issue_are_not_exposed(summary):
     original = _original(_event("pull_request_created", 5))
-    with pytest.raises(DailyEntityRollupError):
-        _preview(original,partial=lambda ctx:[{"summary":summary,"source_refs":[0]}])
+    report = _preview(original,partial=lambda ctx:[
+        {"summary":summary,"source_refs":[0]}
+    ])
+    assert summary not in report.to_json_bytes().decode("utf-8")
+    assert summary not in render_entity_rollup_preview(report)
+    assert report.payload()["publication_authorized"] is False
 
 
 def test_grounded_unsupported_without_structural_change_is_unresolved_not_no_progress():
@@ -314,10 +347,10 @@ def test_grounded_supported_with_no_lifecycle_remains_advisory():
     item = report.items[0]
     assert item.status_event is None
     assert not item.verified_merge_event
-    assert item.model_supported_candidates
+    assert item.supported_candidate_sha256s
     assert report.payload()["requires_human_quality_review"] is True
     text = render_entity_rollup_preview(report)
-    assert "要確認の候補" in text
+    assert "根拠付き候補1件" in text
     assert "マージされました" not in text
 
 
@@ -326,19 +359,24 @@ def test_empty_candidate_for_structural_event_retains_lifecycle_fact_only():
     report = _preview(original, partial=lambda ctx: [])
     assert len(report.items) == 1
     assert report.items[0].status_event == "issue_closed"
-    assert report.items[0].model_supported_candidates == ()
+    assert report.items[0].supported_candidate_sha256s == ()
     assert "Issueがクローズされました。" in render_entity_rollup_preview(report)
 
 
-def test_conflicting_lifecycle_forbids_model_claim_of_current_merge():
+def test_conflicting_lifecycle_does_not_publish_model_current_merge_claim():
     original = _original(
         _event("pull_request_merged", 34, minute=1),
         _event("pull_request_reopened", 34, minute=2),
     )
-    with pytest.raises(DailyEntityRollupError, match="unverified merge"):
-        _preview(original, partial=lambda ctx:[
-            {"summary":"PRがマージされました。","source_refs":[0]}
-        ])
+    summary = "PRはマージ済みで現在もClosedです。"
+    report = _preview(original, partial=lambda ctx:[
+        {"summary":summary,"source_refs":[0]}
+    ])
+    assert report.items[0].verified_merge_event
+    assert report.items[0].lifecycle_conflict
+    assert report.incomplete
+    assert summary not in render_entity_rollup_preview(report)
+    assert summary not in report.to_json_bytes().decode("utf-8")
 
 
 @pytest.mark.parametrize("review_state,expected", [
@@ -379,3 +417,76 @@ def test_bounded_evidence_reparse_budget_fails_closed_before_candidate_reads(mon
             partial_responses_by_context_sha256=partials,
             grounding_responses_by_context_sha256=grounds,
         )
+
+
+def test_swapped_partial_bound_replies_are_rejected_even_when_both_are_valid_empty():
+    original = _original(
+        _event("issue_created", 201, minute=1),
+        _event("pull_request_created", 202, minute=2),
+    )
+    partials, grounds = _responses(original, partial=lambda ctx:[])
+    assert grounds == {}
+    keys = list(partials)
+    assert len(keys) == 2
+    partials[keys[0]], partials[keys[1]] = partials[keys[1]], partials[keys[0]]
+    with pytest.raises(DailyEntityRollupError, match="context binding"):
+        build_entity_rollup_preview(
+            original, partial_responses_by_context_sha256=partials,
+            grounding_responses_by_context_sha256=grounds,
+        )
+
+
+def test_swapped_grounding_envelopes_and_replaced_bytes_are_rejected():
+    original = _original(
+        _event("issue_created", 203, minute=1),
+        _event("pull_request_created", 204, minute=2),
+    )
+    partials, grounds = _responses(original)
+    keys = list(grounds)
+    assert len(keys) == 2
+    grounds[keys[0]], grounds[keys[1]] = grounds[keys[1]], grounds[keys[0]]
+    with pytest.raises(DailyEntityRollupError, match="context binding"):
+        build_entity_rollup_preview(
+            original, partial_responses_by_context_sha256=partials,
+            grounding_responses_by_context_sha256=grounds,
+        )
+    partials, grounds = _responses(original)
+    key = next(iter(grounds))
+    grounds[key] = replace(grounds[key], response_bytes=b'{"verdict":"supported"}')
+    with pytest.raises(DailyEntityRollupError, match="content digest"):
+        build_entity_rollup_preview(
+            original, partial_responses_by_context_sha256=partials,
+            grounding_responses_by_context_sha256=grounds,
+        )
+
+
+def test_bare_bytes_or_wrong_stage_never_qualify_as_bound_model_reply():
+    original = _original(_event("issue_created", 205))
+    partials, grounds = _responses(original)
+    key = next(iter(partials))
+    partials[key] = partials[key].response_bytes
+    with pytest.raises(DailyEntityRollupError, match="context binding"):
+        build_entity_rollup_preview(
+            original, partial_responses_by_context_sha256=partials,
+            grounding_responses_by_context_sha256=grounds,
+        )
+    partials, grounds = _responses(original)
+    key = next(iter(partials))
+    partials[key] = replace(partials[key], stage=GROUND_REPLY_STAGE)
+    with pytest.raises(DailyEntityRollupError, match="context binding"):
+        build_entity_rollup_preview(
+            original, partial_responses_by_context_sha256=partials,
+            grounding_responses_by_context_sha256=grounds,
+        )
+
+
+def test_locally_constructed_bound_reply_is_not_model_or_producer_attestation():
+    original = _original(_event("issue_created", 206))
+    partials, grounds = _responses(original, partial=lambda ctx:[])
+    report = build_entity_rollup_preview(
+        original, partial_responses_by_context_sha256=partials,
+        grounding_responses_by_context_sha256=grounds,
+    )
+    assert report.payload()["producer_attestation_verified"] is False
+    assert report.payload()["requires_human_quality_review"] is True
+    assert report.payload()["publication_authorized"] is False

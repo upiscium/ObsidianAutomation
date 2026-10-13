@@ -22,8 +22,7 @@ from .github_daily_entity_grounding import (
     normalize_entity_grounding_verdict,
 )
 from .github_daily_issue_pr import (
-    EntityKey, _STRUCTURAL_PROGRESS, _UNVERIFIED_DEPLOY,
-    _UNVERIFIED_MERGE, _UNVERIFIED_LINK, _CROSS_ENTITY_MENTION,
+    EntityKey, _STRUCTURAL_PROGRESS,
     _escape_markdown_text, _is_bot, _routine_comment,
 )
 
@@ -32,6 +31,10 @@ STAGE = "github_daily_entity_grounded_rollup_preview_v2"
 MAX_MODEL_CONTEXTS = MAX_CONTEXT_BATCHES
 MAX_GROUND_CONTEXTS = 32768
 MAX_ENTITY_CANDIDATES = 40
+PARTIAL_REPLY_STAGE = "github_daily_entity_partial_bound_reply_v2"
+GROUND_REPLY_STAGE = "github_daily_entity_singleton_ground_bound_reply_v2"
+MAX_PARTIAL_REPLY_BYTES = 64 * 1024
+MAX_GROUND_REPLY_BYTES = 8 * 1024
 MAX_TOTAL_PREVIEW_BYTES = 2 * 1024 * 1024
 MAX_SUMMARY_BYTES_PER_ENTITY = 32 * 1024
 # Each trust-boundary parser deliberately replays the original Evidence.
@@ -101,30 +104,57 @@ def _source_sort(event: Mapping[str, object]) -> tuple[str, str]:
     return str(event["occurred_at"]), str(event["evidence_id"])
 
 
+@dataclass(frozen=True)
+class BoundModelResponse:
+    """Typed per-context response binding, NOT a cryptographic source receipt.
+
+    A trusted producer will eventually have to publish this atomically with
+    model/digest/options/prompt identity. Constructing this local object from
+    untrusted bytes DOES NOT prove which input an external model saw.
+    """
+    stage: str
+    input_context_sha256: str
+    response_sha256: str
+    response_bytes: bytes
+
+
 def _validated_report_inputs(
-    supplied: Mapping[str, bytes], expected: set[str], *, label: str,
-) -> None:
+    supplied: Mapping[str, BoundModelResponse],
+    expected: set[str], *, label: str, stage: str, max_bytes: int,
+) -> dict[str, bytes]:
     if not isinstance(supplied, Mapping) or len(supplied) > MAX_GROUND_CONTEXTS:
         raise DailyEntityRollupError(f"{label} reply map is invalid")
     if any(type(k) is not str or _SHA.fullmatch(k) is None for k in supplied):
         raise DailyEntityRollupError(f"{label} keys must be context SHA-256")
     if set(supplied) != expected:
         raise DailyEntityRollupError(f"{label} replies missing, extra or swapped")
-    if any(type(value) is not bytes for value in supplied.values()):
-        raise DailyEntityRollupError(f"{label} responses must be bytes")
+    normalized: dict[str, bytes] = {}
+    for key, record in supplied.items():
+        if not isinstance(record, BoundModelResponse) or (
+            record.stage != stage
+            or record.input_context_sha256 != key
+            or type(record.response_bytes) is not bytes
+            or not 0 < len(record.response_bytes) <= max_bytes
+            or type(record.response_sha256) is not str
+            or _SHA.fullmatch(record.response_sha256) is None
+            or _sha256(record.response_bytes) != record.response_sha256
+        ):
+            raise DailyEntityRollupError(
+                f"{label} response context binding or content digest mismatch"
+            )
+        normalized[key] = record.response_bytes
+    return normalized
 
 
-def _reject_unverified_status(summary: str, *, key: EntityKey, merged: bool) -> None:
-    # A v2 Partial candidate still allows Unicode layout characters. Never
-    # let an invisible line separator turn one candidate into Markdown blocks.
+def _validate_untrusted_candidate_text(summary: str) -> None:
+    # Earlier lexical lists of "merged", "デプロイ", URL and Issue references
+    # were incomplete for multilingual text. Do not use model prose as status
+    # or as a display string, regardless of any lexical test's result.
+    # Nonprintable controls are still rejected before local hashing/deduping.
     if not summary.isprintable() or len(summary.splitlines()) != 1:
-        raise DailyEntityRollupError("model progress contains nonprintable layout characters")
-    if _UNVERIFIED_LINK.search(summary) or _UNVERIFIED_DEPLOY.search(summary):
-        raise DailyEntityRollupError("model progress text contains unverified URL or deployment")
-    if _UNVERIFIED_MERGE.search(summary) and not merged:
-        raise DailyEntityRollupError("model progress text asserts unverified merge")
-    if any(int(n) != key.number for n in _CROSS_ENTITY_MENTION.findall(summary)):
-        raise DailyEntityRollupError("model progress text cross-refers to another entity")
+        raise DailyEntityRollupError(
+            "model progress contains nonprintable layout characters"
+        )
 
 
 @dataclass(frozen=True)
@@ -133,7 +163,6 @@ class EntityRollupItem:
     status_event: str | None
     verified_merge_event: bool
     lifecycle_conflict: bool
-    model_supported_candidates: tuple[str, ...]
     supported_candidate_sha256s: tuple[str, ...]
     supported_evidence_ids: tuple[str, ...]
     lifecycle_evidence_ids: tuple[str, ...]
@@ -146,7 +175,9 @@ class EntityRollupItem:
             "latest_verified_lifecycle_event": self.status_event,
             "same_day_merge_event_verified": self.verified_merge_event,
             "conflicting_later_lifecycle": self.lifecycle_conflict,
-            "advisory_supported_summaries": list(self.model_supported_candidates),
+            # Model-authored prose must NEVER reach even this draft preview:
+            # lexical status/URL filters cannot cover arbitrary languages.
+            "advisory_candidate_count": len(self.supported_candidate_sha256s),
             "supported_candidate_sha256s": list(self.supported_candidate_sha256s),
             "supported_evidence_ids": list(self.supported_evidence_ids),
             "lifecycle_evidence_ids": list(self.lifecycle_evidence_ids),
@@ -196,6 +227,7 @@ class DailyEntityRollupPreview:
             "processed_singleton_grounding_contexts": self.processed_ground_count,
             "incomplete_source_or_materiality": self.incomplete,
             "requires_human_quality_review": True,
+            "producer_attestation_verified": False,
             "publication_authorized": False,
         }
 
@@ -212,8 +244,8 @@ class DailyEntityRollupPreview:
 
 def build_entity_rollup_preview(
     original_evidence_bytes: bytes, *,
-    partial_responses_by_context_sha256: Mapping[str, bytes],
-    grounding_responses_by_context_sha256: Mapping[str, bytes],
+    partial_responses_by_context_sha256: Mapping[str, BoundModelResponse],
+    grounding_responses_by_context_sha256: Mapping[str, BoundModelResponse],
 ) -> DailyEntityRollupPreview:
     """Deterministically derive an unpublishable Issue/PR-only daily preview.
 
@@ -229,14 +261,15 @@ def build_entity_rollup_preview(
     contexts = tuple((ctx, ctx.sha256) for ctx in grouping.contexts)
     if len({sha for _, sha in contexts}) != len(contexts):
         raise DailyEntityRollupError("duplicated source context SHA")
-    _validated_report_inputs(
+    verified_partial = _validated_report_inputs(
         partial_responses_by_context_sha256, {sha for _, sha in contexts},
-        label="partial",
+        label="partial", stage=PARTIAL_REPLY_STAGE,
+        max_bytes=MAX_PARTIAL_REPLY_BYTES,
     )
     prepared: list[tuple[object, bytes, object, tuple[object, ...]]] = []
     expected_ground_shas: set[str] = set()
     for context, sha in contexts:
-        model_bytes = partial_responses_by_context_sha256[sha]
+        model_bytes = verified_partial[sha]
         candidate_batch = normalize_entity_candidates(
             context, model_bytes, original_evidence_bytes=original_evidence_bytes,
         )
@@ -254,9 +287,10 @@ def build_entity_rollup_preview(
         ) > MAX_EVIDENCE_REPLAY_BYTES:
             raise DailyEntityRollupError("singleton Grounding replay budget exceeded")
         prepared.append((context, model_bytes, candidate_batch, ground_inputs))
-    _validated_report_inputs(
+    verified_grounding = _validated_report_inputs(
         grounding_responses_by_context_sha256, expected_ground_shas,
-        label="grounding",
+        label="grounding", stage=GROUND_REPLY_STAGE,
+        max_bytes=MAX_GROUND_REPLY_BYTES,
     )
 
     grouped_events: dict[EntityKey, dict[str, Mapping[str, object]]] = {}
@@ -277,7 +311,7 @@ def build_entity_rollup_preview(
                 uncited.setdefault(key, set()).add(eid)
         for ground in ground_inputs:
             verdict = normalize_entity_grounding_verdict(
-                ground, grounding_responses_by_context_sha256[ground.sha256],
+                ground, verified_grounding[ground.sha256],
                 partial_context=context, partial_model_bytes=model_bytes,
                 original_evidence_bytes=original_evidence_bytes,
             )
@@ -313,7 +347,7 @@ def build_entity_rollup_preview(
         hashes: list[str] = []
         cited: set[str] = set()
         for summary, candidate_sha, refs in supported:
-            _reject_unverified_status(summary, key=key, merged=merged and not after_merge_conflict)
+            _validate_untrusted_candidate_text(summary)
             cited.update(refs)
             if summary not in seen_summaries:
                 seen_summaries.add(summary)
@@ -345,7 +379,6 @@ def build_entity_rollup_preview(
             status_event=last_status,
             verified_merge_event=merged,
             lifecycle_conflict=after_merge_conflict,
-            model_supported_candidates=tuple(texts),
             supported_candidate_sha256s=tuple(hashes),
             supported_evidence_ids=tuple(sorted(cited)),
             lifecycle_evidence_ids=lifecycle_ids,
@@ -396,11 +429,14 @@ def render_entity_rollup_preview(report: DailyEntityRollupPreview) -> str:
                 )
         if item.lifecycle_conflict:
             phrase = "矛盾するライフサイクル情報のため状態要確認。"
-        summaries = tuple(
-            "要確認の候補：" + _escape_markdown_text(text)
-            for text in item.model_supported_candidates
+        count = len(item.supported_candidate_sha256s)
+        # The model may write "PRをマージしました", "merged", or arbitrary
+        # malicious URLs in any language. Never show that prose directly.
+        advisory = (
+            f"根拠付き候補{count}件（文章・重要性は未検証）。"
+            if count else ""
         )
-        detail = " ".join((phrase, *summaries)).strip()
+        detail = " ".join((phrase, advisory)).strip()
         if not detail:
             detail = "進展候補あり（根拠と意味的重要性は要確認）。"
         if item.unresolved_source_ids:
