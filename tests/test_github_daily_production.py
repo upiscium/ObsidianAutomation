@@ -10,6 +10,7 @@ import pytest
 
 from obsidian_automation.github_daily_progress import (
     DailyProgressTargetMissing,
+    DailyProgressTransportResult,
 )
 from obsidian_automation import github_daily_production as production
 
@@ -299,10 +300,22 @@ def test_successful_transport_ref_makes_rerun_idempotent(
         return SimpleNamespace(outcome="already_desired")
 
     monkeypatch.setattr(production, "apply_projection", apply)
+    fixture_receipt = DailyProgressTransportResult(
+        projection_sha256="a" * 64,
+        date="2026-10-05",
+        target_path="00-DailyNote/2026-10-05.md",
+        evidence_bundle_sha256="b" * 64,
+        grounded_summary_sha256="c" * 64,
+        section_body_sha256="d" * 64,
+        outcome="already_desired",
+        before_content_sha256="e" * 64,
+        after_content_sha256="e" * 64,
+        completed_at="2026-10-13T00:00:00Z",
+    ).to_json_bytes()
     monkeypatch.setattr(
         production,
         "persist_transport_result",
-        lambda _path, _result: b'{"ok":true}\n',
+        lambda _path, _result: fixture_receipt,
     )
 
     first = production.apply_pending(

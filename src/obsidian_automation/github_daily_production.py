@@ -36,6 +36,8 @@ from .github_daily_progress import (
     load_projection,
     make_projection,
     persist_transport_result,
+    parse_transport_result,
+    inspect_published_transport_result,
     store_projection,
 )
 from .github_daily_summary import (
@@ -602,6 +604,22 @@ def apply_pending(
             / f"{projection_sha}.github-daily-progress.transport-result.json"
         )
         try:
+            # A committed receipt can outlive a crash before Stage Ref publish.
+            # Validate its schema, inode, exact projection/date/target bindings
+            # and durability *before* contacting Writer/Nextcloud again.
+            if os.path.lexists(result_path):
+                existing = inspect_published_transport_result(result_path)
+                if (
+                    existing.projection_sha256 != projection_sha
+                    or existing.date != target
+                    or existing.target_path != projection.target_path
+                    or existing.evidence_bundle_sha256 != projection.evidence_bundle_sha256
+                    or existing.grounded_summary_sha256 != projection.grounded_summary_sha256
+                    or existing.section_body_sha256 != projection.section_body_sha256
+                ):
+                    raise DailyProductionError(
+                        "existing transport result projection binding mismatch"
+                    )
             with canonical_io_lock(pipeline_root):
                 result = apply_projection(
                     projection,
@@ -628,6 +646,13 @@ def apply_pending(
             raise
 
         result_sha = sha256_bytes(result_bytes)
+        # The immutable receipt's historical outcome is authoritative. A
+        # crash after an "applied" receipt but before Stage Ref publication
+        # can legitimately replay as "already_desired"; do not write a ref
+        # pairing the old receipt SHA with the newer runtime outcome.
+        persisted_receipt = parse_transport_result(result_bytes)
+        if persisted_receipt.projection_sha256 != projection_sha:
+            raise DailyProductionError("transport receipt projection binding mismatch")
         _write_ref(
             _ref_path(transport_dir, target),
             {
@@ -636,7 +661,7 @@ def apply_pending(
                 "date": target,
                 "projection_sha256": projection_sha,
                 "transport_result_sha256": result_sha,
-                "outcome": result.outcome,
+                "outcome": persisted_receipt.outcome,
             },
         )
         completed.append(target)
