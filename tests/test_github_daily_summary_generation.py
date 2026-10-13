@@ -17,6 +17,7 @@ from obsidian_automation.github_daily_summary_generation import (
     ollama_infer,
     openai_compatible_infer,
 )
+from obsidian_automation.ollama_generator import OllamaProviderError
 
 
 MODEL_DIGEST = "b" * 64
@@ -107,13 +108,54 @@ def test_ollama_adapter_uses_structured_non_thinking_chat() -> None:
     )
     response = infer(prompt_spec(PARTIAL_STAGE, source_count=1), _context())
 
-    assert [call[1] for call in calls] == ["/api/tags", "/api/chat"]
+    assert [call[1] for call in calls] == ["/api/tags", "/api/tags", "/api/chat", "/api/tags"]
     assert response.content == b'{"claims": []}'
     assert response.model_provider == "ollama"
     assert response.model_identifier == "gemma3:latest"
     assert response.model_revision == MODEL_DIGEST
     assert response.model_config["think"] is False
 
+
+
+@pytest.mark.parametrize("drift_at", ("before", "after"))
+def test_ollama_adapter_rejects_tag_digest_drift_without_false_provenance(drift_at):
+    calls = []
+    live_digest = [MODEL_DIGEST]
+
+    def transport(base_url, *, method, path, payload, timeout):
+        calls.append(path)
+        if path == "/api/tags":
+            if drift_at == "before" and calls.count(path) == 2:
+                live_digest[0] = "c" * 64
+            return {
+                "models": [{
+                    "name": "gemma3:latest",
+                    "model": "gemma3:latest",
+                    "digest": live_digest[0],
+                }],
+            }
+        assert path == "/api/chat"
+        if drift_at == "after":
+            live_digest[0] = "d" * 64
+        return {
+            "model": "gemma3:latest",
+            "done": True,
+            "message": {"role": "assistant", "content": '{"claims": []}'},
+        }
+
+    infer = ollama_infer(
+        base_url="https://ollama.example.test",
+        model="gemma3",
+        timeout=30.0,
+        transport=transport,
+    )
+    assert infer.identity.model_revision == MODEL_DIGEST
+    with pytest.raises(OllamaProviderError, match="Ollama model alias digest changed"):
+        infer(prompt_spec(PARTIAL_STAGE, source_count=1), _context())
+    assert calls == (
+        ["/api/tags", "/api/tags"] if drift_at == "before" else
+        ["/api/tags", "/api/tags", "/api/chat", "/api/tags"]
+    )
 
 def test_openai_adapter_uses_strict_json_schema() -> None:
     calls = []
@@ -296,7 +338,7 @@ def test_ollama_singleton_grounding_contract_in_actual_adapter() -> None:
     response = infer(
         prompt_spec(GROUND_STAGE), _singleton_grounding_context(),
     )
-    assert calls == ["/api/tags", "/api/chat"]
+    assert calls == ["/api/tags", "/api/tags", "/api/chat", "/api/tags"]
     assert json.loads(response.content) == {
         "verdict": "supported",
         "reason": "Evidence supports it",

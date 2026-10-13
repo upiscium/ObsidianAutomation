@@ -283,7 +283,8 @@ def parse_grounded_summary(
     }
     if (
         set(value) != required
-        or value.get("record_version") != 1
+        or type(value.get("record_version")) is not int
+        or value["record_version"] != 1
         or value.get("stage") != "grounded_summary"
     ):
         raise DailyProgressError(
@@ -679,7 +680,8 @@ def parse_projection(data: bytes) -> DailyProgressProjection:
     }
     if (
         set(value) != required
-        or value.get("record_version") != PROJECTION_VERSION
+        or type(value.get("record_version")) is not int
+        or value["record_version"] != PROJECTION_VERSION
         or value.get("stage") != PROJECTION_STAGE
     ):
         raise DailyProgressError(
