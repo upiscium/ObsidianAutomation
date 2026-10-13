@@ -542,7 +542,11 @@ def test_live_status_distinguishes_pending_and_complete(
         {**production.json.loads(result_data), "date": "2026-10-06"},
         {**production.json.loads(result_data), "target_path": "00-DailyNote/stale.md"},
         {**production.json.loads(result_data), "evidence_bundle_sha256": "0" * 64},
+        {**production.json.loads(result_data), "grounded_summary_sha256": "0" * 64},
         {**production.json.loads(result_data), "section_body_sha256": "0" * 64},
+        # Both outcomes are individually supported, but must match the
+        # previously published Stage Ref rather than simply be valid strings.
+        {**production.json.loads(result_data), "outcome": "already_desired"},
     ):
         corrupt_result = production._canonical_json_bytes(receipt_value)
         result_path.write_bytes(corrupt_result)
