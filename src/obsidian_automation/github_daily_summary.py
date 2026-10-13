@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+import errno
+import fcntl
 import hashlib
 import json
+import math
+import os
 import re
 import stat
-from dataclasses import dataclass
+import time
+from urllib.error import URLError
+from contextlib import contextmanager
+from types import MappingProxyType
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
@@ -96,6 +105,32 @@ identifiers, lists, or additional properties. Be conservative about support."""
 
 class GitHubDailySummaryError(ArtifactLifecycleError):
     """Raised when Daily Project Progress summarization violates its contract."""
+
+
+@dataclass(frozen=True)
+class SummaryRetryPolicy:
+    """Opt-in, strictly bounded retry on identified provider timeouts only."""
+
+    max_transient_retries: int = 0
+    backoff_seconds: float = 0.0
+
+    def __post_init__(self) -> None:
+        if type(self.max_transient_retries) is not int or not 0 <= self.max_transient_retries <= 2:
+            raise GitHubDailySummaryError("transient retries must be an integer from 0 to 2")
+        if (isinstance(self.backoff_seconds, bool)
+                or not isinstance(self.backoff_seconds, (int, float))
+                or not math.isfinite(self.backoff_seconds)
+                or not 0 <= self.backoff_seconds <= 30):
+            raise GitHubDailySummaryError("retry backoff must be finite and within 0..30 seconds")
+
+
+def _admit_retry_policy(value: SummaryRetryPolicy | None) -> SummaryRetryPolicy:
+    """Reject invalid API configuration before Evidence/Provider/CAS effects."""
+    if value is None:
+        return SummaryRetryPolicy()
+    if type(value) is not SummaryRetryPolicy:
+        raise GitHubDailySummaryError("invalid Daily Summary retry policy")
+    return value
 
 
 @dataclass(frozen=True)
@@ -320,6 +355,55 @@ class PipelineResult:
 Infer = Callable[[PromptSpec, SummaryContext], InferenceResponse]
 
 
+@dataclass(frozen=True)
+class PreboundInferenceIdentity:
+    """Trusted before any inference, unlike response-derived metadata."""
+
+    model_provider: str
+    model_identifier: str
+    model_revision: str
+    model_config: Mapping[str, object]
+    _config_sha256: str = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        for value in (self.model_provider, self.model_identifier):
+            if not isinstance(value, str) or not value or len(value) > MAX_METADATA_CHARS:
+                raise GitHubDailySummaryError("prebound model identity is invalid")
+        if not isinstance(self.model_revision, str) or _SHA_RE.fullmatch(self.model_revision) is None:
+            raise GitHubDailySummaryError("prebound model digest must be SHA-256")
+        config = validate_model_config(dict(self.model_config))
+        object.__setattr__(self, "model_config", MappingProxyType(config))
+        object.__setattr__(self, "_config_sha256", sha256_bytes(_canonical_json_bytes(config)))
+
+    def validated_config(self) -> dict[str, object]:
+        """Reject post-resolution mutation of nested configuration objects."""
+        config = validate_model_config(dict(self.model_config))
+        if sha256_bytes(_canonical_json_bytes(config)) != self._config_sha256:
+            raise GitHubDailySummaryError("prebound model configuration mutated")
+        return config
+
+
+@dataclass(frozen=True)
+class BoundInfer:
+    """Explicit model binding; unbound test/OpenAI callbacks cannot resume."""
+
+    identity: PreboundInferenceIdentity
+    invoke: Infer
+
+    def __call__(self, prompt: PromptSpec, context: SummaryContext) -> InferenceResponse:
+        result = self.invoke(prompt, context)
+        expected = self.identity
+        if (
+            result.model_provider != expected.model_provider
+            or result.model_identifier != expected.model_identifier
+            or result.model_revision != expected.model_revision
+            or _canonical_json_bytes(validate_model_config(dict(result.model_config)))
+            != _canonical_json_bytes(expected.validated_config())
+        ):
+            raise GitHubDailySummaryError("inference response differs from prebound model")
+        return result
+
+
 def _metadata(value: object, *, label: str) -> str:
     if (
         not isinstance(value, str)
@@ -449,7 +533,9 @@ def parse_evidence_bundle(data: bytes) -> EvidenceBundle:
         "repositories",
         "events",
     }
-    if set(value) != required or value.get("record_version") != RECORD_VERSION:
+    if (set(value) != required
+            or type(value.get("record_version")) is not int
+            or value["record_version"] != RECORD_VERSION):
         raise GitHubDailySummaryError(
             "GitHub Daily evidence bundle properties do not match contract"
         )
@@ -1427,6 +1513,244 @@ def _inference_record(
     )
 
 
+def _resume_request(
+    *,
+    stage: str,
+    input_sha: str,
+    prompt: PromptSpec,
+    implementation_revision: str,
+    infer: Infer,
+) -> dict[str, object] | None:
+    if not isinstance(infer, BoundInfer):
+        # Legacy mocks and OpenAI-compatible callbacks have no trusted
+        # pre-response identity, so never adopt pre-existing model outputs.
+        return None
+    identity = infer.identity
+    return {
+        "stage": stage,
+        "input_context_sha256": input_sha,
+        "prompt_template_sha256": prompt.template_sha256,
+        "implementation_revision": implementation_revision,
+        "model_provider": identity.model_provider,
+        "model_identifier": identity.model_identifier,
+        "model_revision": identity.model_revision,
+        "model_config": identity.validated_config(),
+    }
+
+
+def _verified_resume_provenance(
+    data: bytes,
+    *,
+    request: Mapping[str, object],
+    output_sha: str,
+    prompt: PromptSpec,
+) -> None:
+    value = _decode_json_object(data, label="Daily resumed inference provenance")
+    required = {
+        "record_version", "stage", "input_context_sha256", "output_sha256",
+        "implementation_revision", "prompt_template_version",
+        "prompt_template_sha256", "model", "model_config", "generated_at",
+    }
+    if (set(value) != required or type(value["record_version"]) is not int
+            or value["record_version"] != RECORD_VERSION):
+        raise GitHubDailySummaryError("resumed provenance record properties differ")
+    expected = {
+        "stage": request["stage"],
+        "input_context_sha256": request["input_context_sha256"],
+        "output_sha256": output_sha,
+        "implementation_revision": request["implementation_revision"],
+        "prompt_template_version": prompt.template_version,
+        "prompt_template_sha256": request["prompt_template_sha256"],
+        "model": {
+            "provider": request["model_provider"],
+            "identifier": request["model_identifier"],
+            "revision": request["model_revision"],
+        },
+        "model_config": request["model_config"],
+    }
+    if any(
+        _canonical_json_bytes({"value": value[name]})
+        != _canonical_json_bytes({"value": expected[name]})
+        for name in expected
+    ):
+        raise GitHubDailySummaryError("resumed provenance model or context binding mismatch")
+    timestamp = value["generated_at"]
+    if not isinstance(timestamp, str) or not timestamp.endswith("Z") or len(timestamp) > 80:
+        raise GitHubDailySummaryError("resumed provenance timestamp invalid")
+    try:
+        parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise GitHubDailySummaryError("resumed provenance timestamp invalid") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise GitHubDailySummaryError("resumed provenance timestamp is not UTC")
+    if _canonical_json_bytes(value) != data:
+        raise GitHubDailySummaryError("resumed provenance is not canonical")
+
+
+def _resume_claim_output(
+    data: bytes,
+    *,
+    context: SummaryContext,
+    context_sha: str,
+    events_by_id: Mapping[str, Mapping[str, object]],
+) -> ClaimOutput:
+    obj = _decode_json_object(data, label="resumed Partial output")
+    if (
+        set(obj) != {"record_version", "stage", "input_context_sha256", "claims"}
+        or type(obj["record_version"]) is not int
+        or obj["record_version"] != RECORD_VERSION
+        or obj["stage"] != PARTIAL_STAGE
+        or obj["input_context_sha256"] != context_sha
+        or not isinstance(obj["claims"], list)
+    ):
+        raise GitHubDailySummaryError("resumed Partial output binding mismatch")
+    claims = []
+    required = {"claim_id", "kind", "repository", "summary", "evidence_ids"}
+    for item in obj["claims"]:
+        if not isinstance(item, dict) or set(item) != required:
+            raise GitHubDailySummaryError("resumed Partial claim shape is invalid")
+        claims.append({key: item[key] for key in required if key != "claim_id"})
+    normalized = parse_claim_output(
+        _canonical_json_bytes({"claims": claims}),
+        stage=PARTIAL_STAGE,
+        input_context_sha256=context_sha,
+        allowed_evidence_ids={str(e["evidence_id"]) for e in context.events},
+        events_by_id=events_by_id,
+    )
+    if normalized.to_json_bytes() != data:
+        raise GitHubDailySummaryError("resumed Partial normalized claim identity mismatch")
+    return normalized
+
+
+def _resume_ground_output(
+    data: bytes, *, context: SummaryContext, context_sha: str,
+) -> GroundOutput:
+    obj = _decode_json_object(data, label="resumed Ground output")
+    if (
+        set(obj) != {"record_version", "stage", "input_context_sha256", "assessments"}
+        or type(obj["record_version"]) is not int
+        or obj["record_version"] != RECORD_VERSION
+        or obj["stage"] != GROUND_STAGE
+        or obj["input_context_sha256"] != context_sha
+        or not isinstance(obj["assessments"], list)
+    ):
+        raise GitHubDailySummaryError("resumed Ground output binding mismatch")
+    if len(context.claims) != 1 or {
+        str(event["evidence_id"]) for event in context.events
+    } != set(context.claims[0].evidence_ids):
+        raise GitHubDailySummaryError("resumed Ground cited context does not match claim")
+    claim = context.claims[0]
+    original = _normalized_claim(
+        kind=claim.kind, repository=claim.repository,
+        summary=claim.summary, evidence_ids=list(claim.evidence_ids),
+        allowed_evidence_ids={str(e["evidence_id"]) for e in context.events},
+        events_by_id={str(e["evidence_id"]): e for e in context.events},
+    )
+    if original != claim:
+        raise GitHubDailySummaryError("resumed Ground source claim identity mismatch")
+    normalized = parse_ground_output(
+        _canonical_json_bytes({"assessments": obj["assessments"]}),
+        input_context_sha256=context_sha,
+        claims=context.claims,
+    )
+    if normalized.to_json_bytes() != data:
+        raise GitHubDailySummaryError("resumed Ground normalized assessment mismatch")
+    return normalized
+
+
+def _load_verified_resume(
+    state_root: Path,
+    *,
+    request: Mapping[str, object] | None,
+    prompt: PromptSpec,
+    context: SummaryContext,
+    context_sha: str,
+    events_by_id: Mapping[str, Mapping[str, object]],
+) -> tuple[ClaimOutput | GroundOutput, str, str] | None:
+    if request is None:
+        return None
+    from .github_daily_resume import load_resume
+
+    existing = load_resume(state_root, request=request)
+    if existing is None:
+        return None
+    output_sha, output_bytes, provenance_sha, provenance_bytes = existing
+    _verified_resume_provenance(
+        provenance_bytes, request=request, output_sha=output_sha, prompt=prompt,
+    )
+    if context.stage == PARTIAL_STAGE:
+        output = _resume_claim_output(
+            output_bytes, context=context, context_sha=context_sha,
+            events_by_id=events_by_id,
+        )
+    elif context.stage == GROUND_STAGE:
+        output = _resume_ground_output(
+            output_bytes, context=context, context_sha=context_sha,
+        )
+    else:
+        raise GitHubDailySummaryError("unsupported cached model stage")
+    return output, output_sha, provenance_sha
+
+
+def _is_retryable_transport_timeout(exc: BaseException) -> bool:
+    """Only identifiable transport timeouts qualify; never retry integrity errors.
+
+    The upstream provider wrappers preserve the original network exception as
+    __cause__. The no-cause response-reader *deadline* messages are explicit
+    fixed internal contracts, not arbitrary model-supplied error text.
+    """
+    from .ollama_generator import OllamaProviderError
+    from .openai_compatible import OpenAICompatibleProviderError
+
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while isinstance(current, BaseException) and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, TimeoutError):
+            return True
+        if isinstance(current, OllamaProviderError) and (
+            str(current) == "Ollama response read exceeded request timeout"
+        ):
+            return True
+        if isinstance(current, OpenAICompatibleProviderError) and (
+            str(current) == "OpenAI-compatible response read exceeded request timeout"
+        ):
+            return True
+        if isinstance(current, URLError) and isinstance(current.reason, BaseException):
+            current = current.reason
+        else:
+            current = current.__cause__
+    return False
+
+
+def _invoke_model_stage(
+    infer: Infer, prompt: PromptSpec, context: SummaryContext, *,
+    retry_policy: SummaryRetryPolicy | None = None,
+) -> InferenceResponse:
+    """Retry *timeouts only*, with bounded attempts and content-free diagnostics."""
+    from .ollama_generator import OllamaProviderError
+    from .openai_compatible import OpenAICompatibleProviderError
+
+    policy = _admit_retry_policy(retry_policy)
+    started = time.monotonic()
+    for attempt in range(policy.max_transient_retries + 1):
+        try:
+            return infer(prompt, context)
+        except (OllamaProviderError, OpenAICompatibleProviderError, TimeoutError) as exc:
+            if attempt < policy.max_transient_retries and _is_retryable_transport_timeout(exc):
+                if policy.backoff_seconds:
+                    time.sleep(policy.backoff_seconds * (attempt + 1))
+                continue
+            elapsed = time.monotonic() - started
+            cause = type(exc.__cause__).__name__ if exc.__cause__ is not None else "none"
+            raise GitHubDailySummaryError(
+                f"{context.stage} batch {context.batch_index + 1}/"
+                f"{context.batch_count}: provider={type(exc).__name__}, "
+                f"cause={cause}, attempts={attempt + 1}, elapsed_seconds={elapsed:.3f}"
+            ) from exc
+    raise AssertionError("retry loop exhausted without result")
+
+
 def _run_claim_stage(
     state_root: Path,
     bundle: EvidenceBundle,
@@ -1434,11 +1758,13 @@ def _run_claim_stage(
     *,
     infer: Infer,
     implementation_revision: str,
+    retry_policy: SummaryRetryPolicy | None = None,
 ) -> tuple[
     tuple[StoredClaimOutput, ...],
     tuple[str, ...],
     tuple[str, ...],
 ]:
+    retry_policy = _admit_retry_policy(retry_policy)
     stored: list[StoredClaimOutput] = []
     context_shas: list[str] = []
     provenance_shas: list[str] = []
@@ -1449,7 +1775,32 @@ def _run_claim_stage(
         prompt = _prompt_spec(
             context.stage, source_count=len(context.events)
         )
-        response = infer(prompt, context)
+        request = _resume_request(
+            stage=context.stage, input_sha=context_sha,
+            prompt=prompt, implementation_revision=implementation_revision,
+            infer=infer,
+        )
+        try:
+            cached = _load_verified_resume(
+                state_root, request=request, prompt=prompt, context=context,
+                context_sha=context_sha, events_by_id=events_by_id,
+            )
+        except (ArtifactLifecycleError, GitHubDailySummaryError) as exc:
+            raise GitHubDailySummaryError(
+                f"partial batch {context.batch_index + 1}/{context.batch_count}: "
+                f"untrusted resume artifact: {type(exc).__name__}"
+            ) from exc
+        if cached is not None:
+            previous, output_sha, provenance_sha = cached
+            if not isinstance(previous, ClaimOutput):
+                raise GitHubDailySummaryError("resumed Partial output type mismatch")
+            stored.append(StoredClaimOutput(output_sha, previous))
+            provenance_shas.append(provenance_sha)
+            continue
+
+        response = _invoke_model_stage(
+            infer, prompt, context, retry_policy=retry_policy,
+        )
         try:
             output = _parse_model_claim_output(
                 response.content,
@@ -1474,6 +1825,12 @@ def _run_claim_stage(
         )
         provenance_sha, _ = store_inference_record(state_root, record)
         provenance_shas.append(provenance_sha)
+        if request is not None:
+            from .github_daily_resume import store_resume
+            store_resume(
+                state_root, request=request, output_sha256=output_sha,
+                provenance_sha256=provenance_sha,
+            )
     return tuple(stored), tuple(context_shas), tuple(provenance_shas)
 
 
@@ -1542,11 +1899,13 @@ def _run_ground_stage(
     *,
     infer: Infer,
     implementation_revision: str,
+    retry_policy: SummaryRetryPolicy | None = None,
 ) -> tuple[
     tuple[StoredGroundOutput, ...],
     tuple[str, ...],
     tuple[str, ...],
 ]:
+    retry_policy = _admit_retry_policy(retry_policy)
     stored: list[StoredGroundOutput] = []
     context_shas: list[str] = []
     provenance_shas: list[str] = []
@@ -1556,7 +1915,33 @@ def _run_ground_stage(
         context_sha, _ = store_context(state_root, context)
         context_shas.append(context_sha)
         prompt = _prompt_spec(GROUND_STAGE)
-        response = infer(prompt, context)
+        request = _resume_request(
+            stage=GROUND_STAGE, input_sha=context_sha,
+            prompt=prompt, implementation_revision=implementation_revision,
+            infer=infer,
+        )
+        try:
+            cached = _load_verified_resume(
+                state_root, request=request, prompt=prompt, context=context,
+                context_sha=context_sha,
+                events_by_id={str(e["evidence_id"]): e for e in context.events},
+            )
+        except (ArtifactLifecycleError, GitHubDailySummaryError) as exc:
+            raise GitHubDailySummaryError(
+                f"ground batch {context.batch_index + 1}/{context.batch_count}: "
+                f"untrusted resume artifact: {type(exc).__name__}"
+            ) from exc
+        if cached is not None:
+            previous, output_sha, provenance_sha = cached
+            if not isinstance(previous, GroundOutput):
+                raise GitHubDailySummaryError("resumed Ground output type mismatch")
+            stored.append(StoredGroundOutput(output_sha, previous))
+            provenance_shas.append(provenance_sha)
+            continue
+
+        response = _invoke_model_stage(
+            infer, prompt, context, retry_policy=retry_policy,
+        )
         try:
             output = _parse_model_ground_output(
                 response.content,
@@ -1580,7 +1965,48 @@ def _run_ground_stage(
         )
         provenance_sha, _ = store_inference_record(state_root, record)
         provenance_shas.append(provenance_sha)
+        if request is not None:
+            from .github_daily_resume import store_resume
+            store_resume(
+                state_root, request=request, output_sha256=output_sha,
+                provenance_sha256=provenance_sha,
+            )
     return tuple(stored), tuple(context_shas), tuple(provenance_shas)
+
+
+@contextmanager
+def _exclusive_summary_pipeline_root(state_root: Path):
+    """Serialize the whole Daily inference/resume transaction per state inode.
+
+    Lock the *existing directory inode* rather than creating a lockfile inside
+    the strict CAS namespace. A second runner fails before inference or CAS
+    mutation; the kernel releases this lock on crash/exit. This is a trusted
+    local-filesystem admission boundary, not distributed coordination.
+    """
+    root = state_root.absolute()
+    _require_safe_directory(root, create=False)
+    flags = (
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    try:
+        fd = os.open(root, flags)
+    except OSError as exc:
+        raise GitHubDailySummaryError("Daily Summary root lock cannot be opened") from exc
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno in {errno.EAGAIN, errno.EWOULDBLOCK}:
+                raise GitHubDailySummaryError(
+                    "Daily Summary pipeline already active"
+                ) from exc
+            raise GitHubDailySummaryError(
+                "Daily Summary root lock could not be acquired"
+            ) from exc
+        yield
+    finally:
+        os.close(fd)
 
 
 def run_pipeline(
@@ -1592,7 +2018,34 @@ def run_pipeline(
     partial_context_bytes: int = MAX_PARTIAL_CONTEXT_BYTES,
     reduce_context_bytes: int = MAX_REDUCE_CONTEXT_BYTES,
     ground_context_bytes: int = MAX_GROUND_CONTEXT_BYTES,
+    retry_policy: SummaryRetryPolicy | None = None,
 ) -> PipelineResult:
+    retry_policy = _admit_retry_policy(retry_policy)
+    with _exclusive_summary_pipeline_root(state_root):
+        return _run_pipeline_unlocked(
+            evidence_path=evidence_path,
+            state_root=state_root,
+            infer=infer,
+            implementation_revision=implementation_revision,
+            partial_context_bytes=partial_context_bytes,
+            reduce_context_bytes=reduce_context_bytes,
+            ground_context_bytes=ground_context_bytes,
+            retry_policy=retry_policy,
+        )
+
+
+def _run_pipeline_unlocked(
+    *,
+    evidence_path: Path,
+    state_root: Path,
+    infer: Infer,
+    implementation_revision: str,
+    partial_context_bytes: int = MAX_PARTIAL_CONTEXT_BYTES,
+    reduce_context_bytes: int = MAX_REDUCE_CONTEXT_BYTES,
+    ground_context_bytes: int = MAX_GROUND_CONTEXT_BYTES,
+    retry_policy: SummaryRetryPolicy | None = None,
+) -> PipelineResult:
+    retry_policy = _admit_retry_policy(retry_policy)
     bundle = load_evidence_bundle(evidence_path)
     partial_contexts = partition_evidence(
         bundle,
@@ -1605,6 +2058,7 @@ def run_pipeline(
             partial_contexts,
             infer=infer,
             implementation_revision=implementation_revision,
+            retry_policy=retry_policy,
         )
     )
 
@@ -1636,6 +2090,7 @@ def run_pipeline(
             ground_contexts,
             infer=infer,
             implementation_revision=implementation_revision,
+            retry_policy=retry_policy,
         )
     )
 

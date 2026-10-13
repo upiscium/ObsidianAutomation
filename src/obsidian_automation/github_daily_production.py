@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import re
+import secrets
 import stat
 import sys
 from datetime import date, datetime, timedelta
@@ -11,7 +12,16 @@ from pathlib import Path
 from typing import Iterable, Mapping
 from zoneinfo import ZoneInfo
 
-from .artifact_lifecycle import _canonical_json_bytes, _read_exact_file, sha256_bytes
+from .artifact_lifecycle import (
+    ArtifactLifecycleError,
+    _canonical_json_bytes,
+    _read_exact_file,
+    _rename_noreplace,
+    _require_safe_directory,
+    _same_immutable_bytes,
+    _write_all,
+    sha256_bytes,
+)
 from .github_daily_activity import (
     GitHubDailyActivityError,
     collect_daily_evidence,
@@ -32,11 +42,17 @@ from .github_daily_summary import (
     GitHubDailySummaryError,
     load_evidence_bundle,
 )
+from .github_daily_resume import _read_bounded as _read_bounded_stage_ref
 from .github_daily_summary_generation import (
     ollama_infer,
     openai_compatible_infer,
 )
-from .github_daily_summary import run_pipeline
+from .github_daily_summary import (
+    SummaryRetryPolicy,
+    _admit_retry_policy,
+    _exclusive_summary_pipeline_root,
+    _run_pipeline_unlocked,
+)
 from .github_project_watcher import (
     GitHubClient,
     GitHubProjectWatcherError,
@@ -66,6 +82,13 @@ PROJECTION_DIR = "30-Projection"
 TRANSPORT_DIR = "40-Transport"
 
 _REF_SUFFIX = ".ref.json"
+# Stage refs are fixed-shape metadata records, not arbitrary model outputs.
+# A conservative 64-KiB cap bounds all CLI readers and prevents FIFO DoS.
+MAX_STAGE_REF_BYTES = 64 * 1024
+# Transport receipts are fixed-schema metadata (hashes, status and timestamps)
+# rather than full Daily content. Do not let Live Smoke read unbounded or
+# blocking payloads from a claimed completed transport result.
+MAX_TRANSPORT_RESULT_BYTES = 64 * 1024
 _DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 _GIT_REV_RE = re.compile(r"^[0-9a-f]{40,64}$")
@@ -124,20 +147,33 @@ def _read_ref(
     stage: str,
     target_date: str,
 ) -> dict[str, object]:
-    data = _read_exact_file(path)
+    try:
+        # Resume's bounded/no-follow/nonblocking reader refuses FIFO, symlink,
+        # hardlink and oversized metadata before parsing any JSON.
+        data = _read_bounded_stage_ref(path, max_bytes=MAX_STAGE_REF_BYTES)
+    except ArtifactLifecycleError as exc:
+        raise DailyProductionError("stage ref cannot be safely read") from exc
     try:
         value = json.loads(data)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise DailyProductionError("stage ref is invalid JSON") from exc
     if not isinstance(value, dict):
         raise DailyProductionError("stage ref must be an object")
-    if value.get("record_version") != RECORD_VERSION:
+    if (type(value.get("record_version")) is not int
+            or value["record_version"] != RECORD_VERSION):
         raise DailyProductionError("stage ref version is unsupported")
     if value.get("stage") != stage:
         raise DailyProductionError("stage ref kind does not match path")
     if value.get("date") != _canonical_date(target_date):
         raise DailyProductionError("stage ref date does not match path")
-    if _canonical_json_bytes(value) != data:
+    try:
+        canonical = _canonical_json_bytes(value)
+    except UnicodeError as exc:
+        # json.loads accepts escaped lone surrogates, but strict UTF-8
+        # canonicalization cannot encode them. Refuse as a managed invalid
+        # stage ref rather than leaking a raw UnicodeEncodeError traceback.
+        raise DailyProductionError("stage ref is not canonical JSON") from exc
+    if canonical != data:
         raise DailyProductionError("stage ref is not canonical JSON")
     return value
 
@@ -146,44 +182,78 @@ def _write_ref(
     path: Path,
     payload: Mapping[str, object],
 ) -> bytes:
-    data = _canonical_json_bytes(payload)
-    if path.exists() or path.is_symlink():
-        existing = _read_exact_file(path)
-        if existing != data:
-            raise DailyProductionError(
-                "stage ref already exists with different bytes"
-            )
-        return existing
+    """Publish a complete immutable stage ref, never an in-progress final file.
 
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    if hasattr(os, "O_CLOEXEC"):
-        flags |= os.O_CLOEXEC
+    The CAS rename primitive from merged #293 provides no-overwrite semantics,
+    but stage refs retain their legacy explicit 0640 mode regardless of the
+    invoking shell's umask. Payload bytes remain owner-only until fully fsynced.
+    """
+    data = _canonical_json_bytes(payload)
+    _require_safe_directory(path.parent, create=True)
+    parent_flags = (
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        | getattr(os, "O_CLOEXEC", 0)
+    )
     try:
-        fd = os.open(path, flags, 0o640)
-    except FileExistsError:
-        return _write_ref(path, payload)
+        parent_fd = os.open(path.parent, parent_flags)
     except OSError as exc:
-        raise DailyProductionError("cannot create stage ref") from exc
+        raise DailyProductionError("stage ref parent is not safely readable") from exc
+    staged_name = f".obsidian-daily-ref-{secrets.token_hex(16)}.tmp"
+    temp_exists = False
+    fd: int | None = None
     try:
-        view = memoryview(data)
-        while view:
-            written = os.write(fd, view)
-            if written <= 0:
+        try:
+            os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            if not _same_immutable_bytes(parent_fd, path.name, data):
                 raise DailyProductionError(
-                    "short write while persisting stage ref"
+                    "stage ref already exists with different bytes"
                 )
-            view = view[written:]
+            os.fsync(parent_fd)
+            return data
+
+        flags = (
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        fd = os.open(staged_name, flags, 0o600, dir_fd=parent_fd)
+        temp_exists = True
+        os.fchmod(fd, 0o600)
+        _write_all(fd, data)
         os.fsync(fd)
-    finally:
+        # Do not make any payload bytes group-readable before the full fsync.
+        os.fchmod(fd, 0o640)
+        os.fsync(fd)
         os.close(fd)
-    dir_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(dir_fd)
+        fd = None
+        try:
+            _rename_noreplace(parent_fd, staged_name, path.name)
+        except FileExistsError as exc:
+            if not _same_immutable_bytes(parent_fd, path.name, data):
+                raise DailyProductionError(
+                    "stage ref already exists with different bytes"
+                ) from exc
+            os.unlink(staged_name, dir_fd=parent_fd)
+            temp_exists = False
+        else:
+            temp_exists = False
+        os.fsync(parent_fd)
+        return data
+    except (OSError, ArtifactLifecycleError) as exc:
+        raise DailyProductionError("stage ref atomic publication failed") from exc
     finally:
-        os.close(dir_fd)
-    return data
+        try:
+            if fd is not None:
+                os.close(fd)
+            if temp_exists:
+                try:
+                    os.unlink(staged_name, dir_fd=parent_fd)
+                except FileNotFoundError:
+                    pass
+        finally:
+            os.close(parent_fd)
 
 
 def enqueue_date(
@@ -204,6 +274,27 @@ def enqueue_date(
     return path
 
 
+def _reaffirm_ref_directory_durable(directory: Path) -> None:
+    """Re-commit validated existing ref names before declaring stages complete.
+
+    A prior writer may have atomically published a complete ref then failed
+    fsync(parent). Merely observing its pathname on retry does NOT prove its
+    directory entry survived a later crash. This retries the missing boundary.
+    """
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    try:
+        fd = os.open(directory, flags)
+    except OSError as exc:
+        raise DailyProductionError("cannot open stage-ref durability boundary") from exc
+    try:
+        try:
+            os.fsync(fd)
+        except OSError as exc:
+            raise DailyProductionError("existing stage refs are not durable") from exc
+    finally:
+        os.close(fd)
+
+
 def scheduled_dates(root: Path) -> tuple[str, ...]:
     schedule = _stage_dir(root, SCHEDULE_DIR)
     rows: list[str] = []
@@ -212,6 +303,11 @@ def scheduled_dates(root: Path) -> tuple[str, ...]:
         target = _canonical_date(name)
         _read_ref(path, stage="schedule", target_date=target)
         rows.append(target)
+    if rows:
+        # A previous schedule publication may have committed data but failed
+        # the directory fsync. Never enqueue later stages on such a ref until
+        # the directory entry is durably revalidated.
+        _reaffirm_ref_directory_durable(schedule)
     return tuple(sorted(set(rows)))
 
 
@@ -232,12 +328,18 @@ def _pending_dates(
 ) -> tuple[str, ...]:
     directory = _stage_dir(root, completed_dir)
     pending: list[str] = []
+    found_complete = False
     for target in scheduled_dates(root):
         path = _ref_path(directory, target)
-        if not path.exists():
+        if not os.path.lexists(path):
             pending.append(target)
             continue
+        # Also reject dangling symlink refs rather than treating them as
+        # missing and initiating a potentially expensive fresh model call.
         _read_ref(path, stage=completed_stage, target_date=target)
+        found_complete = True
+    if found_complete:
+        _reaffirm_ref_directory_durable(directory)
     return tuple(pending)
 
 
@@ -337,6 +439,7 @@ def summarize_pending(
     implementation_revision: str,
     timeout: float = 120.0,
     api_key: str | None = None,
+    retry_policy: SummaryRetryPolicy | None = None,
 ) -> tuple[str, ...]:
     if (
         not isinstance(implementation_revision, str)
@@ -345,6 +448,7 @@ def summarize_pending(
         raise DailyProductionError(
             "implementation revision must be lowercase 40..64 hex"
         )
+    retry_policy = _admit_retry_policy(retry_policy)
     summary_root = _stage_dir(root, SUMMARY_DIR)
     if provider == "ollama":
         infer = ollama_infer(
@@ -363,34 +467,43 @@ def summarize_pending(
         raise DailyProductionError("unsupported Daily summary provider")
 
     completed: list[str] = []
-    for target in _pending_dates(root, "summary", SUMMARY_DIR):
-        evidence_sha, evidence_path, _bundle = _evidence_for_date(
-            root,
-            target,
-        )
-        result = run_pipeline(
-            evidence_path=evidence_path,
-            state_root=summary_root,
-            infer=infer,
-            implementation_revision=implementation_revision,
-        )
-        if result.evidence_bundle_sha256 != evidence_sha:
-            raise DailyProductionError(
-                "summary result evidence binding mismatch"
+    # A date's Summary ref must be committed under the same admission lock
+    # as its model inference and CAS writes. Otherwise another runner can
+    # select the same pending date after run_pipeline returns but before
+    # _write_ref completes. This is a trusted, local inode lock; direct
+    # read-only scanners and other stage producers have distinct authority.
+    with _exclusive_summary_pipeline_root(summary_root):
+        for target in _pending_dates(root, "summary", SUMMARY_DIR):
+            evidence_sha, evidence_path, _bundle = _evidence_for_date(
+                root,
+                target,
             )
-        _write_ref(
-            _ref_path(summary_root, target),
-            {
-                "record_version": RECORD_VERSION,
-                "stage": "summary",
-                "date": target,
-                "evidence_sha256": evidence_sha,
-                "grounded_summary_sha256": (
-                    result.grounded_summary_sha256
-                ),
-            },
-        )
-        completed.append(target)
+            # The outer production transaction owns the lock across ref
+            # publication; avoid recursively taking the nonblocking lock.
+            result = _run_pipeline_unlocked(
+                evidence_path=evidence_path,
+                state_root=summary_root,
+                infer=infer,
+                implementation_revision=implementation_revision,
+                retry_policy=retry_policy,
+            )
+            if result.evidence_bundle_sha256 != evidence_sha:
+                raise DailyProductionError(
+                    "summary result evidence binding mismatch"
+                )
+            _write_ref(
+                _ref_path(summary_root, target),
+                {
+                    "record_version": RECORD_VERSION,
+                    "stage": "summary",
+                    "date": target,
+                    "evidence_sha256": evidence_sha,
+                    "grounded_summary_sha256": (
+                        result.grounded_summary_sha256
+                    ),
+                },
+            )
+            completed.append(target)
     return tuple(completed)
 
 
@@ -534,13 +647,16 @@ def apply_pending(
 def live_status(root: Path, target_date: str) -> dict[str, object]:
     target = _canonical_date(target_date)
     schedule = _stage_dir(root, SCHEDULE_DIR)
-    if not _ref_path(schedule, target).exists():
+    if not os.path.lexists(_ref_path(schedule, target)):
         raise DailyProductionError("live canary date is not scheduled")
     _read_ref(
         _ref_path(schedule, target),
         stage="schedule",
         target_date=target,
     )
+    # Live acceptance must not infer durable completion from a visible name:
+    # a prior publisher may have returned after a failed parent fsync.
+    _reaffirm_ref_directory_durable(schedule)
 
     evidence_dir = _stage_dir(root, EVIDENCE_DIR)
     summary_dir = _stage_dir(root, SUMMARY_DIR)
@@ -555,13 +671,14 @@ def live_status(root: Path, target_date: str) -> dict[str, object]:
     }
     state: dict[str, object] = {}
     for name, path in stage_paths.items():
-        state[name] = "completed" if path.exists() else "pending"
+        state[name] = "completed" if os.path.lexists(path) else "pending"
 
     if state["evidence"] == "completed":
         evidence_sha, _evidence_path, bundle = _evidence_for_date(
             root,
             target,
         )
+        _reaffirm_ref_directory_durable(evidence_dir)
     else:
         return {
             "record_version": RECORD_VERSION,
@@ -576,6 +693,7 @@ def live_status(root: Path, target_date: str) -> dict[str, object]:
             target,
             bundle=bundle,
         )
+        _reaffirm_ref_directory_durable(summary_dir)
     else:
         return {
             "record_version": RECORD_VERSION,
@@ -595,6 +713,7 @@ def live_status(root: Path, target_date: str) -> dict[str, object]:
             raise DailyProductionError(
                 "live canary projection upstream binding mismatch"
             )
+        _reaffirm_ref_directory_durable(projection_dir)
     else:
         return {
             "record_version": RECORD_VERSION,
@@ -640,14 +759,21 @@ def live_status(root: Path, target_date: str) -> dict[str, object]:
         transport_dir
         / f"{projection_sha}.github-daily-progress.transport-result.json"
     )
-    result_data = _read_exact_file(result_path)
+    try:
+        result_data = _read_bounded_stage_ref(
+            result_path, max_bytes=MAX_TRANSPORT_RESULT_BYTES
+        )
+    except ArtifactLifecycleError as exc:
+        raise DailyProductionError(
+            "live canary transport result cannot be safely read"
+        ) from exc
     if sha256_bytes(result_data) != result_sha:
         raise DailyProductionError(
             "live canary transport result SHA mismatch"
         )
     try:
         result_value = json.loads(result_data)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise DailyProductionError(
             "live canary transport result is invalid JSON"
         ) from exc
@@ -659,6 +785,9 @@ def live_status(root: Path, target_date: str) -> dict[str, object]:
         raise DailyProductionError(
             "live canary transport result binding mismatch"
         )
+    # Only report transport-complete after all four stage-ref parent entries
+    # and the scheduled-date entry have passed durability revalidation.
+    _reaffirm_ref_directory_durable(transport_dir)
     state["transport_outcome"] = outcome
     return {
         "record_version": RECORD_VERSION,
@@ -752,10 +881,16 @@ def summary_main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--model", required=True)
     parser.add_argument("--implementation-revision", required=True)
     parser.add_argument("--timeout", type=float, default=120.0)
+    parser.add_argument("--transient-retries", type=int, default=0)
+    parser.add_argument("--retry-backoff-seconds", type=float, default=0.0)
     args = parser.parse_args(
         list(argv) if argv is not None else None
     )
     try:
+        policy = SummaryRetryPolicy(
+            max_transient_retries=args.transient_retries,
+            backoff_seconds=args.retry_backoff_seconds,
+        )
         completed = summarize_pending(
             root=args.root,
             provider=args.provider,
@@ -764,6 +899,7 @@ def summary_main(argv: Iterable[str] | None = None) -> int:
             implementation_revision=args.implementation_revision,
             timeout=args.timeout,
             api_key=os.environ.get("OPENAI_API_KEY"),
+            retry_policy=policy,
         )
     except (
         DailyProductionError,
@@ -911,8 +1047,14 @@ def smoke_main(argv: Iterable[str] | None = None) -> int:
                 raise DailyProductionError(
                     "live canary is not transport-complete"
                 )
-    except (DailyProductionError, OSError) as exc:
-        print(f"github-daily-smoke: {exc}", file=sys.stderr)
+    except (
+        DailyProductionError, ArtifactLifecycleError,
+        GitHubDailySummaryError, DailyProgressError, OSError,
+    ) as exc:
+        # Preserve actionable, reviewed production failure reasons while
+        # suppressing arbitrary lower-layer exception text or source paths.
+        reason = str(exc) if isinstance(exc, DailyProductionError) else type(exc).__name__
+        print(f"github-daily-smoke: {reason}", file=sys.stderr)
         return 2
     print(json.dumps(result, sort_keys=True))
     return 0

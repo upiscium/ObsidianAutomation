@@ -1,0 +1,278 @@
+"""Linux-only, metadata-only permission policy regressions for #292."""
+from __future__ import annotations
+
+import ctypes
+import os
+import pwd
+import stat
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from obsidian_automation import artifact_lifecycle as cas
+from obsidian_automation import github_daily_cas_admission as audit
+
+
+def _set_acl(path: Path, text: str, *, default: bool) -> None:
+    try:
+        lib = ctypes.CDLL("libacl.so.1", use_errno=True)
+    except OSError:
+        pytest.skip("Linux libacl unavailable")
+    lib.acl_from_text.argtypes = [ctypes.c_char_p]
+    lib.acl_from_text.restype = ctypes.c_void_p
+    lib.acl_set_file.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_void_p]
+    lib.acl_set_file.restype = ctypes.c_int
+    lib.acl_free.argtypes = [ctypes.c_void_p]
+    lib.acl_free.restype = ctypes.c_int
+    handle = lib.acl_from_text(text.encode())
+    if not handle:
+        pytest.skip("requested ACL fixture cannot be parsed")
+    try:
+        result = lib.acl_set_file(os.fsencode(path), 0x4000 if default else 0x8000, handle)
+        if result != 0:
+            pytest.skip("filesystem does not admit POSIX ACL fixture")
+    finally:
+        lib.acl_free(handle)
+
+
+def _fixture(tmp_path, monkeypatch):
+    root = tmp_path / "cas"
+    root.mkdir()
+    root.chmod(0o750)
+    stage = root / "output"
+    stage.mkdir()
+    stage.chmod(0o750)
+    uid = os.getuid()
+    gid = os.getgid()
+    reader = uid + 22017
+    monkeypatch.setattr(audit.pwd, "getpwnam",
+                        lambda name: SimpleNamespace(pw_uid=uid, pw_gid=gid)
+                        if name == "summarizer" else
+                        SimpleNamespace(pw_uid=reader, pw_gid=gid)
+                        if name == "renderer" else (_ for _ in ()).throw(KeyError(name)))
+    for directory in (root, stage):
+        _set_acl(
+            directory,
+            f"u::rwx,u:{uid}:rwx,u:{reader}:r-x,g::---,m::r-x,o::---",
+            default=False,
+        )
+        _set_acl(
+            directory,
+            f"u::rwx,u:{uid}:rwx,u:{reader}:r-x,g::---,m::rwx,o::---",
+            default=True,
+        )
+    final = stage / ("a" * 64 + ".github-daily-partial-output.json")
+    original_mask = os.umask(0o027)
+    try:
+        cas._store_immutable(final, b'{"verified":true}\n')
+    finally:
+        os.umask(original_mask)
+    return root, final, uid, reader
+
+
+def _audit(root):
+    return audit.audit_daily_summary_cas(root, owner_name="summarizer", reader_name="renderer")
+
+
+def test_valid_existing_daily_cas_acl_is_accepted_without_reading_payload(tmp_path, monkeypatch):
+    root, final, uid, reader = _fixture(tmp_path, monkeypatch)
+    before = final.stat()
+    result = _audit(root)
+    after = final.stat()
+    assert result == {
+        "record_version": 1,
+        "audit": "daily-cas-metadata-v1",
+        "status": "admitted_at_inspection",
+        "published_files": 1,
+        "stage_directories": 1,
+        "files_read": 0,
+        "files_changed": 0,
+        "publication_authorized": False,
+    }
+    assert before.st_size == after.st_size
+    assert before.st_mtime_ns == after.st_mtime_ns
+    assert stat.S_IMODE(after.st_mode) == 0o640
+
+
+@pytest.mark.parametrize("mutate,reason", [
+    ("world_read", "inode metadata"),
+    ("group_write", "inode metadata"),
+    ("hardlink", "inode metadata"),
+    ("symlink", "cannot be safely opened"),
+    ("extra_reader", "named-reader ACL"),
+    ("missing_acl", "named-user ACL"),
+    ("wrong_owner", "inode metadata"),
+    ("orphan_temp", "unknown or uncommitted"),
+    ("unknown_stage", "unexpected stage"),
+    ("wrong_artifact_class", "unknown or uncommitted"),
+    ("root_acl_extra_reader", "CAS directory named ACL"),
+    ("stage_acl_extra_reader", "CAS directory named ACL"),
+    ("root_default_extra_reader", "CAS directory named ACL"),
+    ("stage_default_extra_reader", "CAS directory named ACL"),
+    ("root_default_removed", "required named-user ACL missing"),
+    ("stage_default_removed", "required named-user ACL missing"),
+    ("root_access_broad", "CAS root ownership or mode"),
+    ("stage_access_broad", "CAS stage directory mode/owner"),
+])
+def test_unsafe_existing_cas_objects_are_blocked(tmp_path, monkeypatch, mutate, reason):
+    root, final, uid, reader = _fixture(tmp_path, monkeypatch)
+    if mutate == "world_read":
+        final.chmod(0o644)
+    elif mutate == "group_write":
+        final.chmod(0o660)
+    elif mutate == "hardlink":
+        os.link(final, root / "output" / ("b" * 64 + ".github-daily-partial-output.json"))
+    elif mutate == "symlink":
+        target = root / "output" / "target.txt"
+        target.write_text("untrusted")
+        final.unlink()
+        final.symlink_to(target)
+        target.unlink()  # avoid additional unknown-file precedence
+    elif mutate == "extra_reader":
+        extra = reader + 1
+        _set_acl(final,
+            f"u::rw-,u:{uid}:rw-,u:{reader}:r--,u:{extra}:r--,g::---,m::r--,o::---",
+            default=False,
+        )
+        final.chmod(0o640)
+    elif mutate == "missing_acl":
+        # Replace the target with a regular file without inherited named ACL.
+        # The owning stage has a default ACL; strip this file's access ACL.
+        os.removexattr(final, "system.posix_acl_access")
+    elif mutate == "wrong_owner":
+        monkeypatch.setattr(audit.pwd, "getpwnam",
+                            lambda name: SimpleNamespace(pw_uid=uid + 1, pw_gid=os.getgid())
+                            if name == "summarizer" else
+                            SimpleNamespace(pw_uid=reader, pw_gid=os.getgid()))
+        reason = "root ownership"
+    elif mutate == "orphan_temp":
+        (root / "output" / ".obsidian-cas-deadbeef.tmp").write_bytes(b"uncommitted")
+    elif mutate == "unknown_stage":
+        (root / "unknown").mkdir()
+    elif mutate == "wrong_artifact_class":
+        wrong = root / "output" / ("b" * 64 + ".github-daily-ground-context.json")
+        wrong.write_bytes(b"unreviewed class")
+    elif mutate in {
+        "root_acl_extra_reader", "stage_acl_extra_reader",
+        "root_default_extra_reader", "stage_default_extra_reader",
+    }:
+        extra = reader + 1
+        changed = root if mutate.startswith("root") else root / "output"
+        default = "default" in mutate
+        mask = "rwx" if default else "r-x"
+        _set_acl(
+            changed,
+            f"u::rwx,u:{uid}:rwx,u:{reader}:r-x,u:{extra}:r-x,"
+            f"g::---,m::{mask},o::---",
+            default=default,
+        )
+    elif mutate in {"root_default_removed", "stage_default_removed"}:
+        changed = root if mutate.startswith("root") else root / "output"
+        os.removexattr(changed, "system.posix_acl_default")
+    elif mutate in {"root_access_broad", "stage_access_broad"}:
+        changed = root if mutate.startswith("root") else root / "output"
+        changed.chmod(0o755)
+    with pytest.raises(audit.DailyCASAdmissionError, match=reason):
+        _audit(root)
+
+
+def test_symlinked_cas_root_and_stage_fail_without_following(tmp_path, monkeypatch):
+    root, final, uid, reader = _fixture(tmp_path, monkeypatch)
+    fake_root = tmp_path / "alias"
+    fake_root.symlink_to(root, target_is_directory=True)
+    with pytest.raises(audit.DailyCASAdmissionError, match="CAS root cannot be safely opened"):
+        _audit(fake_root)
+    stage = root / "output"
+    relocated = tmp_path / "hidden-real-output"
+    stage.rename(relocated)
+    stage.symlink_to(relocated, target_is_directory=True)
+    with pytest.raises(audit.DailyCASAdmissionError, match="CAS stage cannot be safely opened"):
+        _audit(root)
+    assert final.name.endswith(".github-daily-partial-output.json")
+
+
+def test_empty_root_and_bounded_files_fail_closed(tmp_path, monkeypatch):
+    root = tmp_path / "empty"
+    root.mkdir()
+    root.chmod(0o750)
+    monkeypatch.setattr(audit.pwd, "getpwnam",
+                        lambda name: SimpleNamespace(pw_uid=os.getuid(), pw_gid=os.getgid())
+                        if name == "summarizer" else SimpleNamespace(pw_uid=os.getuid() + 1))
+    owner = os.getuid()
+    reader = owner + 1
+    for default, mask in ((False, "r-x"), (True, "rwx")):
+        _set_acl(
+            root,
+            f"u::rwx,u:{owner}:rwx,u:{reader}:r-x,g::---,m::{mask},o::---",
+            default=default,
+        )
+    with pytest.raises(audit.DailyCASAdmissionError, match="no published"):
+        _audit(root)
+    with pytest.raises(audit.DailyCASAdmissionError, match="limit invalid"):
+        audit.audit_daily_summary_cas(
+            root, owner_name="summarizer", reader_name="renderer", max_files=0
+        )
+
+def test_daily_cas_max_files_rejects_before_opening_extra_inode(tmp_path, monkeypatch):
+    """The read-only audit must not open file max_files + 1."""
+    root, first, _, _ = _fixture(tmp_path, monkeypatch)
+    second = first.with_name("b" * 64 + ".github-daily-partial-output.json")
+    previous_mask = os.umask(0o027)
+    try:
+        cas._store_immutable(second, b'{"other":true}\n')
+    finally:
+        os.umask(previous_mask)
+
+    real_open = audit.os.open
+    opened_artifact_files = []
+
+    def tracking_open(path, flags, *args, **kwargs):
+        if isinstance(path, str) and path.endswith(".github-daily-partial-output.json"):
+            opened_artifact_files.append(path)
+        return real_open(path, flags, *args, **kwargs)
+
+    with monkeypatch.context() as m:
+        m.setattr(audit.os, "open", tracking_open)
+        with pytest.raises(audit.DailyCASAdmissionError, match="size limit"):
+            audit.audit_daily_summary_cas(
+                root, owner_name="summarizer", reader_name="renderer", max_files=1
+            )
+    assert len(opened_artifact_files) == 1
+
+
+def test_large_sha_named_daily_final_passes_metadata_only_acl_admission(
+    tmp_path, monkeypatch
+):
+    """A >2 MiB SHA-named, ACL-conforming Final needs no payload validation here."""
+    root, existing, uid, reader = _fixture(tmp_path, monkeypatch)
+    final_dir = root / "final"
+    final_dir.mkdir()
+    final_dir.chmod(0o750)
+    for default, mask in ((False, "r-x"), (True, "rwx")):
+        _set_acl(
+            final_dir,
+            f"u::rwx,u:{uid}:rwx,u:{reader}:r-x,g::---,m::{mask},o::---",
+            default=default,
+        )
+    payload = b'{"accepted_claims":["' + (b"x" * (2 * 1024 * 1024 + 1)) + b'"],"rejected_claims":[]}\n'
+    digest = cas.sha256_bytes(payload)
+    path = final_dir / (digest + ".github-daily-grounded-summary.json")
+    original_mask = os.umask(0o027)
+    try:
+        cas._store_immutable(path, payload)
+    finally:
+        os.umask(original_mask)
+    assert path.stat().st_size > 2 * 1024 * 1024
+    before = path.stat()
+    report = _audit(root)
+    assert report["status"] == "admitted_at_inspection"
+    assert report["published_files"] == 2
+    assert report["stage_directories"] == 2
+    assert report["files_read"] == 0
+    assert report["files_changed"] == 0
+    assert report["publication_authorized"] is False
+    after = path.stat()
+    assert before.st_mtime_ns == after.st_mtime_ns
+    assert before.st_size == after.st_size
+    assert existing.is_file()

@@ -84,6 +84,8 @@ ROLE_CONFIGS = {
                   "/etc/obsidian-core-promotion/nextcloud.password"),
 }
 DEFAULT_REFRESH_INHIBIT = Path("/run/obsidian-automation/semantic-refresh-inhibited.json")
+DEFAULT_GITHUB_STAGE_RECEIPT = Path("/var/lib/obsidian-github-sync/deployments")
+STAGED_GITHUB_ROOT = "staged-github-production-v1"
 
 
 class LifecycleError(RuntimeError):
@@ -116,11 +118,54 @@ def _write_json(path: Path, value: dict) -> None:
 
 
 def _fsync_directory(path: Path) -> None:
-    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    fd = os.open(
+        path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    )
     try:
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def _fsync_receipt_parents(path: Path) -> None:
+    """Require durable directory entries before any host lifecycle effects.
+
+    Every ancestor is synced: a prior failed first-use attempt may have left
+    one or more newly created directories visible but not durable. Repeating
+    this for already-existing paths makes an interrupted bootstrap safe to
+    retry without inferring durability from mere existence.
+    """
+    for parent in path.parents:
+        _safe_path(parent)
+        try:
+            _fsync_directory(parent)
+        except OSError as exc:
+            raise LifecycleError("runtime_receipt_parent_not_durable") from exc
+
+
+_MONOTONIC_ELAPSE_COMPONENT = re.compile(
+    r"(?P<amount>[0-9]{1,12}(?:\.[0-9]{1,6})?)(?:month|min|us|ms|y|w|d|h|s)"
+)
+
+
+def _finite_monotonic_elapse(value: str) -> bool:
+    """Fail closed on unrecognized systemctl-rendered timer timestamps.
+
+    Keep this standalone bootstrap parser consistent with the Stage counterpart.
+    A nonempty arbitrary string is not sufficient evidence of a finite event.
+    """
+    if not isinstance(value, str) or not 0 < len(value) <= 128:
+        return False
+    parts = value.split(" ")
+    if not parts or len(parts) > 16:
+        return False
+    positive = False
+    for part in parts:
+        match = _MONOTONIC_ELAPSE_COMPONENT.fullmatch(part)
+        if match is None:
+            return False
+        positive = positive or any(char in "123456789" for char in match["amount"])
+    return positive
 
 
 def _load_source_module(path: Path, name: str):
@@ -136,6 +181,41 @@ def _load_source_module(path: Path, name: str):
     return module
 
 
+def _require_no_unresolved_stage(stage_receipt_dir: Path, *, require_root: bool) -> None:
+    """Reject a prior Stage of unknown outcome before ANY host updater effects."""
+    _safe_path(stage_receipt_dir)
+    state = stage_receipt_dir / STAGED_GITHUB_ROOT
+    if not os.path.lexists(state):
+        return
+    _safe_path(state)
+    info = state.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_mode & 0o077
+            or (require_root and info.st_uid != 0)):
+        raise LifecycleError("untrusted_staged_github_directory")
+    fd = -1
+    try:
+        fd = os.open(state / "control.json", os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or not 0 < info.st_size <= 32768 or info.st_mode & 0o077
+                or (require_root and info.st_uid != 0)):
+            raise LifecycleError("invalid_staged_github_control")
+        raw = os.read(fd, 32769)
+        if len(raw) != info.st_size:
+            raise LifecycleError("invalid_staged_github_control")
+        control = json.loads(raw)
+        if (not isinstance(control, dict) or control.get("record_version") != 1
+                or control.get("status") != "activated"
+                or not isinstance(control.get("stage_sha256"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", control["stage_sha256"])):
+            raise LifecycleError("staged_github_reconciliation_required")
+    except (OSError, ValueError, TypeError) as exc:
+        raise LifecycleError("staged_github_reconciliation_required") from exc
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
 class RuntimeTransaction:
     def __init__(
         self, *, source_root: Path, target_sha: str, venv_root: Path,
@@ -148,6 +228,7 @@ class RuntimeTransaction:
         drain_timeout: float = 300.0, clock: Callable = time.monotonic,
         sleep: Callable = time.sleep, config_exists: Callable = os.path.lexists,
         refresh_inhibit_path: Path = DEFAULT_REFRESH_INHIBIT,
+        stage_receipt_dir: Path | None = None,
     ):
         if not re.fullmatch(r"[0-9a-f]{40,64}", target_sha):
             raise LifecycleError("invalid_target_sha")
@@ -166,6 +247,13 @@ class RuntimeTransaction:
         self.mutation_started = False
         self.refresh_inhibit_path = refresh_inhibit_path
         self.refresh_inhibit = None
+        self.stage_receipt_dir = (
+            stage_receipt_dir if stage_receipt_dir is not None else
+            DEFAULT_GITHUB_STAGE_RECEIPT if require_root else
+            receipt_dir.parent / "github-receipts"
+        )
+        if require_root and self.stage_receipt_dir != DEFAULT_GITHUB_STAGE_RECEIPT:
+            raise LifecycleError("production_stage_receipt_root_is_fixed")
 
     def _run(self, args: Sequence[str], code: str) -> str:
         result = self.runner(tuple(str(arg) for arg in args))
@@ -252,6 +340,10 @@ class RuntimeTransaction:
             raise LifecycleError("unsafe_runtime_receipt_directory")
         if self.require_root and directory.st_uid != 0:
             raise LifecycleError("unsafe_runtime_receipt_owner")
+        # mkdir(parents=True) can create several ancestors on first install.
+        # Sync every parent, including on retries after a failed parent fsync,
+        # before acquiring the host lock or writing a PREPARING intent.
+        _fsync_receipt_parents(self.receipt_dir)
         lock = self.receipt_dir / "host-update.lock"
         _safe_path(lock)
         fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
@@ -261,6 +353,7 @@ class RuntimeTransaction:
                 or (self.require_root and info.st_uid != 0)):
                 raise LifecycleError("unsafe_runtime_lock")
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _require_no_unresolved_stage(self.stage_receipt_dir, require_root=self.require_root)
         except BaseException:
             os.close(fd)
             raise
@@ -434,8 +527,7 @@ class RuntimeTransaction:
                     raise LifecycleError("timer_not_armed_after_restore")
                 if (
                     substate == "waiting"
-                    and after.get("NextElapseUSecMonotonic", "")
-                    in {"", "0", "infinity", "n/a"}
+                    and not _finite_monotonic_elapse(after.get("NextElapseUSecMonotonic", ""))
                 ):
                     raise LifecycleError("timer_not_armed_after_restore")
         self.host_activation = "restored" if any(s["enabled"] or s["active"] for s in self.intent["timers"].values()) else "not_attempted"
