@@ -84,8 +84,11 @@ The test suite instruments actual `cas.read_verified_capture` counts. These
 limits are conservative work/data bounds, not wall-clock deadlines; legitimate
 large days may need a separately measured batching design.
 
-Markdown/HTML/Obsidian control syntax is escaped, including `%%`, without
-truncating admitted prose. Unlike prose, existing title labels retain C3's
+Every ASCII punctuation character in narrative prose is encoded as a literal
+inline character reference, including `^block`, `$math$`, `==highlight==`,
+`%%`, Markdown/HTML links and embeds, without truncating admitted prose.
+Tests verify emitted delimiters and exact decoded-text roundtrip; an actual
+Obsidian UI renderer has not been exercised. Unlike prose, existing title labels retain C3's
 bounded display policy. Escaping prevents formatting effects, not false prose.
 No test or public CI log should dump real source contexts, replies or drafts.
 

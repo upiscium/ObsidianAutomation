@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
-import html
+import string
 import json
 import re
 
@@ -289,9 +289,10 @@ def build_witnessed_narrative_grounding_contexts(capture_sha256, partial_replies
 
 
 def _escape_narrative(text):
-    # Unlike the title helper, this must not truncate an admitted sentence.
-    escaped = re.sub(r"([\\`*_{}\[\]()#!|~])", r"\\\1", text)
-    return html.escape(escaped, quote=True).replace("%", "&#37;")
+    # Encode all ASCII punctuation as literal inline character references.
+    # This covers Obsidian ^block IDs, $math$, ==highlight==, %%comments%%,
+    # Markdown links/embeds and HTML without truncating admitted text.
+    return "".join(f"&#{ord(ch)};" if ch in string.punctuation else ch for ch in text)
 
 
 def build_witnessed_narrative_preview(capture_sha256, partial_replies, grounding_replies,
@@ -349,7 +350,9 @@ def build_witnessed_narrative_preview(capture_sha256, partial_replies, grounding
             if repo != entity["repository"]:
                 repo = entity["repository"]; lines.extend([f"## {c3._escape(repo)}", ""])
             name = "PR" if entity["entity_type"] == "pull_request" else "Issue"
-            label = f"{name} #{entity['number']} — {c3._escape(ctx['title'])}"
+            label = f"{name} #{entity['number']}"
+            if ctx["title"] != label:
+                label += " — " + c3._escape(ctx["title"])
             lines.append(f"- [{label}]({ctx['url']})")
             if ctx["source_status_ja"]:
                 lines.append("  元Evidenceの状態: " + ctx["source_status_ja"])

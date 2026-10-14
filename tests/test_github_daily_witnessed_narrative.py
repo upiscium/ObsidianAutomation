@@ -290,3 +290,26 @@ def test_zero_selected_entities_does_not_invent_no_progress(tmp_path, safe_layou
     assert "## upiscium/Test" not in out.markdown
     assert "進展なしの認定ではありません" in out.markdown
     assert out.report()["publication_authorized"] is False
+
+
+@pytest.mark.parametrize('text', ['変更を確認しました。 ^private-id',
+                                  '式は $x+y$ です。 ==highlight==',
+                                  '記号 [x](https://invalid) %% ![[internal]] #tag ^block'])
+def test_narrative_punctuation_is_literal_not_obsidian_markup(case, text):
+    import html
+    import string
+    escaped = c4._escape_narrative(text)
+    assert html.unescape(escaped) == text
+    # Entities are decoded as literal inline text, not raw Markdown delimiters.
+    assert '^' not in escaped and '$' not in escaped and '==' not in escaped
+    drafts = editorials(case, text)
+    result = render(case, drafts, verdicts(case, drafts))
+    assert escaped in result.markdown
+    assert result.report()['entities'][0]['sentences'][0]['text'] == text
+
+
+def test_fallback_entity_title_is_not_repeated(case):
+    drafts = editorials(case)
+    result = render(case, drafts, verdicts(case, drafts))
+    assert '- [Issue #1](' in result.markdown
+    assert '- [PR #2](' in result.markdown
