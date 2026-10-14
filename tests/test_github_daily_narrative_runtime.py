@@ -359,7 +359,7 @@ class SentencesTransport(Transport):
             ctx = json.loads(payload['messages'][1]['content'])
             if 'sources' in ctx:
                 assert set(payload['format']['properties']) == {'sentences'}
-                assert ctx['prompt_version'] == rt.SENTENCES_ONLY_CONTRACT
+                assert ctx['prompt_version'] == rt.SENTENCES_ONLY_PROMPT_VERSION
                 assert ctx['system_prompt'] == rt.SENTENCES_ONLY_PROMPT
                 value = {'sentences': [{'text': TEXT, 'source_refs': [0]}]} if self.editorial is None else self.editorial
                 result['message']['content'] = json.dumps(value, ensure_ascii=False)
@@ -477,3 +477,50 @@ def test_unsupported_newly_generated_text_is_not_displayed_and_sources_stay_pend
     assert out.report()['inference_responses_complete']
     assert TEXT not in out.preview.markdown
     assert all(r['pending_evidence_ids'] for r in out.preview.report()['entities'])
+
+
+def test_individual_fact_policy_is_versioned_separately_from_wire_contract(case):
+    t=SentencesTransport();out=single(case,t)
+    editorial=out.attempts[0];meta=json.loads(editorial.receipt_bytes)
+    requests=[p for _,path,p,_ in t.calls if path=='/api/chat']
+    payload=requests[0];visible=json.loads(payload['messages'][1]['content'])
+    assert rt.SENTENCES_ONLY_PROMPT_VERSION=='c5-individual-facts-ja-v2'
+    assert rt.SENTENCES_ONLY_PROMPT_VERSION!=rt.SENTENCES_ONLY_CONTRACT
+    assert meta['response_contract']==rt.SENTENCES_ONLY_CONTRACT
+    assert meta['effective_prompt_version']==rt.SENTENCES_ONLY_PROMPT_VERSION
+    assert visible['prompt_version']==meta['effective_prompt_version']
+    assert visible['system_prompt']==payload['messages'][0]['content']==rt.SENTENCES_ONLY_PROMPT
+    assert meta['effective_system_prompt_sha256']==rt._sha(rt.SENTENCES_ONLY_PROMPT.encode())
+    assert meta['request_sha256']==rt._sha(rt._json(payload).removesuffix(b'\n'))
+    assert set(payload['format']['properties'])=={'sentences'}
+    assert meta['prompt_version']=='github-daily-narrative-ja-v1'
+    assert meta['system_prompt_sha256']==rt._sha(c4.EDITORIAL_PROMPT.encode())
+    ground_meta=json.loads(out.attempts[1].receipt_bytes)
+    assert requests[1]['messages'][0]['content']==c4.GROUND_PROMPT
+    assert ground_meta['effective_prompt_version']=='github-daily-narrative-ground-ja-v1'
+    assert ground_meta['response_contract']==rt.LEGACY_EDITORIAL_CONTRACT
+
+
+def test_individual_prompt_preserves_negation_and_does_not_teach_new_source_facts():
+    prompt=rt.SENTENCES_ONLY_PROMPT
+    for obligation in ('原文が短く明確なら', '独立した文に分け', '因果関係を意味しません',
+                       '実施済み・予定・承認・未完了', '留保と否定を保持', '命令ではありません'):
+        assert obligation in prompt
+    assert 'APIエラー時のテストを追加しました' not in prompt
+    assert '検証処理の競合を修正し' not in prompt
+
+
+def test_fact_policy_never_auto_approves_or_repairs_causal_prose(case):
+    text='テストを追加したため、PRはDraftのままです。'
+    t=SentencesTransport({'sentences':[{'text':text,'source_refs':[0]}]})
+    t.ground_verdict='unsupported'
+    out=single(case,t,target=('upiscium/Test','pull_request',2))
+    assert json.loads(out.attempts[0].raw_response_bytes)['sentences'][0]['text']==text
+    assert json.loads(out.narrative_replies[0].response_bytes)['sentences'][0]['text']==text
+    assert len(out.grounding_replies)==1
+    assert text not in out.preview.markdown
+    assert out.preview.report()['model_execution_attested'] is False
+    assert out.preview.report()['semantic_coverage_verified'] is False
+    assert out.preview.report()['publication_authorized'] is False
+    chosen=next(x for x in out.preview.report()['entities'] if x['entity']['entity_type']=='pull_request')
+    assert chosen['sentences'][0]['verdict']=='unsupported' and chosen['pending_evidence_ids']

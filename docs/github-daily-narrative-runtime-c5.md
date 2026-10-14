@@ -186,3 +186,26 @@ facts in that record were covered. This adaptation does not certify importance,
 Japanese quality, truth, semantic exhaustiveness or human approval. Those flags
 remain false/unapproved. No cross-entity synthesis, live GitHub collector,
 Writer/Timer, main merge, new model installation or automatic retries are added.
+
+## Individual factual phrasing policy (2026-10-14)
+
+The optional `c4-sentences-only-v1` response schema remains unchanged. Its
+editorial instruction now has the distinct effective prompt version
+`c5-individual-facts-ja-v2`, recorded both in model-visible context and private
+receipt. Original C4 prompt/version and raw provider/projection bytes remain
+separate. The legacy default and the post-edit Grounding prompt are unchanged.
+
+Prefer the source's own concise wording; put work and status/unfinished facts
+in separate sentences. Do not infer causation from temporal order or co-occurrence.
+Preserve negation and distinguish plans, approval, completed work and deployment.
+This is guidance, not a semantic validator or a promise of factual output.
+The host does not remove causal words or rewrite a bad response. An unsupported
+sentence stays pending even when its JSON is valid. Citation accounting is not
+semantic completeness; model-verdict and human-quality flags remain advisory.
+
+Compare native-model outcomes on fixed synthetic sources, retaining failures,
+raw replies, request/effective-prompt/model/options and verdict receipts. Positive
+and deliberately unsupported negative controls are separate from pytest.
+A sample that becomes `supported` is not human approval or real-day acceptance.
+No cross-entity synthesis, model download, retry loop or Writer/Timer rollout is
+part of this policy change.
