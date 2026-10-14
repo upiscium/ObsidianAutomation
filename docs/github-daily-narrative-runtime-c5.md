@@ -227,3 +227,58 @@ This changes presentation to the model, not Grounding acceptance criteria.
 Observed model support is advisory and can contain false positives/negatives;
 compare positive and intentionally false claims and retain failures. Neither a
 higher support count nor citation coverage establishes factual completeness.
+
+## Private original-source companion (2026-10-15, #290)
+
+`NarrativeRun.source_review` and `NarrativeRun.review_markdown` add an individual
+source-comparison view without new inference, CAS reads, pipeline stage or
+publication authority. The original `preview` and C4/model request behavior are
+unchanged. Consumers performing human review should use `review_markdown`, not
+interpret a zero pending-event count in `preview` as complete fact coverage.
+
+Before the first model callback the runner owns a bounded JSON snapshot of each
+requested entity's complete captured title/body/message fields. Exact text,
+Evidence ID, source index, timestamp, field name, original byte/truncation
+metadata and hashes are retained. Unrequested entities remain pending in C4;
+the companion copies only requested entities. Fields already truncated by the
+Collector remain explicitly truncated, not reconstructed. Nontext events are
+counted, not certified from absent prose. No original source is posted to a
+public log by the runtime; this companion and its Markdown are PRIVATE.
+
+After final C4 reconstruction, matching is strictly lexical: each displayed
+`supported` sentence is searched only in the original fields of the events it
+actually cites, recording the first contiguous occurrence with Unicode-code-
+point offsets. Overlapping matches are merged when calculating complementary
+`unmatched_source_ranges`. No whitespace, text, event ordering or negation is
+normalized; repeated passages beyond the first match stay unmatched. The full
+captured original field is displayed even when every character matches. Thus
+an omitted qualification inside a cited Event, such as `恒久対応は調査中です`,
+remains present in the private source and unmatched ranges. A model-supported
+invented causal phrase absent from its cited original is marked nonliteral,
+not silently rewritten or reclassified.
+
+**This is NOT semantic coverage, an automatic fact checker, or a new Grounding
+verdict.** Legitimate paraphrases may be nonliteral; a substring inside a quote,
+negation, hypothetical, superseded report or false source can match literally
+while being misleading. Literal matches never override Grounding and never
+establish truth. Unmatched text is not proof of an omitted important fact.
+`semantic_coverage_verified`, `factuality_verified`, and `publication_authorized`
+remain false, and `requires_human_quality_review` remains true, including when
+all ranges match. Empty, rejected or unsupported drafts retain their original
+fields and unmatched spans for review.
+
+Raw exact text resides in the companion JSON; Markdown encodes ASCII punctuation
+and represents nonprintable/control/bidi characters with visible `[U+XXXX]`
+labels. Neither headings, links, comments, block IDs nor raw control characters
+from source text are executable layout. This specifies emitted syntax, not an
+Obsidian UI-rendering guarantee; no live UI was tested. The original text is
+never silently truncated or modified in its JSON record.
+
+Bounded limits: at most 1 MiB canonical source-review input checked before model
+calls; 2 MiB companion JSON and 8 MiB combined review Markdown. An exceeded
+output limit fails the run rather than reporting a truncated review complete.
+Such final output failure is not cancellation or rollback of already finished
+inference. The normal metadata-only run report contains companion hashes/version
+and `source_review_required`, never source or reason prose. Bounds, native-call
+caps, exact C4 identity replay, legacy response contracts and all production
+UID/ACL/checkpoint/Writer/Timer gates remain in effect.

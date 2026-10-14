@@ -578,3 +578,148 @@ def test_semantic_projection_cannot_borrow_other_entity_or_unquoted_claim(case):
     # invented causality. Its verdict never becomes a source fact or approval.
     assert '因果関係' in ground['messages'][0]['content']
     assert out.preview.report()['publication_authorized'] is False
+
+
+def review_fields(out):
+    return [f for e in out.source_review.report()['entities'] for f in e['fields']]
+
+
+def test_original_qualification_remains_visible_despite_event_citation(case):
+    work = '検証処理の競合を修正し、回帰テストを追加しました。'
+    t = SentencesTransport({'sentences': [{'text': work, 'source_refs': [0]}]})
+    out = single(case, t)
+    chosen = next(e for e in out.preview.report()['entities'] if e['entity']['entity_type']=='issue')
+    assert chosen['pending_evidence_ids'] == []  # old event-level signal misses the qualification
+    field = next(f for f in review_fields(out) if f['field']=='body')
+    assert field['text'] == TEXT
+    assert [field['text'][a:b] for a,b in field['unmatched_source_ranges']] == ['マージと本番反映は未実施です。']
+    assert TEXT in out.review_markdown
+    assert '文字列の一致は正確さの保証ではなく' in out.review_markdown
+    assert out.source_review.report()['semantic_coverage_verified'] is False
+    assert out.report()['source_review_required'] is True
+
+
+def test_known_missing_permanent_fix_qualification(case):
+    # Source-reading algorithm regression independent of a live model; the
+    # real-CAS runtime path is exercised by the neighboring tests.
+    original = '不具合の原因を特定し、再現テストを追加しました。恒久対応は調査中です。'
+    sentence = '不具合の原因を特定し、再現テストを追加しました。'
+    start = original.find(sentence)
+    ranges = rt._unmatched_ranges(original, [(start,start+len(sentence))])
+    assert [original[a:b] for a,b in ranges] == ['恒久対応は調査中です。']
+
+
+def test_false_positive_grounding_cannot_hide_nonliteral_causality(case):
+    invented = 'テストを追加したため、PRはDraftのままです。'
+    t = SentencesTransport({'sentences': [{'text': invented, 'source_refs': [0]}]})
+    t.ground_verdict = 'supported'  # explicitly reproduce the judge's false positive
+    out = single(case,t,target=('upiscium/Test','pull_request',2))
+    assert invented in out.preview.markdown  # do NOT secretly repair or reverse the verdict
+    source = out.source_review.report()
+    assert len(source['entities']) == 1 and source['entities'][0]['entity']['number']==2
+    assert source['entities'][0]['nonliteral_displayed_sentence_indices'] == [0]
+    assert source['factuality_verified'] is False and source['publication_authorized'] is False
+    assert TEXT in out.review_markdown
+    assert '言い換え・因果関係・否定を要確認' in out.review_markdown
+
+
+def test_exact_literal_match_does_not_grant_semantic_or_factual_approval(case):
+    out = single(case)
+    field = next(f for f in review_fields(out) if f['field']=='body')
+    assert field['unmatched_source_ranges'] == []
+    assert field['displayed_literal_spans'] == [{'sentence_index':0,'start':0,'end':len(TEXT)}]
+    info = out.source_review.report()
+    assert info['factuality_verified'] is False
+    assert info['semantic_coverage_verified'] is False
+    assert info['requires_human_quality_review'] is True
+    assert info['offset_unit'] == 'unicode_code_point'
+    assert info['preview_sha256'] == out.preview.sha256
+    assert info['capture_sha256'] == case[1].index_sha256
+
+
+@pytest.mark.parametrize('state', ['unsupported','empty','invalid','failure'])
+def test_no_displayed_sentence_still_exposes_complete_original_source(case,state):
+    t=SentencesTransport()
+    if state=='unsupported': t.ground_verdict='unsupported'
+    if state=='empty': t.editorial={'sentences':[]}
+    if state=='invalid': t.editorial={'sentences':[{'text':TEXT,'source_refs':[True]}]}
+    if state=='failure': t.fail_stage='editorial'
+    out=single(case,t)
+    field=next(f for f in review_fields(out) if f['field']=='body')
+    assert field['displayed_literal_spans']==[]
+    assert field['unmatched_source_ranges']==[[0,len(TEXT)]]
+    assert TEXT in out.source_review.markdown
+    assert not out.source_review.report()['publication_authorized']
+
+
+def test_source_companion_does_not_copy_unrequested_entity_or_raw_reason(case):
+    out=single(case)
+    info=out.source_review.report()
+    assert len(info['entities'])==1 and info['entities'][0]['entity']['entity_type']=='issue'
+    assert out.report()['unrequested_entity_count']==1
+    assert len(out.preview.report()['entities'])==2  # retained pending, not erased
+    assert TEXT not in out.canonical_bytes.decode()
+    assert '元の証拠と一致します。' not in out.source_review.canonical_bytes.decode()
+    assert out.report()['source_review_sha256']==out.source_review.sha256
+    assert out.source_review.sha256==rt._sha(out.source_review.canonical_bytes)
+    assert info['markdown_sha256']==rt._sha(out.source_review.markdown.encode())
+
+
+def test_source_companion_adds_zero_model_calls_and_zero_CAS_reads(case,monkeypatch):
+    reads=[0]; old=cas.read_verified_capture
+    def read(*a,**kw): reads[0]+=1; return old(*a,**kw)
+    monkeypatch.setattr(cas,'read_verified_capture',read)
+    t=SentencesTransport();out=single(case,t)
+    assert reads[0]==out.report()['planned_cas_triplet_reads']
+    assert len([p for _,p,_,_ in t.calls if p=='/api/chat'])==2
+
+
+def test_source_companion_budget_is_checked_before_model(case,monkeypatch):
+    monkeypatch.setattr(rt,'MAX_REVIEW_INPUT_BYTES',1)
+    t=SentencesTransport()
+    with pytest.raises(rt.NarrativeRuntimeError,match='source-review input'):single(case,t)
+    assert t.calls==[]
+
+
+@pytest.mark.parametrize('bound',['MAX_REVIEW_BYTES','MAX_REVIEW_MARKDOWN_BYTES'])
+def test_source_companion_never_silently_truncates(case,monkeypatch,bound):
+    monkeypatch.setattr(rt,bound,1)
+    with pytest.raises(rt.NarrativeRuntimeError,match='source-review output'):single(case)
+
+
+def test_source_original_snapshot_precedes_callback_and_owns_nested_text(case,monkeypatch):
+    old=rt._review_snapshot; captured=[]
+    def snap(rows,sha):
+        captured.append(rows)
+        return old(rows,sha)
+    monkeypatch.setattr(rt,'_review_snapshot',snap)
+    infer=backend(SentencesTransport(),editorial_contract=rt.SENTENCES_ONLY_CONTRACT)
+    def mutate(raw,**kw):
+        # Only mutate the caller-accessible in-memory object AFTER it was
+        # handed as immutable bytes to the adapter. Snapshot remains owned.
+        captured[0][0]['context']['sources'][0]['original_event']['body']['text']='PRIVATE_FORGED'
+        return infer(raw,**kw)
+    out=rt.run_witnessed_narrative_inference(**kwargs(case),infer=mutate,
+          target_entity=('upiscium/Test','issue',1))
+    assert TEXT in out.source_review.markdown
+    assert 'PRIVATE_FORGED' not in out.source_review.canonical_bytes.decode()
+
+
+@pytest.mark.parametrize('text',['^block-id','%%hidden%%','[x](https://invalid)','![[embed]]','<script>x</script>','$math$','==mark==','```\ncode','a\u202eb','x\x00y','a\u2028b'])
+def test_source_text_markup_and_controls_are_literal_in_companion(text):
+    import html
+    rendered=rt._review_escape(text)
+    assert '^' not in rendered and '<' not in rendered and '[' not in rendered
+    assert '\u202e' not in rendered and '\x00' not in rendered and '\u2028' not in rendered
+    expected=''.join(ch if ch.isprintable() else f'[U+{ord(ch):04X}]' for ch in text)
+    assert html.unescape(rendered)==expected
+
+
+def test_unmatched_intervals_preserve_gaps_duplicates_unicode_and_full_source():
+    text='未対応です。対応済みです。未対応です。'
+    # A match never certifies semantics; repeated source passages are NOT
+    # erased merely because one occurrence is displayed.
+    assert rt._unmatched_ranges(text,[])==[[0,len(text)]]
+    assert rt._unmatched_ranges(text,[(0,6),(3,9)])==[[9,len(text)]]
+    assert rt._unmatched_ranges(text,[(6,13)])==[[0,6],[13,len(text)]]
+    assert rt._unmatched_ranges(text,[(0,len(text))])==[]

@@ -24,6 +24,10 @@ MAX_RECEIPT_BYTES = 32 * 1024
 MAX_RUN_SECONDS = 600
 MAX_SOURCE_WORK_BYTES = 256 * 1024 * 1024
 MAX_SOURCE_RECONSTRUCTIONS = 512
+MAX_REVIEW_INPUT_BYTES = 1024 * 1024
+MAX_REVIEW_BYTES = 2 * 1024 * 1024
+MAX_REVIEW_MARKDOWN_BYTES = 8 * 1024 * 1024
+SOURCE_REVIEW_VERSION = "c5-literal-source-review-v1"
 EDITORIAL_REMINDER_VERSION = "c5-disjoint-source-accounting-ja-v1"
 EDITORIAL_REMINDER = """出力検証の補足（元証拠ではなく形式上の制約）:
 pending_source_refs は、どの文の source_refs にも含めなかった番号だけを入れてください。
@@ -99,6 +103,20 @@ class NarrativeAttempt:
 
 
 @dataclass(frozen=True)
+class NarrativeSourceReview:
+    """Private original text and lexical diagnostics, never semantic proof."""
+    canonical_bytes: bytes
+    markdown: str
+
+    def report(self):
+        return json.loads(self.canonical_bytes)
+
+    @property
+    def sha256(self):
+        return _sha(self.canonical_bytes)
+
+
+@dataclass(frozen=True)
 class NarrativeRun:
     """Owned private results. Raw attempts are separate from metadata-only report."""
     canonical_bytes: bytes
@@ -106,6 +124,12 @@ class NarrativeRun:
     narrative_replies: tuple[c4.NarrativeReply, ...]
     grounding_replies: tuple[c4.NarrativeGroundReply, ...]
     preview: c4.NarrativePreview
+    source_review: NarrativeSourceReview
+
+    @property
+    def review_markdown(self):
+        """Existing AI preview plus original-source companion; not Writer input."""
+        return self.preview.markdown + "\n" + self.source_review.markdown
 
     def report(self):
         return json.loads(self.canonical_bytes)
@@ -302,6 +326,123 @@ def _snapshot(partials, grounds, decisions):
             tuple(c4.c3.MaterialityDecision(*row) for row in d))
 
 
+def _review_snapshot(rows, context_set_sha256):
+    """Own selected original fields before inference, with no extra CAS read."""
+    entries = []
+    for row in rows:
+        ctx = row["context"]
+        fields = []
+        nontext = 0
+        for source in ctx["sources"]:
+            event = source["original_event"]
+            before = len(fields)
+            for name in ("title", "body", "message"):
+                value = event.get(name)
+                if value is None:
+                    continue
+                text = value.get("text") if type(value) is dict else value
+                if type(text) is not str:
+                    raise NarrativeRuntimeError("invalid original review text")
+                fields.append({"source_ref": source["source_ref"],
+                    "evidence_id": event["evidence_id"], "field": name,
+                    "kind": event["kind"], "occurred_at": event["occurred_at"],
+                    "text": text, "text_sha256": _sha(text.encode("utf-8")),
+                    "original_value": value})  # keep truncation/byte metadata exactly
+            nontext += int(before == len(fields))
+        entries.append({"entity": ctx["entity"], "context_sha256": row["context_sha256"],
+            "source_event_count": len(ctx["sources"]), "nontext_event_count": nontext,
+            "fields": fields})
+    raw = _json({"source_context_set_sha256": context_set_sha256, "entities": entries})
+    if len(raw) > MAX_REVIEW_INPUT_BYTES:
+        raise NarrativeRuntimeError("complete source-review input exceeds budget")
+    return raw
+
+
+def _unmatched_ranges(text, matches):
+    # Offsets count Python Unicode code points, not UTF-8 bytes. A literal
+    # match (including one within a quotation/negation) NEVER proves truth.
+    cursor, missing = 0, []
+    for start, end in sorted(matches):
+        if start > cursor:
+            missing.append([cursor, start])
+        cursor = max(cursor, end)
+    if cursor < len(text):
+        missing.append([cursor, len(text)])
+    return missing
+
+
+def _review_escape(text):
+    # Keep the original exact bytes in the JSON companion. In the display,
+    # controls/bidi/line separators are visible labels, not hidden directives.
+    visible = "".join(ch if ch.isprintable() else f"[U+{ord(ch):04X}]" for ch in text)
+    return c4._escape_narrative(visible)
+
+
+def _build_source_review(snapshot_bytes, preview):
+    snapshot = json.loads(snapshot_bytes)
+    actual = preview.report()
+    if actual["source_context_set_sha256"] != snapshot["source_context_set_sha256"]:
+        raise NarrativeRuntimeError("source-review context changed")
+    previews = {row["context_sha256"]: row for row in actual["entities"]}
+    lines = ["## 原文照合（非公開・未承認）", "",
+        "文字列の一致は正確さの保証ではなく、不一致も誤りの断定ではありません。",
+        "原文の作業・留保・否定を確認してください。原文自体の真偽も未確認です。", ""]
+    entities = []
+    for original in snapshot["entities"]:
+        shown = previews[original["context_sha256"]]
+        if original["entity"] != shown["entity"]:
+            raise NarrativeRuntimeError("source-review entity changed")
+        supported = [(i, s) for i, s in enumerate(shown["sentences"])
+                     if s["verdict"] == "supported"]
+        literal_sentence_ids = set()
+        field_rows = []
+        entity = original["entity"]
+        label = "PR" if entity["entity_type"] == "pull_request" else "Issue"
+        lines.extend([f"### {_review_escape(entity['repository'])} — {label} #{entity['number']}", ""])
+        for field in original["fields"]:
+            spans = []
+            for i, sentence in supported:
+                if field["evidence_id"] not in sentence["evidence_ids"]:
+                    continue  # identical text in another event is not its citation
+                start = field["text"].find(sentence["text"])
+                if start >= 0:
+                    # First occurrence only; do not claim all repeated passages
+                    # have been addressed because the model cited one event.
+                    spans.append({"sentence_index": i, "start": start,
+                                  "end": start + len(sentence["text"])})
+                    literal_sentence_ids.add(i)
+            missing = _unmatched_ranges(field["text"], [(r["start"], r["end"]) for r in spans])
+            field_rows.append(dict(field, displayed_literal_spans=spans,
+                                   unmatched_source_ranges=missing))
+            lines.append(f"- 原文 source_ref={field['source_ref']} / {field['field']} / "
+                         f"{_review_escape(field['occurred_at'])} / {field['evidence_id'][:12]}")
+            lines.append("  > " + _review_escape(field["text"]))  # entire captured field, no elision
+            if type(field["original_value"]) is dict and field["original_value"].get("truncated") is True:
+                lines.append("  取得時点で切り詰められています。未取得部分は照合できません。")
+            if missing:
+                lines.append(f"  表示文と文字列一致していない原文範囲: {len(missing)}箇所（省略の断定ではありません）。")
+        nonliteral = [i for i, _ in supported if i not in literal_sentence_ids]
+        if nonliteral:
+            lines.append(f"元の引用フィールドに全文が連続一致しないAI文: {len(nonliteral)}件。言い換え・因果関係・否定を要確認。")
+        if original["nontext_event_count"]:
+            lines.append(f"本文フィールドのない元イベント: {original['nontext_event_count']}件。状態は上の元Evidence表示を確認してください。")
+        lines.append("")
+        entities.append({**original, "fields": field_rows,
+                         "nonliteral_displayed_sentence_indices": nonliteral})
+    markdown = "\n".join(lines) + "\n"
+    raw = _json({"record_version": 1, "stage": SOURCE_REVIEW_VERSION,
+        "source_context_set_sha256": snapshot["source_context_set_sha256"],
+        "source_snapshot_sha256": _sha(snapshot_bytes), "preview_sha256": preview.sha256,
+        "capture_sha256": actual["capture_sha256"], "entities": entities,
+        "offset_unit": "unicode_code_point", "match_rule": "first_contiguous_literal_in_cited_field",
+        "markdown_sha256": _sha(markdown.encode()), "publication_authorized": False,
+        "semantic_coverage_verified": False, "factuality_verified": False,
+        "requires_human_quality_review": True})
+    if len(raw) > MAX_REVIEW_BYTES or len((preview.markdown + "\n" + markdown).encode()) > MAX_REVIEW_MARKDOWN_BYTES:
+        raise NarrativeRuntimeError("complete source-review output exceeds budget")
+    return NarrativeSourceReview(raw, markdown)
+
+
 def run_witnessed_narrative_inference(capture_sha256, partial_replies, grounding_replies,
         materiality_decisions=(), *, infer: Callable[..., NarrativeCallResult],
         max_entities: int = 4, max_calls: int = 16, max_elapsed_seconds: float = 120,
@@ -347,6 +488,7 @@ def run_witnessed_narrative_inference(capture_sha256, partial_replies, grounding
         planned_reads = 3*(2*planned+3)+1
         if source_bytes * planned_reads > MAX_SOURCE_WORK_BYTES:
             raise NarrativeRuntimeError("aggregate source-read budget exceeded")
+        review_snapshot = _review_snapshot(requested_contexts, plan.sha256)
         attempts, drafts, verdicts = [], [], []
 
         def invoke(stage, identity, ctx):
@@ -413,6 +555,7 @@ def run_witnessed_narrative_inference(capture_sha256, partial_replies, grounding
                                                       narrative_grounding_replies=tuple(verdicts))
         if preview.report()["source_context_set_sha256"] != plan.sha256:
             raise NarrativeRuntimeError("source context changed across inference")
+        source_review = _build_source_review(review_snapshot, preview)
         report = {"record_version": VERSION, "stage": "github_daily_narrative_runtime_v1",
             "capture_sha256": capture_sha256, "context_set_sha256": plan.sha256,
             "preview_sha256": preview.sha256, "date": data["preview"]["date"],
@@ -430,10 +573,13 @@ def run_witnessed_narrative_inference(capture_sha256, partial_replies, grounding
                 "raw_response_sha256": None if a.raw_response_bytes is None else _sha(a.raw_response_bytes),
                 "receipt_sha256": None if a.receipt_bytes is None else _sha(a.receipt_bytes),
                 "admitted_response_sha256": a.admitted_response_sha256} for a in attempts],
+            "source_review_sha256": source_review.sha256,
+            "source_review_version": SOURCE_REVIEW_VERSION,
+            "source_review_required": True,
             "inference_responses_complete": all(a.state == "accepted" for a in attempts),
             "publication_authorized": False, "model_execution_attested": False,
             "requires_human_quality_review": True, "semantic_coverage_verified": False}
-        return NarrativeRun(_json(report),tuple(attempts),tuple(drafts),tuple(verdicts),preview)
+        return NarrativeRun(_json(report),tuple(attempts),tuple(drafts),tuple(verdicts),preview,source_review)
     except NarrativeRuntimeError:
         raise
     except (c4.DailyNarrativeError, ArtifactLifecycleError, ValueError, TypeError,
