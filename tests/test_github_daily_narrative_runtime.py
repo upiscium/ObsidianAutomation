@@ -78,7 +78,7 @@ def test_c5_real_pipeline_provenance_and_new_grounding(case):
         r=json.loads(attempt.receipt_bytes)
         assert r["context_sha256"]==attempt.context_sha256
         assert r["raw_response_sha256"]==hashlib.sha256(attempt.raw_response_bytes).hexdigest()
-        assert r["request_sha256"]==hashlib.sha256(rt._json(request)).hexdigest()
+        assert r["request_sha256"]==hashlib.sha256(rt._json(request).removesuffix(b"\n")).hexdigest()
         assert r["system_prompt_sha256"]==hashlib.sha256(request["messages"][0]["content"].encode()).hexdigest()
         assert r["model_identifier"]==MODEL and r["observed_model_revision"]==DIGEST
         assert r["config"]["options"] == {"temperature":0}
@@ -134,10 +134,10 @@ def test_provider_failure_leaves_source_pending(case,failure):
 
 def test_one_failed_entity_does_not_erase_other_success(case):
     t=Transport(); base=backend(t); n=[0]
-    def infer(raw):
+    def infer(raw, **kw):
         n[0]+=1
         if n[0]==1: raise OSError("fixture failure")
-        return base(raw)
+        return base(raw, **kw)
     out=rt.run_witnessed_narrative_inference(**kwargs(case),infer=infer)
     assert not out.report()["inference_responses_complete"]
     assert len(out.narrative_replies)==len(out.grounding_replies)==1
@@ -194,8 +194,8 @@ def test_counts_actual_CAS_reads_not_per_entity(case,monkeypatch):
 def test_deadline_stops_further_model_calls_preserving_pending(case,monkeypatch):
     clock=[0.0];monkeypatch.setattr(rt.time,"monotonic",lambda:clock[0])
     t=Transport(); real=backend(t)
-    def slow(raw):
-        result=real(raw);clock[0]=121;return result
+    def slow(raw, **kw):
+        result=real(raw, **kw);clock[0]=121;return result
     out=rt.run_witnessed_narrative_inference(**kwargs(case),infer=slow,max_elapsed_seconds=120)
     assert len([p for _,p,_,_ in t.calls if p=="/api/chat"])==1
     assert not out.narrative_replies
@@ -215,7 +215,7 @@ def test_model_identity_or_completion_failure_not_admitted(case,mode):
 
 @pytest.mark.parametrize("bad",[None,True,{},b"{}"])
 def test_wrong_inference_result_is_bounded_failure(case,bad):
-    out=rt.run_witnessed_narrative_inference(**kwargs(case),infer=lambda raw:bad)
+    out=rt.run_witnessed_narrative_inference(**kwargs(case),infer=lambda raw, **kw:bad)
     assert not out.report()["inference_responses_complete"]
     assert not out.narrative_replies
 
@@ -223,8 +223,8 @@ def test_wrong_inference_result_is_bounded_failure(case,bad):
 @pytest.mark.parametrize("mode",["digest","authority","raw-type","receipt-type","oversize"])
 def test_receipt_forgery_does_not_admit_output(case,mode):
     base=backend(Transport())
-    def bad(raw):
-        result=base(raw);meta=json.loads(result.receipt_bytes)
+    def bad(raw, **kw):
+        result=base(raw, **kw);meta=json.loads(result.receipt_bytes)
         if mode=="digest":meta["context_sha256"]="f"*64
         if mode=="authority":meta["model_execution_attested"]=True
         content=bytearray(result.raw_response_bytes) if mode=="raw-type" else result.raw_response_bytes
@@ -241,12 +241,12 @@ def test_caller_records_changed_during_inference_do_not_affect_run(case):
     # Exact primitive snapshots must predate the first callback.
     partials=tuple(replace(p) for p in case[2]);decisions=tuple(replace(d) for d in case[4])
     base=backend(Transport());first=[True]
-    def mutate(raw):
+    def mutate(raw, **kw):
         if first[0]:
             first[0]=False
             object.__setattr__(partials[0],"response_bytes",b"forged")
             object.__setattr__(decisions[0],"classification","routine")
-        return base(raw)
+        return base(raw, **kw)
     args=kwargs(case);args.update(partial_replies=partials,materiality_decisions=decisions)
     out=rt.run_witnessed_narrative_inference(**args,infer=mutate)
     assert out.report()["inference_responses_complete"] is True
@@ -263,3 +263,84 @@ def test_missing_source_before_call_never_contacts_model(case):
 def test_existing_endpoint_safety_policy_preserved(url):
     with pytest.raises(rt.NarrativeRuntimeError):
         rt.ollama_narrative_infer(base_url=url,model="fixture")
+
+
+def test_disjoint_reminder_is_bound_to_request_not_silently_added(case):
+    t=Transport();out=run(case,t)
+    requests=[r[2] for r in t.calls if r[1]=="/api/chat"]
+    for a,r in zip(out.attempts,requests):
+        receipt=json.loads(a.receipt_bytes)
+        if a.stage=="editorial":
+            assert r["messages"][-1]=={"role":"user","content":rt.EDITORIAL_REMINDER}
+            assert receipt["runtime_instruction_version"]==rt.EDITORIAL_REMINDER_VERSION
+            assert receipt["runtime_instruction_sha256"]==rt._sha(rt.EDITORIAL_REMINDER.encode())
+        else:
+            assert len(r["messages"])==2
+            assert receipt["runtime_instruction_sha256"] is None
+        assert receipt["request_sha256"]==rt._sha(rt._json(r).removesuffix(b"\n"))
+
+
+def test_observed_model_overlap_failure_is_not_auto_repaired(case):
+    base=backend(Transport())
+    def actual_failure_pattern(raw, **kw):
+        result=base(raw, **kw);data=json.loads(result.raw_response_bytes)
+        data["pending_source_refs"]=[0]  # Native small-model probe failure.
+        response=rt._json(data);receipt=json.loads(result.receipt_bytes)
+        receipt["raw_response_sha256"]=rt._sha(response)
+        return rt.NarrativeCallResult(response,rt._json(receipt))
+    out=rt.run_witnessed_narrative_inference(**kwargs(case),infer=actual_failure_pattern)
+    assert not out.narrative_replies and not out.grounding_replies
+    assert all(a.state=="inference_or_validation_failed" for a in out.attempts)
+    assert all(e["pending_evidence_ids"] for e in out.preview.report()["entities"])
+
+
+def test_mutated_options_do_not_change_later_requests(case):
+    options={"temperature":0,"seed":7};t=Transport();infer=backend(t,options=options)
+    options["seed"]=8
+    rt.run_witnessed_narrative_inference(**kwargs(case),infer=infer)
+    assert all(r[2]["options"]["seed"]==7 for r in t.calls if r[1]=="/api/chat")
+
+
+def test_ambiguous_installed_model_fails_without_chat(case):
+    t=Transport()
+    def duplicate(*a,**kw):
+        value=t(*a,**kw)
+        if kw['path']=="/api/tags":
+            value['models'].append({"name":MODEL,"model":MODEL,"digest":"c"*64})
+        return value
+    out=run(case,duplicate)
+    assert not out.narrative_replies
+    assert all(c[1]=="/api/tags" for c in t.calls)
+
+
+def test_deadline_crossed_during_tags_prevents_chat(case,monkeypatch):
+    clock=[0.0];monkeypatch.setattr(rt.time,"monotonic",lambda:clock[0])
+    t=Transport()
+    def delayed_tags(*a,**kw):
+        response=t(*a,**kw)
+        if kw["path"]=="/api/tags":clock[0]=121
+        return response
+    out=run(case,delayed_tags,max_elapsed_seconds=120)
+    assert [c[1] for c in t.calls]==["/api/tags"]
+    assert all(a.state=="deadline_pending" for a in out.attempts)
+    assert not out.narrative_replies and not out.grounding_replies
+
+
+def test_native_transport_timeouts_use_remaining_deadline(case,monkeypatch):
+    clock=[10.0];monkeypatch.setattr(rt.time,"monotonic",lambda:clock[0])
+    t=Transport()
+    def ticking(*a,**kw):
+        response=t(*a,**kw);clock[0]+=1;return response
+    out=run(case,ticking,max_elapsed_seconds=20)
+    assert out.report()["inference_responses_complete"] is True
+    assert [c[3] for c in t.calls]==list(range(20,8,-1))
+    for i,a in enumerate(out.attempts):
+        meta=json.loads(a.receipt_bytes)
+        assert [r["timeout_seconds"] for r in meta["http_requests"]]==[c[3] for c in t.calls[i*3:i*3+3]]
+
+
+def test_recorded_request_hash_matches_existing_wire_serializer(case):
+    t=Transport();out=run(case,t)
+    request=[c[2] for c in t.calls if c[1]=="/api/chat"][0]
+    wire=json.dumps(request,ensure_ascii=False,sort_keys=True,separators=(",",":"),allow_nan=False).encode()
+    assert json.loads(out.attempts[0].receipt_bytes)["request_sha256"]==hashlib.sha256(wire).hexdigest()

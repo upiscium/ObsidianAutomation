@@ -35,7 +35,11 @@ source admission and whole-request quotas. Installing or pulling models is absen
 C5 snapshots primitive upstream reply/decision fields before source access and
 calls the unchanged C4 public API to create complete entity prompts. It sends
 those exact canonical context bytes as the user message, plus the exact C4 system
-prompt and structured-output schema. Each accepted editorial response is then
+prompt and structured-output schema. A versioned, fixed Japanese user-message
+reminder restates the already-enforced disjointness of cited and pending refs;
+it adds no source fact and changes no C4 validator or source Context. Its exact
+version/hash and the complete actual request hash are recorded independently
+of the original C4 system-prompt identity. Each accepted editorial response is then
 passed through the public C4 reconstruction to generate NEW per-sentence
 Grounding contexts. Finally C4 rebuilds/validates the complete raw editorial and
 verdict set for the private preview. No previous C2 Grounding support is inherited
@@ -108,10 +112,17 @@ one source-size measurement read. Original triplet size times that count must
 fit 256 MiB before inference. Tests count actual dependency calls. These limits
 can reject legitimate large days; no source checks are skipped to fit them.
 
-Elapsed budget is checked before and after each model callback. Expiration stops
-new calls and leaves outputs pending. It is **not** preemptive cancellation, a
-hard wall-clock bound, or a guarantee against unbounded trusted callback code;
-one in-flight HTTP call may finish after the elapsed budget. There is no automatic
+Elapsed budget is checked before and after each model callback. The native
+adapter receives the absolute deadline and checks remaining time before EACH
+HTTP request, including after pre-chat model lookup and before post-chat lookup.
+Each HTTP timeout is capped to that remaining budget; the receipt records the
+actual per-request timeout separately from the configured upper bound. Therefore
+a delayed model lookup cannot start a new chat after expiry. Custom callbacks
+receive the same deadline keyword and must implement their own internal I/O
+checks. This is **not** preemptive cancellation, a hard wall-clock bound or a
+protection against unbounded trusted callback code; an in-flight request may
+finish late. The request SHA covers the same compact JSON bytes serialized by
+the native transport, without the canonical artifact newline. There is no automatic
 model parallelism on a shared GPU. Test suites and independent reviews may run
 in parallel without increasing inference resource contention.
 

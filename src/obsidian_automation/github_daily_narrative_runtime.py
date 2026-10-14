@@ -24,6 +24,14 @@ MAX_RECEIPT_BYTES = 32 * 1024
 MAX_RUN_SECONDS = 600
 MAX_SOURCE_WORK_BYTES = 256 * 1024 * 1024
 MAX_SOURCE_RECONSTRUCTIONS = 512
+EDITORIAL_REMINDER_VERSION = "c5-disjoint-source-accounting-ja-v1"
+EDITORIAL_REMINDER = """出力検証の補足（元証拠ではなく形式上の制約）:
+pending_source_refs は、どの文の source_refs にも含めなかった番号だけを入れてください。
+同じ番号を文の source_refs と pending_source_refs の両方に入れると出力全体が拒否されます。
+例: 元イベントが source_ref=0 の1件で、その内容を文で引用した場合は
+{"sentences":[{"text":"根拠のある日本語文。","source_refs":[0]}],"pending_source_refs":[]} です。
+引用できない場合は sentences を空にし pending_source_refs に0を残してください。
+この例の文章を流用せず、実際の元証拠と対象日の未完了事項に忠実に書いてください。"""
 GROUND_SCHEMA = {"type": "object", "additionalProperties": False,
     "required": ["verdict", "reason"], "properties": {
         "verdict": {"type": "string", "enum": ["supported", "unsupported"]},
@@ -32,6 +40,10 @@ GROUND_SCHEMA = {"type": "object", "additionalProperties": False,
 
 class NarrativeRuntimeError(ValueError):
     """Source, runtime configuration or complete request cannot be admitted."""
+
+
+class NarrativeDeadlineError(NarrativeRuntimeError):
+    """No further HTTP request may begin under this run's elapsed budget."""
 
 
 def _json(value: object) -> bytes:
@@ -95,8 +107,17 @@ def ollama_narrative_infer(*, base_url: str, model: str, options=None,
     request = transport or provider._request_json
     pinned = None
 
-    def infer(context_bytes: bytes) -> NarrativeCallResult:
+    def infer(context_bytes: bytes, *, deadline: float | None = None) -> NarrativeCallResult:
         nonlocal pinned
+        http_requests = []
+        def bounded_request(*args, **kw):
+            remaining = seconds if deadline is None else deadline - time.monotonic()
+            if remaining <= 0:
+                raise NarrativeDeadlineError("inference elapsed budget exhausted")
+            kw["timeout"] = min(seconds, remaining)
+            http_requests.append({"method": kw["method"], "path": kw["path"],
+                                  "timeout_seconds": kw["timeout"]})
+            return request(*args, **kw)
         if type(context_bytes) is not bytes or not 0 < len(context_bytes) <= c4.MAX_GROUND_CONTEXT_BYTES:
             raise NarrativeRuntimeError("invalid inference context bytes")
         ctx = _decode_json_object(context_bytes, label="C4 inference context")
@@ -116,7 +137,7 @@ def ollama_narrative_infer(*, base_url: str, model: str, options=None,
             raise NarrativeRuntimeError("C4 prompt identity changed")
         # Identity/source admission is the runner's responsibility. This low-
         # level adapter by itself never certifies externally supplied contexts.
-        before = provider.resolve_ollama_model(root, requested, timeout=seconds, transport=request)
+        before = provider.resolve_ollama_model(root, requested, timeout=seconds, transport=bounded_request)
         if pinned is None:
             pinned = before
         if before.identifier != pinned.identifier or before.digest != pinned.digest:
@@ -126,10 +147,14 @@ def ollama_narrative_infer(*, base_url: str, model: str, options=None,
             {"role": "user", "content": context_bytes.decode("utf-8")}],
             "stream": False, "think": False, "format": schema,
             "options": json.loads(option_bytes)}
-        request_bytes = _json(payload)
+        reminder = EDITORIAL_REMINDER if stage == "github_daily_narrative_context_v4" else ""
+        if reminder:
+            payload["messages"].append({"role": "user", "content": reminder})
+        # Match the reused transport's exact compact JSON wire payload (no newline).
+        request_bytes = _json(payload).removesuffix(b"\n")
         if len(request_bytes) > MAX_REQUEST_BYTES:
             raise NarrativeRuntimeError("inference request exceeds byte budget")
-        response = request(root, method="POST", path="/api/chat",
+        response = bounded_request(root, method="POST", path="/api/chat",
                            payload=json.loads(request_bytes), timeout=seconds)
         if (type(response) is not dict or response.get("done") is not True
                 or response.get("model") != pinned.identifier
@@ -141,18 +166,21 @@ def ollama_narrative_infer(*, base_url: str, model: str, options=None,
         raw = message["content"].encode("utf-8")
         if not 0 < len(raw) <= limit:
             raise NarrativeRuntimeError("model response exceeds byte limit")
-        after = provider.resolve_ollama_model(root, requested, timeout=seconds, transport=request)
+        after = provider.resolve_ollama_model(root, requested, timeout=seconds, transport=bounded_request)
         if after.identifier != pinned.identifier or after.digest != pinned.digest:
             raise NarrativeRuntimeError("model revision changed during inference")
         receipt = _json({"record_version": VERSION, "adapter": "c4-ollama-chat-v1",
             "stage": stage, "context_sha256": _sha(context_bytes),
             "request_sha256": _sha(request_bytes), "raw_response_sha256": _sha(raw),
             "prompt_version": version, "system_prompt_sha256": _sha(prompt.encode()),
+            "runtime_instruction_version": EDITORIAL_REMINDER_VERSION if reminder else None,
+            "runtime_instruction_sha256": _sha(reminder.encode()) if reminder else None,
             "response_schema_sha256": _sha(_json(schema)), "options_sha256": _sha(option_bytes),
             "model_provider": "ollama", "model_identifier": pinned.identifier,
             "observed_model_revision": pinned.digest,
             "config": {"options": json.loads(option_bytes), "stream": False,
-                       "think": False, "request_timeout_seconds": seconds},
+                       "think": False, "configured_request_timeout_seconds": seconds},
+            "http_requests": http_requests,
             "model_execution_attested": False, "publication_authorized": False})
         return NarrativeCallResult(raw, receipt)
     return infer
@@ -173,7 +201,7 @@ def _snapshot(partials, grounds, decisions):
 
 
 def run_witnessed_narrative_inference(capture_sha256, partial_replies, grounding_replies,
-        materiality_decisions=(), *, infer: Callable[[bytes], NarrativeCallResult],
+        materiality_decisions=(), *, infer: Callable[..., NarrativeCallResult],
         max_entities: int = 4, max_calls: int = 16, max_elapsed_seconds: float = 120,
         max_context_bytes: int = c4.roll.c1a.MAX_CONTEXT_BYTES) -> NarrativeRun:
     """Run editorial then NEW post-edit Grounding; retain failures as pending.
@@ -220,7 +248,7 @@ def run_witnessed_narrative_inference(capture_sha256, partial_replies, grounding
                 attempts.append(NarrativeAttempt(stage, identity, "deadline_pending", None, None))
                 return None
             try:
-                result = infer(body)
+                result = infer(body, deadline=started + seconds)
                 if type(result) is not NarrativeCallResult:
                     raise NarrativeRuntimeError("inference result type invalid")
                 candidate_raw, candidate_receipt = result.raw_response_bytes, result.receipt_bytes
@@ -245,6 +273,9 @@ def run_witnessed_narrative_inference(capture_sha256, partial_replies, grounding
                             or obj["verdict"] not in ("supported", "unsupported")):
                         raise NarrativeRuntimeError("invalid model verdict")
                     c4._texts(obj["reason"])
+            except NarrativeDeadlineError:
+                attempts.append(NarrativeAttempt(stage, identity, "deadline_pending", raw, receipt))
+                return None
             except Exception:
                 # Exact bounded replies are retained privately; raw provider
                 # exception strings (possibly credentials/source) are not.
@@ -270,7 +301,7 @@ def run_witnessed_narrative_inference(capture_sha256, partial_replies, grounding
             "capture_sha256": capture_sha256, "context_set_sha256": plan.sha256,
             "preview_sha256": preview.sha256, "date": data["preview"]["date"],
             "collection_mode": data["preview"]["collection_mode"],
-            "entity_count": len(data["contexts"]), "planned_max_calls": len(data["contexts"])*4,
+            "entity_count": len(data["contexts"]), "planned_max_calls": len(data["contexts"])*(1+c4.MAX_SENTENCES),
             "planned_cas_triplet_reads": planned_reads,
             "attempts": [{"stage": a.stage, "context_sha256": a.context_sha256, "state": a.state,
                 "raw_response_sha256": None if a.raw_response_bytes is None else _sha(a.raw_response_bytes),
