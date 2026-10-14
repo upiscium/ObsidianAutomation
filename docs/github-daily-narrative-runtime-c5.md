@@ -209,3 +209,21 @@ and deliberately unsupported negative controls are separate from pytest.
 A sample that becomes `supported` is not human approval or real-day acceptance.
 No cross-entity synthesis, model download, retry loop or Writer/Timer rollout is
 part of this policy change.
+
+For the explicitly selected sentences-only editorial contract, post-edit
+Grounding now receives `c5-grounding-semantic-v1`: entity, target date, the exact
+edited text, and every cited original event with only its opaque `evidence_id`
+removed. No excerpt, negation, truncation marker, actor, event kind, number,
+timestamp or other original field is changed. Full C4 context and host-side
+validation/grounding identities remain unchanged. The original Grounding system
+prompt and response schema are unchanged; no unsupported verdict is converted.
+The legacy adapter's model-visible input remains the complete canonical context.
+
+Receipts separately bind `model_input_version`/`model_input_sha256` to the actual
+user-message bytes, alongside the exact full C4 context and wire-request hashes.
+The semantic view omits unrelated provenance hashes and derived status labels;
+it never substitutes a previous model summary for original source events.
+This changes presentation to the model, not Grounding acceptance criteria.
+Observed model support is advisory and can contain false positives/negatives;
+compare positive and intentionally false claims and retain failures. Neither a
+higher support count nor citation coverage establishes factual completeness.

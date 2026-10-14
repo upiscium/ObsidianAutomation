@@ -40,7 +40,11 @@ class Transport:
         if self.fail_stage == stage:
             raise OSError("PRIVATE_ENDPOINT_TOKEN must never enter report")
         assert payload["stream"] is False and payload["think"] is False
-        assert payload["messages"][0]["content"] == ctx["system_prompt"]
+        if "system_prompt" in ctx:
+            assert payload["messages"][0]["content"] == ctx["system_prompt"]
+        else:
+            assert payload["messages"][0]["content"] == c4.GROUND_PROMPT
+            assert set(ctx) == {"entity", "date", "sentence", "original_events"}
         assert payload["format"]["additionalProperties"] is False
         if stage == "editorial":
             raw = {"sentences": [{"text": TEXT, "source_refs": [0]}],
@@ -524,3 +528,53 @@ def test_fact_policy_never_auto_approves_or_repairs_causal_prose(case):
     assert out.preview.report()['publication_authorized'] is False
     chosen=next(x for x in out.preview.report()['entities'] if x['entity']['entity_type']=='pull_request')
     assert chosen['sentences'][0]['verdict']=='unsupported' and chosen['pending_evidence_ids']
+
+
+def test_semantic_grounding_projection_preserves_exact_text_sources_and_C4_identity(case):
+    t=SentencesTransport();out=single(case,t)
+    requests=[p for _,path,p,_ in t.calls if path=='/api/chat']
+    raw_ground=c4.build_witnessed_narrative_grounding_contexts(**kwargs(case),
+        narrative_replies=out.narrative_replies).report()['contexts'][0]
+    full=raw_ground['context'];payload=requests[1]
+    visible=json.loads(payload['messages'][1]['content'])
+    assert visible == {'entity':full['entity'],'date':full['date'],
+        'sentence':full['sentence']['text'],
+        'original_events':[{k:v for k,v in ev.items() if k!='evidence_id'} for ev in full['original_events']]}
+    assert payload['messages'][0]['content']==c4.GROUND_PROMPT
+    assert payload['format']==rt.GROUND_SCHEMA
+    meta=json.loads(out.attempts[1].receipt_bytes)
+    assert meta['context_sha256']==raw_ground['ground_context_sha256']
+    assert meta['context_sha256']==rt._sha(rt._json(full))
+    assert meta['model_input_version']==rt.SEMANTIC_GROUND_VIEW_VERSION
+    assert meta['model_input_sha256']==rt._sha(payload['messages'][1]['content'].encode())
+    assert meta['request_sha256']==rt._sha(rt._json(payload).removesuffix(b'\n'))
+    for name in ('capture_sha256','closure_sha256','source_status_ja','raw_editorial_response_sha256'):
+        assert name not in visible
+    assert all('evidence_id' not in event for event in visible['original_events'])
+    assert meta['publication_authorized'] is False and meta['model_execution_attested'] is False
+
+
+def test_legacy_grounding_model_view_and_prompt_are_unchanged(case):
+    t=Transport();out=run(case,t)
+    for attempt,payload in zip(out.attempts,[p for _,path,p,_ in t.calls if path=='/api/chat']):
+        meta=json.loads(attempt.receipt_bytes)
+        assert meta['model_input_version']=='c4-canonical-context-v1'
+        assert meta['model_input_sha256']==meta['context_sha256']
+        visible=json.loads(payload['messages'][1]['content'])
+        if attempt.stage=='grounding':
+            assert visible['stage']=='github_daily_narrative_ground_context_v4'
+            assert visible['system_prompt']==c4.GROUND_PROMPT
+            assert visible['original_events'][0]['evidence_id']
+
+
+def test_semantic_projection_cannot_borrow_other_entity_or_unquoted_claim(case):
+    t=SentencesTransport();out=single(case,t,target=('upiscium/Test','pull_request',2))
+    ground=[p for _,path,p,_ in t.calls if path=='/api/chat'][1]
+    visible=json.loads(ground['messages'][1]['content'])
+    assert visible['entity']=={'repository':'upiscium/Test','entity_type':'pull_request','number':2}
+    assert all(e['number']==2 and e['repository']=='upiscium/Test' for e in visible['original_events'])
+    assert 'selected_candidate_sha256s' not in visible and 'rollup_sha256' not in visible
+    # Model prompt still demands support for the whole sentence and rejects
+    # invented causality. Its verdict never becomes a source fact or approval.
+    assert '因果関係' in ground['messages'][0]['content']
+    assert out.preview.report()['publication_authorized'] is False
