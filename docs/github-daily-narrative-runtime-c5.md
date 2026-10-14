@@ -133,3 +133,56 @@ Japanese/omission quality (#283/#290), independent source producer identity,
 production UID/ACL/checkpoint admission, #337 HTTP409 and explicit Writer/Timer
 approval remain separate gates. Synthetic fixtures and local HTTP protocol tests
 are not actual-model or production acceptance. Keep the feature Draft.
+
+## Individual Issue/PR priority (2026-10-14)
+
+The immediate delivery target is an individually usable Issue/PR summary,
+not a synthesized repository-wide or cross-entity recap. Use the explicit
+`target_entity=("owner/repository", "issue"|"pull_request", positive_number)`
+runner argument to request exactly one already selected C4 entity. It must
+match one verified context; a missing/ambiguous target fails before inference.
+The target is snapshotted before source reads. No model selects that identity.
+Only the target receives editorial and new grounding calls. Other selected
+entities remain unprocessed/pending in the retained full private preview; they
+are not silently deleted or declared inactive. Runtime reports distinguish
+`run_scope`, requested vs selected counts and `all_selected_entities_requested`.
+`inference_responses_complete` describes requested calls, not the whole day or
+semantic completeness. Default all-selected behavior is unchanged. Full source
+reconstruction quotas and C4 source/semantic checks remain in force; explicit
+single-entity inference is not yet a large-day performance optimization.
+
+### Opt-in simpler editorial wire contract
+
+Configure `ollama_narrative_infer(...,
+editorial_contract="c4-sentences-only-v1")`. Legacy `"c4-v1"` remains the
+default and keeps its strict cited/pending disjointness check. The new **requested
+provider format** contains only `{"sentences":[{"text":...,"source_refs":[...]}]}`.
+Its fixed Japanese system prompt, prompt version and constrained JSON schema
+replace the model-visible editorial contract; the original C4 context/digest
+and source data are retained and the exact actual wire request is hashed.
+Grounding's original contract does not change.
+
+The host validates exact keys/types/reference bounds, computes the complement
+of cited source indices as `pending_source_refs`, then submits that projected
+JSON to the **unchanged** C4 validator. This is deterministic format adaptation,
+not semantic repair. An output containing `pending_source_refs` under the new
+contract is rejected, even if its list happens to be consistent. Invalid refs,
+Boolean refs, duplicate keys, extra permissions or text fail as before. An empty
+sentences list conservatively leaves all original sources pending and triggers
+no Grounding. Unsupported post-edit verdicts re-add their sources to pending.
+
+Private attempts and native receipts retain the **verbatim provider response**
+and its hash. Accepted attempts separately record `admitted_response_sha256`
+for projected C4 bytes, which are retained in `narrative_replies`. Receipts
+record `response_contract`, original C4 prompt hash and effective wire prompt/
+schema hashes, plus exact wire request/model/options identities. The two hashes
+are deliberately different when projection is used; never describe projected
+JSON as provider-emitted bytes or repair a legacy failed output by relabeling it.
+A trusted custom callback must explicitly declare its response contract; these
+callbacks and receipts remain application code, not unforgeable attestation.
+
+A citation proves only which original record was referenced, **not** that all
+facts in that record were covered. This adaptation does not certify importance,
+Japanese quality, truth, semantic exhaustiveness or human approval. Those flags
+remain false/unapproved. No cross-entity synthesis, live GitHub collector,
+Writer/Timer, main merge, new model installation or automatic retries are added.

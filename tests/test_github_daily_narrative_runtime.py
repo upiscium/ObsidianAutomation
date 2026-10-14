@@ -344,3 +344,136 @@ def test_recorded_request_hash_matches_existing_wire_serializer(case):
     request=[c[2] for c in t.calls if c[1]=="/api/chat"][0]
     wire=json.dumps(request,ensure_ascii=False,sort_keys=True,separators=(",",":"),allow_nan=False).encode()
     assert json.loads(out.attempts[0].receipt_bytes)["request_sha256"]==hashlib.sha256(wire).hexdigest()
+
+
+class SentencesTransport(Transport):
+    """Provider fixture follows the NEW requested wire contract, not C4 JSON."""
+    def __init__(self, editorial=None):
+        super().__init__()
+        self.editorial = editorial
+
+    def __call__(self, base_url, **kw):
+        result = super().__call__(base_url, **kw)
+        if kw['path'] == '/api/chat':
+            payload = kw['payload']
+            ctx = json.loads(payload['messages'][1]['content'])
+            if 'sources' in ctx:
+                assert set(payload['format']['properties']) == {'sentences'}
+                assert ctx['prompt_version'] == rt.SENTENCES_ONLY_CONTRACT
+                assert ctx['system_prompt'] == rt.SENTENCES_ONLY_PROMPT
+                value = {'sentences': [{'text': TEXT, 'source_refs': [0]}]} if self.editorial is None else self.editorial
+                result['message']['content'] = json.dumps(value, ensure_ascii=False)
+        return result
+
+
+def single(case, transport=None, target=('upiscium/Test','issue',1), **kw):
+    t = transport or SentencesTransport()
+    return rt.run_witnessed_narrative_inference(**kwargs(case),
+        infer=backend(t, editorial_contract=rt.SENTENCES_ONLY_CONTRACT),
+        target_entity=target, max_entities=1, max_calls=4, **kw)
+
+
+@pytest.mark.parametrize('kind,number', [('issue',1),('pull_request',2)])
+def test_explicit_single_entity_runs_only_that_entity_without_global_reduction(case,kind,number):
+    t=SentencesTransport(); out=single(case,t,target=('upiscium/Test',kind,number))
+    report=out.report()
+    assert report['run_scope']=='single_entity'
+    assert report['target_entity']=={'repository':'upiscium/Test','entity_type':kind,'number':number}
+    assert report['entity_count']==1 and report['selected_entity_count']==2
+    assert report['unrequested_entity_count']==1 and not report['all_selected_entities_requested']
+    assert report['inference_responses_complete'] is True
+    assert [a.stage for a in out.attempts]==['editorial','grounding']
+    assert len(out.narrative_replies)==len(out.grounding_replies)==1
+    assert len([p for _,p,_,_ in t.calls if p=='/api/chat'])==2
+    rows=out.preview.report()['entities']
+    chosen=next(r for r in rows if r['entity']['entity_type']==kind)
+    other=next(r for r in rows if r['entity']['entity_type']!=kind)
+    assert chosen['sentences'][0]['verdict']=='supported'
+    assert not other['response_received'] and other['pending_evidence_ids']
+    assert not report['publication_authorized'] and not report['semantic_coverage_verified']
+
+
+def test_sentences_only_raw_and_projected_C4_bytes_are_separately_traceable(case):
+    t=SentencesTransport(); out=single(case,t)
+    a=out.attempts[0]; meta=json.loads(a.receipt_bytes)
+    raw=json.loads(a.raw_response_bytes); mapped=json.loads(out.narrative_replies[0].response_bytes)
+    assert set(raw)=={'sentences'} and 'pending_source_refs' not in raw
+    assert mapped==dict(raw,pending_source_refs=[])
+    assert a.raw_response_bytes != out.narrative_replies[0].response_bytes
+    assert meta['response_contract']==rt.SENTENCES_ONLY_CONTRACT
+    assert meta['raw_response_sha256']==rt._sha(a.raw_response_bytes)
+    assert a.admitted_response_sha256==rt._sha(out.narrative_replies[0].response_bytes)
+    assert out.report()['attempts'][0]['admitted_response_sha256']==a.admitted_response_sha256
+    payload=next(p for _,path,p,_ in t.calls if path=='/api/chat')
+    assert meta['request_sha256']==rt._sha(rt._json(payload).removesuffix(b'\n'))
+    assert meta['effective_system_prompt_sha256']==rt._sha(payload['messages'][0]['content'].encode())
+    assert meta['system_prompt_sha256']==rt._sha(c4.EDITORIAL_PROMPT.encode())
+    assert meta['response_schema_sha256']==rt._sha(rt._json(payload['format']))
+    assert not meta['model_execution_attested']
+
+
+def test_empty_sentences_keeps_all_sources_pending_without_grounding(case):
+    out=single(case,SentencesTransport({'sentences':[]}))
+    assert len(out.attempts)==1 and out.attempts[0].state=='accepted'
+    assert not out.grounding_replies
+    assert all(r['pending_evidence_ids'] for r in out.preview.report()['entities'])
+    assert all(not r['sentences'] for r in out.preview.report()['entities'])
+    assert out.report()['inference_responses_complete'] is True # requested calls, not semantic coverage
+    assert not out.report()['semantic_coverage_verified']
+
+
+@pytest.mark.parametrize('obj',[
+ {'sentences':[{'text':TEXT,'source_refs':[0]}],'pending_source_refs':[]},
+ {'sentences':[{'text':TEXT,'source_refs':[0]}],'pending_source_refs':[0]},
+ {'sentences':[{'text':TEXT,'source_refs':[True]}]},
+ {'sentences':[{'text':TEXT,'source_refs':[-1]}]},
+ {'sentences':[{'text':TEXT,'source_refs':[99]}]},
+ {'sentences':[{'text':TEXT,'source_refs':[]}]},
+ {'sentences':[{'text':TEXT,'source_refs':[0,0]}]},
+ {'sentences':[{'text':TEXT,'source_refs':[0],'url':'https://invalid'}]},
+ {'sentences':[{'text':TEXT,'source_refs':[0]}],'publication_authorized':True},
+ {'sentences':[{'text':TEXT+'\n改行','source_refs':[0]}]},
+ {'sentences':{}},
+])
+def test_new_contract_never_repairs_malformed_output_or_accepts_extra_pending(case,obj):
+    out=single(case,SentencesTransport(obj))
+    assert out.attempts[0].state=='inference_or_validation_failed'
+    assert out.attempts[0].raw_response_bytes is not None
+    assert out.attempts[0].admitted_response_sha256 is None
+    assert not out.narrative_replies and not out.grounding_replies
+    assert all(r['pending_evidence_ids'] for r in out.preview.report()['entities'])
+
+
+def test_complement_uses_original_source_count_and_does_not_infer_semantic_coverage():
+    ctx={'sources':[{'original_event':{'evidence_id':str(i)}} for i in range(4)]}
+    raw=rt._json({'sentences':[{'text':TEXT,'source_refs':[2,0]}]})
+    admitted=rt._admit_editorial(ctx,raw,rt.SENTENCES_ONLY_CONTRACT)
+    assert json.loads(admitted)['pending_source_refs']==[1,3]
+    assert json.loads(admitted)['sentences'][0]['source_refs']==[2,0]
+    legacy=rt._json({'sentences':[{'text':TEXT,'source_refs':[0]}],'pending_source_refs':[0,1,2,3]})
+    with pytest.raises(c4.DailyNarrativeError): rt._admit_editorial(ctx,legacy,rt.LEGACY_EDITORIAL_CONTRACT)
+
+
+@pytest.mark.parametrize('target',[
+ ['upiscium/Test','issue',1], ('upiscium/Test','issue',True),
+ ('upiscium/Test','issue',0), ('upiscium/Test','unknown',1),
+ ('','issue',1), ('upiscium/Test','issue',99), ('upiscium/Test','issue',2),
+])
+def test_invalid_or_missing_explicit_target_never_starts_model(case,target):
+    t=SentencesTransport()
+    with pytest.raises(rt.NarrativeRuntimeError): single(case,t,target=target)
+    assert not t.calls
+
+
+@pytest.mark.parametrize('mode',[None,True,[], 'future-unknown'])
+def test_unknown_wire_contract_rejected_before_network(mode):
+    t=Transport()
+    with pytest.raises(rt.NarrativeRuntimeError):backend(t,editorial_contract=mode)
+    assert not t.calls
+
+
+def test_unsupported_newly_generated_text_is_not_displayed_and_sources_stay_pending(case):
+    t=SentencesTransport();t.ground_verdict='unsupported';out=single(case,t)
+    assert out.report()['inference_responses_complete']
+    assert TEXT not in out.preview.markdown
+    assert all(r['pending_evidence_ids'] for r in out.preview.report()['entities'])
