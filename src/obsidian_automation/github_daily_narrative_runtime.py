@@ -425,7 +425,7 @@ def _build_source_review(snapshot_bytes, preview):
         if nonliteral:
             lines.append(f"元の引用フィールドに全文が連続一致しないAI文: {len(nonliteral)}件。言い換え・因果関係・否定を要確認。")
         if original["nontext_event_count"]:
-            lines.append(f"本文フィールドのない元イベント: {original['nontext_event_count']}件。状態は上の元Evidence表示を確認してください。")
+            lines.append(f"取得済みテキストフィールドのない元イベント: {original['nontext_event_count']}件。状態は上の元Evidence表示を確認してください。")
         lines.append("")
         entities.append({**original, "fields": field_rows,
                          "nonliteral_displayed_sentence_indices": nonliteral})

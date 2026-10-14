@@ -723,3 +723,33 @@ def test_unmatched_intervals_preserve_gaps_duplicates_unicode_and_full_source():
     assert rt._unmatched_ranges(text,[(0,6),(3,9)])==[[9,len(text)]]
     assert rt._unmatched_ranges(text,[(6,13)])==[[0,6],[13,len(text)]]
     assert rt._unmatched_ranges(text,[(0,len(text))])==[]
+
+
+@pytest.mark.parametrize('field_name',[None,'title','body','message'])
+def test_nontext_counter_and_label_mean_all_captured_text_fields(field_name):
+    entity={'repository':'upiscium/Test','entity_type':'issue','number':1}
+    ev={'evidence_id':'e'*64,'kind':'issue_comment','occurred_at':'2026-10-05T01:00:00Z',
+        'title':None,'body':None,'message':None}
+    if field_name is not None: ev[field_name]={'text':'取得した原文。','truncated':False,'included_bytes':21,'original_bytes':21}
+    rows=[{'context_sha256':'a'*64,'context':{'entity':entity,'sources':[{'source_ref':0,'original_event':ev}]}}]
+    snap=rt._review_snapshot(rows,'b'*64)
+    preview=c4.NarrativePreview(rt._json({'capture_sha256':'c'*64,'source_context_set_sha256':'b'*64,
+        'entities':[{'context_sha256':'a'*64,'entity':entity,'sentences':[]}]}),'')
+    view=rt._build_source_review(snap,preview)
+    assert view.report()['entities'][0]['nontext_event_count']==(1 if field_name is None else 0)
+    assert ('取得済みテキストフィールドのない元イベント: 1件' in view.markdown)==(field_name is None)
+    assert '本文フィールドのない元イベント' not in view.markdown
+    if field_name is not None: assert '取得した原文。' in view.markdown
+
+
+def test_original_truncation_metadata_is_preserved_and_visible():
+    ev={'evidence_id':'e'*64,'kind':'issue_comment','occurred_at':'2026-10-05T01:00:00Z',
+        'body':{'text':'取得した範囲だけ。','truncated':True,'included_bytes':27,'original_bytes':999}}
+    entity={'repository':'upiscium/Test','entity_type':'issue','number':1}
+    row={'context_sha256':'a'*64,'context':{'entity':entity,'sources':[{'source_ref':0,'original_event':ev}]}}
+    snap=rt._review_snapshot([row],'b'*64)
+    preview=c4.NarrativePreview(rt._json({'capture_sha256':'c'*64,'source_context_set_sha256':'b'*64,
+        'entities':[{'context_sha256':'a'*64,'entity':entity,'sentences':[]}]}),'')
+    out=rt._build_source_review(snap,preview)
+    assert out.report()['entities'][0]['fields'][0]['original_value']==ev['body']
+    assert '取得時点で切り詰められています。未取得部分は照合できません。' in out.markdown
