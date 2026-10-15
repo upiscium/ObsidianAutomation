@@ -13,6 +13,7 @@ from typing import Callable, Sequence
 
 from .admin_status import aggregate_status
 from .admin_ai_status import load_ai_health
+from .admin_broker_socket import capabilities_from_socket, _unavailable_capabilities
 
 HTML = """<!doctype html>
 <html lang="ja">
@@ -272,6 +273,30 @@ class Handler(BaseHTTPRequestHandler):
                 "actions": {"start": False, "stop": False, "trigger": False},
             }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
             self._reply(200, data, "application/json; charset=utf-8")
+        elif self.path == "/api/v1/operation-capabilities":
+            try:
+                capability = self.server.capabilities_observer()
+                if (
+                    not isinstance(capability, dict)
+                    or set(capability) != {"version", "authority", "operations", "reason"}
+                    or type(capability.get("version")) is not int
+                    or capability["version"] != 1
+                    or capability["authority"] != "observation_only"
+                    or capability["reason"] not in (
+                        "broker_unavailable", "cross_updater_exclusion_unqualified"
+                    )
+                    or not isinstance(capability["operations"], dict)
+                    or set(capability["operations"]) != {"pause", "resume", "run_once"}
+                    or any(type(value) is not bool or value is not False
+                           for value in capability["operations"].values())
+                ):
+                    capability = _unavailable_capabilities()
+            except Exception:
+                capability = _unavailable_capabilities()
+            data = json.dumps(
+                capability, sort_keys=True, separators=(",", ":"),
+            ).encode("utf-8")
+            self._reply(200, data, "application/json; charset=utf-8")
         else:
             self._reply(404, b"Not found")
 
@@ -291,12 +316,14 @@ def make_server(
     *, port: int = 8370,
     observer: Observer = aggregate_status,
     ai_observer: AIObserver = load_ai_health,
+    capabilities_observer: Callable[[], dict[str, object]] = _unavailable_capabilities,
 ) -> ThreadingHTTPServer:
     if not isinstance(port, int) or not 0 <= port <= 65535:
         raise ValueError("port must be between 0 and 65535")
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     server.observer = observer
     server.ai_observer = ai_observer
+    server.capabilities_observer = capabilities_observer
     server.daemon_threads = True
     return server
 
@@ -305,7 +332,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Experimental read-only localhost status dashboard")
     parser.add_argument("--port", type=int, default=8370)
     args = parser.parse_args(argv)
-    with make_server(port=args.port) as server:
+    with make_server(
+        port=args.port, capabilities_observer=capabilities_from_socket,
+    ) as server:
         server.serve_forever(poll_interval=0.25)
     return 0
 
