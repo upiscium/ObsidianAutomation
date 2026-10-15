@@ -282,3 +282,22 @@ inference. The normal metadata-only run report contains companion hashes/version
 and `source_review_required`, never source or reason prose. Bounds, native-call
 caps, exact C4 identity replay, legacy response contracts and all production
 UID/ACL/checkpoint/Writer/Timer gates remain in effect.
+
+
+## Real-day English-source diagnostic (2026-10-15)
+
+The opt-in sentences-only effective prompt is now `c5-individual-facts-ja-v3`.
+It distinguishes faithfully retaining concise **Japanese** source wording from
+translating an English source into Japanese output. English commit subjects must
+not be copied as an entire output sentence. Proper names/API identifiers may
+retain their spelling. Discovered defects, evaluation outcomes and unresolved
+work are reportable progress, not grounds to return an empty array merely
+because implementation is incomplete. Unsupported claims still must be omitted.
+
+Only prompt instructions/version changed. The wire response contract, C4
+Japanese/text/reference validator, source proof, semantic Grounding view/prompt,
+model/call/deadline bounds and authority flags are unchanged. Provider bytes
+are not translated or repaired after generation. These instructions are not a
+proof that the model complied. Baseline and revised runs on the same captured
+real sources must be retained separately; no general quality or production
+acceptance follows from two examples.

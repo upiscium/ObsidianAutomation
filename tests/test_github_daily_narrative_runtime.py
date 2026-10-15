@@ -488,7 +488,7 @@ def test_individual_fact_policy_is_versioned_separately_from_wire_contract(case)
     editorial=out.attempts[0];meta=json.loads(editorial.receipt_bytes)
     requests=[p for _,path,p,_ in t.calls if path=='/api/chat']
     payload=requests[0];visible=json.loads(payload['messages'][1]['content'])
-    assert rt.SENTENCES_ONLY_PROMPT_VERSION=='c5-individual-facts-ja-v2'
+    assert rt.SENTENCES_ONLY_PROMPT_VERSION=='c5-individual-facts-ja-v3'
     assert rt.SENTENCES_ONLY_PROMPT_VERSION!=rt.SENTENCES_ONLY_CONTRACT
     assert meta['response_contract']==rt.SENTENCES_ONLY_CONTRACT
     assert meta['effective_prompt_version']==rt.SENTENCES_ONLY_PROMPT_VERSION
@@ -753,3 +753,21 @@ def test_original_truncation_metadata_is_preserved_and_visible():
     out=rt._build_source_review(snap,preview)
     assert out.report()['entities'][0]['fields'][0]['original_value']==ev['body']
     assert '取得時点で切り詰められています。未取得部分は照合できません。' in out.markdown
+
+
+def test_individual_editorial_language_policy_distinguishes_source_from_output():
+    prompt = rt.SENTENCES_ONLY_PROMPT
+    assert "日本語の原文はその表現を優先" in prompt
+    assert "原文が英語でも、各textは日本語に翻訳" in prompt
+    assert "英語のコミット題名を文全体として転記しない" in prompt
+    assert "不具合の発見・評価結果・未解決事項の報告も要約対象" in prompt
+    assert "根拠のある文を作れなければsentencesを空配列" in prompt
+
+
+def test_language_guidance_does_not_admit_english_only_provider_sentence(case):
+    raw = {"sentences": [{"text": "fix(daily): correct ordering and add regression tests", "source_refs": [0]}]}
+    out = single(case, SentencesTransport(raw))
+    assert out.attempts[0].state == "inference_or_validation_failed"
+    assert not out.narrative_replies and not out.grounding_replies
+    assert json.loads(out.attempts[0].raw_response_bytes) == raw
+    assert all(row["pending_evidence_ids"] for row in out.preview.report()["entities"])
