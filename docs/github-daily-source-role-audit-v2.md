@@ -1,4 +1,4 @@
-# Source-role audit v1 (Issue #290)
+# Source-role audit v2 (Issue #290)
 
 This is an optional read-only calibration tool for individual GitHub Daily summaries.
 It does not change model replies, post-edit Grounding, source capture, publication, Writer or Timer.
@@ -14,9 +14,15 @@ Changing Grounding instructions alone did not reject that fixed counterexample.
 
 `audit_individual_source_roles(source_review_bytes, preview_bytes, target_entity, annotations)`
 accepts the exact private C5 source-review and C4 preview bytes. Each annotation
-names a displayed sentence index, claim kind, operator assessment, and one or more
+names a displayed sentence index, exact Unicode code-point claim_start/claim_end
+within that sentence, claim kind, operator assessment, and one or more
 source anchors (`source_ref`, `field`, Unicode code-point `start` / `end`, `role`).
 The source field must belong to an event that the sentence actually cites.
+Multiple nonoverlapping claim spans may be annotated inside a single sentence:
+this prevents a genuine completed action in one clause from laundering a
+quoted-example action in another. Every partial label set remains incomplete;
+`all_atomic_claims_labeled_verified` stays false even when every sentence has
+at least one label. Offsets alone cannot prove that all claims were found.
 
 Claim kinds: `performed_action`, `example_report`, `unresolved_status`, `other`.
 Source roles: `direct_action`, `quoted_example`, `proposed`, `negated`, `background`.

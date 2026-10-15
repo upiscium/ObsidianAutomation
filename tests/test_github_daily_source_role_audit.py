@@ -43,7 +43,9 @@ def anchors(real=True):
 
 
 def annotation(i, real=True):
-    return {"sentence_index": i, "claim_kind": "performed_action",
+    text = REAL_SUMMARY if real else BAD_SUMMARY
+    return {"sentence_index": i, "claim_start": 0, "claim_end": len(text),
+            "claim_kind": "performed_action",
             "assessment": "entailed", "anchors": anchors(real)}
 
 
@@ -147,3 +149,32 @@ def test_no_annotations_is_not_no_progress():
     assert d["annotated_sentence_count"] == 0
     assert all(r["source_scope_state"] == "unreviewed" for r in d["results"])
     assert not d["publication_authorized"]
+
+
+def test_two_atomic_claims_in_one_sentence_are_separately_audited():
+    sr, preview = fixtures()
+    text = REAL_SUMMARY + BAD_SUMMARY
+    preview["entities"][0]["sentences"] = [
+        {"verdict": "supported", "text": text, "evidence_ids": [EID]}]
+    sr["preview_sha256"] = _sha(_canonical(preview))
+    real = annotation(0, True)
+    incorrect = annotation(0, False)
+    incorrect["claim_start"] = len(REAL_SUMMARY)
+    incorrect["claim_end"] = len(text)
+    result = audit_individual_source_roles(
+        _canonical(sr), _canonical(preview), TARGET, [real, incorrect]).report()
+    assert result["supported_sentence_count"] == 1
+    assert result["annotated_claim_count"] == 2
+    assert result["scope_conflict_count"] == 1
+    assert [x["source_scope_state"] for x in result["results"]] == [
+        "no_scope_conflict_detected_not_verified", "quoted_example_only"]
+    assert not result["all_atomic_claims_labeled_verified"]
+    assert result["results"][1]["claim_start"] == len(REAL_SUMMARY)
+
+
+def test_overlapping_atomic_claims_fail_closed():
+    a = annotation(1, False)
+    overlapping = copy.deepcopy(a)
+    overlapping["claim_start"] = 1
+    with pytest.raises(SourceRoleAuditError):
+        run([a, overlapping])

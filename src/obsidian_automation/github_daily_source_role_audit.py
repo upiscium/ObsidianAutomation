@@ -9,8 +9,8 @@ import hashlib
 import json
 from dataclasses import dataclass
 
-VERSION = 1
-STAGE = "github_daily_source_role_audit_v1"
+VERSION = 2
+STAGE = "github_daily_source_role_audit_v2"
 MAX_PREVIEW_BYTES = 4 * 1024 * 1024
 MAX_SOURCE_REVIEW_BYTES = 2 * 1024 * 1024
 MAX_AUDIT_BYTES = 128 * 1024
@@ -57,16 +57,18 @@ def _identifier(entity):
 
 
 def _annotation(value):
-    if type(value) is not dict or set(value) != {"sentence_index", "claim_kind", "assessment", "anchors"}:
+    if type(value) is not dict or set(value) != {"sentence_index", "claim_start", "claim_end", "claim_kind", "assessment", "anchors"}:
         raise SourceRoleAuditError("invalid exact audit annotation")
     index = value["sentence_index"]
+    start, end = value["claim_start"], value["claim_end"]
     anchors = value["anchors"]
     if (type(index) is not int or index < 0
+            or type(start) is not int or type(end) is not int or not 0 <= start < end
             or type(value["claim_kind"]) is not str or value["claim_kind"] not in CLAIM_KINDS
             or type(value["assessment"]) is not str or value["assessment"] not in ASSESSMENTS
             or type(anchors) is not list or not 1 <= len(anchors) <= MAX_ANCHORS):
         raise SourceRoleAuditError("invalid bounded audit annotation")
-    return index, anchors
+    return index, start, end, anchors
 
 
 @dataclass(frozen=True)
@@ -137,9 +139,11 @@ def audit_individual_source_roles(source_review_bytes: bytes, preview_bytes: byt
         raise SourceRoleAuditError("too many audit annotations")
     labels = {}
     for a in annotations:
-        index, anchors = _annotation(a)
-        if index in labels or index >= len(sentences):
-            raise SourceRoleAuditError("duplicate or foreign sentence label")
+        index, claim_start, claim_end, anchors = _annotation(a)
+        if index >= len(sentences) or claim_end > len(sentences[index]["text"]):
+            raise SourceRoleAuditError("out-of-range claim span")
+        if any(i == index and claim_start < e and s < claim_end for i, s, e in labels):
+            raise SourceRoleAuditError("overlapping or duplicate claim span")
         sentence = sentences[index]
         if sentence.get("verdict") != "supported" or type(sentence.get("evidence_ids")) is not list:
             raise SourceRoleAuditError("only cited displayed sentences can be audited")
@@ -163,36 +167,47 @@ def audit_individual_source_roles(source_review_bytes: bytes, preview_bytes: byt
             retained.append({"source_ref": ref, "field": name, "start": start,
                              "end": end, "role": role,
                              "source_text_sha256": field["text_sha256"]})
-        labels[index] = (a, retained)
+        labels[(index, claim_start, claim_end)] = (a, retained)
 
     results = []
+    supported_sentence_count = 0
     for i, sentence in enumerate(sentences):
         if sentence.get("verdict") != "supported":
             continue
         if type(sentence.get("text")) is not str:
             raise SourceRoleAuditError("invalid narrative sentence")
-        row = {"sentence_index": i, "sentence_sha256": _sha(sentence["text"].encode("utf-8")),
-               "model_grounding_verdict": "supported", "source_scope_state": "unreviewed",
-               "operator_assessment": None, "claim_kind": None, "anchors": []}
-        if i in labels:
-            label, retained = labels[i]
+        supported_sentence_count += 1
+        sentence_sha = _sha(sentence["text"].encode("utf-8"))
+        atoms = [(s, e, value) for (idx, s, e), value in labels.items() if idx == i]
+        if not atoms:
+            results.append({"sentence_index": i, "sentence_sha256": sentence_sha,
+                "claim_start": None, "claim_end": None, "claim_sha256": None,
+                "model_grounding_verdict": "supported", "source_scope_state": "unreviewed",
+                "operator_assessment": None, "claim_kind": None, "anchors": []})
+            continue
+        for start, end, (label, retained) in sorted(atoms):
             roles = {a["role"] for a in retained}
             performed = label["claim_kind"] == "performed_action"
             if performed and "direct_action" not in roles:
                 scope_state = "quoted_example_only" if roles == {"quoted_example"} else "performed_action_not_established_by_anchors"
             else:
                 scope_state = "no_scope_conflict_detected_not_verified"
-            row.update(source_scope_state=scope_state,
-                       operator_assessment=label["assessment"],
-                       claim_kind=label["claim_kind"], anchors=retained)
-        results.append(row)
+            results.append({"sentence_index": i, "sentence_sha256": sentence_sha,
+                "claim_start": start, "claim_end": end,
+                "claim_sha256": _sha(sentence["text"][start:end].encode("utf-8")),
+                "model_grounding_verdict": "supported", "source_scope_state": scope_state,
+                "operator_assessment": label["assessment"],
+                "claim_kind": label["claim_kind"], "anchors": retained})
     result = {"record_version": VERSION, "stage": STAGE, "entity": dict(zip(
         ("repository", "entity_type", "number"), target_entity)),
         "capture_sha256": source["capture_sha256"],
         "source_review_sha256": _sha(source_review_bytes),
         "preview_sha256": _sha(preview_bytes),
         "source_context_sha256": sr["context_sha256"], "results": results,
-        "supported_sentence_count": len(results), "annotated_sentence_count": len(labels),
+        "supported_sentence_count": supported_sentence_count,
+        "annotated_sentence_count": len({index for index, _, _ in labels}),
+        "annotated_claim_count": len(labels),
+        "all_atomic_claims_labeled_verified": False,
         "scope_conflict_count": sum(r["source_scope_state"] in
             ("quoted_example_only", "performed_action_not_established_by_anchors") for r in results),
         "annotations_independently_attested": False,
