@@ -232,3 +232,58 @@ def test_unknown_policy_refused_before_API(tmp_path,monkeypatch,bad):
     with pytest.raises(source.DailySourceRouteError,match='policy'):
         collect(tmp_path,monkeypatch,client,policy=bad)
     assert not client.calls
+
+
+@pytest.mark.parametrize('bad_time',[None, {}, 'not-a-timestamp'])
+def test_rehashed_malformed_original_time_is_a_typed_route_rejection(tmp_path,monkeypatch,bad_time):
+    result=collect(tmp_path,monkeypatch)
+    receipt=json.loads(result.receipt_bytes);original=receipt['temporal_observations'][0]['original_event']
+    original['occurred_at']=bad_time
+    original['evidence_id']=hashlib.sha256(encoded({k:v for k,v in original.items() if k!='evidence_id'})).hexdigest()
+    with pytest.raises(source.DailySourceRouteError,match='invalid temporal source projection'):
+        source.parse_verified_routes(encoded(receipt),result.evidence.canonical_bytes)
+
+
+def test_projection_event_count_checked_before_retaining_records(tmp_path,monkeypatch):
+    legacy=collect(tmp_path,monkeypatch,policy=None)
+    monkeypatch.setattr(temporal,'MAX_OBSERVATIONS',1)
+    def forbidden(event):raise AssertionError('must reject event count before projection')
+    with pytest.raises(temporal.TemporalEvidenceError,match='event count limit'):
+        temporal.project_events(list(legacy.evidence.events),SimpleNamespace(for_event=forbidden),
+                                start=activity._date_window(DATE)[0],end=activity._date_window(DATE)[1])
+
+
+def test_receipt_byte_budget_stops_before_encoding_later_members(monkeypatch):
+    monkeypatch.setattr(temporal,'MAX_RECEIPT_BYTES',100)
+    # A later unserializable object must never be visited after the byte cap.
+    with pytest.raises(temporal.TemporalEvidenceError,match='byte limit'):
+        temporal.encode_receipt({'a':'x'*1000,'z':object()})
+    small={'a':[1,False,None,'日本語']}
+    assert temporal.encode_receipt(small)==encoded(small)
+
+
+def test_projection_enforces_original_record_budget_incrementally(tmp_path,monkeypatch):
+    monkeypatch.setattr(temporal,'MAX_RECEIPT_BYTES',500)
+    with pytest.raises(temporal.TemporalEvidenceError,match='byte limit'):
+        collect(tmp_path,monkeypatch)
+
+
+def test_wrapper_charges_commit_and_timeline_rows_not_only_observation_map(monkeypatch):
+    monkeypatch.setattr(temporal,'MAX_SOURCE_ROWS',3)
+    raw=SimpleNamespace(_paged=lambda p:[{'sha':'a'*40}]*2,
+                        _request_json=lambda p:[{'sha':'b'*40}]*2)
+    wrapped=temporal.ObservationClient(raw,lambda:NOW)
+    wrapped._paged(f'{BASE}/issues/2/events')
+    assert wrapped.rows_seen==2 and not wrapped.observations
+    with pytest.raises(temporal.TemporalEvidenceError,match='source row limit'):
+        wrapped._request_json(f'{BASE}/pulls/2/commits?per_page=100&page=1')
+    assert wrapped.rows_seen==2
+
+
+def test_wrapper_bounds_aggregate_returned_source_bytes(monkeypatch):
+    monkeypatch.setattr(temporal,'MAX_SOURCE_BYTES',100)
+    raw=SimpleNamespace(_paged=lambda p:[{'body':'x'*200}])
+    wrapped=temporal.ObservationClient(raw,lambda:NOW)
+    with pytest.raises(temporal.TemporalEvidenceError,match='byte limit'):
+        wrapped._paged(f'{BASE}/issues/2/events')
+    assert wrapped.rows_seen==0 and wrapped.bytes_seen==0

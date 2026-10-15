@@ -118,3 +118,23 @@ large-day capacity, example-vs-actual-work semantics, full historical coverage,
 #337 HTTP409 compatibility and explicit Writer/Timer release remain separate
 work. Keep this change in a child Draft. Do not rewrite historical refs or
 merge to main based on synthetic tests or a model's supported verdict.
+
+
+## Bounded projection / review corrections
+
+The opt-in wrapper charges **every returned source row** (including commits,
+timeline rows and direct classification responses), with aggregate caps of
+50,000 rows and 32 MiB canonical JSON across endpoints/repositories. Projection
+checks total event count before constructing new objects, charges each bounded
+original-record encoding before retaining it, and streams the complete receipt
+into a maximum 4-MiB output buffer, stopping before materializing an oversized
+aggregate. Existing transport/per-endpoint pagination allocations occur before
+this wrapper and are unchanged; these are limits on added aggregate work, not
+a hard upper bound on Python process RSS or all inherited page allocations.
+Encoding may allocate one individual string chunk before charging its size.
+
+Malformed original-event timestamps (including a rehashed original in a v3
+receipt) are translated into the typed temporal/route rejection, not leaked
+`GitHubDailyActivityError` exceptions. These corrections do not alter the
+projection, model-visible content, API destinations, or publication decisions
+for admitted bounded inputs.

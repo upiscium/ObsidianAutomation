@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime
 import hashlib
+import json
 import re
 
 from . import github_daily_activity as activity
@@ -18,6 +19,9 @@ from . import github_project_watcher as watcher
 POLICY = "github-day-snapshot-v1"
 RECEIPT_VERSION = 3
 MAX_OBSERVATIONS = 50000
+MAX_SOURCE_ROWS = 50000
+MAX_SOURCE_BYTES = 32 * 1024 * 1024
+MAX_RECEIPT_BYTES = 4 * 1024 * 1024
 MUTABLE_FIELDS = ("body", "draft", "message", "state", "title")
 _COMMENTS = {"issue_comment": "comment", "pull_request_comment": "comment",
              "pull_request_review_comment": "review_comment"}
@@ -46,6 +50,30 @@ def _stamp(value, *, optional=False):
     return canonical
 
 
+def _bounded_json(value, limit, *, materialize=False):
+    """Charge canonical chunks before retaining a complete aggregate encoding."""
+    size, chunks = 1, []  # canonical trailing newline
+    try:
+        encoder = json.JSONEncoder(ensure_ascii=False, sort_keys=True,
+                                   separators=(",", ":"), allow_nan=False)
+        for chunk in encoder.iterencode(value):
+            encoded = chunk.encode("utf-8")
+            size += len(encoded)
+            if size > limit:
+                raise TemporalEvidenceError("temporal aggregate byte limit exceeded")
+            if materialize:
+                chunks.append(encoded)
+    except TemporalEvidenceError:
+        raise
+    except (TypeError, ValueError, UnicodeError):
+        raise TemporalEvidenceError("temporal JSON cannot be encoded") from None
+    return b"".join(chunks) + b"\n" if materialize else size
+
+
+def encode_receipt(payload):
+    return _bounded_json(payload, MAX_RECEIPT_BYTES, materialize=True)
+
+
 class ObservationClient:
     """Forward existing bounded API calls, keeping only observation timestamps.
 
@@ -55,6 +83,18 @@ class ObservationClient:
     def __init__(self, client, clock):
         self._client, self._clock = client, clock
         self.observations = {}
+        self.rows_seen = 0
+        self.bytes_seen = 0
+
+    def _charge(self, value, count):
+        # Includes unobserved commit/timeline rows and classification responses,
+        # not just objects stored in the timestamp map. The reused client's
+        # per-endpoint page allocation still precedes this wrapper boundary.
+        if self.rows_seen + count > MAX_SOURCE_ROWS:
+            raise TemporalEvidenceError("temporal source row limit exceeded")
+        size = _bounded_json(value, MAX_SOURCE_BYTES - self.bytes_seen)
+        self.rows_seen += count
+        self.bytes_seen += size
 
     def __getattr__(self, name):
         return getattr(self._client, name)
@@ -94,11 +134,13 @@ class ObservationClient:
         rows = self._client._paged(path)
         if type(rows) is not list:
             raise TemporalEvidenceError("observed pagination is not a complete list")
+        self._charge(rows, len(rows))
         self._record(path, rows)
         return rows
 
     def _request_json(self, path):
         value = self._client._request_json(path)
+        self._charge(value, len(value) if type(value) is list else 1)
         # Only direct comment rechecks affect observations. Other endpoints
         # (classification, commit lists) do not establish mutable-field times.
         suffix = path.split("?", 1)[0]
@@ -138,7 +180,7 @@ def project_row(original, observation, *, start: datetime, end: datetime):
     stamps = {k: _stamp(v, optional=k != "observed_at_utc") for k, v in observation.items()}
     if stamps != observation:
         raise TemporalEvidenceError("noncanonical temporal observation")
-    occurred = activity._timestamp(original["occurred_at"], label="temporal event")
+    occurred = activity._timestamp(_stamp(original["occurred_at"]), label="temporal event")
     observed = activity._timestamp(stamps["observed_at_utc"], label="temporal observation")
     updated = None if stamps["updated_at"] is None else activity._timestamp(stamps["updated_at"], label="temporal update")
     if not start <= occurred < end or observed < occurred:
@@ -180,18 +222,23 @@ def project_row(original, observation, *, start: datetime, end: datetime):
 
 
 def project_events(events, recorder, *, start, end):
+    if type(events) not in (tuple, list) or len(events) > MAX_OBSERVATIONS:
+        raise TemporalEvidenceError("temporal projected event count limit exceeded")
     projected, records, mapping = [], [], {}
+    record_bytes = 2  # array delimiters; final envelope is separately bounded
     for event in events:
         original, observation = event.to_json(), recorder.for_event(event)
         row = project_row(original, observation, start=start, end=end)
+        record = {"evidence_id": row["evidence_id"],
+                  "observation": observation, "original_event": original}
+        record_bytes += _bounded_json(record, MAX_RECEIPT_BYTES - record_bytes)
         mapping[event.evidence_id] = row["evidence_id"]
         fields = {k: None if row[k] is None else activity.TextExcerpt(**row[k])
                   for k in ("title", "body", "message")}
         projected.append(replace(event, evidence_id=row["evidence_id"],
             state=row["state"], draft=row["draft"], **fields,
             temporal_observation=row["temporal_observation"]))
-        records.append({"evidence_id": row["evidence_id"],
-                        "observation": observation, "original_event": original})
+        records.append(record)
     records.sort(key=lambda row: row["evidence_id"])
     return projected, records, mapping
 

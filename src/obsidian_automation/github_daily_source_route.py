@@ -555,7 +555,8 @@ def parse_verified_routes(
             originals = temporal.validate_records(raw["temporal_observations"], bundle.events, start=start, end=end)
             _validate_original_evidence_window_and_kinds(replace(bundle, events=tuple(originals)))
         except (temporal.TemporalEvidenceError, ValueError, TypeError, KeyError,
-                AttributeError, OverflowError, RecursionError, watcher.GitHubProjectWatcherError):
+                AttributeError, OverflowError, RecursionError, watcher.GitHubProjectWatcherError,
+                activity.GitHubDailyActivityError):
             raise DailySourceRouteError("invalid temporal source projection") from None
     elif any("temporal_observation" in e for e in bundle.events):
         raise DailySourceRouteError("legacy receipt cannot attest temporal metadata")
@@ -776,7 +777,7 @@ def collect_fresh_verified_routes(
     if temporal_records is not None:
         payload.update(record_version=temporal.RECEIPT_VERSION,
                        temporal_policy=temporal.POLICY, temporal_observations=temporal_records)
-    receipt = _json(payload)
+    receipt = temporal.encode_receipt(payload) if temporal_records is not None else _json(payload)
     # Validate our own freshly produced read-only artifact before returning.
     validated = parse_verified_routes(receipt, updated.canonical_bytes)
     assert len(validated) == len(records)
