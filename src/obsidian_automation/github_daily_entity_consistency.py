@@ -93,6 +93,31 @@ def _time(s):
         raise EntityConsistencyError("invalid event timestamp") from None
 
 
+def _source_extent(field, byte_count):
+    """Preserve C5 TextExcerpt truncation instead of implying full-source review."""
+    value = field.get("original_value")
+    if value is None:
+        return {"state": "unverified_extent", "included_bytes": byte_count,
+                "original_bytes": None}
+    if type(value) is str and value == field["text"]:
+        return {"state": "unverified_extent", "included_bytes": byte_count,
+                "original_bytes": None}
+    if (type(value) is not dict
+            or set(value) != {"text", "original_bytes", "included_bytes", "truncated"}
+            or value.get("text") != field["text"]
+            or type(value.get("truncated")) is not bool
+            or type(value.get("included_bytes")) is not int
+            or type(value.get("original_bytes")) is not int
+            or value["included_bytes"] != byte_count
+            or value["original_bytes"] < value["included_bytes"]
+            or (value["truncated"] is True) != (
+                value["original_bytes"] > value["included_bytes"])):
+        raise EntityConsistencyError("invalid retained excerpt size/truncation metadata")
+    return {"state": "truncated_source_prefix" if value["truncated"] else "complete_captured_field",
+            "included_bytes": value["included_bytes"],
+            "original_bytes": value["original_bytes"]}
+
+
 @dataclass(frozen=True)
 class EntityConsistencyPacket:
     canonical_bytes: bytes
@@ -221,7 +246,7 @@ def build_entity_consistency_packet(source_review_bytes: bytes, preview_bytes: b
         ref, eid, name, text = (row.get(k) for k in ("source_ref", "evidence_id", "field", "text"))
         if (type(ref) is not int or not 0 <= ref < sr["source_event_count"]
                 or not _digest(eid) or name not in ("title", "body", "message")
-                or type(text) is not str or not 0 < len(text.encode("utf-8")) <= 65536
+                or type(text) is not str or len(text.encode("utf-8")) > 65536
                 or row.get("text_sha256") != _sha(text.encode("utf-8"))
                 or type(row.get("kind")) is not str
                 or type(row.get("occurred_at")) is not str):
@@ -253,9 +278,11 @@ def build_entity_consistency_packet(source_review_bytes: bytes, preview_bytes: b
             scope = obs["status"]
         else:
             scope = "legacy_current_API_snapshot_unverified"
+        extent = _source_extent(row, len(text.encode("utf-8")))
         source_rows.append({"source_ref": ref, "field": name, "evidence_id": eid,
             "event_kind": row["kind"], "occurred_at": row["occurred_at"],
-            "text": text, "text_sha256": row["text_sha256"], "temporal_scope": scope})
+            "text": text, "text_sha256": row["text_sha256"],
+            "source_extent": extent, "temporal_scope": scope})
     if not legacy:
         for ref, (eid, obs) in note_map.items():
             if ref in event_ids and event_ids[ref] != eid:
@@ -263,6 +290,15 @@ def build_entity_consistency_packet(source_review_bytes: bytes, preview_bytes: b
             event_ids.setdefault(ref, eid)
     if len(event_ids) != len(set(event_ids.values())):
         raise EntityConsistencyError("duplicate source evidence across events")
+    missing_text_refs = sorted(set(range(sr["source_event_count"])) -
+                               {row["source_ref"] for row in source_rows})
+    incomplete_extent_refs = {row["source_ref"] for row in source_rows
+                              if row["source_extent"]["state"] != "complete_captured_field"}
+    refs_with_fields = {row["source_ref"] for row in source_rows}
+    refs_with_nonempty_text = {row["source_ref"] for row in source_rows if row["text"]}
+    empty_only_refs = sorted(refs_with_fields - refs_with_nonempty_text)
+    incomplete_source_refs = sorted(set(missing_text_refs) | incomplete_extent_refs
+                                    | set(empty_only_refs))
     results = []
     for i, s in enumerate(pr["sentences"]):
         if (type(s) is not dict or type(s.get("verdict")) is not str
@@ -271,17 +307,20 @@ def build_entity_consistency_packet(source_review_bytes: bytes, preview_bytes: b
                 or type(s.get("evidence_ids")) is not list
                 or not 1 <= len(s["evidence_ids"]) <= 16
                 or any(not _digest(eid) for eid in s["evidence_ids"])
-                or len(set(s["evidence_ids"])) != len(s["evidence_ids"])
-                or any(eid not in event_ids.values() for eid in s["evidence_ids"])):
+                or len(set(s["evidence_ids"])) != len(s["evidence_ids"])):
             raise EntityConsistencyError("invalid displayed sentence source identity")
+        unmapped = [eid for eid in s["evidence_ids"] if eid not in event_ids.values()]
+        if unmapped and (not legacy or len(unmapped) > len(missing_text_refs)):
+            raise EntityConsistencyError("foreign or unmapped cited source evidence")
         if s["verdict"] != "supported":
             continue
-        cited = [ref for ref, eid in event_ids.items() if eid in s["evidence_ids"]]
+        cited = sorted(ref for ref, eid in event_ids.items() if eid in s["evidence_ids"])
+        incomplete_citation = bool(unmapped or any(ref in missing_text_refs for ref in cited))
         results.append({"sentence_index": i, "sentence": s["text"],
             "sentence_sha256": _sha(s["text"].encode("utf-8")),
-            "previous_model_verdict": "supported", "cited_source_refs": sorted(cited)})
-    missing_text_refs = sorted(set(range(sr["source_event_count"])) -
-                               {row["source_ref"] for row in source_rows})
+            "previous_model_verdict": "supported", "cited_source_refs": cited,
+            "unmapped_legacy_evidence_ids": unmapped,
+            "source_citation_incomplete": incomplete_citation})
     payload = {"record_version": 1, "stage": STAGE, "entity": dict(zip(
         ("repository", "entity_type", "number"), target_entity)),
         "date": preview["date"], "capture_sha256": source["capture_sha256"],
@@ -292,6 +331,8 @@ def build_entity_consistency_packet(source_review_bytes: bytes, preview_bytes: b
         "historical_instant_verified": False, "sources": source_rows,
         "source_event_count": sr["source_event_count"],
         "source_refs_with_no_retained_text": missing_text_refs,
+        "source_refs_with_only_empty_fields": empty_only_refs,
+        "source_refs_with_incomplete_or_unverified_text": incomplete_source_refs,
         "sentences": results, "publication_authorized": False,
         "requires_human_quality_review": True,
         "semantic_coverage_verified": False, "factuality_verified": False}
@@ -337,11 +378,17 @@ def admit_entity_consistency_reply(packet_bytes: bytes, reply_bytes: bytes):
                 or not 1 <= len(item["reason"]) <= 240
                 or "\n" in item["reason"] or "\r" in item["reason"]):
             raise EntityConsistencyError("invalid typed advisory check")
+        if expect.get("source_citation_incomplete") is True:
+            if item["status"] != "uncertain" or item["challenger_refs"]:
+                raise EntityConsistencyError("textless cited event requires uncertainty")
         if item["status"] in ("potential_conflict", "possible_omission"):
             if not item["challenger_refs"]:
                 raise EntityConsistencyError("challenge lacks independent source event")
-        elif item["status"] == "no_conflict_observed" and item["challenger_refs"]:
-            raise EntityConsistencyError("no-conflict status cannot carry challengers")
+        elif item["status"] == "no_conflict_observed":
+            if item["challenger_refs"]:
+                raise EntityConsistencyError("no-conflict status cannot carry challengers")
+            if packet.get("source_refs_with_incomplete_or_unverified_text"):
+                raise EntityConsistencyError("no-conflict answer cannot certify incomplete sources")
         admitted.append({"sentence_index": expect["sentence_index"],
             "sentence_sha256": expect["sentence_sha256"],
             "model_consistency_status": item["status"],

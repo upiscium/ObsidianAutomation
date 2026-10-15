@@ -48,7 +48,11 @@ def packets(strict=True):
                       "source_event_count": 4, "fields": [
                           {"source_ref": ref, "evidence_id": EIDS[ref], "field": name,
                            "kind": kind, "occurred_at": STAMPS[ref],
-                           "text": text, "text_sha256": _sha(text.encode("utf-8"))}
+                           "text": text, "text_sha256": _sha(text.encode("utf-8")),
+                           "original_value": {"text": text,
+                               "included_bytes": len(text.encode("utf-8")),
+                               "original_bytes": len(text.encode("utf-8")),
+                               "truncated": False}}
                           for ref, name, text, kind in fields]}]}
     if strict:
         observations = []
@@ -225,7 +229,11 @@ def test_unicode_literal_source_retained_and_sha_mismatch_rejected():
     sr["entities"][0]["fields"][2]["text"] = "試験で34件PASS、未完了の問題は残る"
     with pytest.raises(EntityConsistencyError):
         build(sr, p)
-    sr["entities"][0]["fields"][2]["text_sha256"] = _sha(sr["entities"][0]["fields"][2]["text"].encode())
+    altered = sr["entities"][0]["fields"][2]
+    altered["text_sha256"] = _sha(altered["text"].encode())
+    altered["original_value"] = {"text": altered["text"],
+        "included_bytes": len(altered["text"].encode("utf-8")),
+        "original_bytes": len(altered["text"].encode("utf-8")), "truncated": False}
     packet = build(sr, p)
     assert "未完了" in packet.canonical_bytes.decode("utf-8")
     assert packet.report()["publication_authorized"] is False
@@ -331,3 +339,114 @@ def test_real_c4_preview_version_is_4_and_older_envelopes_fail():
     sr["preview_sha256"] = _sha(_json(p))
     with pytest.raises(EntityConsistencyError, match="provenance"):
         build(sr, p)
+
+
+def test_truncated_field_is_visible_and_blocks_reassuring_no_conflict():
+    sr, p = packets()
+    row = sr["entities"][0]["fields"][1]
+    size = row["original_value"]["included_bytes"]
+    row["original_value"]["original_bytes"] = size + 80
+    row["original_value"]["truncated"] = True
+    packet = build(sr, p)
+    assert packet.report()["source_refs_with_incomplete_or_unverified_text"] == [1]
+    field = next(f for f in packet.report()["sources"] if f["source_ref"] == 1 and f["field"] == "body")
+    assert field["source_extent"]["state"] == "truncated_source_prefix"
+    assert field["source_extent"]["original_bytes"] > field["source_extent"]["included_bytes"]
+    with pytest.raises(EntityConsistencyError, match="incomplete sources"):
+        admit_entity_consistency_reply(packet.canonical_bytes, _json(reply(packet)))
+    v = reply(packet)
+    v["checks"][1] = {"sentence_index": 1, "status": "uncertain",
+                       "challenger_refs": [], "reason": "the original body is truncated"}
+    out = admit_entity_consistency_reply(packet.canonical_bytes, _json(v))
+    assert out.report()["publication_authorized"] is False
+
+
+@pytest.mark.parametrize("bad", [
+    "included_mismatch", "truncated_false_mismatch", "truncated_true_without_missing",
+    "boolean_size", "wrong_original_text",
+])
+def test_inconsistent_source_truncation_receipt_fails_closed(bad):
+    sr, p = packets()
+    a = sr["entities"][0]["fields"][1]["original_value"]
+    if bad == "included_mismatch": a["included_bytes"] += 1
+    elif bad == "truncated_false_mismatch": a["original_bytes"] += 1
+    elif bad == "truncated_true_without_missing": a["truncated"] = True
+    elif bad == "boolean_size": a["included_bytes"] = True
+    else: a["text"] += "extra"
+    with pytest.raises(EntityConsistencyError):
+        build(sr, p)
+
+
+def test_missing_extent_metadata_is_not_silently_treated_as_complete():
+    sr, p = packets()
+    del sr["entities"][0]["fields"][1]["original_value"]
+    packet = build(sr, p)
+    assert packet.report()["source_refs_with_incomplete_or_unverified_text"] == [1]
+    with pytest.raises(EntityConsistencyError, match="incomplete sources"):
+        admit_entity_consistency_reply(packet.canonical_bytes, _json(reply(packet)))
+
+
+def test_valid_empty_captured_body_does_not_block_other_events():
+    sr, p = packets()
+    field = sr["entities"][0]["fields"][1]
+    field["text"] = ""
+    field["text_sha256"] = _sha(b"")
+    field["original_value"] = {"text": "", "included_bytes": 0,
+                               "original_bytes": 0, "truncated": False}
+    packet = build(sr, p)
+    kept = next(r for r in packet.report()["sources"]
+                if r["source_ref"] == 1 and r["field"] == "body")
+    assert kept["text"] == ""
+    assert kept["source_extent"]["state"] == "complete_captured_field"
+    assert packet.report()["publication_authorized"] is False
+
+
+def test_legacy_textless_cited_event_remains_unmapped_and_uncertain():
+    sr, p = packets(False)
+    sr["entities"][0]["fields"] = [r for r in sr["entities"][0]["fields"]
+                                   if r["source_ref"] != 0]
+    p["entities"][0]["sentences"][0]["evidence_ids"] = [EIDS[0]]
+    sr["preview_sha256"] = _sha(_json(p))
+    packet = build(sr, p, legacy=True)
+    sentence = packet.report()["sentences"][0]
+    assert sentence["source_citation_incomplete"] is True
+    assert sentence["unmapped_legacy_evidence_ids"] == [EIDS[0]]
+    assert packet.report()["source_refs_with_no_retained_text"] == [0]
+    a = reply(packet)
+    with pytest.raises(EntityConsistencyError, match="textless cited event"):
+        admit_entity_consistency_reply(packet.canonical_bytes, _json(a))
+    for check in a["checks"]:
+        check.update(status="uncertain", challenger_refs=[], reason="cannot verify absent source text")
+    result = admit_entity_consistency_reply(packet.canonical_bytes, _json(a)).report()
+    assert result["checks"][0]["model_consistency_status"] == "uncertain"
+    assert result["publication_authorized"] is False
+
+
+def test_strict_textless_cited_event_also_forces_uncertain_without_hiding_evidence():
+    sr, p = packets(True)
+    sr["entities"][0]["fields"] = [r for r in sr["entities"][0]["fields"]
+                                   if r["source_ref"] != 0]
+    p["entities"][0]["sentences"][0]["evidence_ids"] = [EIDS[0]]
+    sr["preview_sha256"] = _sha(_json(p))
+    packet = build(sr, p)
+    s = packet.report()["sentences"][0]
+    assert s["cited_source_refs"] == [0]
+    assert s["source_citation_incomplete"] is True
+    assert s["unmapped_legacy_evidence_ids"] == []
+    assert packet.report()["temporal_source_mode"] == POLICY
+    assert packet.report()["source_refs_with_no_retained_text"] == [0]
+
+
+def test_entity_with_only_empty_field_cannot_receive_reassuring_no_conflict():
+    sr, p = packets()
+    comment = next(r for r in sr["entities"][0]["fields"]
+                   if r["source_ref"] == 2)
+    comment["text"] = ""
+    comment["text_sha256"] = _sha(b"")
+    comment["original_value"] = {"text": "", "included_bytes": 0,
+                                  "original_bytes": 0, "truncated": False}
+    packet = build(sr, p)
+    assert packet.report()["source_refs_with_only_empty_fields"] == [2]
+    assert packet.report()["source_refs_with_incomplete_or_unverified_text"] == [2]
+    with pytest.raises(EntityConsistencyError, match="incomplete sources"):
+        admit_entity_consistency_reply(packet.canonical_bytes, _json(reply(packet)))
