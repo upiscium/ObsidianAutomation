@@ -1,0 +1,224 @@
+"""Source-role audit is a bounded diagnostic, never a fact or Writer authority."""
+import copy
+import pytest
+from obsidian_automation.github_daily_source_role_audit import (
+    audit_individual_source_roles, SourceRoleAuditError, _canonical, _sha,
+)
+
+ENTITY = {"repository": "upiscium/ObsidianAutomation", "entity_type": "pull_request", "number": 355}
+TARGET = ("upiscium/ObsidianAutomation", "pull_request", 355)
+EID = "a" * 64
+BODY = ("Markdown表示を実際に修正しました。\n\n合成試験の生成出力:\n"
+        "> 検証処理の競合を修正し、回帰テストを追加しました。マージは未実施です。\n")
+DONE = "Markdown表示を実際に修正しました。"
+EXAMPLE = "検証処理の競合を修正し、回帰テストを追加しました。"
+REAL_SUMMARY = "Markdown表示処理を修正しました。"
+BAD_SUMMARY = "合成プローブで検証処理の競合修正と回帰テスト追加を実施しました。"
+
+
+def fixtures():
+    p = {"capture_sha256": "b" * 64, "source_context_set_sha256": "c" * 64,
+         "publication_authorized": False, "entities": [{
+             "context_sha256": "d" * 64, "entity": ENTITY, "sentences": [
+                 {"verdict": "supported", "text": REAL_SUMMARY, "evidence_ids": [EID]},
+                 {"verdict": "supported", "text": BAD_SUMMARY, "evidence_ids": [EID]},
+             ]}]}
+    sr = {"record_version": 1, "stage": "c5-literal-source-review-v1",
+          "capture_sha256": p["capture_sha256"],
+          "source_context_set_sha256": p["source_context_set_sha256"],
+          "preview_sha256": _sha(_canonical(p)), "publication_authorized": False,
+          "entities": [{"entity": ENTITY, "context_sha256": "d" * 64,
+                        "fields": [{"evidence_id": EID, "source_ref": 1,
+                                    "field": "body", "text": BODY,
+                                    "text_sha256": _sha(BODY.encode())}]}]}
+    return sr, p
+
+
+def anchors(real=True):
+    phrase = DONE if real else EXAMPLE
+    index = BODY.index(phrase)
+    return [{"source_ref": 1, "field": "body", "start": index,
+             "end": index + len(phrase),
+             "role": "direct_action" if real else "quoted_example"}]
+
+
+def annotation(i, real=True):
+    text = REAL_SUMMARY if real else BAD_SUMMARY
+    return {"sentence_index": i, "claim_start": 0, "claim_end": len(text),
+            "claim_kind": "performed_action",
+            "assessment": "entailed", "anchors": anchors(real)}
+
+
+def run(anns=()):
+    sr, p = fixtures()
+    return audit_individual_source_roles(
+        _canonical(sr), _canonical(p), TARGET, anns).report()
+
+
+def test_same_cited_event_cannot_launder_quoted_example_into_actual_work():
+    d = run([annotation(0, True), annotation(1, False)])
+    assert d["supported_sentence_count"] == 2
+    assert d["scope_conflict_count"] == 1
+    assert [r["source_scope_state"] for r in d["results"]] == [
+        "no_scope_conflict_detected_not_verified", "quoted_example_only"]
+    assert d["results"][1]["operator_assessment"] == "entailed"
+    assert d["publication_authorized"] is False
+    assert d["annotations_independently_attested"] is False
+    assert d["factuality_verified"] is False
+    assert BAD_SUMMARY not in str(d) and BODY not in str(d)
+
+
+def test_partial_annotations_stay_unreviewed():
+    d = run([annotation(0, True)])
+    assert d["supported_sentence_count"] == 2 and d["annotated_sentence_count"] == 1
+    assert d["results"][1]["source_scope_state"] == "unreviewed"
+    assert d["requires_human_quality_review"]
+
+
+def test_non_example_pending_scope_does_not_count_as_action():
+    a = annotation(1, False)
+    a["anchors"][0]["role"] = "proposed"
+    d = run([a])
+    assert d["results"][1]["source_scope_state"] == "performed_action_not_established_by_anchors"
+
+
+@pytest.mark.parametrize("bad", [
+    "wrong_field", "foreign_ref", "outside_range", "bool_start",
+    "bool_ref", "duplicate_span", "extra_key",
+])
+def test_invalid_or_cross_reference_annotations_fail_closed(bad):
+    a = annotation(1, False)
+    e = a["anchors"][0]
+    if bad == "wrong_field":
+        e["field"] = "title"
+    if bad == "foreign_ref":
+        e["source_ref"] = 2
+    if bad == "outside_range":
+        e["end"] = len(BODY) + 1
+    if bad == "bool_start":
+        e["start"] = True
+    if bad == "bool_ref":
+        e["source_ref"] = False
+    if bad == "duplicate_span":
+        a["anchors"].append(copy.deepcopy(e))
+    if bad == "extra_key":
+        e["publication_authorized"] = True
+    with pytest.raises(SourceRoleAuditError):
+        run([a])
+
+
+def test_rehashed_unbound_or_noncanonical_sources_are_rejected():
+    sr, p = fixtures()
+    sr["preview_sha256"] = "9" * 64
+    with pytest.raises(SourceRoleAuditError):
+        audit_individual_source_roles(_canonical(sr), _canonical(p), TARGET)
+    sr, p = fixtures()
+    with pytest.raises(SourceRoleAuditError):
+        audit_individual_source_roles(_canonical(sr) + b" ", _canonical(p), TARGET)
+
+
+def test_annotation_cannot_borrow_another_event():
+    sr, p = fixtures()
+    p["entities"][0]["sentences"][1]["evidence_ids"] = ["e" * 64]
+    sr["preview_sha256"] = _sha(_canonical(p))
+    with pytest.raises(SourceRoleAuditError):
+        audit_individual_source_roles(
+            _canonical(sr), _canonical(p), TARGET, [annotation(1, False)])
+
+
+def test_bool_and_missing_entity_disallowed():
+    sr, p = fixtures()
+    with pytest.raises(SourceRoleAuditError):
+        audit_individual_source_roles(_canonical(sr), _canonical(p),
+                                      (ENTITY["repository"], ENTITY["entity_type"], True))
+    with pytest.raises(SourceRoleAuditError):
+        audit_individual_source_roles(_canonical(sr), _canonical(p),
+                                      (ENTITY["repository"], ENTITY["entity_type"], 354))
+
+
+def test_claim_is_not_certified_even_when_annotation_says_entailed():
+    d = run([annotation(0, True), annotation(1, False)])
+    assert d["scope_conflict_count"] == 1
+    assert not d["factuality_verified"] and not d["semantic_coverage_verified"]
+    assert not d["publication_authorized"]
+
+
+def test_no_annotations_is_not_no_progress():
+    d = run()
+    assert d["supported_sentence_count"] == 2
+    assert d["annotated_sentence_count"] == 0
+    assert all(r["source_scope_state"] == "unreviewed" for r in d["results"])
+    assert not d["publication_authorized"]
+
+
+def test_two_atomic_claims_in_one_sentence_are_separately_audited():
+    sr, preview = fixtures()
+    text = REAL_SUMMARY + BAD_SUMMARY
+    preview["entities"][0]["sentences"] = [
+        {"verdict": "supported", "text": text, "evidence_ids": [EID]}]
+    sr["preview_sha256"] = _sha(_canonical(preview))
+    real = annotation(0, True)
+    incorrect = annotation(0, False)
+    incorrect["claim_start"] = len(REAL_SUMMARY)
+    incorrect["claim_end"] = len(text)
+    result = audit_individual_source_roles(
+        _canonical(sr), _canonical(preview), TARGET, [real, incorrect]).report()
+    assert result["supported_sentence_count"] == 1
+    assert result["annotated_claim_count"] == 2
+    assert result["scope_conflict_count"] == 1
+    assert [x["source_scope_state"] for x in result["results"]] == [
+        "no_scope_conflict_detected_not_verified", "quoted_example_only"]
+    assert not result["all_atomic_claims_labeled_verified"]
+    assert result["results"][1]["claim_start"] == len(REAL_SUMMARY)
+
+
+def test_overlapping_atomic_claims_fail_closed():
+    a = annotation(1, False)
+    overlapping = copy.deepcopy(a)
+    overlapping["claim_start"] = 1
+    with pytest.raises(SourceRoleAuditError):
+        run([a, overlapping])
+
+
+@pytest.mark.parametrize("field,value", [
+    ("text", None), ("text", True), ("text", 123),
+    ("text", ""), ("text", "x" * 361), ("text", "あ" * 700),
+    ("verdict", None), ("verdict", "approved"), ("verdict", True),
+    ("evidence_ids", None), ("evidence_ids", True),
+    ("evidence_ids", [True]), ("evidence_ids", ["invalid"]),
+    ("evidence_ids", ["a" * 64, "a" * 64]),
+    ("evidence_ids", []),
+])
+@pytest.mark.parametrize("annotated", [False, True])
+def test_malformed_preview_sentence_never_escapes_typed_error(field, value, annotated):
+    sr, preview = fixtures()
+    preview["entities"][0]["sentences"][0][field] = value
+    sr["preview_sha256"] = _sha(_canonical(preview))
+    annotations = [annotation(0, True)] if annotated else []
+    with pytest.raises(SourceRoleAuditError):
+        audit_individual_source_roles(
+            _canonical(sr), _canonical(preview), TARGET, annotations)
+
+
+@pytest.mark.parametrize("element", [None, 3, True, [], "not a sentence"])
+def test_malformed_preview_sentence_element_rejected_before_offsets(element):
+    sr, preview = fixtures()
+    preview["entities"][0]["sentences"][0] = element
+    sr["preview_sha256"] = _sha(_canonical(preview))
+    with pytest.raises(SourceRoleAuditError):
+        audit_individual_source_roles(
+            _canonical(sr), _canonical(preview), TARGET, [annotation(0, True)])
+
+
+def test_unresolved_original_grounding_is_unreviewed_not_a_error():
+    sr, preview = fixtures()
+    preview["entities"][0]["sentences"][0]["verdict"] = "unresolved"
+    sr["preview_sha256"] = _sha(_canonical(preview))
+    out = audit_individual_source_roles(
+        _canonical(sr), _canonical(preview), TARGET, ()).report()
+    assert out["supported_sentence_count"] == 1
+    assert out["results"][0]["sentence_index"] == 1
+    assert out["results"][0]["source_scope_state"] == "unreviewed"
+    with pytest.raises(SourceRoleAuditError):
+        audit_individual_source_roles(
+            _canonical(sr), _canonical(preview), TARGET, [annotation(0, True)])
