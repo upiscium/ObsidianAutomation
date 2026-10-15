@@ -85,6 +85,7 @@ def compose_private_individual_digest(
         if len(targets) != len(source_rows):
             raise IndividualDigestError("duplicate verified selected source identity")
         seen = set()
+        original_rows = {}
         editorials = []
         verdicts = []
         for run in individual_runs:
@@ -119,18 +120,91 @@ def compose_private_individual_digest(
                     or review.get("capture_sha256") != capture_sha256
                     or review.get("publication_authorized") is not False):
                 raise IndividualDigestError("source-review companion is not bound")
+            # The run's *original* attempts are an immutable comparison
+            # witness. A structurally valid replacement supported Grounding
+            # answer must never upgrade the original unsupported/pending row.
+            if (type(run.attempts) is not tuple
+                    or len(run.attempts) > 1 + c4.MAX_SENTENCES
+                    or type(report.get("attempts")) is not list
+                    or len(report["attempts"]) != len(run.attempts)):
+                raise IndividualDigestError("incomplete original model attempt set")
+            accepted_editorials, accepted_grounds = {}, {}
+            for attempt, recorded in zip(run.attempts, report["attempts"]):
+                if (type(attempt) is not rt.NarrativeAttempt
+                        or type(attempt.context_sha256) is not str
+                        or attempt.stage not in ("editorial", "grounding")
+                        or attempt.state not in ("accepted", "deadline_pending",
+                                                  "inference_or_validation_failed")
+                        or type(recorded) is not dict):
+                    raise IndividualDigestError("invalid recorded model attempt")
+                raw = attempt.raw_response_bytes
+                receipt = attempt.receipt_bytes
+                raw_hash = _sha(raw) if type(raw) is bytes else None
+                receipt_hash = _sha(receipt) if type(receipt) is bytes else None
+                if (type(raw) not in (bytes, type(None))
+                        or type(receipt) not in (bytes, type(None))
+                        or recorded.get("stage") != attempt.stage
+                        or recorded.get("context_sha256") != attempt.context_sha256
+                        or recorded.get("state") != attempt.state
+                        or recorded.get("raw_response_sha256") != raw_hash
+                        or recorded.get("receipt_sha256") != receipt_hash
+                        or recorded.get("admitted_response_sha256") !=
+                        attempt.admitted_response_sha256):
+                    raise IndividualDigestError("original model attempt bytes changed")
+                if attempt.state != "accepted":
+                    if attempt.admitted_response_sha256 is not None:
+                        raise IndividualDigestError("failed reply appeared admitted")
+                    continue
+                if (raw_hash is None or receipt_hash is None
+                        or type(attempt.admitted_response_sha256) is not str):
+                    raise IndividualDigestError("missing accepted model bytes")
+                receipt_meta = rt._decode_json_object(
+                    receipt, label="individual model receipt")
+                if (receipt_meta.get("context_sha256") != attempt.context_sha256
+                        or receipt_meta.get("raw_response_sha256") != raw_hash
+                        or receipt_meta.get("publication_authorized") is not False
+                        or receipt_meta.get("model_execution_attested") is not False):
+                    raise IndividualDigestError("foreign accepted model receipt")
+                group = (accepted_editorials if attempt.stage == "editorial"
+                         else accepted_grounds)
+                if attempt.context_sha256 in group:
+                    raise IndividualDigestError("duplicate admitted model reply")
+                group[attempt.context_sha256] = attempt.admitted_response_sha256
             if type(run.narrative_replies) is not tuple or len(run.narrative_replies) > 1:
                 raise IndividualDigestError("single-entity run has wrong editorial set")
+            admitted_editorials = {}
             for item in run.narrative_replies:
                 if type(item) is not c4.NarrativeReply or item.context_sha256 != targets[key]:
                     raise IndividualDigestError("foreign editorial")
+                admitted_editorials[item.context_sha256] = _sha(item.response_bytes)
                 editorials.append(item)
+            if admitted_editorials != accepted_editorials:
+                raise IndividualDigestError("editorial differs from accepted C5 attempt")
             if type(run.grounding_replies) is not tuple or len(run.grounding_replies) > c4.MAX_SENTENCES:
                 raise IndividualDigestError("unbounded model grounding set")
+            admitted_groundings = {}
             for item in run.grounding_replies:
                 if type(item) is not c4.NarrativeGroundReply:
                     raise IndividualDigestError("untyped grounding reply")
+                if item.ground_context_sha256 in admitted_groundings:
+                    raise IndividualDigestError("duplicate emitted grounding")
+                admitted_groundings[item.ground_context_sha256] = _sha(item.response_bytes)
                 verdicts.append(item)
+            if admitted_groundings != accepted_grounds:
+                raise IndividualDigestError("grounding differs from accepted C5 attempt")
+            original = run.preview.report()
+            if (original.get("source_context_set_sha256") != source.sha256
+                    or original.get("capture_sha256") != capture_sha256
+                    or type(original.get("entities")) is not list):
+                raise IndividualDigestError("individual preview changed before composition")
+            original_matches = [row for row in original["entities"]
+                if type(row) is dict
+                and (row["entity"]["repository"], row["entity"]["entity_type"],
+                     row["entity"]["number"]) == key]
+            if len(original_matches) != 1 or original_matches[0].get(
+                    "context_sha256") != targets[key]:
+                raise IndividualDigestError("missing original per-entity preview")
+            original_rows[key] = rt._json(original_matches[0])
         preview = c4.build_witnessed_narrative_preview(
             **args, narrative_replies=tuple(editorials),
             narrative_grounding_replies=tuple(verdicts))
@@ -146,6 +220,10 @@ def compose_private_individual_digest(
             key = (entity["repository"], entity["entity_type"], entity["number"])
             if key not in targets:
                 raise IndividualDigestError("foreign entity in composed preview")
+            if key in original_rows and rt._json(row) != original_rows[key]:
+                # The public C4 revalidation must reproduce *exactly* the
+                # originally displayed row, including unsupported verdicts.
+                raise IndividualDigestError("composed row changed original C5 preview")
             supported = sum(s["verdict"] == "supported" for s in row["sentences"])
             selected.append({
                 "entity": entity,

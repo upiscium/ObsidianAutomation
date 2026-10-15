@@ -162,3 +162,41 @@ def test_single_entity_runs_are_not_relabelled_as_execution_attestation(case):
     assert metadata["model_execution_attested"] is False
     assert metadata["requires_human_quality_review"] is True
     assert metadata["publication_authorized"] is False
+
+
+
+def test_replaced_unsupported_grounding_cannot_be_promoted_to_supported(case):
+    t = Transport()
+    t.ground_verdict = "unsupported"
+    run = individual(case, entities(case)[0], t)
+    assert run.grounding_replies
+    baseline = compose(case, [run])
+    assert baseline.report()["pending_summary_entity_count"] == 2
+
+    # The replacement is *valid C4 Grounding* for the same exact context.
+    # Citation and schema alone cannot prove it was the original C5 reply.
+    original = run.grounding_replies[0]
+    upgraded = replace(original, response_bytes=rt._json({
+        "verdict": "supported", "reason": "改ざんした支持判定です。",
+    }))
+    fake = replace(run, grounding_replies=(upgraded,))
+    with pytest.raises(IndividualDigestError, match="grounding differs"):
+        compose(case, [fake])
+
+
+def test_replaced_valid_editorial_bytes_cannot_change_original_draft(case):
+    run = individual(case, entities(case)[0])
+    original = run.narrative_replies[0]
+    new = json.loads(original.response_bytes)
+    new["sentences"][0]["text"] = "別の作業が完了したとする文章です。"
+    forged = replace(original, response_bytes=rt._json(new))
+    with pytest.raises(IndividualDigestError, match="editorial differs"):
+        compose(case, [replace(run, narrative_replies=(forged,))])
+
+
+def test_changed_grounding_attempt_record_is_not_silently_accepted(case):
+    run = individual(case, entities(case)[0])
+    old = run.attempts[-1]
+    wrong = replace(old, raw_response_bytes='{"verdict":"supported","reason":"別の応答"}'.encode())
+    with pytest.raises(IndividualDigestError, match="attempt bytes changed"):
+        compose(case, [replace(run, attempts=run.attempts[:-1] + (wrong,))])

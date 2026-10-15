@@ -35,8 +35,13 @@ Authority. C4 re-reads the original verified CAS and reconstructs the
 combined per-entity preview from **exact original C5 C4 replies and new
 Grounding replies**, using the unchanged bounded source and identity checks.
 Order of supplied entity runs cannot change the deterministic C4 source order.
-Duplicate targets, foreign citations, changed capture/provenance, unsupported
-input types, or unsafe publication flags fail closed. The metadata report
+Each supplied editorial/Grounding answer must exactly match the **original
+accepted C5 attempt** (raw and admitted-response SHA plus receipt binding),
+and each resulting per-entity row must reproduce its **original** C5 preview.
+A structurally valid substituted `supported` reply must not promote an
+originally `unsupported` statement. Duplicate targets, foreign citations,
+changed capture/provenance, unsupported input types, or unsafe publication
+flags fail closed. The metadata report
 contains identifiers, hashes and bounded counts, **not raw GitHub or model
 source text**.
 
