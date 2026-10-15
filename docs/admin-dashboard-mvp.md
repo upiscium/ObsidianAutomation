@@ -13,7 +13,7 @@
   - `obsidian-core-promotion.timer` → `obsidian-core-promotion.service`
 - The same status response includes an `ai_pipeline` aggregate sourced exclusively from the pre-existing **non-authoritative** `/var/lib/obsidian-ai/state/02-Orchestration/status/pre-review-status.json` projection. It exposes only schema-validated health, Human Review queue count, separate operational-failure and deterministic-rejection counts, Backpressure and reminder flags.
 - Freshness is explicit: projection age under 15 minutes is `fresh`; older data is `stale` and its old review/error counts are **not** presented as current. A missing, malformed, overlarge, symlinked or unreadable file is `unavailable` (never healthy). Far-future timestamps are `invalid`; minor clock skew up to 60 seconds is clamped to zero age.
-- `GET /`, `GET /static/style.css`, `GET /static/app.js`. All other paths return 404.
+- `GET /`, `GET /static/style.css`, `GET /static/app.js`, and the separate static `GET /api/v1/connections` contract. All other paths return 404.
 - POST/PUT/PATCH/DELETE/OPTIONS return 405; no start/stop/restart/reload/run-once, credential update, or Vault mutation endpoints exist.
 
 The output is **observation only**. A systemd oneshot `inactive` status is not automatically an error. The current implementation classifies explicit service failures, a successfully completed latest systemd attempt, a timer deliberately paused, no-run history, elapsed timers without a next event, unknown or uninstalled units independently. It does *not* treat an observed successful systemd exit as proof that Nextcloud, the private Vault or an AI result is current and correct. The API does not include Vault paths, credentials, raw journal, ExecStart, command lines, URLs, or systemd stderr.
