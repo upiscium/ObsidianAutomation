@@ -310,3 +310,27 @@ def test_explicit_day_policy_gate_rejects_partial_metadata_before_model(case):
         mod.run_complete_private_daily(
             **kwargs(case), infer=backend(t), require_day_policy=True)
     assert not t.calls
+
+
+
+def test_complete_day_reports_upstream_pending_entities_not_empty_day(case):
+    from obsidian_automation.github_daily_individual_digest import (
+        run_complete_private_daily,
+    )
+    args = kwargs(case)
+    args["materiality_decisions"] = ()  # support exists; materiality not selected
+    transport = Transport()
+    report = run_complete_private_daily(
+        **args, infer=backend(transport), require_day_policy=False)
+    data = report.report()
+    assert data["selected_entity_count"] == 0
+    assert data["original_source_entity_count"] == 2
+    assert data["original_source_event_count"] >= 2
+    assert data["unselected_pending_review_count"] == 2
+    assert data["unselected_entity_count"] == 2
+    assert len(data["unselected_pending_entities"]) == 2
+    assert data["source_selection_requires_review"] is True
+    assert data["complete_and_all_selected_have_supported_text"] is False
+    assert data["requested_entity_count"] == 0
+    assert data["publication_authorized"] is False
+    assert not transport.calls

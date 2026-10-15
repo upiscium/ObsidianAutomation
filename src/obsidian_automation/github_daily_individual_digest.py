@@ -327,7 +327,27 @@ def run_complete_private_daily(
                     materiality_decisions=materiality_decisions,
                     max_context_bytes=max_context_bytes)
         plan = c4.build_witnessed_narrative_contexts(**args)
-        contexts = plan.report()["contexts"]
+        source_plan = plan.report()
+        contexts = source_plan["contexts"]
+        # C3 already accounts for EVERY original Issue/PR entity. C4 only
+        # selects meaningful verified progress; non-selected pending-review
+        # entities are tracked separately so "all selected" never silently
+        # becomes "all updated original entities were summarized".
+        upstream_preview = source_plan["preview"]
+        diagnostics = upstream_preview["entity_diagnostics"]
+        if (type(diagnostics) is not list
+                or any(type(row) is not dict
+                       or row.get("reason") not in
+                       ("selected", "pending_review", "no_selected_progress")
+                       or type(row.get("selected")) is not bool
+                       or (row["reason"] == "selected") != row["selected"]
+                       for row in diagnostics)
+                or sum(row["selected"] for row in diagnostics) != len(contexts)
+                or type(upstream_preview.get("response_set_complete")) is not bool):
+            raise IndividualDigestError("incomplete source-selection accounting")
+        unselected_pending = [
+            row["entity"] for row in diagnostics
+            if row["reason"] == "pending_review"]
         if len(contexts) > max_entities:
             raise IndividualDigestError("selected day exceeds complete-request entity cap")
         if len(contexts) * (1 + c4.MAX_SENTENCES) > max_total_calls:
@@ -388,6 +408,14 @@ def run_complete_private_daily(
             "source_context_set_sha256": plan.sha256,
             "digest_sha256": digest.sha256,
             "date": aggregate["date"],
+            "original_source_entity_count": len(diagnostics),
+            "original_source_event_count": upstream_preview["original_event_count"],
+            "source_selection_responses_complete": upstream_preview["response_set_complete"],
+            "unselected_entity_count": len(diagnostics) - len(identities),
+            "unselected_pending_review_count": len(unselected_pending),
+            "unselected_pending_entities": unselected_pending,
+            "source_selection_requires_review": (
+                bool(unselected_pending) or not upstream_preview["response_set_complete"]),
             "selected_entity_count": len(identities),
             "requested_entity_count": len(runs),
             "unrequested_entity_count": len(identities) - len(runs),

@@ -136,3 +136,16 @@ The bounded size, 4-calls-per-target reservation and elapsed limits are meant
 to keep manual previews auditable, not attest throughput at 64-entity scale.
 Independent model-selection/preflight/production UID/ACL/Writer approval remain
 separate.
+
+
+### Selection is not the same as source coverage
+
+The complete-day report now separately includes C3's original source entity
+count, original event count, C1/C2 response-set completeness, and the bounded
+identities/count of **unselected entities still pending materiality review**.
+These are *not* automatically added as progress because the user wants
+meaningful updated Issue/PR items, not routine messages. However a day with
+zero selected items and unresolved candidate materiality must never be treated
+as a positively verified empty day. The operator must inspect those pending
+source entities before claiming all important daily updates were included.
+No additional model or semantic contradiction stage is introduced.
