@@ -2,6 +2,18 @@
 
 **Status:** implementation prototype, not accepted or deployed. This is a deliberately small, non-mutating first vertical slice of the larger [#298](https://github.com/upiscium/ObsidianAutomation/issues/298) single-LXC UX redesign.
 
+The phase-A UI/mobile shell described for [#304](https://github.com/upiscium/ObsidianAutomation/issues/304) is a limited read-only presentation contract, not evidence that #304 is complete, accepted, or deployed. The #300 acceptance evidence later in this document is historical for that earlier slice and does not establish #304 acceptance.
+
+## #304 phase-A UI/mobile shell contract
+
+- The page has in-page navigation to `#overview`, `#services-section`, `#connections`, `#setup-wizard`, and `#vaults`; each destination is a headed section. Existing live-observation hooks (`updated`, `count`, `pipeline`, `pipeline-summary`, `pipeline-details`, `services`, `error`, and `refresh`) remain available to the existing status view.
+- Connections, configuration, and backend sections are placeholders that explicitly disclose the absence of a configured/available connection or backend. The Vault section is not usable for browsing or changing a Vault. These areas do not imply live integration, saved settings, or usable Vault access.
+- The setup wizard is a read-only checklist for orientation only. It has no form inputs, credential fields, submission, save action, or persistence. Refreshing the current status is the only UI action; the browser does not use `localStorage`.
+- The shell and its cards/navigation must adapt at the CSS mobile breakpoint of `max-width: 620px`. The local page and its static assets continue to use the existing same-origin, restrictive-CSP delivery model.
+- The shell does not add connection/configuration APIs, credentials handling, service controls, Vault operations, or write routes. The existing `/api/v1/status` response is observational only; unimplemented paths and state-changing HTTP methods remain unavailable.
+
+This phase-A contract is intentionally narrower than the complete #304 feature. It does not provide management integrations, configuration persistence, setup execution, usable Vault access, remote ingress, or production deployment, and this document makes no claim that #304 has been completed.
+
 ## Scope
 
 - A mobile-responsive HTML/CSS/JavaScript page, loaded entirely from the Python stdlib HTTP server, with no CDN or externally loaded resources.
@@ -97,3 +109,12 @@ AI health while the fixed service observations remain intact.
 ## Masked timer observability
 
 When systemd reports a mask (`LoadState=masked` or `UnitFileState=masked` / `masked-runtime`) **and** confirms the timer is `inactive/dead`, the Dashboard shows `blocked`. Masking does not necessarily stop a previously active timer; `active/waiting`, `active/running`, or transitional masked states remain `unknown` rather than being misrepresented as quiescent. A verified `ActiveState=failed` remains a failure. Malformed, missing, or contradictory properties—including `LoadState=not-found` paired with a masked unit file—also remain `unknown`. These observations grant no authority to unmask or control a timer.
+
+## #304 integration note — Connections read-only API
+
+The navigation shell intentionally does not claim whether Nextcloud/Gitea/
+GitHub/AI connections are configured. #301 may add a separate read-only
+`GET /api/v1/connections` contract while the connection setup/write/probe
+workflow remains unimplemented. The #304 route tests must NOT assert that
+the #301 endpoint stays 404: the child branches are intended to integrate.
+They only require nonexistent **mutation/setup** routes to remain unavailable.

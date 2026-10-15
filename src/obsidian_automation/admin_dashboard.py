@@ -19,7 +19,7 @@ HTML = """<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>ObsidianAutomation | Status</title>
+  <title>ObsidianAutomation | Dashboard</title>
   <link rel="stylesheet" href="/static/style.css">
   <script defer src="/static/app.js"></script>
 </head>
@@ -27,25 +27,59 @@ HTML = """<!doctype html>
   <main class="frame">
     <header>
       <div><p class="eyebrow">OBSIDIAN AUTOMATION</p>
-        <h1>サービスの稼働状況</h1>
-        <p class="desc">読み取り専用の管理Dashboard（試作版）</p></div>
+        <h1>管理Dashboard</h1>
+        <p class="desc">読み取り専用の画面（試作版）。設定・操作機能はまだありません。</p></div>
       <button id="refresh" type="button">状態を更新</button>
     </header>
+    <nav class="page-nav" aria-label="ページ内ナビゲーション">
+      <a href="#overview">Overview</a>
+      <a href="#services-section">Services</a>
+      <a href="#connections">Connections</a>
+      <a href="#setup-wizard">Setup Wizard</a>
+      <a href="#vaults">Vaults</a>
+    </nav>
     <section aria-label="システムの説明" class="notice">
       <strong>Observation only</strong>
       <span>この画面からサービスの起動・停止やVaultへの書き込みはできません。</span>
     </section>
-    <div class="summary">
-      <span id="updated" aria-live="polite">状態を取得しています…</span>
-      <span id="count">—</span>
-    </div>
-    <section id="pipeline" class="pipeline" aria-label="AI Pipeline" aria-live="polite">
-      <h2>AI Pipeline</h2>
-      <p id="pipeline-summary">AIの運用状況を取得しています…</p>
-      <div id="pipeline-details" class="pipeline-details"></div>
+    <section id="overview" class="page-section" aria-labelledby="overview-heading">
+      <h2 id="overview-heading">Overview</h2>
+      <p class="section-help">直近の観測です。成功履歴は現在の稼働や接続の正常性を保証しません。</p>
+      <div class="summary">
+        <span id="updated" aria-live="polite">状態を取得しています…</span>
+        <span id="count">—</span>
+      </div>
+      <section id="pipeline" class="pipeline" aria-label="AI Pipeline" aria-live="polite">
+        <h3>AI Pipeline</h3>
+        <p id="pipeline-summary">AIの運用状況を取得しています…</p>
+        <div id="pipeline-details" class="pipeline-details"></div>
+      </section>
     </section>
-    <section id="services" class="cards" aria-label="サービス一覧" aria-live="polite"></section>
+    <section id="services-section" class="page-section" aria-labelledby="services-heading">
+      <h2 id="services-heading">Services</h2>
+      <p class="section-help">定期実行と直近のsystemd実行結果のみを表示します。操作や履歴の閲覧はまだできません。</p>
+      <div id="services" class="cards" role="region" aria-label="サービス一覧" aria-live="polite"></div>
+    </section>
     <p id="error" class="error" role="status"></p>
+    <section id="connections" class="page-section placeholder" aria-labelledby="connections-heading">
+      <h2 id="connections-heading">Connections</h2>
+      <p>未実装：Nextcloud、AI provider、Gitea、GitHub の接続情報の登録・変更・疎通確認はまだできません。この画面では実際の接続状態を確認・保存できません。</p>
+    </section>
+    <section id="setup-wizard" class="page-section placeholder" aria-labelledby="setup-heading">
+      <h2 id="setup-heading">Setup Wizard</h2>
+      <p>読み取り専用の手順案内です。設定バックエンドは未実装で、進捗は確認・記録していません。ここから設定の保存や本番操作は始まりません。</p>
+      <ol class="checklist">
+        <li>専用ホストと非公開のアクセス経路を確認する（この試作版は localhost 専用）。</li>
+        <li>Connections の設定・疎通確認は将来の実装を待つ。</li>
+        <li>Vaults のルート・用途別割当は将来の実装を待つ。</li>
+        <li>サービスと AI Pipeline の観測結果を確認する。未確認や古い状態は正常とみなさない。</li>
+        <li>本番適用は別途レビューと明示的な承認が必要。</li>
+      </ol>
+    </section>
+    <section id="vaults" class="page-section placeholder" aria-labelledby="vaults-heading">
+      <h2 id="vaults-heading">Vaults</h2>
+      <p>未実装：Vault root の選択・フォルダ割当・変更影響の確認はまだ利用できません。Vault の現在の割当や整合性をこの画面から確認することもできません。</p>
+    </section>
     <footer>状態はsystemdの直近の観測結果です。成功履歴やVaultの完全性を証明するものではありません。</footer>
   </main>
 </body>
@@ -55,12 +89,14 @@ HTML = """<!doctype html>
 CSS = """
 :root { color-scheme: light dark; font: 15px/1.6 system-ui, -apple-system, sans-serif;
   --bg:#f7f8fb; --surface:#ffffff; --ink:#182536; --muted:#5c6979;
-  --border:#dce2e9; --accent:#315cb5; --focus:#3169db }
+  --border:#dce2e9; --accent:#315cb5; --focus:#3169db;
+  --good:#176344; --bad:#a32924; --warn:#765300 }
 @media (prefers-color-scheme: dark) { :root { --bg:#111820; --surface:#1a2632; --ink:#f1f5fa;
-  --muted:#b2becd; --border:#344455; --accent:#8dacff; --focus:#8dacff } }
+  --muted:#b2becd; --border:#344455; --accent:#8dacff; --focus:#8dacff;
+  --good:#78ddb0; --bad:#ff9b92; --warn:#f2c875 } }
 * { box-sizing: border-box }
 body { background:var(--bg); color:var(--ink); margin:0 }
-.frame { max-width:1080px; padding:40px 22px; margin:auto }
+.frame { max-width:1080px; padding:40px 22px; margin:auto; min-width:0 }
 header { display:flex; justify-content:space-between; align-items:center; gap:24px }
 h1 { font-size:clamp(1.5rem, 4vw, 2.15rem); letter-spacing:-.04em; margin:.1em 0 .2em }
 .eyebrow { color:var(--accent); font-weight:750; letter-spacing:.12em; font-size:.73rem; margin:0 }
@@ -70,33 +106,49 @@ button { background:var(--accent); color:var(--bg); border:0; padding:9px 16px; 
   font:inherit; font-weight:700; cursor:pointer; white-space:nowrap }
 button:focus-visible { outline:3px solid var(--focus); outline-offset:3px }
 button:disabled { opacity:.55; cursor:wait }
+.page-nav { display:flex; flex-wrap:wrap; gap:8px; margin-top:24px }
+.page-nav a { display:inline-block; padding:8px 12px; background:var(--surface);
+  border:1px solid var(--border); border-radius:9px; color:var(--accent); font-weight:700;
+  text-decoration:none; overflow-wrap:anywhere }
+.page-nav a:hover { text-decoration:underline }
+.page-nav a:focus-visible { outline:3px solid var(--focus); outline-offset:2px }
+.page-section { margin:28px 0; min-width:0; scroll-margin-top:16px }
+.page-section > h2 { font-size:1.35rem; margin:0 0 4px }
+.section-help { margin:0 0 14px; color:var(--muted) }
 .notice { background:var(--surface); border:1px solid var(--border); border-left:4px solid var(--accent);
-  border-radius:10px; padding:13px 16px; display:flex; gap:16px; margin:26px 0 22px; flex-wrap:wrap }
-.summary { display:flex; justify-content:space-between; gap:12px; margin:0 0 15px }
+  border-radius:10px; padding:13px 16px; display:flex; gap:16px; margin:20px 0 22px; flex-wrap:wrap }
+.summary { display:flex; justify-content:space-between; flex-wrap:wrap; gap:12px; margin:0 0 15px }
 .pipeline { background:var(--surface); border:1px solid var(--border); border-radius:14px;
-  padding:18px 19px; margin:0 0 16px }
-.pipeline h2 { margin:0; font-size:1.1rem }
+  padding:18px 19px; margin:0 0 16px; min-width:0 }
+.pipeline h3 { margin:0; font-size:1.1rem }
 .pipeline p { color:var(--muted); margin:5px 0 12px }
-.pipeline-details { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:8px 18px }
-.metric { display:flex; flex-direction:column; font-size:.82rem; color:var(--muted) }
+.pipeline-details { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,160px),1fr)); gap:8px 18px }
+.metric { display:flex; flex-direction:column; font-size:.82rem; color:var(--muted); min-width:0; overflow-wrap:anywhere }
 .metric strong { font-size:1.08rem; color:var(--ink) }
-.cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:16px }
+.cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr)); gap:16px }
 .card { background:var(--surface); border:1px solid var(--border); border-radius:14px;
-  padding:18px 19px; min-height:168px }
-.card h2 { margin:0; font-size:1.08rem }
+  padding:18px 19px; min-height:168px; min-width:0 }
+.card h3 { margin:0; font-size:1.08rem; overflow-wrap:anywhere }
 .card .small { font-size:.81rem; color:var(--muted); margin-top:8px; overflow-wrap:anywhere }
-.headline { display:flex; justify-content:space-between; align-items:center; gap:8px }
+.headline { display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap }
 .state { padding:3px 9px; border:1px solid var(--border); border-radius:999px;
   color:var(--muted); white-space:nowrap; font-size:.73rem; font-weight:700 }
-.state[data-health="healthy"] { color:#2e9164 }
-.state[data-health="failed"] { color:#cf5b51 }
-.state[data-health="paused"] { color:#a77d2d }
-.rowline { display:flex; justify-content:space-between; gap:12px; font-size:.88rem; margin-top:12px }
-.rowline .value { color:var(--muted); text-align:right }
-.error { color:#cb4545; min-height:1.5em }
+.state[data-health="healthy"] { color:var(--good) }
+.state[data-health="failed"] { color:var(--bad) }
+.state[data-health="paused"] { color:var(--warn) }
+.rowline { display:flex; justify-content:space-between; gap:12px; font-size:.88rem; margin-top:12px; flex-wrap:wrap }
+.rowline .value { color:var(--muted); text-align:right; overflow-wrap:anywhere }
+.error { color:var(--bad); min-height:1.5em }
+.placeholder { background:var(--surface); border:1px solid var(--border); border-radius:14px;
+  padding:18px 19px; overflow-wrap:anywhere }
+.placeholder p { margin:8px 0; color:var(--muted) }
+.checklist { padding-left:1.5em; margin:12px 0 0 }
+.checklist li { padding:3px 0 }
 footer { margin-top:32px; font-size:.78rem }
 @media (max-width:620px) { .frame { padding:26px 14px } header { align-items:start; flex-direction:column }
-  button { width:100% } .notice { margin-top:18px } }
+  button { width:100% } .page-nav { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px }
+  .page-nav a { min-width:0 } .cards { grid-template-columns:minmax(0,1fr) }
+  .notice { margin-top:18px } }
 """
 
 JS = """
@@ -129,7 +181,7 @@ function card(service) {
   box.className = "card";
   const top = document.createElement("div");
   top.className = "headline";
-  const title = document.createElement("h2");
+  const title = document.createElement("h3");
   title.textContent = service.label;
   const status = document.createElement("span");
   status.className = "state";
