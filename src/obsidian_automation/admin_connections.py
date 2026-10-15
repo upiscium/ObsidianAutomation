@@ -103,7 +103,7 @@ def connections_projection() -> dict[str, object]:
         "authority": "observation_only",
         "connections": [
             {"name": spec.name, "provider": spec.provider.value,
-             "configured": False, "verification": "unknown"}
+             "configured": None, "verification": "unknown"}
             for spec in REGISTRY
         ],
     }

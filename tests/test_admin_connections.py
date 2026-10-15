@@ -70,7 +70,7 @@ def test_typed_registry_and_projection_are_fixed_nonsecret_values() -> None:
     expected = {
         "version": 1, "authority": "observation_only",
         "connections": [
-            {"name": name, "provider": name, "configured": False, "verification": "unknown"}
+            {"name": name, "provider": name, "configured": None, "verification": "unknown"}
             for name in ("nextcloud", "gitea", "github", "ai")
         ],
     }

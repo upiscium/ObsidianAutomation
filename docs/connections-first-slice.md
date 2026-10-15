@@ -6,9 +6,12 @@ only a typed non-secret registry of four provider IDs (`nextcloud`, `gitea`,
 `GET /api/v1/connections` response. No live credentials, secret files, private
 config, environment variables, or remote provider state are consulted. The
 response has `version: 1`, `authority: observation_only`, and a fixed list of
-`name`, `provider`, `configured: false`, `verification: unknown`. `false` means
-**not configured by this registry**, not a claim that existing private service
-configuration is missing. `unknown` is never a claim of a verified connection.
+`name`, `provider`, `configured: null`, `verification: unknown`.
+**`null` means the current live configuration has not been inspected.** In
+particular this endpoint must not falsely claim that an installed Nextcloud,
+GitHub, Gitea, or AI provider is unconfigured. A boolean configured value may
+be used later only after a scoped configuration authority has supplied
+defensible evidence. `unknown` never claims a verified connection.
 
 Validation is pure and not exposed as a write API. Provider IDs are exact and
 allowlisted; names are bounded (1–64 ASCII letters, digits, dots, underscores,
