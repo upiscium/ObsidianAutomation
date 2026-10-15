@@ -13,6 +13,7 @@ from typing import Callable, Sequence
 
 from .admin_status import aggregate_status
 from .admin_ai_status import load_ai_health
+from .admin_connections import connections_projection
 
 HTML = """<!doctype html>
 <html lang="ja">
@@ -271,6 +272,9 @@ class Handler(BaseHTTPRequestHandler):
                 "ai_pipeline": ai_pipeline,
                 "actions": {"start": False, "stop": False, "trigger": False},
             }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            self._reply(200, data, "application/json; charset=utf-8")
+        elif self.path == "/api/v1/connections":
+            data = json.dumps(connections_projection(), sort_keys=True, separators=(",", ":")).encode("utf-8")
             self._reply(200, data, "application/json; charset=utf-8")
         else:
             self._reply(404, b"Not found")
