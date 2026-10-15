@@ -1,7 +1,7 @@
 # #300 Service operation preflight — Phase A (NO EFFECT)
 
 This is an **unwired pure function** implementing typed intent validation for
-pause, resume and run-once on the five fixed Dashboard service identifiers.
+pause, resume and run-once on the five fixed Dashboard service identifiers.\nRun-once is restricted to deliberately paused recurrence (not currently\nscheduled timer execution), with a non-failed idle service.
 
 It is NOT an operator API, privileged broker, durable audit, authorization, or
 deployed feature. All HTTP mutation verbs remain 405. A preflight candidate

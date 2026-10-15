@@ -97,7 +97,7 @@ def test_allows_exact_thirty_second_boundary():
 @pytest.mark.parametrize("schedule,action,allowed", [
     ("scheduled", "pause", True), ("paused", "pause", False),
     ("paused", "resume", True), ("scheduled", "resume", False),
-    ("scheduled", "run_once", True), ("paused", "run_once", False),
+    ("scheduled", "run_once", False), ("paused", "run_once", True),
     ("unknown", "pause", False), ("triggering", "run_once", False),
 ])
 def test_action_requires_expected_state(schedule, action, allowed):

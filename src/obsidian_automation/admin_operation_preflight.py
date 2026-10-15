@@ -131,6 +131,10 @@ def preflight_operation(
         raise PreflightRejected("operation_state_mismatch")
     if action == "resume" and schedule != "paused":
         raise PreflightRejected("operation_state_mismatch")
-    if action == "run_once" and schedule != "scheduled":
+    if action == "run_once" and (
+        schedule != "paused" or execution == "failed"
+    ):
+        # Until timer/dependency scheduling is cross-authority qualified, a
+        # one-shot can only be submitted with recurrence already disabled.
         raise PreflightRejected("operation_state_mismatch")
     return OperationCandidate(rid, sid, action, recorded)
