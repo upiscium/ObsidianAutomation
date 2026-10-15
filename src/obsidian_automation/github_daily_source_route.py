@@ -28,6 +28,8 @@ class DailySourceRouteError(ValueError):
     """Identity or route could not be independently verified; fail closed."""
 
 
+from . import github_daily_temporal_evidence as temporal
+
 RECORD_VERSION = 2
 MAX_OBSERVED_ROUTES = 2048
 MAX_PAGES_PER_PR = 32
@@ -336,7 +338,7 @@ def _validate_original_evidence_window_and_kinds(bundle) -> None:
         "title", "body", "message",
     }
     for event in bundle.events:
-        if not isinstance(event, dict) or set(event) != exact_keys:
+        if not isinstance(event, dict) or set(event) not in (exact_keys, exact_keys | {"temporal_observation"}):
             raise DailySourceRouteError("source event schema is not recognized")
         kind = event["kind"]
         if not isinstance(kind, str) or kind not in activity._EVENT_KINDS:
@@ -528,11 +530,12 @@ def parse_verified_routes(
         raise DailySourceRouteError("invalid source receipt JSON") from exc
     if (
         not isinstance(raw, dict)
-        or set(raw) != {
+        or set(raw) != ({
             "record_version", "date", "evidence_sha256", "routes",
             "collection_mode", "publication_authorized", "captured_at_utc",
-        }
-        or type(raw["record_version"]) is not int or raw["record_version"] != RECORD_VERSION
+        } | ({"temporal_policy", "temporal_observations"}
+             if raw.get("record_version") == temporal.RECEIPT_VERSION else set()))
+        or type(raw["record_version"]) is not int or raw["record_version"] not in (RECORD_VERSION, temporal.RECEIPT_VERSION)
         or raw["collection_mode"] not in _ALLOWED_COLLECTION_MODES
         or not isinstance(raw["captured_at_utc"], str)
         or raw["publication_authorized"] is not False
@@ -544,6 +547,19 @@ def parse_verified_routes(
         raise DailySourceRouteError("route receipt version/evidence binding mismatch")
     if _json(raw) != receipt_bytes:
         raise DailySourceRouteError("noncanonical source receipt")
+    if raw["record_version"] == temporal.RECEIPT_VERSION:
+        if raw["temporal_policy"] != temporal.POLICY:
+            raise DailySourceRouteError("unknown temporal policy")
+        try:
+            start, end = activity._date_window(date.fromisoformat(bundle.date))
+            originals = temporal.validate_records(raw["temporal_observations"], bundle.events, start=start, end=end)
+            _validate_original_evidence_window_and_kinds(replace(bundle, events=tuple(originals)))
+        except (temporal.TemporalEvidenceError, ValueError, TypeError, KeyError,
+                AttributeError, OverflowError, RecursionError, watcher.GitHubProjectWatcherError,
+                activity.GitHubDailyActivityError):
+            raise DailySourceRouteError("invalid temporal source projection") from None
+    elif any("temporal_observation" in e for e in bundle.events):
+        raise DailySourceRouteError("legacy receipt cannot attest temporal metadata")
     try:
         observed = activity._timestamp(raw["captured_at_utc"], label="captured_at_utc")
     except activity.GitHubDailyActivityError as exc:
@@ -600,6 +616,7 @@ def collect_fresh_verified_routes(
     target_date: date,
     client: watcher.GitHubClient,
     explicit_historical_reconfirmation: bool = False,
+    period_policy: str | None = None,
 ) -> FreshRouteCollection:
     """Fresh GitHub API collection + re-verification in one invocation.
 
@@ -607,8 +624,12 @@ def collect_fresh_verified_routes(
     A failed read/rate-limit/changed comment/changed PR route fails closed; no
     original Evidence or local state is persisted by this function.
     """
+    if period_policy is not None and (type(period_policy) is not str or period_policy != temporal.POLICY):
+        raise DailySourceRouteError("unknown period policy")
     _require_collector_source(config, client)
     client = _pinned_source_client(client)
+    if period_policy is not None:
+        client = temporal.ObservationClient(client, _utc_now)
     observed = _utc_now()
     local_today = observed.astimezone(ZoneInfo(activity.CANONICAL_TIMEZONE)).date()
     if target_date > local_today:
@@ -735,6 +756,11 @@ def collect_fresh_verified_routes(
                 event, route=route, entity="pull_request",
                 verification_route=f"{base}/pulls/{number}", remote_id=event.source_id,
             ))
+    temporal_records = None
+    if period_policy is not None:
+        start, end = activity._date_window(target_date)
+        corrected, temporal_records, identities = temporal.project_events(corrected, client, start=start, end=end)
+        records = [dict(record, evidence_id=identities[record["evidence_id"]]) for record in records]
     updated = activity.make_daily_evidence_bundle(
         target_date=target_date, projects=original.projects, events=corrected,
     )
@@ -748,7 +774,10 @@ def collect_fresh_verified_routes(
         "publication_authorized": False,
         "routes": records,
     }
-    receipt = _json(payload)
+    if temporal_records is not None:
+        payload.update(record_version=temporal.RECEIPT_VERSION,
+                       temporal_policy=temporal.POLICY, temporal_observations=temporal_records)
+    receipt = temporal.encode_receipt(payload) if temporal_records is not None else _json(payload)
     # Validate our own freshly produced read-only artifact before returning.
     validated = parse_verified_routes(receipt, updated.canonical_bytes)
     assert len(validated) == len(records)

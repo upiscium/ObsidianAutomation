@@ -62,7 +62,7 @@ def _validated_index(evidence_bytes: bytes, receipt_bytes: bytes) -> CaptureInde
         raise DailyCaptureIndexError("capture sources failed route verification") from None
     payload = {
         "record_version": CAPTURE_INDEX_VERSION,
-        "source_receipt_version": route.RECORD_VERSION,
+        "source_receipt_version": receipt["record_version"],
         "date": receipt["date"],
         "evidence_sha256": _sha(evidence_bytes),
         "route_receipt_sha256": _sha(receipt_bytes),
