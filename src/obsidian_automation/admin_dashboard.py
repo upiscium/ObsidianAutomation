@@ -13,6 +13,7 @@ from typing import Callable, Sequence
 
 from .admin_status import aggregate_status
 from .admin_ai_status import load_ai_health
+from .admin_mirror_status import load_mirror_observation
 
 HTML = """<!doctype html>
 <html lang="ja">
@@ -43,6 +44,12 @@ HTML = """<!doctype html>
       <h2>AI Pipeline</h2>
       <p id="pipeline-summary">AIの運用状況を取得しています…</p>
       <div id="pipeline-details" class="pipeline-details"></div>
+    </section>
+    <section id="mirror" class="pipeline" aria-label="Vault Mirrorの診断" aria-live="polite">
+      <h2>Vault Mirror</h2>
+      <p id="mirror-summary">Mirrorの状態を確認しています…</p>
+      <div id="mirror-details" class="pipeline-details"></div>
+      <p class="small">systemdの直近試行のみを観測。Nextcloudへの反映・永続的な成功履歴を証明するものではありません。</p>
     </section>
     <section id="services" class="cards" aria-label="サービス一覧" aria-live="polite"></section>
     <p id="error" class="error" role="status"></p>
@@ -109,7 +116,17 @@ const labels = {
   not_observed:"実行記録なし", fresh:"最新", stale:"古い状態", unavailable:"未取得",
   invalid:"不正な状態", ok:"Pre-reviewの既知障害なし",
   warning:"Pre-review失敗・再試行待ち", critical:"Pre-review障害",
-  observed_success:"直近成功（鮮度未検証）"
+  observed_success:"直近成功（鮮度未検証）",
+  ok:"直近試行に異常なし", in_progress:"実行中",
+  timer_not_loaded:"Timer未導入", service_not_loaded:"Service未導入",
+  timer_not_active:"Timer停止", timer_not_enabled:"Timer無効",
+  unexpected_service_type:"Service型不明",
+  run_in_progress_success_history_unavailable:"稼働中・成功履歴未確定",
+  latest_attempt_failed:"直近試行失敗", unexpected_service_state:"Service状態不明",
+  no_completed_attempt_observed:"完了記録なし",
+  inconsistent_monotonic_timestamps:"時刻不整合",
+  refresh_success_stale:"最終成功が古い", refresh_success_aging:"最終成功から時間経過",
+  completion_not_proven:"完了未確認"
 };
 const $ = (id) => document.getElementById(id);
 const stateText = (value) => labels[value] || "不明";
@@ -182,6 +199,42 @@ function renderAi(p) {
     );
   }
 }
+function renderMirror(p) {
+  const health = ["ok", "warning", "critical", "unknown"];
+  const attempts = ["succeeded", "failed", "in_progress", "not_observed", "unknown"];
+  if (!p || p.source !== "systemd_latest_attempt" ||
+      !health.includes(p.health) || !attempts.includes(p.latest_attempt) ||
+      p.durable_success_history !== false || p.remote_verified !== false ||
+      !Array.isArray(p.reasons)) {
+    throw Error("invalid_mirror_projection");
+  }
+  const age = p.last_success_age_seconds;
+  const runtime = p.running_seconds;
+  if ((age !== null && (!Number.isSafeInteger(age) || age < 0)) ||
+      (runtime !== null && (!Number.isSafeInteger(runtime) || runtime < 0))) {
+    throw Error("invalid_mirror_duration");
+  }
+  const seconds = (v) => Number.isSafeInteger(v) && v >= 0 ? v + "秒" : "—";
+  const reasons = p.reasons.filter(v => typeof v === "string" &&
+    Object.hasOwn(labels, v)).slice(0, 5);
+  const mirrorHealth = {ok:"直近試行成功（しきい値内）", warning:"注意",
+    critical:"異常または鮮度不足", unknown:"未確認"};
+  $("mirror-summary").textContent = "Mirror最新試行: " + mirrorHealth[p.health];
+  const entries = [
+    line("実行結果", p.latest_attempt),
+    line("成功からの経過", "unknown"),
+  ];
+  if (reasons.length) entries.splice(1, 0, line("診断", reasons[0]));
+  $("mirror-details").replaceChildren(...entries);
+  // Durations are not service-history timestamps. Show only numeric,
+  // non-secret elapsed times from the fixed systemd diagnostic.
+  $("mirror-details").lastElementChild.lastElementChild.textContent = seconds(age);
+  if (runtime !== null) {
+    const running = line("実行時間", "unknown");
+    running.lastElementChild.textContent = seconds(runtime);
+    $("mirror-details").append(running);
+  }
+}
 async function refresh() {
   $("refresh").disabled = true;
   $("error").textContent = "";
@@ -191,6 +244,7 @@ async function refresh() {
     const data = await response.json();
     if (data.version !== 1 || !Array.isArray(data.services)) throw Error("schema");
     renderAi(data.ai_pipeline);
+    renderMirror(data.ai_mirror);
     $("services").replaceChildren(...data.services.map(card));
     $("updated").textContent = "観測日時: " + data.generated_at;
     $("count").textContent = data.services.length + " services";
@@ -199,6 +253,8 @@ async function refresh() {
     $("services").replaceChildren();
     $("pipeline-details").replaceChildren();
     $("pipeline-summary").textContent = "Pipeline: 現在の状態は未確認";
+    $("mirror-details").replaceChildren();
+    $("mirror-summary").textContent = "Mirror: 現在の状態は未確認";
     $("updated").textContent = "観測失敗";
     $("count").textContent = "—";
     $("error").textContent = "状態を取得できませんでした。サーバー側の設定を確認してください。";
@@ -212,6 +268,7 @@ refresh();
 
 Observer = Callable[[], list[dict[str, object]]]
 AIObserver = Callable[[], dict[str, object]]
+MirrorObserver = Callable[[], dict[str, object]]
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -261,6 +318,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 services = self.server.observer()
                 ai_pipeline = self.server.ai_observer()
+                ai_mirror = self.server.mirror_observer()
             except Exception:
                 self._reply(503, b'{"error":"status_unavailable"}', "application/json")
                 return
@@ -269,6 +327,7 @@ class Handler(BaseHTTPRequestHandler):
                 "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "services": services,
                 "ai_pipeline": ai_pipeline,
+                "ai_mirror": ai_mirror,
                 "actions": {"start": False, "stop": False, "trigger": False},
             }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
             self._reply(200, data, "application/json; charset=utf-8")
@@ -291,12 +350,14 @@ def make_server(
     *, port: int = 8370,
     observer: Observer = aggregate_status,
     ai_observer: AIObserver = load_ai_health,
+    mirror_observer: MirrorObserver = load_mirror_observation,
 ) -> ThreadingHTTPServer:
     if not isinstance(port, int) or not 0 <= port <= 65535:
         raise ValueError("port must be between 0 and 65535")
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     server.observer = observer
     server.ai_observer = ai_observer
+    server.mirror_observer = mirror_observer
     server.daemon_threads = True
     return server
 

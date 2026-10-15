@@ -12,6 +12,7 @@
   - `obsidian-github-daily-progress.timer` → `obsidian-github-daily-apply.service`
   - `obsidian-core-promotion.timer` → `obsidian-core-promotion.service`
 - The same status response includes an `ai_pipeline` aggregate sourced exclusively from the pre-existing **non-authoritative** `/var/lib/obsidian-ai/state/02-Orchestration/status/pre-review-status.json` projection. It exposes only schema-validated health, Human Review queue count, separate operational-failure and deterministic-rejection counts, Backpressure and reminder flags.
+- A separate `ai_mirror` aggregate derives from the pre-existing fixed-unit `mirror_status.collect_status` diagnostic: latest systemd attempt, monotonic age since latest completed successful attempt, active runtime duration and finite diagnostic reasons. The consumer explicitly reports `durable_success_history=false` and `remote_verified=false`; it never claims actual remote Nextcloud freshness or a durable history.
 - Freshness is explicit: projection age under 15 minutes is `fresh`; older data is `stale` and its old review/error counts are **not** presented as current. A missing, malformed, overlarge, symlinked or unreadable file is `unavailable` (never healthy). Far-future timestamps are `invalid`; minor clock skew up to 60 seconds is clamped to zero age.
 - `GET /`, `GET /static/style.css`, `GET /static/app.js`. All other paths return 404.
 - POST/PUT/PATCH/DELETE/OPTIONS return 405; no start/stop/restart/reload/run-once, credential update, or Vault mutation endpoints exist.
@@ -46,7 +47,7 @@ The test mocks do not establish actual production systemd health or correct mana
 
 ## Follow-up to complete #300
 
-1. AI `pre_review_status` read projection is implemented in this incremental branch; next integrate `mirror_status` and a **dedicated durable GitHub pipeline read model** for independently proven last-success/failure and reasons. The existing systemd display only provides a latest attempt; do not call it a verified remote state or invent a history from it.
+1. AI `pre_review_status` and `mirror_status` read-only observations are implemented in separate bounded Dashboard slices. Next add a **dedicated durable GitHub pipeline read model** (#316) for independently proven success/failure and incident history. The existing systemd display and Mirror diagnostic provide only the latest attempt, never verified remote state or durable history.
 2. Unify the service registry with runtime/provisioning logic instead of maintaining duplicate lists long-term (current prototype duplicates known names deliberately to prevent dynamic command injection).
 3. Add a narrowly scoped local operation broker for approved `pause`, `resume`, `run_once` with idempotency, lock and persistent audit, and do not bypass #294 deployment stage/activate or #309 exact-bound automatic rejection cleanup.
 4. Confirm trustworthy origin when opened from a private WireGuard-connected phone and add real deployment-unit hardening; never silently expand the host bind address.
@@ -97,3 +98,30 @@ AI health while the fixed service observations remain intact.
 ## Masked timer observability
 
 When systemd reports a mask (`LoadState=masked` or `UnitFileState=masked` / `masked-runtime`) **and** confirms the timer is `inactive/dead`, the Dashboard shows `blocked`. Masking does not necessarily stop a previously active timer; `active/waiting`, `active/running`, or transitional masked states remain `unknown` rather than being misrepresented as quiescent. A verified `ActiveState=failed` remains a failure. Malformed, missing, or contradictory properties—including `LoadState=not-found` paired with a masked unit file—also remain `unknown`. These observations grant no authority to unmask or control a timer.
+
+
+## Vault Mirror latest-attempt observation slice (2026-10-15, Draft)
+
+The WebUI now displays a separate **Vault Mirror** diagnostics panel alongside
+the five systemd service cards and AI Review pipeline aggregate. This reuses
+the existing `mirror_status.collect_status` read-only systemd monitor rather than
+inventing success evidence. Only the fixed source identifier, latest attempt
+class, bounded monotonic durations, health class and a finite reason-code
+allowlist reach the browser; failed/malformed diagnostic reads become `unknown`.
+The browser renders with `textContent` only and clears stale mirror values when
+an API refresh fails.
+
+The time since the last successful systemd pull is **not** an attestation that
+Nextcloud remote state is current. The response explicitly fixes
+`durable_success_history=false` and `remote_verified=false`; even a report of
+`health=ok` applies only to the fixed-unit latest attempt and age threshold.
+A disabled or stopped timer is still distinguished by the independent service
+card, not silently reported as a failed remote write.
+
+Local isolated Adam worktree `feat/300-dashboard-mirror-observation` from
+Dashboard integration commit `9927d63` (not main) passed 103 targeted status/UI
+tests and **1238/1238 full pytest tests** using the project's Nix Python 3.11
+environment, plus Python compileall, JavaScript node syntax validation and
+`git diff --check`. No host timer/service, Vault, Nextcloud, credential or
+production configuration was modified. GitHub CI and independent review remain
+separate gates; final merge continues only via integration Draft PR #311.

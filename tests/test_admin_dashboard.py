@@ -8,10 +8,11 @@ from contextlib import contextmanager
 import pytest
 
 from obsidian_automation.admin_dashboard import Handler, JS, make_server
+from obsidian_automation.admin_mirror_status import _unknown
 
 
 @contextmanager
-def serving(observer, ai_observer=None):
+def serving(observer, ai_observer=None, mirror_observer=None):
     if ai_observer is None:
         ai_observer = lambda: {
             "freshness": "unavailable", "health": "unknown",
@@ -20,7 +21,12 @@ def serving(observer, ai_observer=None):
             "deterministic_rejections": None, "backpressure": None,
             "review_reminder_due": None,
         }
-    server = make_server(port=0, observer=observer, ai_observer=ai_observer)
+    if mirror_observer is None:
+        mirror_observer = _unknown
+    server = make_server(
+        port=0, observer=observer, ai_observer=ai_observer,
+        mirror_observer=mirror_observer,
+    )
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
     thread.start()
     try:
@@ -70,6 +76,8 @@ def test_is_bound_to_loopback_and_json_observation_only() -> None:
         assert len(value["services"]) == 1
         assert value["services"][0]["health"] == "observed_success"
         assert value["ai_pipeline"]["freshness"] == "unavailable"
+        assert value["ai_mirror"]["health"] == "unknown"
+        assert value["ai_mirror"]["remote_verified"] is False
         assert "default-src 'none'" in headers["Content-Security-Policy"]
         assert "frame-ancestors 'none'" in headers["Content-Security-Policy"]
         assert headers["Cache-Control"] == "no-store"
@@ -182,6 +190,8 @@ def test_failed_refresh_drops_previous_healthy_observations() -> None:
     assert '"services").replaceChildren()' in error_branch
     assert '"pipeline-details").replaceChildren()' in error_branch
     assert '"pipeline-summary").textContent' in error_branch
+    assert '"mirror-details").replaceChildren()' in error_branch
+    assert '"mirror-summary").textContent' in error_branch
     assert '"updated").textContent = "観測失敗"' in error_branch
 
 
@@ -200,3 +210,43 @@ def test_status_javascript_renders_distinct_incident_and_retry_metrics() -> None
     assert 'retry_exhausted_generations' in JS
     assert 'blocked_generations' in JS
     assert 'innerHTML' not in JS
+
+
+def test_mirror_latest_attempt_subview_is_read_only_and_distinct():
+    def mirror():
+        return {
+            "source": "systemd_latest_attempt",
+            "health": "critical", "latest_attempt": "succeeded",
+            "last_success_age_seconds": 2000, "running_seconds": None,
+            "reasons": ["refresh_success_stale"],
+            "durable_success_history": False, "remote_verified": False,
+        }
+    with serving(fixture_observer, mirror_observer=mirror) as server:
+        status, _, raw = response(server)
+        assert status == 200
+        data = json.loads(raw)
+        assert data["services"][0]["health"] == "observed_success"
+        assert data["ai_mirror"]["health"] == "critical"
+        assert data["ai_mirror"]["last_success_age_seconds"] == 2000
+        assert data["ai_mirror"]["remote_verified"] is False
+        assert data["actions"]["trigger"] is False
+
+
+def test_mirror_observation_failure_is_redacted():
+    def mirror():
+        raise ValueError("SECRET=VERY_SENSITIVE")
+    with serving(fixture_observer, mirror_observer=mirror) as server:
+        code, _, raw = response(server)
+        assert code == 503
+        assert json.loads(raw) == {"error": "status_unavailable"}
+        assert b"VERY_SENSITIVE" not in raw
+
+
+def test_mirror_frontend_has_explicit_scope_warning_and_no_html_injection():
+    from obsidian_automation.admin_dashboard import HTML, JS
+    assert 'id="mirror"' in HTML
+    assert "Nextcloudへの反映" in HTML
+    assert "p.remote_verified !== false" in JS
+    assert "p.durable_success_history !== false" in JS
+    assert 'renderMirror(data.ai_mirror)' in JS
+    assert "innerHTML" not in JS
