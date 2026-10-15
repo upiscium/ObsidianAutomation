@@ -46,10 +46,21 @@ preserves that property.
 
 Raw normalized events are grouped by repository in deterministic
 first-appearance order, then greedily partitioned into content-addressed
-partial contexts with a default maximum canonical context size of 64 KiB.
-Every event appears exactly once. Its original deterministic evidence order
-is preserved within its repository; the global cross-repository event order
-is intentionally not the partial-context iteration order.
+Partial contexts. The original safety ceiling is 64 KiB, but the
+**default model-facing Partial budget is 24 KiB of canonical JSON**.
+This smaller default is a guarded inference-size experiment following the
+2026-10-08 production timeout where 7 long issue comments filled nearly
+62 KiB. It is not a token budget and does not prove that every model
+provider can process a batch within its configured timeout.
+
+Every event appears exactly once, without shortening its already-canonical
+Evidence fields. Its original deterministic evidence order is preserved
+within its repository; the global cross-repository event order is
+intentionally not the partial-context iteration order. Smaller batches
+increase LLM call count and can reduce cross-event synthesis. Grounding,
+exact original Evidence IDs and immutable audit artifacts are unchanged.
+The effect on inference latency, coverage and quality must be established
+with production canaries before restoring unattended recurrence.
 
 A single event that cannot fit the configured context bound fails closed. It is
 never silently dropped.
