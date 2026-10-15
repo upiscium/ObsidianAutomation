@@ -160,7 +160,7 @@ provider format** contains only `{"sentences":[{"text":...,"source_refs":[...]}]
 Its fixed Japanese system prompt, prompt version and constrained JSON schema
 replace the model-visible editorial contract; the original C4 context/digest
 and source data are retained and the exact actual wire request is hashed.
-Grounding's original contract does not change.
+Grounding's original response schema and host-side validator do not change.
 
 The host validates exact keys/types/reference bounds, computes the complement
 of cited source indices as `pending_source_refs`, then submits that projected
@@ -215,8 +215,9 @@ Grounding now receives `c5-grounding-semantic-v1`: entity, target date, the exac
 edited text, and every cited original event with only its opaque `evidence_id`
 removed. No excerpt, negation, truncation marker, actor, event kind, number,
 timestamp or other original field is changed. Full C4 context and host-side
-validation/grounding identities remain unchanged. The original Grounding system
-prompt and response schema are unchanged; no unsupported verdict is converted.
+validation/grounding identities remain unchanged. The original C4 Grounding system prompt and response schema are unchanged;
+C5's optional effective system prompt may be versioned separately below.
+No unsupported verdict is converted.
 The legacy adapter's model-visible input remains the complete canonical context.
 
 Receipts separately bind `model_input_version`/`model_input_sha256` to the actual
@@ -301,3 +302,42 @@ are not translated or repaired after generation. These instructions are not a
 proof that the model complied. Baseline and revised runs on the same captured
 real sources must be retained separately; no general quality or production
 acceptance follows from two examples.
+
+## Quoted example versus completed work — #290 (2026-10-15)
+
+In the first bounded real-source probe, the model promoted a synthetic
+compatibility probe's *generated example text* about a validation fix and
+regression tests into a claim that the PR actually performed that fix. A fresh
+model Grounding verdict called this `supported`. Neither the cited Event
+identity nor a supported verdict establishes the statement's attribution.
+
+The optional `c4-sentences-only-v1` adapter now uses
+`c5-individual-facts-ja-v4` as its effective editorial prompt and
+`c5-grounding-quotation-scope-ja-v1` as its effective post-edit Grounding
+system prompt. The extra instructions distinguish: (1) actual reported work,
+(2) an example, quoted generated sentence, hypothetical test output or
+expected value *describing* work, and (3) not-yet-completed or negated work.
+A claim that the *example* was generated or inspected can be supported by
+source evidence; the work asserted *inside the example* is not automatically
+work done by the author. Ambiguous examples should remain unwritten/pending
+rather than converted to implementation claims. Citation and response
+contracts are unchanged.
+
+The complete original C4 Grounding context, its original C4 system prompt
+hash, source IDs and host validator remain identical. Only the optional C5
+model-facing Grounding system prompt changes; the new effective version/hash
+and full request bytes are recorded separately from the original prompt and
+`c5-grounding-semantic-v1` user-message view. The legacy `c4-v1` path still
+uses the unmodified C4 prompt, input and verdict schema. No model outputs are
+post-hoc rewritten, verdicts overridden, source events silently removed or
+new inference stages introduced.
+
+**This is a prompt-level mitigation and must not be called a semantic fix
+without independent real-model and human quality evidence.** A model may
+still judge an example-derived implementation claim `supported`. Tests that
+inspect the exact prompt/version/wire receipts only establish protocol behavior.
+The private original-source companion and `requires_human_quality_review`
+are still mandatory. In particular, independently label actual completed
+actions, quoted examples, plans, negation, and exclusions on held-out individual
+Issue/PR examples before any rollout or reliability claim. No publication,
+production Writer/Timer, default-policy change, or cross-repository reducer.
