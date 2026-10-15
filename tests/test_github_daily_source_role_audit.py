@@ -178,3 +178,47 @@ def test_overlapping_atomic_claims_fail_closed():
     overlapping["claim_start"] = 1
     with pytest.raises(SourceRoleAuditError):
         run([a, overlapping])
+
+
+@pytest.mark.parametrize("field,value", [
+    ("text", None), ("text", True), ("text", 123),
+    ("text", ""), ("text", "x" * 361), ("text", "あ" * 700),
+    ("verdict", None), ("verdict", "approved"), ("verdict", True),
+    ("evidence_ids", None), ("evidence_ids", True),
+    ("evidence_ids", [True]), ("evidence_ids", ["invalid"]),
+    ("evidence_ids", ["a" * 64, "a" * 64]),
+    ("evidence_ids", []),
+])
+@pytest.mark.parametrize("annotated", [False, True])
+def test_malformed_preview_sentence_never_escapes_typed_error(field, value, annotated):
+    sr, preview = fixtures()
+    preview["entities"][0]["sentences"][0][field] = value
+    sr["preview_sha256"] = _sha(_canonical(preview))
+    annotations = [annotation(0, True)] if annotated else []
+    with pytest.raises(SourceRoleAuditError):
+        audit_individual_source_roles(
+            _canonical(sr), _canonical(preview), TARGET, annotations)
+
+
+@pytest.mark.parametrize("element", [None, 3, True, [], "not a sentence"])
+def test_malformed_preview_sentence_element_rejected_before_offsets(element):
+    sr, preview = fixtures()
+    preview["entities"][0]["sentences"][0] = element
+    sr["preview_sha256"] = _sha(_canonical(preview))
+    with pytest.raises(SourceRoleAuditError):
+        audit_individual_source_roles(
+            _canonical(sr), _canonical(preview), TARGET, [annotation(0, True)])
+
+
+def test_unresolved_original_grounding_is_unreviewed_not_a_error():
+    sr, preview = fixtures()
+    preview["entities"][0]["sentences"][0]["verdict"] = "unresolved"
+    sr["preview_sha256"] = _sha(_canonical(preview))
+    out = audit_individual_source_roles(
+        _canonical(sr), _canonical(preview), TARGET, ()).report()
+    assert out["supported_sentence_count"] == 1
+    assert out["results"][0]["sentence_index"] == 1
+    assert out["results"][0]["source_scope_state"] == "unreviewed"
+    with pytest.raises(SourceRoleAuditError):
+        audit_individual_source_roles(
+            _canonical(sr), _canonical(preview), TARGET, [annotation(0, True)])

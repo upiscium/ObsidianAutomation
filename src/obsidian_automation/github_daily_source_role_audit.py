@@ -120,6 +120,23 @@ def audit_individual_source_roles(source_review_bytes: bytes, preview_bytes: byt
         sentences = pr["sentences"]
         if type(sentences) is not list or len(sentences) > 3:
             raise SourceRoleAuditError("invalid selected narrative")
+        # Validate every sentence BEFORE label offsets or audit iteration. The
+        # private preview is canonical JSON, not an independent type guarantee.
+        # Genuine C4 may leave a sentence's Grounding status unresolved.
+        for sentence in sentences:
+            if (type(sentence) is not dict
+                    or type(sentence.get("text")) is not str
+                    or not 0 < len(sentence["text"]) <= 360
+                    or len(sentence["text"].encode("utf-8")) > 2048
+                    or type(sentence.get("verdict")) is not str
+                    or sentence["verdict"] not in ("supported", "unsupported", "unresolved")
+                    or type(sentence.get("evidence_ids")) is not list
+                    or not 1 <= len(sentence["evidence_ids"]) <= 16
+                    or any(type(eid) is not str or len(eid) != 64
+                           or any(c not in "0123456789abcdef" for c in eid)
+                           for eid in sentence["evidence_ids"])
+                    or len(set(sentence["evidence_ids"])) != len(sentence["evidence_ids"])):
+                raise SourceRoleAuditError("invalid typed narrative sentence")
         field_index = {}
         for field in sr["fields"]:
             ref, name, text = field["source_ref"], field["field"], field["text"]

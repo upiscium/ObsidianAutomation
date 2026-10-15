@@ -35,7 +35,10 @@ Other performed-action claims with no direct-action anchor are reported as
 `no_scope_conflict_detected_not_verified` never implies factual correctness.
 
 Canonical bytes, preview/content hashes, entity identity and cited span bounds
-are checked. Operator labels remain untrusted semantic interpretations: verifying
+are checked. Every preview sentence is type-checked before any annotation offset
+is dereferenced; malformed fields fail with the typed audit error, while genuine
+C4 `unresolved` verdicts remain permissible but cannot be annotated as displayed.
+Operator labels remain untrusted semantic interpretations: verifying
 their offsets does not verify their meaning or provide independently signed
 human adjudication. Review metadata contains only hashes, roles, offsets and counts,
 not source or model text. Every output has publication, factuality, semantic
