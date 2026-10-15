@@ -7,6 +7,7 @@ sentence-Grounding-validated private preview from original source CAS.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from time import monotonic as _monotonic
 import hashlib
 import json
 
@@ -263,3 +264,156 @@ def compose_private_individual_digest(
             ArtifactLifecycleError, KeyError, TypeError, ValueError,
             AttributeError, IndexError, OverflowError, RecursionError):
         raise IndividualDigestError("private individual daily source unavailable") from None
+
+
+
+MAX_COMPLETE_DAY_ENTITIES = c4.MAX_ENTITIES
+MAX_COMPLETE_DAY_C5_CALLS = 4 * MAX_COMPLETE_DAY_ENTITIES
+MAX_COMPLETE_DAY_SECONDS = 3600
+
+
+@dataclass(frozen=True)
+class CompletePrivateDaily:
+    """Full selected-day private result, including source-pending skipped items."""
+    canonical_bytes: bytes
+    digest: PrivateIndividualDigest
+    individual_runs: tuple[rt.NarrativeRun, ...]
+
+    @property
+    def markdown(self):
+        return self.digest.markdown
+
+    def report(self):
+        return json.loads(self.canonical_bytes)
+
+
+def run_complete_private_daily(
+        capture_sha256: str,
+        partial_replies: tuple[c4.roll.PartialReply, ...],
+        grounding_replies: tuple[c4.roll.GroundReply, ...],
+        materiality_decisions: tuple[c4.c3.MaterialityDecision, ...],
+        *,
+        infer,
+        max_entities: int = c4.MAX_ENTITIES,
+        max_total_calls: int = MAX_COMPLETE_DAY_C5_CALLS,
+        max_total_seconds: float = 3600,
+        per_entity_seconds: float = 120,
+        require_day_policy: bool = True,
+        max_context_bytes: int = c4.roll.c1a.MAX_CONTEXT_BYTES,
+        ) -> CompletePrivateDaily:
+    """Run each C3-selected Issue/PR with the existing C5 runner, then compose.
+
+    This is an explicit operator-controlled, PRIVATE preview, not a scheduler,
+    persistence boundary or automatic Writer activation. No additional model
+    judging or rewriting occurs beyond C5's existing Grounding.
+
+    A complete worst-case call budget must be reserved before model inference.
+    Time exhaustion between entities leaves remaining source-selected items
+    visibly pending. Source, model and trust policies are separately controlled.
+    """
+    if (type(max_entities) is not int
+            or not 1 <= max_entities <= MAX_COMPLETE_DAY_ENTITIES
+            or type(max_total_calls) is not int
+            or not 1 <= max_total_calls <= MAX_COMPLETE_DAY_C5_CALLS
+            or type(require_day_policy) is not bool
+            or not callable(infer)):
+        raise IndividualDigestError("invalid complete-day execution bounds")
+    try:
+        remaining_total = rt._number(max_total_seconds, MAX_COMPLETE_DAY_SECONDS)
+        per_entity = rt._number(per_entity_seconds, rt.MAX_RUN_SECONDS)
+        args = dict(capture_sha256=capture_sha256,
+                    partial_replies=partial_replies,
+                    grounding_replies=grounding_replies,
+                    materiality_decisions=materiality_decisions,
+                    max_context_bytes=max_context_bytes)
+        plan = c4.build_witnessed_narrative_contexts(**args)
+        contexts = plan.report()["contexts"]
+        if len(contexts) > max_entities:
+            raise IndividualDigestError("selected day exceeds complete-request entity cap")
+        if len(contexts) * (1 + c4.MAX_SENTENCES) > max_total_calls:
+            raise IndividualDigestError("complete-request model call budget insufficient")
+        identities = []
+        for item in contexts:
+            ctx = item["context"]
+            e = ctx["entity"]
+            identities.append((e["repository"], e["entity_type"], e["number"]))
+            if require_day_policy:
+                # A #358 produced, authenticated CAS source is required. This
+                # presence check is not a standalone GitHub signature or
+                # reconstruction of original PR-body edit history.
+                sources = ctx["sources"]
+                if type(sources) is not list:
+                    raise IndividualDigestError("invalid period-bound source set")
+                for row in sources:
+                    event = row["original_event"]
+                    observation = event.get("temporal_observation")
+                    if (type(observation) is not dict
+                            or observation.get("policy") != "github-day-snapshot-v1"
+                            or observation.get("historical_instant_verified") is not False):
+                        raise IndividualDigestError("missing date-scoped source policy")
+        if len(set(identities)) != len(identities):
+            raise IndividualDigestError("duplicate selected Issue/PR")
+
+        started = _monotonic()
+        runs = []
+        stop_reason = None
+        for target in identities:
+            remaining = remaining_total - (_monotonic() - started)
+            if remaining <= 0.01:
+                stop_reason = "total_elapsed_budget_exhausted"
+                break
+            run = rt.run_witnessed_narrative_inference(
+                **args, infer=infer, target_entity=target,
+                max_entities=1, max_calls=1 + c4.MAX_SENTENCES,
+                max_elapsed_seconds=min(per_entity, remaining))
+            runs.append(run)
+        digest = compose_private_individual_digest(**args,
+                                                  individual_runs=tuple(runs))
+        aggregate = digest.report()
+        if (aggregate["selected_entity_count"] != len(identities)
+                or aggregate["requested_entity_count"] != len(runs)
+                or aggregate["publication_authorized"] is not False):
+            raise IndividualDigestError("complete-day source accounting changed")
+        responses_complete = all(
+            r.report()["inference_responses_complete"] for r in runs)
+        # Empty selected input is not an attestation that GitHub had no
+        # progress: that claim needs independently complete source selection.
+        completed = (bool(identities) and len(runs) == len(identities)
+                     and responses_complete
+                     and aggregate["pending_summary_entity_count"] == 0)
+        result = {
+            "record_version": VERSION,
+            "stage": "github_daily_complete_private_execution_v1",
+            "source_capture_sha256": capture_sha256,
+            "source_context_set_sha256": plan.sha256,
+            "digest_sha256": digest.sha256,
+            "date": aggregate["date"],
+            "selected_entity_count": len(identities),
+            "requested_entity_count": len(runs),
+            "unrequested_entity_count": len(identities) - len(runs),
+            "pending_summary_entity_count": aggregate["pending_summary_entity_count"],
+            "attempt_record_count": sum(len(r.attempts) for r in runs),
+            "all_selected_entities_requested": len(runs) == len(identities),
+            "all_inference_responses_complete": responses_complete,
+            "complete_and_all_selected_have_supported_text": completed,
+            "stopped_before_new_entity_reason": stop_reason,
+            "source_period_policy": ("day_snapshot_required"
+                                    if require_day_policy else
+                                    "legacy_unverified_explicit_offline"),
+            "historical_instant_verified": False,
+            "model_execution_attested": False,
+            "semantic_coverage_verified": False,
+            "factuality_verified": False,
+            "requires_human_quality_review": True,
+            "publication_authorized": False,
+        }
+        raw = rt._json(result)
+        if len(raw) > MAX_REPORT_BYTES:
+            raise IndividualDigestError("complete-day report exceeds budget")
+        return CompletePrivateDaily(raw, digest, tuple(runs))
+    except IndividualDigestError:
+        raise
+    except (c4.DailyNarrativeError, rt.NarrativeRuntimeError,
+            ArtifactLifecycleError, KeyError, TypeError, ValueError,
+            AttributeError, IndexError, OverflowError, RecursionError):
+        raise IndividualDigestError("trusted complete-day input unavailable") from None

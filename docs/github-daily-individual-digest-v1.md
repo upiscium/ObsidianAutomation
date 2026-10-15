@@ -81,3 +81,58 @@ persist private reviews or enable production Writer.
 
 Keep legacy v1 and published historical Daily artifacts unchanged. Explicit
 human approval is required before any future main merge or Writer/Timer rollout.
+
+
+## One explicit all-selected-day operation (opt-in, offline/manual only)
+
+\`run_complete_private_daily(...)\` is an operator-controlled helper using the
+**existing C5 inference** and the same composer, not a new model stage. It
+enumerates every verified C3-selected (repository, Issue/PR type, positive
+number) in source order, reserves the full worst-case four model calls
+per entity before any inference, then invokes C5 once per entity. A shared
+execution-time budget may stop before a later entity; those unrequested entries
+must remain **visible and pending** in the composed private Markdown.
+
+\`\`\`python
+from obsidian_automation.github_daily_individual_digest import (
+    run_complete_private_daily,
+)
+
+result = run_complete_private_daily(
+    authorized_capture_sha, partial_replies, grounding_replies,
+    materiality_decisions,
+    infer=approved_native_ollama_infer,
+    max_entities=64, max_total_calls=256,
+    max_total_seconds=3600, per_entity_seconds=120,
+    require_day_policy=True,
+)
+private_markdown = result.markdown
+run_accounting = result.report()
+\`\`\`
+
+The strict default accepts only #358 \`github-day-snapshot-v1\` per-event
+projected source within an independently verified immutable CAS capture; this
+presence/identity check does not prove original resource edit time or model
+execution authenticity. **An old API snapshot is not historically day-safe.**
+\`require_day_policy=False\` is an explicit **legacy offline diagnostic only**
+and can never authorize Daily publication. The policy is not magically present
+in the original #359 branch: #358 must be integrated and adopted before
+strict production-like usage.
+
+\`selected_entity_count\`, \`requested_entity_count\`, \`unrequested_entity_count\`,
+\`pending_summary_entity_count\`, \`all_inference_responses_complete\`, and
+\`complete_and_all_selected_have_supported_text\` are separate. An exhausted
+time budget is reported and leaves pending source items; it does not fabricate
+empty/no-progress content. All source, semantic, factuality and human approval
+remain advisory/unverified. A zero selected-entity day requires independent
+C3/source completeness evidence before declaring a genuinely empty GitHub day.
+
+This helper never fetches new GitHub data, persists artifacts, contacts
+Nextcloud/Vault or enables a systemd Timer. Original C5 model calls occur only
+because the operator supplied \`infer\` and invoked this function. A large day
+may require many sequential C5 single-target runs; there is **no implicit
+infinite retry**, and extra CAS reconstruction could be resource-intensive.
+The bounded size, 4-calls-per-target reservation and elapsed limits are meant
+to keep manual previews auditable, not attest throughput at 64-entity scale.
+Independent model-selection/preflight/production UID/ACL/Writer approval remain
+separate.

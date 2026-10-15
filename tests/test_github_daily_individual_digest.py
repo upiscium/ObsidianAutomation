@@ -200,3 +200,113 @@ def test_changed_grounding_attempt_record_is_not_silently_accepted(case):
     wrong = replace(old, raw_response_bytes='{"verdict":"supported","reason":"別の応答"}'.encode())
     with pytest.raises(IndividualDigestError, match="attempt bytes changed"):
         compose(case, [replace(run, attempts=run.attempts[:-1] + (wrong,))])
+
+
+
+def test_complete_day_private_operator_runs_every_selected_entity(case):
+    from obsidian_automation.github_daily_individual_digest import (
+        run_complete_private_daily,
+    )
+    t = Transport()
+    full = run_complete_private_daily(
+        **kwargs(case), infer=backend(t), max_entities=4,
+        require_day_policy=False)  # archival/synthetic fixture only
+    report = full.report()
+    assert report["selected_entity_count"] == 2
+    assert report["requested_entity_count"] == 2
+    assert report["unrequested_entity_count"] == 0
+    assert report["all_selected_entities_requested"]
+    assert report["all_inference_responses_complete"]
+    assert report["complete_and_all_selected_have_supported_text"]
+    assert report["source_period_policy"] == "legacy_unverified_explicit_offline"
+    assert report["publication_authorized"] is False
+    assert len(full.individual_runs) == 2
+    assert full.digest.markdown == full.markdown
+    assert full.markdown.count("AI下書き（未承認）") == 2
+    assert "検証処理" not in full.canonical_bytes.decode()
+    # Same original C4 preview as its single bulk C5 run; no rephrasing.
+    compare = rt.run_witnessed_narrative_inference(
+        **kwargs(case), infer=backend(Transport()),
+        max_entities=2, max_calls=8)
+    assert full.digest.preview.sha256 == compare.preview.sha256
+    # Two independently scoped C5 runs, rather than another model stage.
+    assert len([x for x in t.calls if x[1] == "/api/chat"]) == 4
+
+
+def test_strict_day_policy_rejects_legacy_without_model_call(case):
+    from obsidian_automation.github_daily_individual_digest import (
+        run_complete_private_daily,
+    )
+    transport = Transport()
+    with pytest.raises(IndividualDigestError, match="date-scoped"):
+        run_complete_private_daily(
+            **kwargs(case), infer=backend(transport))
+    assert not transport.calls
+
+
+@pytest.mark.parametrize("changed", [
+    {"max_entities": 1}, {"max_total_calls": 7},
+    {"max_total_calls": True}, {"max_total_seconds": 0},
+    {"per_entity_seconds": False}, {"require_day_policy": None},
+])
+def test_complete_day_full_budget_preflight_never_silently_drops_entity(case, changed):
+    from obsidian_automation.github_daily_individual_digest import (
+        run_complete_private_daily,
+    )
+    t = Transport()
+    options = {"require_day_policy": False, **changed}
+    with pytest.raises(IndividualDigestError):
+        run_complete_private_daily(
+            **kwargs(case), infer=backend(t), **options)
+    assert not t.calls
+
+
+def test_complete_day_stops_new_requests_and_keeps_not_started_item_pending(
+        case, monkeypatch):
+    from obsidian_automation import github_daily_individual_digest as mod
+    clock = [0.]
+    monkeypatch.setattr(mod, "_monotonic", lambda: clock[0])
+    t = Transport()
+    base = backend(t)
+    def bump(raw, *, deadline):
+        reply = base(raw, deadline=deadline)
+        clock[0] = 1000.
+        return reply
+    daily = mod.run_complete_private_daily(
+        **kwargs(case), infer=bump, require_day_policy=False,
+        max_total_seconds=20, per_entity_seconds=10)
+    metadata = daily.report()
+    assert metadata["selected_entity_count"] == 2
+    assert metadata["requested_entity_count"] == 1
+    assert metadata["unrequested_entity_count"] == 1
+    assert metadata["stopped_before_new_entity_reason"] == "total_elapsed_budget_exhausted"
+    assert metadata["complete_and_all_selected_have_supported_text"] is False
+    assert daily.digest.report()["pending_summary_entity_count"] >= 1
+    assert "進展なしとは判定していません" in daily.markdown
+
+
+def test_complete_day_model_failure_is_pending_not_no_progress(case):
+    from obsidian_automation.github_daily_individual_digest import (
+        run_complete_private_daily,
+    )
+    t = Transport()
+    t.fail_stage = "editorial"
+    daily = run_complete_private_daily(
+        **kwargs(case), infer=backend(t),
+        max_entities=2, require_day_policy=False)
+    report = daily.report()
+    assert report["all_selected_entities_requested"]
+    assert not report["all_inference_responses_complete"]
+    assert report["pending_summary_entity_count"] == 2
+    assert report["complete_and_all_selected_have_supported_text"] is False
+    assert daily.markdown.count("本文は未生成、根拠不足、または照合待ちです。") == 2
+
+
+def test_explicit_day_policy_gate_rejects_partial_metadata_before_model(case):
+    from obsidian_automation import github_daily_individual_digest as mod
+    t = Transport()
+    # Built-in archived C4 fixture lacks #358's owned temporal policy.
+    with pytest.raises(IndividualDigestError):
+        mod.run_complete_private_daily(
+            **kwargs(case), infer=backend(t), require_day_policy=True)
+    assert not t.calls
