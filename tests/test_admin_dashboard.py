@@ -2,12 +2,60 @@ from __future__ import annotations
 
 import http.client
 import json
+import re
 import threading
 from contextlib import contextmanager
+from html.parser import HTMLParser
 
 import pytest
 
 from obsidian_automation.admin_dashboard import Handler, JS, make_server
+
+
+class DashboardHTMLParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.elements: list[tuple[str, dict[str, str | None]]] = []
+        self.ids: set[str] = set()
+        self.navs: list[dict[str, object]] = []
+        self.sections: dict[str, dict[str, object]] = {}
+        self._nav_stack: list[dict[str, object]] = []
+        self._section_stack: list[dict[str, object]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        self.elements.append((tag, attributes))
+        element_id = attributes.get("id")
+        if element_id:
+            self.ids.add(element_id)
+
+        if tag == "nav":
+            nav: dict[str, object] = {"label": attributes.get("aria-label"), "links": []}
+            self.navs.append(nav)
+            self._nav_stack.append(nav)
+        if tag == "section":
+            section: dict[str, object] = {"tags": set(), "headings": [], "text": []}
+            if element_id:
+                self.sections[element_id] = section
+            self._section_stack.append(section)
+
+        for section in self._section_stack:
+            section["tags"].add(tag)
+            if tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
+                section["headings"].append(tag)
+        if tag == "a":
+            for nav in self._nav_stack:
+                nav["links"].append(attributes.get("href"))
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "nav" and self._nav_stack:
+            self._nav_stack.pop()
+        if tag == "section" and self._section_stack:
+            self._section_stack.pop()
+
+    def handle_data(self, data: str) -> None:
+        for section in self._section_stack:
+            section["text"].append(data)
 
 
 @contextmanager
@@ -59,6 +107,29 @@ def fixture_observer():
     ]
 
 
+def _section_text(section: dict[str, object]) -> str:
+    return " ".join(section["text"]).casefold()
+
+
+def _contains_any(text: str, phrases: tuple[str, ...]) -> bool:
+    return any(phrase.casefold() in text for phrase in phrases)
+
+
+def _mobile_media_block(css: str) -> str:
+    match = re.search(r"@media\s*\(\s*max-width\s*:\s*620px\s*\)\s*\{", css, re.IGNORECASE)
+    assert match is not None, "mobile styles must target a maximum width of 620px"
+    opening_brace = css.find("{", match.start())
+    depth = 0
+    for index in range(opening_brace, len(css)):
+        if css[index] == "{":
+            depth += 1
+        elif css[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return css[opening_brace + 1:index]
+    raise AssertionError("mobile media query is not closed")
+
+
 def test_is_bound_to_loopback_and_json_observation_only() -> None:
     with serving(fixture_observer) as server:
         code, headers, body = response(server)
@@ -90,12 +161,143 @@ def test_browsable_document_and_external_assets() -> None:
         assert response(server, path="/../../../etc/passwd")[0] == 404
 
 
+def test_phase_a_shell_navigation_sections_and_existing_status_hooks() -> None:
+    with serving(fixture_observer) as server:
+        status, _, body = response(server, path="/")
+
+    assert status == 200
+    parser = DashboardHTMLParser()
+    parser.feed(body.decode("utf-8"))
+    expected_sections = ["overview", "services-section", "connections", "setup-wizard", "vaults"]
+
+    navigation = [nav for nav in parser.navs if nav["label"] == "ページ内ナビゲーション"]
+    assert len(navigation) == 1
+    assert navigation[0]["links"] == [f"#{section_id}" for section_id in expected_sections]
+    for section_id in expected_sections:
+        assert section_id in parser.sections
+        assert parser.sections[section_id]["headings"], f"#{section_id} needs a section heading"
+
+    assert {"updated", "count", "pipeline", "pipeline-summary", "pipeline-details",
+            "services", "error", "refresh"}.issubset(parser.ids)
+    assert any(tag == "button" and attrs.get("id") == "refresh" for tag, attrs in parser.elements)
+
+
+def test_phase_a_placeholders_and_setup_checklist_are_explicitly_read_only() -> None:
+    with serving(fixture_observer) as server:
+        status, _, body = response(server, path="/")
+
+    assert status == 200
+    parser = DashboardHTMLParser()
+    parser.feed(body.decode("utf-8"))
+    connections = _section_text(parser.sections["connections"])
+    setup = _section_text(parser.sections["setup-wizard"])
+    vaults = _section_text(parser.sections["vaults"])
+    connection_and_setup_text = f"{connections} {setup}"
+    unavailable = (
+        "未接続", "未設定", "未提供", "未対応", "未実装", "未構築", "対象外", "利用できません",
+        "利用できない", "利用不可", "使用できません", "使用できない", "使用不可", "ありません", "なし",
+        "not connected", "not configured", "not provided", "not implemented", "not available",
+        "unavailable", "not usable", "cannot be used", "no connection", "not wired", "no backend",
+    )
+
+    assert _contains_any(connections, ("接続", "connection"))
+    assert _contains_any(connections, unavailable)
+    assert _contains_any(setup, ("設定", "構成", "config", "configuration"))
+    assert _contains_any(setup, unavailable)
+    assert _contains_any(connection_and_setup_text, ("バックエンド", "backend"))
+    assert _contains_any(connection_and_setup_text, unavailable)
+    assert _contains_any(vaults, ("vault", "保管庫"))
+    assert _contains_any(vaults, (
+        "利用できません", "利用できない", "利用不可", "使えません", "使えない", "使用できません",
+        "使用不可", "not usable", "cannot be used", "unavailable", "not available",
+    ))
+
+    checklist_tags = parser.sections["setup-wizard"]["tags"]
+    assert "li" in checklist_tags and ("ul" in checklist_tags or "ol" in checklist_tags)
+    assert _contains_any(_section_text(parser.sections["setup-wizard"]), (
+        "読み取り専用", "read-only", "確認のみ", "変更できません",
+    ))
+
+
+def test_phase_a_mobile_rules_and_browser_are_read_only() -> None:
+    with serving(fixture_observer) as server:
+        responses = {
+            path: response(server, path=path)
+            for path in ("/", "/static/style.css", "/static/app.js", "/api/v1/status")
+        }
+
+    assert all(result[0] == 200 for result in responses.values())
+    css = responses["/static/style.css"][2].decode("utf-8")
+    mobile_rules = _mobile_media_block(css)
+    rules = re.findall(r"([^{}]+)\{([^{}]*)\}", mobile_rules)
+    nav_rules = [declarations for selector, declarations in rules if re.search(r"\bnav\b", selector)]
+    card_rules = [declarations for selector, declarations in rules if re.search(r"cards", selector)]
+    assert any(re.search(r"(?:flex-wrap|overflow(?:-[xy])?|flex-direction|gap)\s*:", rule) for rule in nav_rules)
+    assert any(re.search(r"(?:grid-template-columns|grid-template|grid-auto-flow|flex-direction)\s*:", rule)
+               for rule in card_rules)
+
+    html = responses["/"][2].decode("utf-8")
+    js = responses["/static/app.js"][2].decode("utf-8")
+    api_body = responses["/api/v1/status"][2].decode("utf-8")
+    api_value = json.loads(api_body)
+    parser = DashboardHTMLParser()
+    parser.feed(html)
+    served_content = html + css + js + api_body
+    assert not re.search(r"\b(?:localStorage|sessionStorage)\b", served_content, re.IGNORECASE)
+    assert not {"form", "input", "select", "textarea"}.intersection(tag for tag, _ in parser.elements)
+    assert not re.search(
+        r"createElement\(\s*['\"](?:form|input|select|textarea)['\"]\s*\)", js, re.IGNORECASE
+    )
+    assert not re.search(r"<\s*(?:form|input|select|textarea)\b", js, re.IGNORECASE)
+    assert [attrs.get("id") for tag, attrs in parser.elements if tag == "button"] == ["refresh"]
+    assert "innerHTML" not in js
+    assert not re.search(r"\bmethod\s*:\s*['\"](?:POST|PUT|PATCH|DELETE)['\"]", js, re.IGNORECASE)
+    fetch_paths = re.findall(r"fetch\(\s*['\"]([^'\"]+)['\"]", js)
+    assert fetch_paths == ["/api/v1/status"]
+    assert api_value["authority"] == "observation_only"
+    assert api_value["actions"] == {"start": False, "stop": False, "trigger": False}
+
+    def field_names(value):
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                yield str(key).casefold()
+                yield from field_names(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                yield from field_names(nested)
+
+    forbidden_fields = {"password", "token", "secret", "credential", "credentials", "authorization"}
+    assert forbidden_fields.isdisjoint(field_names(api_value))
+
+    csp_required = (
+        "default-src 'none'", "script-src 'self'", "style-src 'self'", "connect-src 'self'",
+        "base-uri 'none'", "form-action 'none'", "frame-ancestors 'none'",
+    )
+    for result in responses.values():
+        csp = result[1]["Content-Security-Policy"]
+        assert all(directive in csp for directive in csp_required)
+
+
 @pytest.mark.parametrize("verb", ["POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
 def test_no_state_changing_routes(verb: str) -> None:
     with serving(fixture_observer) as server:
         code, _, body = response(server, method=verb)
         assert code == 405
         assert body == b"Method not allowed"
+
+
+def test_placeholder_and_save_routes_do_not_exist() -> None:
+    unknown_read_paths = (
+        "/api/v1/connections", "/api/v1/config", "/api/v1/setup", "/api/v1/vaults", "/api/v1/save",
+    )
+    write_methods = ("POST", "PUT", "PATCH", "DELETE", "OPTIONS")
+    with serving(fixture_observer) as server:
+        for path in unknown_read_paths:
+            assert response(server, path=path)[0] == 404
+            for method in write_methods:
+                status, _, body = response(server, method=method, path=path)
+                assert status == 405
+                assert body == b"Method not allowed"
 
 
 def test_host_validation_and_origin_validation() -> None:
