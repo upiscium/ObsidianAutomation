@@ -11,9 +11,9 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable, Sequence
 
+from .admin_broker_socket import capabilities_from_socket, _unavailable_capabilities
 from .admin_status import aggregate_status
 from .admin_ai_status import load_ai_health
-from .admin_broker_socket import capabilities_from_socket, _unavailable_capabilities
 
 HTML = """<!doctype html>
 <html lang="ja">
@@ -258,21 +258,6 @@ class Handler(BaseHTTPRequestHandler):
             self._reply(200, CSS.encode("utf-8"), "text/css; charset=utf-8")
         elif self.path == "/static/app.js":
             self._reply(200, JS.encode("utf-8"), "text/javascript; charset=utf-8")
-        elif self.path == "/api/v1/status":
-            try:
-                services = self.server.observer()
-                ai_pipeline = self.server.ai_observer()
-            except Exception:
-                self._reply(503, b'{"error":"status_unavailable"}', "application/json")
-                return
-            data = json.dumps({
-                "version": 1, "authority": "observation_only",
-                "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                "services": services,
-                "ai_pipeline": ai_pipeline,
-                "actions": {"start": False, "stop": False, "trigger": False},
-            }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-            self._reply(200, data, "application/json; charset=utf-8")
         elif self.path == "/api/v1/operation-capabilities":
             try:
                 capability = self.server.capabilities_observer()
@@ -296,6 +281,21 @@ class Handler(BaseHTTPRequestHandler):
             data = json.dumps(
                 capability, sort_keys=True, separators=(",", ":"),
             ).encode("utf-8")
+            self._reply(200, data, "application/json; charset=utf-8")
+        elif self.path == "/api/v1/status":
+            try:
+                services = self.server.observer()
+                ai_pipeline = self.server.ai_observer()
+            except Exception:
+                self._reply(503, b'{"error":"status_unavailable"}', "application/json")
+                return
+            data = json.dumps({
+                "version": 1, "authority": "observation_only",
+                "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "services": services,
+                "ai_pipeline": ai_pipeline,
+                "actions": {"start": False, "stop": False, "trigger": False},
+            }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
             self._reply(200, data, "application/json; charset=utf-8")
         else:
             self._reply(404, b"Not found")
