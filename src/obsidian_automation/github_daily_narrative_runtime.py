@@ -335,9 +335,14 @@ def _review_snapshot(rows, context_set_sha256):
     for row in rows:
         ctx = row["context"]
         fields = []
+        temporal_notes = []
         nontext = 0
         for source in ctx["sources"]:
             event = source["original_event"]
+            observation = event.get("temporal_observation")
+            if observation is not None:
+                temporal_notes.append({"source_ref": source["source_ref"],
+                    "evidence_id": event["evidence_id"], "observation": observation})
             before = len(fields)
             for name in ("title", "body", "message"):
                 value = event.get(name)
@@ -355,6 +360,8 @@ def _review_snapshot(rows, context_set_sha256):
         entries.append({"entity": ctx["entity"], "context_sha256": row["context_sha256"],
             "source_event_count": len(ctx["sources"]), "nontext_event_count": nontext,
             "fields": fields})
+        if temporal_notes:
+            entries[-1]["temporal_observations"] = temporal_notes
     raw = _json({"source_context_set_sha256": context_set_sha256, "entities": entries})
     if len(raw) > MAX_REVIEW_INPUT_BYTES:
         raise NarrativeRuntimeError("complete source-review input exceeds budget")
@@ -429,6 +436,19 @@ def _build_source_review(snapshot_bytes, preview):
             lines.append(f"元の引用フィールドに全文が連続一致しないAI文: {len(nonliteral)}件。言い換え・因果関係・否定を要確認。")
         if original["nontext_event_count"]:
             lines.append(f"取得済みテキストフィールドのない元イベント: {original['nontext_event_count']}件。状態は上の元Evidence表示を確認してください。")
+        for note in original.get("temporal_observations", ()):
+            observation = note["observation"]
+            status = observation["status"]
+            label = ("当日の更新時点のスナップショットです。イベント発生瞬間の内容ではありません。"
+                     if status == "day_snapshot_not_event_instant" else
+                     "コミット内容の日時です。リポジトリへの到着日時は未確認です。"
+                     if status == "content_addressed_commit_not_push_time" else
+                     "当日時点の内容を確認できないため、本文・状態等を要約根拠から保留しました。")
+            lines.append(f"期間注記 source_ref={note['source_ref']}: {label}")
+            if observation["withheld_fields"]:
+                lines.append("保留フィールド: " + _review_escape(", ".join(observation["withheld_fields"])))
+            lines.append("取得日時: " + _review_escape(observation["observed_at_utc"]) +
+                         " / リソース更新日時: " + _review_escape(observation["resource_updated_at"] or "不明"))
         lines.append("")
         entities.append({**original, "fields": field_rows,
                          "nonliteral_displayed_sentence_indices": nonliteral})

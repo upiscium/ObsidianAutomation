@@ -103,9 +103,10 @@ class EvidenceEvent:
     title: TextExcerpt | None
     body: TextExcerpt | None
     message: TextExcerpt | None
+    temporal_observation: Mapping[str, object] | None = None
 
     def to_json(self) -> dict[str, object]:
-        return {
+        result = {
             "evidence_id": self.evidence_id,
             "kind": self.kind,
             "repository": self.repository,
@@ -122,6 +123,9 @@ class EvidenceEvent:
             "body": self.body.to_json() if self.body is not None else None,
             "message": self.message.to_json() if self.message is not None else None,
         }
+        if self.temporal_observation is not None:
+            result["temporal_observation"] = dict(self.temporal_observation)
+        return result
 
 
 @dataclass(frozen=True)
