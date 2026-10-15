@@ -63,7 +63,7 @@ HTML = """<!doctype html>
     <p id="error" class="error" role="status"></p>
     <section id="connections" class="page-section placeholder" aria-labelledby="connections-heading">
       <h2 id="connections-heading">Connections</h2>
-      <p>未実装：Nextcloud、AI provider、Gitea、GitHub の接続設定・疎通確認を行うバックエンドや設定画面はまだありません。この画面では接続状態を判定・保存できません。</p>
+      <p>未実装：Nextcloud、AI provider、Gitea、GitHub の接続情報の登録・変更・疎通確認はまだできません。この画面では実際の接続状態を確認・保存できません。</p>
     </section>
     <section id="setup-wizard" class="page-section placeholder" aria-labelledby="setup-heading">
       <h2 id="setup-heading">Setup Wizard</h2>

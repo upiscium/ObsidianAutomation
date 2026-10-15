@@ -109,3 +109,12 @@ AI health while the fixed service observations remain intact.
 ## Masked timer observability
 
 When systemd reports a mask (`LoadState=masked` or `UnitFileState=masked` / `masked-runtime`) **and** confirms the timer is `inactive/dead`, the Dashboard shows `blocked`. Masking does not necessarily stop a previously active timer; `active/waiting`, `active/running`, or transitional masked states remain `unknown` rather than being misrepresented as quiescent. A verified `ActiveState=failed` remains a failure. Malformed, missing, or contradictory properties—including `LoadState=not-found` paired with a masked unit file—also remain `unknown`. These observations grant no authority to unmask or control a timer.
+
+## #304 integration note — Connections read-only API
+
+The navigation shell intentionally does not claim whether Nextcloud/Gitea/
+GitHub/AI connections are configured. #301 may add a separate read-only
+`GET /api/v1/connections` contract while the connection setup/write/probe
+workflow remains unimplemented. The #304 route tests must NOT assert that
+the #301 endpoint stays 404: the child branches are intended to integrate.
+They only require nonexistent **mutation/setup** routes to remain unavailable.

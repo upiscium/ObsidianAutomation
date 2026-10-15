@@ -286,9 +286,9 @@ def test_no_state_changing_routes(verb: str) -> None:
         assert body == b"Method not allowed"
 
 
-def test_placeholder_and_save_routes_do_not_exist() -> None:
+def test_mutating_setup_and_save_routes_do_not_exist() -> None:
     unknown_read_paths = (
-        "/api/v1/connections", "/api/v1/config", "/api/v1/setup", "/api/v1/vaults", "/api/v1/save",
+        "/api/v1/config", "/api/v1/setup", "/api/v1/vaults", "/api/v1/save",
     )
     write_methods = ("POST", "PUT", "PATCH", "DELETE", "OPTIONS")
     with serving(fixture_observer) as server:
