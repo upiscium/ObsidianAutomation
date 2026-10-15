@@ -23,7 +23,7 @@ POLICY = "github-day-snapshot-v1"
 
 def packets(strict=True):
     entity = {"repository": TARGET[0], "entity_type": TARGET[1], "number": TARGET[2]}
-    preview = {"record_version": 1, "stage": "github_daily_narrative_private_preview_v4",
+    preview = {"record_version": 4, "stage": "github_daily_narrative_private_preview_v4",
         "publication_authorized": False, "date": "2026-10-14",
         "capture_sha256": "a" * 64, "source_context_set_sha256": "b" * 64,
         "entities": [{"entity": entity, "context_sha256": "c" * 64,
@@ -321,4 +321,13 @@ def test_temporal_scope_cannot_masquerade_as_wrong_event_kind(ref, wrong_status)
     if ref == 0:
         observation["resource_updated_at"] = "2026-10-14T04:00:00Z"
     with pytest.raises(EntityConsistencyError):
+        build(sr, p)
+
+
+def test_real_c4_preview_version_is_4_and_older_envelopes_fail():
+    sr, p = packets()
+    assert build(sr, p).report()["record_version"] == 1
+    p["record_version"] = 1
+    sr["preview_sha256"] = _sha(_json(p))
+    with pytest.raises(EntityConsistencyError, match="provenance"):
         build(sr, p)

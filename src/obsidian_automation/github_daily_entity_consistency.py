@@ -133,7 +133,7 @@ def build_entity_consistency_packet(source_review_bytes: bytes, preview_bytes: b
     if (type(source.get("record_version")) is not int or source["record_version"] != 1
             or source.get("stage") != "c5-literal-source-review-v1"
             or type(preview.get("record_version")) is not int
-            or preview["record_version"] != 1
+            or preview["record_version"] != 4
             or preview.get("stage") != "github_daily_narrative_private_preview_v4"
             or source.get("publication_authorized") is not False
             or preview.get("publication_authorized") is not False
