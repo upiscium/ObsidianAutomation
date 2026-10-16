@@ -1,8 +1,23 @@
 # Production LXC consolidation and private migration inventory
 
-## Target topology
+## Scope of this historical inventory
 
-Writer-side automation is consolidated by trust domain, not by feature:
+This inventory describes the earlier multiple-LXC trust-domain layout.
+The accepted target for Dashboard #298/#300 is **one active
+ObsidianAutomation service-execution LXC per managed Vault**. No concurrent
+second runtime acting on the same Vault is supported or guaranteed to preserve
+correct behavior/data integrity. The old LXC(s) may be retained as *inactive*
+rollback candidates, but must not continue their service-execution effects
+once the new single-LXC runtime is activated.
+
+This target does **not** imply separate Unix users/processes disappear or
+that remote CAS/ETag and local updater/service-operation locks can be skipped.
+See [the README supported topology](../README.md#supported-runtime-topology-and-concurrency-limits)
+and [ADR-0001](adr/0001-single-host-management-dashboard.md).
+
+## Historical trust-domain topology (superseded by #298 target)
+
+In the former deployment, writer-side automation was consolidated by trust domain, not by feature. The layout below is historical, not the active #298 target:
 
 ```text
 obsidian-automation
@@ -18,8 +33,7 @@ obsidian-snapshot-taker
   read-only Nextcloud snapshot authority only
 ```
 
-The Snapshot LXC remains separate. Its read-only Nextcloud credential is never
-copied into the writer-side automation LXC.
+In the former topology the Snapshot LXC was separate and its read-only Nextcloud credential was not copied into the writer-side LXC. This is historical, not the #298 target: Snapshot runs under a separate Unix identity in the sole active service LXC, with explicitly reviewed remote-credential permissions.
 
 Inside `obsidian-automation`, feature and authority boundaries remain separate
 Unix identities with POSIX ACLs and systemd sandboxing. Consolidating containers
@@ -58,7 +72,10 @@ listings.
 Review the report before sharing it. Paths, service-user names, and structural
 metadata may still be operationally private.
 
-## Publisher boundary
+## Publisher boundary (historical-only)
+
+The legacy external Gitea Runner cutover below must not be used as the #298 publication rollout. The current target replaces this ObsidianAutomation publication path with a narrowly scoped local publisher, without requiring a second active service LXC. Generic host-mode runners remain excluded from the secrets-bearing LXC.
+
 
 The dedicated `gitea-runner` LXC registers a fresh Gitea Runner; the automation
 host does not run a workflow executor. See `gitea-runner-production.md` for the
@@ -320,45 +337,48 @@ remain disabled/inactive:
 - `obsidian-github-daily-progress.timer`;
 - `obsidian-core-promotion.timer`.
 
-No production service is started. Gitea Runner is not part of this unit staging
-because it is hosted on a separate execution-plane LXC and remains inactive until
-its own cutover. No runner binary/unit/registration belongs on the automation host.
+No production service is started. In this historical staging flow, the Gitea Runner belonged to a separate execution-plane LXC. This older runner cutover is not the #298 single-host target; use the separately reviewed local publisher (not a generic runner) for the new service LXC.
 
-Once the new host has passed this inert staging gate, a later cutover transaction
-may quiesce old writers, transfer durable state, run canaries, and enable the new
-timers.
+After inert staging, the new #298 cutover must first quiesce and drain old writers, then reconcile remote effects and transfer the final authoritative durable state, and only then enable the new runtime after explicit approval.
 
-## Cutover
+## Cutover — active single-LXC target
 
-Never run equivalent canonical writers on old and new LXCs simultaneously.
+This section replaces the former cutover sequence. The historical guidance
+copied durable state before stopping active services and treated the last state
+copy as optional; that is **not safe as a final authoritative transfer**.
 
-A safe sequence is:
+**Never operate equivalent services on old and new LXCs against the same Vault
+at the same time.** Concurrent active instances are unsupported and have no
+guarantee of correct behavior or data integrity.
 
-```text
-bootstrap new LXC
-  -> value-free inventory old LXC
-  -> provision identities and ACLs
-  -> install private config/credentials
-  -> migrate only required durable state
-  -> rebuild mirrors
-  -> safe/shadow acceptance
-  -> stop old recurring writer
-  -> final state copy if needed
-  -> enable new recurring writer
-  -> production health verification
-  -> keep old LXC powered off but recoverable
-```
+The supported, human-gated sequence is:
 
-The source-side bootstrap/self-update implementation is tracked separately and
-must be accepted before production cutover.
+~~~text
+bootstrap and stage new LXC; all execution timers DISABLED
+  -> inventory old environment, prepare new identities and scoped config
+  -> run inert/no-effect staging and acceptance checks
+  -> stop old scheduling and admission of new effect claims
+  -> drain or safely contain ALL in-flight jobs and pending effects
+  -> reconcile remote writes, cleanup, journals and recovery receipts
+  -> MANDATORY final authoritative durable-state transfer AFTER quiescence
+  -> verify state integrity, permissions, provenance and disposable mirrors
+  -> receive explicit Human Cutover acceptance
+  -> enable ONLY the new service LXC and verify actual remote outcomes
+  -> keep old LXC powered off / disabled and recoverable
+~~~
+
+A preliminary mirror or configuration copy can be used solely for staging.
+It never replaces the mandatory post-drain reconciliation and final state
+transfer. Incomplete/uncertain remote effects block activation rather than
+authorizing an overlapping period of old/new service execution.
+
+This procedure is separate from source PR merge approval. The target-owned
+bootstrap/update implementation and the one-LXC security/effect gates must
+be independently accepted before production cutover.
 
 ## Final acceptance and retirement
 
-The deployment topology has three trust domains, not three interchangeable
-workers. #111 records the completed role migration; #110 tracks the generic
-automation-host update transaction. Merge/deploy #110 before treating the parent
-#109 lifecycle as fully accepted. A PR/CI result does not substitute for real-host
-acceptance of that new lifecycle.
+The prior layout had three LXC trust domains, not interchangeable workers. #109/#110/#111 record that earlier migration and updater contract. The #298 target instead runs one active service-execution LXC with separate local Unix identities. Those historical issue/PR outcomes are not sufficient evidence for the new target's runtime safety or live cutover.
 
 Retire old containers only after backup and fresh production evidence: complete
 pipeline stages with invocation timestamps, not just stale `Result=success`.
@@ -368,8 +388,7 @@ An idle AI chain does not prove non-empty generation/review-stop behavior.
 After cutover, old durable state is stale. Do not simply re-enable an old writer:
 first quiesce the new writer, transfer/reconcile its latest durable state and
 credentials, validate the target, then switch authority. Never overwrite current
-state with an old backup in order to roll software back. Keep snapshot credentials
-out of both writer and runner domains.
+state with an old backup in order to roll software back. In the one-LXC target, protect Snapshot-role credentials from unrelated Unix service identities; where Standard shares a Nextcloud account, document its broader remote-access exposure and do not claim independent remote read-only enforcement.
 
 The legacy dormant runner account in automation authority fixtures is retained
 for negative access checks and compatibility, not permission to run jobs there.

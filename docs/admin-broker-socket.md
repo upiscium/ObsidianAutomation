@@ -66,13 +66,22 @@ The future effect gate must exclude all relevant launch/update paths:
 3. GitHub update / sync / Daily launchers and pending effects.
 4. Core Promotion writer and its deployment/update paths.
 5. Concurrent timer starts, chained oneshot jobs and recovery.
-6. Legacy LXC hosts if they remain active.
+6. A replacement/standby LXC only after the prior active runtime has been
+   quiesced and stopped. Both concurrently active against one Vault are
+   **unsupported**.
 
-A local flock cannot be assumed to exclude separate LXC/VM machines. Until
-the single-LXC operational topology and every updater lock contract are
-verified, service controls MUST stay disabled. The #294 Stage/Activate gate
-and #309 Sync cleanup are independent authority boundaries that cannot be
-replaced by generic systemd access.
+**Supported configuration: one active service-execution LXC per managed
+Vault.** Simultaneous operation of multiple ObsidianAutomation instances
+against one Vault is unsupported and does **not** carry behavior or
+data-integrity guarantees. The MVP does not need a distributed cross-LXC
+lock, leader election or cross-host fencing system. A local flock does not
+make the unsupported configuration safe, and we do not claim that it does.
+
+To enable controls on the supported one-LXC topology, all **local** active
+updaters and job/worker paths still need verified common exclusion. Until
+those within-LXC lock/idle contracts are qualified, service controls remain
+disabled. The #294 Stage/Activate gate and #309 Sync cleanup remain independent
+authority boundaries, not generalized systemd operations.
 
 ## Deployment/acceptance still required
 

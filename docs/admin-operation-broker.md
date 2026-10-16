@@ -73,6 +73,20 @@ other actors capable of starting a workflow for the full command duration.
 A newer systemd success is not sufficient if another actor can intervene. No
 existing updater set has been qualified to meet that precondition.
 
+## Supported deployment boundary
+
+**One active service-execution LXC per managed Vault** is the supported operator
+configuration. A second active ObsidianAutomation runtime acting on the same
+Vault is expressly **unsupported**; no behavioral or data-integrity guarantees
+apply to that configuration. The broker does not need to implement cross-LXC
+distributed mutual exclusion, leadership or active-active failover for #300.
+
+This is a *scope assumption*, not a lock. The sole active LXC can still have
+multiple services, timers, updater processes, dependency jobs and local
+privileged identities. The maintenance gate must exclude **those same-host
+actors** during the entire effect and its durable result. Remote CAS/ETag and
+other effect-specific safeguards still apply independently.
+
 ## Remaining mandatory live-use gates
 
 - **Deployment exclusion NOT QUALIFIED:** updater paths do not all share one

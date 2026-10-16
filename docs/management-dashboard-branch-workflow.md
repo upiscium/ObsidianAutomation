@@ -20,6 +20,7 @@
 The final transition out of Draft and merge into `main` requires:
 
 - A reviewed, accepted ADR on credential-mode guarantees, loginless private-network ingress and the one-LXC design;
+- README and runtime docs explicitly disclose the **single active service-execution LXC per Vault** support boundary and that concurrent multi-instance operations on the same Vault are **unsupported and not guaranteed**; cross-host distributed fencing is out of #300 MVP scope, but within-LXC update/worker/control locks remain mandatory;
 - All requested operator workflows present: service status and controlled pause/resume, Nextcloud/AI/Gitea/GitHub Connections, Vault selection, Snapshot and local publication, one-host install/recovery;
 - Representative end-to-end tests including one-Nextcloud-account Standard, remotely isolated Strict, CAS/ETag/no unintended deletion, secret confidentiality, shared lock and no duplicate canonical writer;
 - Independently qualified Security and Correctness reviews on the **final** integration SHA, CI Green, and explicit user merge approval;

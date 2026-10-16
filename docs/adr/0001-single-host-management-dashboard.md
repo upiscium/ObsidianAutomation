@@ -18,7 +18,7 @@ These were originally deliberate restrictions, not accidental cruft. Nevertheles
 
 - `docs/production-lxc-consolidation.md`: writer-side `obsidian-automation`, separately isolated `gitea-runner` and read-only `obsidian-snapshot-taker`. These are *documented deployment domains*, not a guarantee that each is presently active.
 - `docs/installation.md` and `docs/ai-production-authority.md`: canonical writer, Review Intake reader, bounded `04-AI` projection cleanup are separate remote Nextcloud authorities; local processing stages use Unix identities and POSIX ACLs.
-- `tools/host_runtime_lifecycle.py`: five managed recurring timers (AI pull, pre-review, GitHub Sync, GitHub Daily Progress, Core Promotion). `docs/host-runtime-lifecycle.md` contains an older count of four; runtime registry and documentation must converge.
+- `tools/host_runtime_lifecycle.py`: five managed recurring timers (AI pull, pre-review, GitHub Sync, GitHub Daily Progress, Core Promotion). `docs/host-runtime-lifecycle.md` and `docs/installation.md` now enumerate the same five timers, including GitHub Daily Progress.
 - `src/obsidian_automation/pre_review_status.py`, `mirror_status.py`: useful non-secret read models already exist; many services are `Type=oneshot`, so `inactive` by itself is not unhealthy.
 - `examples/gitea/public-projection.yml`: current public publication is a Gitea Actions host-runner workflow.
 - `src/obsidian_automation/vault_snapshot.py` and `docs/live-vault-snapshot.md`: deterministic snapshot helper has no network effects itself.
@@ -60,6 +60,16 @@ Separate, separately scoped connectors: AI provider, Gitea, GitHub.
 Single *host* does not mean a single *process* or single root-privileged service. Keep the Unix identities, filesystem ACLs, immutable artifact/provenance contracts, fixed service registry and systemd sandboxing.
 
 A generic host-mode Gitea Runner MUST NOT be placed into the same privileged-data LXC to satisfy the one-host checkbox. Replace its ObsidianAutomation publication use with a narrowly scoped local publisher; other unrelated Gitea workflows may keep an optional external runner not required by this product.
+
+### 3.1 Supported runtime concurrency (operator-approved boundary, 2026-10-16)
+
+The supported runtime has **one active service-execution LXC per managed Vault**. It may contain multiple isolated Unix users, processes and systemd roles, but a second independently running ObsidianAutomation instance targeting the **same Vault** is unsupported. Simultaneous multi-instance operation is not guaranteed to work correctly or preserve Vault/data consistency. Distributed locks, cross-LXC leader election, distributed fencing and automatic active-active/high-availability coordination are **not** MVP requirements. This does not constitute proof that multiple active writers are harmless.
+
+An inactive standby is allowed only as a stopped recovery artifact, not as a concurrently running Vault operator. A switch to a replacement LXC must quiesce/drain and reconcile the old runtime and remote effects, transfer durable state, and activate **only the replacement**. During the cutover, no overlapping service-execution window is part of the supported procedure.
+
+Within the one active LXC, preserve strong local exclusion for Dashboard broker operations vs deployment/update programs, timer triggers, dependency jobs and publisher/canonical effects. The local broker's fixed-unit commands require verified intra-LXC lock/provenance/idle-state gates; do **not** confuse the single-LXC assumption with a blanket waiver of mutexes or remote CAS/ETag safeguards. #294 stage/activate and #309 conditional Sync cleanup remain separate effect authorities.
+
+This paragraph is an accepted product-scope decision, not an acceptance of the entire Proposed ADR or a permission to merge, deploy, run live service controls or switch production LXC.
 
 ## 4. Credential profiles and their honest guarantees
 

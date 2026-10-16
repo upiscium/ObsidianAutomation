@@ -54,7 +54,19 @@ Do not place lifecycle state inside the Vault mirror.
 
 ## Requirements
 
-The production host is expected to be a dedicated Linux host or LXC. The current production model is single-host; the shared execution lock is not a distributed lock.
+The supported target is **one active ObsidianAutomation service-execution
+LXC per managed Vault**. A second concurrently active ObsidianAutomation
+instance targeting the same Vault is **unsupported**, with no guarantee of
+correct behavior or data integrity. There is no distributed coordination,
+leader election or automatic failover across LXCs. Before a replacement starts,
+disable and drain old services, reconcile in-flight effects and transfer
+authoritative durable state under quiescence. An inactive standby is allowed.
+
+Within that single LXC, the shared execution lock is local, not distributed;
+it must still coordinate service control with local update processes, timers,
+job dependencies and durable recovery. The #298 Dashboard/one-LXC migration
+is not production-qualified merely by this notice; retain existing activation
+and authority gates until independently accepted.
 
 Required host capabilities include:
 
@@ -290,6 +302,7 @@ The managed timers are:
 obsidian-ai-vault-pull.timer
 obsidian-pre-review.timer
 obsidian-github-sync.timer
+obsidian-github-daily-progress.timer
 obsidian-core-promotion.timer
 ```
 
@@ -313,12 +326,14 @@ systemctl is-enabled \
   obsidian-ai-vault-pull.timer \
   obsidian-pre-review.timer \
   obsidian-github-sync.timer \
+  obsidian-github-daily-progress.timer \
   obsidian-core-promotion.timer
 
 systemctl is-active \
   obsidian-ai-vault-pull.timer \
   obsidian-pre-review.timer \
   obsidian-github-sync.timer \
+  obsidian-github-daily-progress.timer \
   obsidian-core-promotion.timer
 ```
 
