@@ -43,7 +43,7 @@ class Transport:
         if "system_prompt" in ctx:
             assert payload["messages"][0]["content"] == ctx["system_prompt"]
         else:
-            assert payload["messages"][0]["content"] == c4.GROUND_PROMPT
+            assert payload["messages"][0]["content"] in (c4.GROUND_PROMPT, rt.SEMANTIC_GROUND_PROMPT)
             assert set(ctx) == {"entity", "date", "sentence", "original_events"}
         assert payload["format"]["additionalProperties"] is False
         if stage == "editorial":
@@ -488,7 +488,7 @@ def test_individual_fact_policy_is_versioned_separately_from_wire_contract(case)
     editorial=out.attempts[0];meta=json.loads(editorial.receipt_bytes)
     requests=[p for _,path,p,_ in t.calls if path=='/api/chat']
     payload=requests[0];visible=json.loads(payload['messages'][1]['content'])
-    assert rt.SENTENCES_ONLY_PROMPT_VERSION=='c5-individual-facts-ja-v3'
+    assert rt.SENTENCES_ONLY_PROMPT_VERSION=='c5-individual-facts-ja-v4'
     assert rt.SENTENCES_ONLY_PROMPT_VERSION!=rt.SENTENCES_ONLY_CONTRACT
     assert meta['response_contract']==rt.SENTENCES_ONLY_CONTRACT
     assert meta['effective_prompt_version']==rt.SENTENCES_ONLY_PROMPT_VERSION
@@ -500,8 +500,11 @@ def test_individual_fact_policy_is_versioned_separately_from_wire_contract(case)
     assert meta['prompt_version']=='github-daily-narrative-ja-v1'
     assert meta['system_prompt_sha256']==rt._sha(c4.EDITORIAL_PROMPT.encode())
     ground_meta=json.loads(out.attempts[1].receipt_bytes)
-    assert requests[1]['messages'][0]['content']==c4.GROUND_PROMPT
-    assert ground_meta['effective_prompt_version']=='github-daily-narrative-ground-ja-v1'
+    assert requests[1]['messages'][0]['content']==rt.SEMANTIC_GROUND_PROMPT
+    assert ground_meta['effective_prompt_version']==rt.SEMANTIC_GROUND_PROMPT_VERSION
+    assert ground_meta['system_prompt_sha256']==rt._sha(c4.GROUND_PROMPT.encode())
+    assert ground_meta['effective_system_prompt_sha256']==rt._sha(rt.SEMANTIC_GROUND_PROMPT.encode())
+    assert ground_meta['request_sha256']==rt._sha(rt._json(requests[1]).removesuffix(b'\n'))
     assert ground_meta['response_contract']==rt.LEGACY_EDITORIAL_CONTRACT
 
 
@@ -512,6 +515,10 @@ def test_individual_prompt_preserves_negation_and_does_not_teach_new_source_fact
         assert obligation in prompt
     assert 'APIエラー時のテストを追加しました' not in prompt
     assert '検証処理の競合を修正し' not in prompt
+    assert '合成試験の例文' in prompt and '例を生成・検証' in prompt
+    judge = rt.SEMANTIC_GROUND_PROMPT
+    assert '引用文・テスト用例文' in judge and 'unsupported' in judge
+    assert '原文にその行為の証拠がある場合' in judge
 
 
 def test_fact_policy_never_auto_approves_or_repairs_causal_prose(case):
@@ -540,7 +547,7 @@ def test_semantic_grounding_projection_preserves_exact_text_sources_and_C4_ident
     assert visible == {'entity':full['entity'],'date':full['date'],
         'sentence':full['sentence']['text'],
         'original_events':[{k:v for k,v in ev.items() if k!='evidence_id'} for ev in full['original_events']]}
-    assert payload['messages'][0]['content']==c4.GROUND_PROMPT
+    assert payload['messages'][0]['content']==rt.SEMANTIC_GROUND_PROMPT
     assert payload['format']==rt.GROUND_SCHEMA
     meta=json.loads(out.attempts[1].receipt_bytes)
     assert meta['context_sha256']==raw_ground['ground_context_sha256']
@@ -577,6 +584,7 @@ def test_semantic_projection_cannot_borrow_other_entity_or_unquoted_claim(case):
     # Model prompt still demands support for the whole sentence and rejects
     # invented causality. Its verdict never becomes a source fact or approval.
     assert '因果関係' in ground['messages'][0]['content']
+    assert '引用文' in ground['messages'][0]['content']
     assert out.preview.report()['publication_authorized'] is False
 
 
