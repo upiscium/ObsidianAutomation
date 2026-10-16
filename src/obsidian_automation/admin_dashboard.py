@@ -1,16 +1,25 @@
-"""Loopback-only, read-only ObsidianAutomation status dashboard (experimental).
+"""Loopback Dashboard; status + deliberately no-effect operation PREVIEW.
 
-No login because the listener is loopback only; not a public administration server.
-No mutating method or arbitrary service/unit name is accepted.
+The POST preview route is strictly CSRF/Origin-guarded and cannot execute a
+systemd operation, write Vault data or grant privileged control. No login is
+implemented, so this must remain on loopback/private ingress only.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import threading
+import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable, Sequence
 
+from .admin_broker_socket import capabilities_from_socket, _unavailable_capabilities
+from .admin_operation_preview import preview_from_socket
+from .admin_operation_web import (
+    MAX_REQUEST_BYTES, OneTimePreviewCsrf, PreviewRequestRejected,
+    parse_operation_preview_request, strict_browser_preview, unavailable_preview,
+)
 from .admin_status import aggregate_status
 from .admin_ai_status import load_ai_health
 
@@ -45,6 +54,25 @@ HTML = """<!doctype html>
       <div id="pipeline-details" class="pipeline-details"></div>
     </section>
     <section id="services" class="cards" aria-label="サービス一覧" aria-live="polite"></section>
+    <section id="operation-preview" class="pipeline" aria-label="操作の事前確認">
+      <h2>サービス操作のプレビュー</h2>
+      <p>現在の状態で操作を検討できるか確認します。これは実行許可ではなく、サービスへの変更も発生しません。</p>
+      <div class="operation-controls">
+        <label>対象サービス
+          <select id="preview-service" aria-label="対象サービス" disabled></select>
+        </label>
+        <label>操作内容
+          <select id="preview-action" aria-label="操作内容">
+            <option value="pause">定期実行を一時停止</option>
+            <option value="resume">定期実行を再開</option>
+            <option value="run_once">一度だけ実行</option>
+          </select>
+        </label>
+        <button id="preview-check" type="button" disabled>プレビュー</button>
+        <button type="button" disabled aria-label="実際のサービス操作は未対応">実行不可</button>
+      </div>
+      <p id="preview-message" role="status" aria-live="polite">状態を取得してからプレビューを行えます。</p>
+    </section>
     <p id="error" class="error" role="status"></p>
     <footer>状態はsystemdの直近の観測結果です。成功履歴やVaultの完全性を証明するものではありません。</footer>
   </main>
@@ -94,6 +122,12 @@ button:disabled { opacity:.55; cursor:wait }
 .rowline { display:flex; justify-content:space-between; gap:12px; font-size:.88rem; margin-top:12px }
 .rowline .value { color:var(--muted); text-align:right }
 .error { color:#cb4545; min-height:1.5em }
+.operation-controls { display:flex; flex-wrap:wrap; align-items:end; gap:12px; margin:12px 0 }
+.operation-controls label { display:flex; flex:1 1 170px; flex-direction:column; gap:5px; min-width:0 }
+.operation-controls select { width:100%; min-height:42px; border:1px solid var(--border);
+  background:var(--surface); color:var(--ink); border-radius:9px; font:inherit; padding:7px 9px }
+.operation-controls button { flex:0 0 auto; }
+#preview-message { overflow-wrap:anywhere }
 footer { margin-top:32px; font-size:.78rem }
 @media (max-width:620px) { .frame { padding:26px 14px } header { align-items:start; flex-direction:column }
   button { width:100% } .notice { margin-top:18px } }
@@ -182,7 +216,11 @@ function renderAi(p) {
     );
   }
 }
+let previewGeneration = 0;
 async function refresh() {
+  ++previewGeneration; // Invalidate any in-flight operation preview.
+  $("preview-check").disabled = true;
+  $("preview-message").textContent = "状態の更新中です。";
   $("refresh").disabled = true;
   $("error").textContent = "";
   try {
@@ -192,11 +230,26 @@ async function refresh() {
     if (data.version !== 1 || !Array.isArray(data.services)) throw Error("schema");
     renderAi(data.ai_pipeline);
     $("services").replaceChildren(...data.services.map(card));
+    const selectable = data.services.filter(s =>
+      ["ai-vault-pull","pre-review","github-sync","github-daily","core-promotion"].includes(s.id));
+    $("preview-service").replaceChildren(...selectable.map(s => {
+      const option = document.createElement("option");
+      option.value = s.id;
+      option.textContent = s.label;
+      return option;
+    }));
+    $("preview-service").disabled = selectable.length === 0;
+    $("preview-check").disabled = selectable.length === 0;
+    $("preview-message").textContent = "操作をプレビューできます。実行は無効です。";
     $("updated").textContent = "観測日時: " + data.generated_at;
     $("count").textContent = data.services.length + " services";
   } catch {
     // Previous observations must never remain visible as current on errors.
     $("services").replaceChildren();
+    $("preview-service").replaceChildren();
+    $("preview-service").disabled = true;
+    $("preview-check").disabled = true;
+    $("preview-message").textContent = "観測できないためプレビューできません。";
     $("pipeline-details").replaceChildren();
     $("pipeline-summary").textContent = "Pipeline: 現在の状態は未確認";
     $("updated").textContent = "観測失敗";
@@ -208,15 +261,256 @@ async function refresh() {
 }
 $("refresh").addEventListener("click", refresh);
 refresh();
+
+async function previewOperation() {
+  const button = $("preview-check");
+  const serviceId = $("preview-service").value;
+  const action = $("preview-action").value;
+  const generation = ++previewGeneration;
+  const stillCurrent = () => (
+    generation === previewGeneration
+    && $("preview-service").value === serviceId
+    && $("preview-action").value === action
+    && !$("preview-service").disabled
+  );
+  if (!["ai-vault-pull","pre-review","github-sync","github-daily","core-promotion"].includes(serviceId)
+      || !["pause","resume","run_once"].includes(action)) {
+    $("preview-message").textContent = "操作の対象を検証できません。";
+    return;
+  }
+  button.disabled = true;
+  $("preview-message").textContent = "現在の状態を検証しています…";
+  try {
+    if (!globalThis.crypto || !crypto.randomUUID) throw Error("random_uuid_missing");
+    const sessionResponse = await fetch("/api/v1/operation-session", {
+      cache:"no-store", credentials:"same-origin",
+    });
+    if (!sessionResponse.ok) throw Error("csrf_unavailable");
+    const session = await sessionResponse.json();
+    if (session.version !== 1 || session.authority !== "preview_only"
+        || session.can_execute !== false || typeof session.csrf_token !== "string") {
+      throw Error("invalid_csrf");
+    }
+    const request = {
+      version:1, service_id:serviceId, action, request_id:crypto.randomUUID(),
+    };
+    const response = await fetch("/api/v1/operation-previews", {
+      method:"POST", cache:"no-store", credentials:"same-origin",
+      headers:{"Content-Type":"application/json", "X-Obsidian-CSRF":session.csrf_token},
+      body:JSON.stringify(request),
+    });
+    if (!response.ok) throw Error("preview_request_failed");
+    const result = await response.json();
+    if (result.version !== 1 || result.authority !== "preview_only"
+        || result.can_execute !== false
+        || !["rejected","compatible"].includes(result.status)) {
+      throw Error("untrusted_preview_response");
+    }
+    if (stillCurrent()) {
+      $("preview-message").textContent = result.status === "compatible"
+        ? "現在の状態では操作候補です。ただし実行権限は未承認のため、変更はできません。"
+        : "操作の状態検証が完了しませんでした。操作は実行されていません。";
+    }
+  } catch {
+    if (stillCurrent()) {
+      $("preview-message").textContent = "プレビューが利用できません。操作は実行されていません。";
+    }
+  } finally {
+    if (generation === previewGeneration) {
+      button.disabled = $("preview-service").disabled;
+    }
+  }
+}
+for (const id of ["preview-service", "preview-action"]) {
+  $(id).addEventListener("change", () => {
+    ++previewGeneration;
+    $("preview-message").textContent = "対象・操作が変わりました。プレビューをやり直してください。";
+    $("preview-check").disabled = $("preview-service").disabled;
+  });
+}
+$("preview-check").addEventListener("click", previewOperation);
 """
 
 Observer = Callable[[], list[dict[str, object]]]
 AIObserver = Callable[[], dict[str, object]]
 
+MAX_DASHBOARD_HANDLERS = 12
+HEADER_DEADLINE_SECONDS = 2.0
+MAX_HEADER_BYTES = 8192
+
+
+class _BoundedHeaderReader:
+    """One monotonic deadline across request-line + all HTTP header lines."""
+
+    def __init__(self, raw, conn):
+        self.raw = raw
+        self.conn = conn
+        self.deadline = time.monotonic() + HEADER_DEADLINE_SECONDS
+        self.read_total = 0
+
+    def readline(self, size=-1):
+        limit = min(size if isinstance(size, int) and size > 0
+                    else MAX_HEADER_BYTES, MAX_HEADER_BYTES)
+        data = bytearray()
+        while True:
+            if len(data) >= limit or self.read_total >= MAX_HEADER_BYTES:
+                raise TimeoutError("http_header_limit")
+            remaining = self.deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("http_header_deadline")
+            self.conn.settimeout(remaining)
+            value = self.raw.read1(1)
+            if not value:
+                return bytes(data)
+            data.extend(value)
+            self.read_total += len(value)
+            if value == b"\n":
+                return bytes(data)
+
+    def read1(self, size=-1):
+        # POST body has its own independent 1-second monotonic deadline.
+        return self.raw.read1(size)
+
+    def __getattr__(self, name):
+        return getattr(self.raw, name)
+
+
+class BoundedDashboardServer(ThreadingHTTPServer):
+    """Bound concurrent slow clients before a new handler thread is spawned."""
+
+    request_queue_size = MAX_DASHBOARD_HANDLERS
+    daemon_threads = True
+
+    def __init__(self, *args, **kwargs):
+        self._slots = threading.BoundedSemaphore(MAX_DASHBOARD_HANDLERS)
+        super().__init__(*args, **kwargs)
+
+    def process_request(self, request, client_address):
+        if not self._slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            return super().process_request(request, client_address)
+        except BaseException:
+            self._slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
+
+
+class _StatusSingleFlight:
+    """At most one costly systemd/AI projection collection in flight.
+
+    Repeated cross-origin GETs without a readable Origin cannot cause dozens
+    of concurrent subprocess invocations. A busy reader fails closed quickly;
+    a recent immutable JSON result is shared for at most one second. A failed
+    read NEVER serves a former healthy/stale observation.
+    """
+
+    def __init__(self, observer: Observer, ai_observer: AIObserver):
+        self.observer = observer
+        self.ai_observer = ai_observer
+        self._lock = threading.Lock()
+        self._active = False
+        self._cache: bytes | None = None
+        self._expires = 0.0
+
+    def get(self) -> tuple[int, bytes]:
+        now = time.monotonic()
+        with self._lock:
+            if self._cache is not None and now < self._expires:
+                return 200, self._cache
+            if self._active:
+                return 503, b'{"error":"status_busy"}'
+            self._active = True
+        try:
+            services = self.observer()
+            ai_pipeline = self.ai_observer()
+            payload = json.dumps({
+                "version": 1, "authority": "observation_only",
+                "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "services": services, "ai_pipeline": ai_pipeline,
+                "actions": {"start": False, "stop": False, "trigger": False},
+            }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        except Exception:
+            with self._lock:
+                self._cache = None
+                self._expires = 0.0
+                self._active = False
+            return 503, b'{"error":"status_unavailable"}'
+        with self._lock:
+            self._cache = payload
+            self._expires = time.monotonic() + 1.0
+            self._active = False
+        return 200, payload
+
+
+class _CapabilitiesSingleFlight:
+    """Bound optional local socket reads to one in-flight request only."""
+
+    def __init__(self, observer: Callable[[], dict[str, object]]):
+        self.observer = observer
+        self._lock = threading.Lock()
+        self._active = False
+        self._cache: bytes | None = None
+        self._expires = 0.0
+
+    @staticmethod
+    def _safe_payload(candidate: object) -> bytes:
+        if (
+            type(candidate) is not dict
+            or set(candidate) != {"version", "authority", "operations", "reason"}
+            or type(candidate["version"]) is not int
+            or candidate["version"] != 1
+            or candidate["authority"] != "observation_only"
+            or candidate["reason"] not in (
+                "broker_unavailable", "cross_updater_exclusion_unqualified"
+            )
+            or type(candidate["operations"]) is not dict
+            or set(candidate["operations"]) != {"pause", "resume", "run_once"}
+            or any(type(v) is not bool or v is not False
+                   for v in candidate["operations"].values())
+        ):
+            candidate = _unavailable_capabilities()
+        return json.dumps(
+            candidate, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+
+    def get(self) -> bytes:
+        now = time.monotonic()
+        with self._lock:
+            if self._cache is not None and now < self._expires:
+                return self._cache
+            if self._active:
+                # Every capability is false; never wait for an already slow
+                # privileged-socket query while consuming HTTP worker slots.
+                return self._safe_payload(_unavailable_capabilities())
+            self._active = True
+        try:
+            result = self._safe_payload(self.observer())
+        except Exception:
+            result = self._safe_payload(_unavailable_capabilities())
+        with self._lock:
+            self._cache = result
+            self._expires = time.monotonic() + 1.0
+            self._active = False
+        return result
+
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "ObsidianStatus/0.1"
     sys_version = ""
+
+    def setup(self):
+        super().setup()
+        # A per-read socket timeout alone is insufficient: a slow client
+        # can drip one byte before every timeout indefinitely. The wrapper
+        # enforces a total request-line+headers deadline before parsing.
+        self.rfile = _BoundedHeaderReader(self.rfile, self.connection)
 
     def log_message(self, format: str, *args: object) -> None:
         # Never log a browser URL, user input, exception, or systemd data.
@@ -251,6 +545,24 @@ class Handler(BaseHTTPRequestHandler):
         if not self._origin_allowed():
             self._reply(403, b"Forbidden")
             return
+        if self.path == "/api/v1/operation-capabilities":
+            self._reply(
+                200, self.server.capabilities_singleflight.get(),
+                "application/json; charset=utf-8",
+            )
+            return
+        elif self.path == "/api/v1/operation-session":
+            try:
+                session = self.server.preview_csrf.issue()
+            except PreviewRequestRejected:
+                self._reply(503, b'{"error":"preview_session_unavailable"}',
+                            "application/json; charset=utf-8")
+                return
+            data = json.dumps(
+                session, sort_keys=True, separators=(",", ":"),
+            ).encode("utf-8")
+            self._reply(200, data, "application/json; charset=utf-8")
+            return
         if self.path == "/":
             self._reply(200, HTML.encode("utf-8"), "text/html; charset=utf-8")
         elif self.path == "/static/style.css":
@@ -258,54 +570,135 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/static/app.js":
             self._reply(200, JS.encode("utf-8"), "text/javascript; charset=utf-8")
         elif self.path == "/api/v1/status":
-            try:
-                services = self.server.observer()
-                ai_pipeline = self.server.ai_observer()
-            except Exception:
-                self._reply(503, b'{"error":"status_unavailable"}', "application/json")
-                return
-            data = json.dumps({
-                "version": 1, "authority": "observation_only",
-                "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                "services": services,
-                "ai_pipeline": ai_pipeline,
-                "actions": {"start": False, "stop": False, "trigger": False},
-            }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-            self._reply(200, data, "application/json; charset=utf-8")
+            code, payload = self.server.status_singleflight.get()
+            self._reply(code, payload, "application/json; charset=utf-8")
         else:
             self._reply(404, b"Not found")
 
     def do_HEAD(self) -> None:
+        if self.path == "/api/v1/operation-session":
+            # A HEAD request has no body to return the token and must not
+            # manufacture an otherwise unreadable operator session.
+            self._reply(405, b"Method not allowed")
+            return
         self.do_GET()
 
-    def do_POST(self) -> None:
-        self._reply(405, b"Method not allowed")
+    def _write_origin_allowed(self) -> bool:
+        """Mutating HTTP verb policy is stricter than read-only GET."""
+        if not self._origin_allowed():
+            return False
+        received_hosts = self.headers.get_all("Host", [])
+        origins = self.headers.get_all("Origin", [])
+        fetch_site = self.headers.get_all("Sec-Fetch-Site", [])
+        return (
+            len(received_hosts) == 1 and len(origins) == 1
+            and origins[0] == f"http://{received_hosts[0]}"
+            and len(fetch_site) <= 1
+            and (not fetch_site or fetch_site[0] in ("same-origin", "none"))
+        )
 
-    do_PUT = do_POST
-    do_PATCH = do_POST
-    do_DELETE = do_POST
-    do_OPTIONS = do_POST
+    def _read_bounded_json(self) -> bytes:
+        """One hard deadline across all fragmented HTTP body reads."""
+        lengths = self.headers.get_all("Content-Length", [])
+        types = self.headers.get_all("Content-Type", [])
+        if (
+            len(lengths) != 1
+            or len(types) != 1
+            or types[0] != "application/json"
+            or self.headers.get_all("Transfer-Encoding")
+            or self.headers.get_all("Content-Encoding")
+            or self.headers.get_all("Expect")
+        ):
+            raise PreviewRequestRejected("invalid_preview_headers")
+        value = lengths[0]
+        if not value.isascii() or not value.isdecimal() or len(value) > 4:
+            raise PreviewRequestRejected("invalid_preview_headers")
+        remaining = int(value)
+        if not 1 <= remaining <= MAX_REQUEST_BYTES:
+            raise PreviewRequestRejected("invalid_preview_headers")
+        chunks = []
+        deadline = time.monotonic() + 1.0
+        while remaining:
+            seconds = deadline - time.monotonic()
+            if seconds <= 0:
+                raise PreviewRequestRejected("preview_body_timeout")
+            try:
+                self.connection.settimeout(seconds)
+                # read1 returns at most one buffered/OS read, not a
+                # potentially indefinite exact-byte read loop.
+                part = self.rfile.read1(min(remaining, 256))
+            except (OSError, TimeoutError):
+                raise PreviewRequestRejected("preview_body_unavailable") from None
+            if not part:
+                raise PreviewRequestRejected("preview_body_truncated")
+            chunks.append(part)
+            remaining -= len(part)
+        return b"".join(chunks)
+
+    def do_POST(self) -> None:
+        if self.path != "/api/v1/operation-previews":
+            self._reply(405, b"Method not allowed")
+            return
+        if not self._write_origin_allowed():
+            self._reply(403, b'{"error":"origin_rejected"}', "application/json")
+            return
+        tokens = self.headers.get_all("X-Obsidian-CSRF", [])
+        if len(tokens) != 1 or not self.server.preview_csrf.consume(tokens[0]):
+            self._reply(403, b'{"error":"csrf_rejected"}', "application/json")
+            return
+        try:
+            request = parse_operation_preview_request(self._read_bounded_json())
+        except PreviewRequestRejected:
+            self._reply(
+                400, b'{"error":"invalid_preview_request"}',
+                "application/json",
+            )
+            return
+        try:
+            preview = self.server.preview_observer(request)
+            preview = strict_browser_preview(preview, request)
+        except Exception:
+            preview = unavailable_preview()
+        data = json.dumps(
+            preview, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+        self._reply(200, data, "application/json; charset=utf-8")
+
+    do_PUT = lambda self: self._reply(405, b"Method not allowed")
+    do_PATCH = do_PUT
+    do_DELETE = do_PUT
+    do_OPTIONS = do_PUT
 
 
 def make_server(
     *, port: int = 8370,
     observer: Observer = aggregate_status,
     ai_observer: AIObserver = load_ai_health,
+    capabilities_observer: Callable[[], dict[str, object]] = _unavailable_capabilities,
+    preview_observer: Callable[[dict[str, object]], dict[str, object]] = lambda _: unavailable_preview(),
 ) -> ThreadingHTTPServer:
     if not isinstance(port, int) or not 0 <= port <= 65535:
         raise ValueError("port must be between 0 and 65535")
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    server = BoundedDashboardServer(("127.0.0.1", port), Handler)
     server.observer = observer
     server.ai_observer = ai_observer
+    server.status_singleflight = _StatusSingleFlight(observer, ai_observer)
+    server.capabilities_observer = capabilities_observer
+    server.capabilities_singleflight = _CapabilitiesSingleFlight(capabilities_observer)
+    server.preview_observer = preview_observer
+    server.preview_csrf = OneTimePreviewCsrf()
     server.daemon_threads = True
     return server
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Experimental read-only localhost status dashboard")
+    parser = argparse.ArgumentParser(description="Experimental no-effect localhost Dashboard")
     parser.add_argument("--port", type=int, default=8370)
     args = parser.parse_args(argv)
-    with make_server(port=args.port) as server:
+    with make_server(
+        port=args.port, capabilities_observer=capabilities_from_socket,
+        preview_observer=preview_from_socket,
+    ) as server:
         server.serve_forever(poll_interval=0.25)
     return 0
 

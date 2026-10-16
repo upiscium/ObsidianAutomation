@@ -1,8 +1,10 @@
 # Exact-SHA automation host lifecycle (contract 4)
 
 This is the completion of the source-side bootstrap transaction for #110.
-It manages only `obsidian-automation`, not the separate Gitea Runner or Snapshot
-LXC. The dormant compatibility runner account in older authority manifests is
+It describes the existing `obsidian-automation` host lifecycle. Its
+historical separation from the Gitea Runner and Snapshot LXC is not the
+#298 single-LXC target; the future local publisher and Snapshot-role cutover
+require their own separately reviewed installation. The dormant compatibility runner account in older authority manifests is
 not a serving runner and is not started or removed by this lifecycle.
 
 ## Boundary and sequence
@@ -18,7 +20,7 @@ The target implementation:
 1. Locks a root-owned deployment journal directory against concurrent updates.
 2. Rechecks the clean production `main` checkout and target ancestry.
 3. Acquires the shared refresh-update lock, rechecks the independent
-   enabled/active states of all four managed timers and prepares the restoration
+   enabled/active states of all five managed timers and prepares the restoration
    intent. Capturing the states
    inside the shared lock prevents a concurrent legacy updater's temporary
    stopped state from becoming a new restoration intent.
@@ -49,6 +51,7 @@ Managed recurrence is exactly:
 obsidian-ai-vault-pull.timer
 obsidian-pre-review.timer
 obsidian-github-sync.timer
+obsidian-github-daily-progress.timer
 obsidian-core-promotion.timer
 ```
 

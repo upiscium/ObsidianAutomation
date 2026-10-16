@@ -1,5 +1,17 @@
 # Experimental read-only Dashboard (#300)
 
+**Phase H note (2026-10-16):** The original prototype below had no POST
+route. [The optional operator preview slice](admin-operator-preview.md)
+now accepts CSRF/Origin-protected **POST /api/v1/operation-previews**, which
+only checks syntax/current server-owned observation and always returns
+can_execute=false. **POST /api/v1/operations** and all real state-changing
+routes still return 405. No production service, root worker or general loginless
+private ingress was activated by this source change.
+The same Phase H source also bounds pre-header HTTP parsing, concurrent
+handler slots and expensive status observations: a single in-flight systemd
+collection and at most a one-second internal status cache. Clients never
+receive a stale successful status after a failed refresh.
+
 **Status:** implementation prototype, not accepted or deployed. This is a deliberately small, non-mutating first vertical slice of the larger [#298](https://github.com/upiscium/ObsidianAutomation/issues/298) single-LXC UX redesign.
 
 ## Scope
