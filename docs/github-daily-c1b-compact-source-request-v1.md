@@ -146,3 +146,28 @@ is authorized by this Draft.
 
 Private exact model requests/replies/receipts remain only on Adam at
 /tmp/obsa379-native-ab-tmH7O4/ and are not GitHub attachments.
+
+### v2 review correction: retain temporal and Draft semantics in input
+
+Correctness and Security read-only source reviewers found a material gap in
+the first v2 source projection: it omitted the source Draft marker and the
+time scope of source observations despite asking the model to distinguish
+Draft, performed work and deployment. The correction now includes these
+**bounded, non-authoritative** event fields alongside each entire excerpt:
+
+- Original source-projected draft (true/false/null); null does not prove
+  non-Draft.
+- The validated v3 temporal_source_status, including
+  day_snapshot_not_event_instant, withheld_outside_target_day,
+  event_transition_only, and content_addressed_commit_not_push_time.
+- historical_instant_verified remains false. Withheld field names, when
+  present, are reported, but their original withheld content is NOT added
+  back from private receipt v3.
+- A legacy source lacking v3 temporal metadata is explicitly rendered as
+  legacy_unverified, not silently upgraded to a dated verified snapshot.
+
+The versioned prompt now prohibits treating day-level snapshot body as the
+text at the event instant, and prohibits inferring push/arrival time solely
+from the immutable commit content. This is **prompt guidance**, not a new
+semantic classifier or truth attestation. The original strict CAS/C1b/C2a
+normalization remains in charge of raw bytes and citations.

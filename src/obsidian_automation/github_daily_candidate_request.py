@@ -32,6 +32,9 @@ RECENT_FULL_PROMPT = """あなたはGitHubの日次Issue/PRの進捗候補作成
 既に実施したことと予定・未実施・Draft・本番未反映を厳密に区別してください。引用や合成テスト用の文章を実際の作業として報告しないでください。
 source_refsにはその主張を実際に支える表示済みsource_refの整数を指定してください。元の引用元の番号は変更しないでください。
 省略された過去イベントの内容は推測せず、提示されたイベントだけから直接支持される主張を採用してください。
+temporal_source_status が day_snapshot_not_event_instant の本文は対象日の観測内容でありイベント発生瞬間の本文とは限りません。
+content_addressed_commit_not_push_time はコミット内容のみを示し、当日にpushされた証拠ではありません。withheld_outside_target_day、withheld_unknown_modification_time、legacy_unverified は欠けた本文の当日状態を断定する根拠になりません。
+draft が true ならDraftと記述し、nullならDraft状態を推定しないでください。
 提示されたイベントに進展の証拠が無い場合のみ candidates は空配列にします。空配列は進展なしの証明ではありません。
 出力はJSONオブジェクト candidates のみ。Markdown、改行を含むsummary、解説、JSON外テキストは禁止です。"""
 
@@ -301,13 +304,42 @@ def build_recent_full_candidate_request(
                     else:
                         raw[field] = None
                 observation = src.get("temporal_observation")
-                if type(observation) is dict and observation.get("withheld_fields"):
+                if type(observation) is dict:
+                    status = observation.get("status")
+                    if (observation.get("policy") != "github-day-snapshot-v1"
+                            or type(status) is not str
+                            or status not in {
+                                "day_snapshot_not_event_instant",
+                                "content_addressed_commit_not_push_time",
+                                "event_transition_only",
+                                "withheld_outside_target_day",
+                                "withheld_unknown_modification_time",
+                            }
+                            or observation.get("historical_instant_verified") is not False
+                            or type(observation.get("withheld_fields")) is not list):
+                        raise BoundedCandidateRequestError(
+                            "invalid source temporal policy")
+                    withheld = observation["withheld_fields"]
+                    if any(type(field) is not str for field in withheld):
+                        raise BoundedCandidateRequestError(
+                            "invalid withheld field annotation")
+                    if withheld:
+                        complete_text = False
+                else:
+                    # Legacy synthetic fixtures are diagnostic only. They must
+                    # not silently masquerade as date-scoped source.
+                    status = "legacy_unverified"
                     complete_text = False
+                    withheld = []
                 rows.append({"source_ref": i, "original_event": {
                     "kind": src["kind"],
                     "occurred_at": src["occurred_at"],
                     "actor": src["actor"],
                     "state": src["state"],
+                    "draft": src["draft"],
+                    "temporal_source_status": status,
+                    "historical_instant_verified": False,
+                    "withheld_fields": list(withheld),
                     **raw,
                 }})
             included = set(indices)

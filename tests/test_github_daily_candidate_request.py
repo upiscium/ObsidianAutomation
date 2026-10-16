@@ -243,11 +243,29 @@ def test_recent_full_v2_contains_exact_uncut_projected_source_and_original_refs(
                     "truncated": captured["truncated"]}
         assert item["original_event"]["kind"] == original["kind"]
         assert item["original_event"]["occurred_at"] == original["occurred_at"]
+        assert item["original_event"]["draft"] == original["draft"]
+        observation = original.get("temporal_observation")
+        if observation:
+            assert item["original_event"]["temporal_source_status"] == observation["status"]
+            assert item["original_event"]["withheld_fields"] == observation["withheld_fields"]
+        else:
+            assert item["original_event"]["temporal_source_status"] == "legacy_unverified"
+            assert item["original_event"]["withheld_fields"] == []
+        assert item["original_event"]["historical_instant_verified"] is False
     schema=req.model_schema()
     assert schema["properties"]["candidates"]["items"]["properties"]["source_refs"]["items"]["enum"] == list(req.shown_source_refs)
     assert req.report()["prompt_version"] == compact.RECENT_FULL_PROMPT_VERSION
     assert "original_event" not in req.report()
     assert req.report()["publication_authorized"] is False
+
+
+def test_recent_full_v2_prompt_carries_temporal_and_draft_warnings():
+    assert "day_snapshot_not_event_instant" in compact.RECENT_FULL_PROMPT
+    assert "content_addressed_commit_not_push_time" in compact.RECENT_FULL_PROMPT
+    assert "withheld_outside_target_day" in compact.RECENT_FULL_PROMPT
+    assert "withheld_unknown_modification_time" in compact.RECENT_FULL_PROMPT
+    assert "draft が true" in compact.RECENT_FULL_PROMPT
+    assert "イベント発生瞬間" in compact.RECENT_FULL_PROMPT
 
 
 def test_recent_full_v2_accepts_only_unmodified_original_c1b_and_in_view_citations(
@@ -310,3 +328,40 @@ def test_recent_full_v2_cannot_promote_forged_context(tmp_path,safe_layout):
     with pytest.raises(c1b.DailyWitnessedCandidateError):
         compact.build_recent_full_candidate_request(
             ctx,capture_sha256="f"*64)
+
+
+def test_recent_full_v2_carries_real_v3_day_scope_and_draft_to_model(
+    tmp_path, safe_layout, monkeypatch
+):
+    from obsidian_automation import github_daily_witnessed_entity_context as c1a
+    from obsidian_automation import github_daily_route_cas as cas
+    from test_github_daily_temporal_evidence import (
+        Client, collect, NOW, LATER,
+    )
+    monkeypatch.setattr(cas, "_utc_now", lambda: NOW)
+    client=Client()
+    client.issue_update=LATER
+    client.review=True
+    collection=collect(tmp_path,monkeypatch,client)
+    saved=cas.publish_fresh_capture(collection)
+    contexts=c1a.build_witnessed_entity_contexts(saved.index_sha256)
+    seen_statuses=set()
+    for ctx in contexts.contexts:
+        req=compact.build_recent_full_candidate_request(
+            ctx,capture_sha256=saved.index_sha256,
+            max_shown_events=compact.MAX_RECENT_FULL_EVENTS)
+        assert len(req.source_view_bytes)<=compact.MAX_VIEW_BYTES
+        for row in req.model_source_view()["events"]:
+            original=ctx.events[row["source_ref"]].original
+            owned=row["original_event"]
+            meta=original["temporal_observation"]
+            assert owned["draft"] == original["draft"]
+            assert owned["temporal_source_status"] == meta["status"]
+            assert owned["historical_instant_verified"] is False
+            assert owned["withheld_fields"] == meta["withheld_fields"]
+            if meta["withheld_fields"]:
+                for field in meta["withheld_fields"]:
+                    assert owned[field] is None
+            seen_statuses.add(meta["status"])
+    assert "content_addressed_commit_not_push_time" in seen_statuses
+    assert "day_snapshot_not_event_instant" in seen_statuses
