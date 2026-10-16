@@ -270,3 +270,29 @@ def test_busctl_rejects_any_unit_outside_fixed_service_allowlist():
 def test_busctl_custom_executable_disallowed():
     with pytest.raises(BrokerRejected, match="systemd_manager_binary_unqualified"):
         BusctlStartUnitManager(executable="/tmp/fake-busctl")
+
+
+def test_actual_systemd_empty_job_property_is_accepted_as_idle():
+    a = FakeUnits(timer_state="paused")
+    a.override_timer["Job"] = ""
+    a.override_service["Job"] = ""
+    mgr = FakeManager()
+    result = dispatcher(a,mgr).dispatch(
+        request_id="aabbccdd-1234-4abc-9abc-112233445566",
+        service_id=SPEC.identifier, trusted_snapshot=snapshot(a),
+    )
+    assert result.job_path == JOB
+    assert mgr.calls == [SPEC]
+
+
+@pytest.mark.parametrize("pending", ["7", "1 /org/freedesktop/systemd1/job/7", "active", "  "])
+def test_idle_state_does_not_accept_nonempty_job_properties(pending):
+    a = FakeUnits(timer_state="paused")
+    a.override_service["Job"] = pending
+    mgr = FakeManager()
+    with pytest.raises(BrokerRejected):
+        dispatcher(a,mgr).dispatch(
+            request_id="aabbccdd-1234-4abc-9abc-112233445566",
+            service_id=SPEC.identifier, trusted_snapshot=snapshot(a),
+        )
+    assert mgr.calls == []

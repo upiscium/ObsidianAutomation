@@ -123,8 +123,11 @@ def _verified_live(spec: ServiceSpec, live: LiveUnits) -> tuple[str, str, str]:
         or service["Type"] != "oneshot"
         or timer["LoadState"] != "loaded"
         or service["LoadState"] != "loaded"
-        or timer["Job"] != "0"
-        or service["Job"] != "0"
+        # Real systemctl show Job= renders an empty string when no job is
+        # queued; older/test projections may use "0". Both are idle only
+        # when the corresponding ActiveState/SubState and PID guards agree.
+        or timer["Job"] not in ("", "0")
+        or service["Job"] not in ("", "0")
         or service["MainPID"] != "0"
         or service["ControlPID"] != "0"
     ):

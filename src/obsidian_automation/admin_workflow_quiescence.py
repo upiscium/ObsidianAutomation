@@ -147,7 +147,7 @@ def require_run_once_quiescent(
             or fields["ActiveState"] != "inactive"
             or fields["SubState"] != "dead"
             or fields["Unit"] != TIMER_TARGETS[timer]
-            or fields["Job"] != "0"
+            or fields["Job"] not in ("", "0")
             or fields["FragmentPath"] != f"/etc/systemd/system/{timer}"
         ):
             raise WorkflowNotQuiescent("workflow_timer_not_quiescent")
@@ -161,7 +161,7 @@ def require_run_once_quiescent(
             or fields["Type"] != "oneshot"
             or fields["ActiveState"] != "inactive"
             or fields["SubState"] != "dead"
-            or fields["Job"] != "0"
+            or fields["Job"] not in ("", "0")
             or fields["MainPID"] != "0"
             or fields["ControlPID"] != "0"
             or fields["FragmentPath"] != f"/etc/systemd/system/{name}"

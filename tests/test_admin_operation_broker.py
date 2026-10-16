@@ -839,3 +839,19 @@ def test_workflow_observer_malicious_string_key_cannot_leak_code(tmp_path):
     assert "must-not-leak" not in str(exc.value)
     assert adapter.calls == []
     assert not (root / "pending.json").exists()
+
+
+@pytest.mark.parametrize("action, timer_state", [
+    ("pause", "scheduled"), ("resume", "paused"),
+])
+def test_real_systemctl_empty_idle_job_allows_fixed_timer_control(
+    tmp_path, action, timer_state,
+):
+    a = FakeUnits(timer_state=timer_state)
+    a.override_timer["Job"] = ""
+    a.override_service["Job"] = ""
+    broker = configured(audit(tmp_path), a)
+    receipt = broker.apply(request(action), snapshot(a))
+    assert receipt.state == "completed"
+    assert a.calls == [_command(action, SPEC)]
+    assert broker.lookup_result(RID).state == "completed"

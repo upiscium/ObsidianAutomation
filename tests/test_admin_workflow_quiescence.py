@@ -242,3 +242,24 @@ def test_string_subclass_keys_are_rejected_without_calling_custom_hash():
             SERVICES[4],
             WorkflowObservation(timers=timers, services=good.services),
         )
+
+
+@pytest.mark.parametrize("spec", SERVICES, ids=[s.identifier for s in SERVICES])
+def test_real_systemctl_empty_job_properties_are_idle(spec):
+    obs = fixture_for(spec)
+    for timer in obs.timers.values():
+        timer["Job"] = ""
+    for service in obs.services.values():
+        service["Job"] = ""
+    assert require_run_once_quiescent(spec, obs) is None
+
+
+@pytest.mark.parametrize("value", ["7", "4 /org/freedesktop/systemd1/job/4", "  "])
+def test_unknown_nonzero_job_still_rejected_with_empty_job_support(value):
+    spec = SERVICES[2]
+    obs = fixture_for(spec)
+    for service in obs.services.values():
+        service["Job"] = ""
+    obs.services["obsidian-github-sync.service"]["Job"] = value
+    with pytest.raises(WorkflowNotQuiescent, match="workflow_service_not_quiescent"):
+        require_run_once_quiescent(spec, obs)

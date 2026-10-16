@@ -66,6 +66,17 @@ It does not execute work. The browser Execute button remains disabled and
 no installed root daemon, systemd unit, sudo/polkit rule or public mutating
 HTTP route has been added.
 
+## Phase K isolated runtime evidence
+
+The [isolated real-systemd test](admin-systemd-isolated-acceptance.md)
+exercised the production Job parser through a test-only user-bus shim,
+confirmed the Job receipt is NOT service success, and found that a real idle
+systemd Job is an empty string rather than always 0. Both documented idle
+encodings are now accepted with unchanged PID and unit-identity checks.
+A separate disposable kernel-flock test confirmed cooperating host/semantic
+update lock exclusion, inhibitor markers and safe release. Neither test
+authorizes installed root Broker actions or uncooperative launchers.
+
 ## Legacy path and remaining acceptance
 
 Earlier Phase-B OperationBroker.apply(run_once) retained synchronous

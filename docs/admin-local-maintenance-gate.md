@@ -38,3 +38,13 @@ cross-UID broker + disposable actual systemd interactions and crash recovery.
 Remote CAS/ETag, #294 stage/activate and #309 Sync cleanup remain independent
 authorities. No distributed multi-LXC lock is required for the unsupported
 case of multiple active instances against the same Vault.
+
+
+### Phase K actual Linux acceptance
+
+[Isolated host-kernel-lock acceptance](admin-systemd-isolated-acceptance.md)
+used private throwaway directories and a separate OS process to verify
+both lock inodes, host updater/pre-review contention, pending inhibitor
+markers, rejected unsafe lock names and release. This proves *cooperating*
+updater exclusion only; old uncoordinated binaries or arbitrary manual root
+jobs are outside the guarantee.
