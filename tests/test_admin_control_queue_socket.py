@@ -31,10 +31,12 @@ def site():
         yield p / "queue.sock", rootq
 
 
-def setup(site, *, enabled=True, peer_uid=None, peer_gid=None):
+def setup(site, *, enabled=True, peer_uid=None, peer_gid=None,
+          allow_run_once=False):
     path, journal = site
     store = DurableOperationQueue(
         queue_root=journal, require_root=False, enabled=enabled,
+        allow_run_once=allow_run_once,
     )
     server = OperationQueueSocket(
         path, queue=store, require_root=False,
@@ -176,9 +178,11 @@ def test_arbitrary_command_and_mutation_are_never_supported(site, override):
     result = call(
         server, lambda: BrokerSocketClient(site[0]).query(raw),
     )
-    assert result == {"version": 1, "error": "queue_request_rejected"} or result == {
-        "version": 1, "error": "read_only_request_rejected",
-    }
+    assert result in (
+        {"version": 1, "error": "queue_request_rejected"},
+        {"version": 1, "error": "read_only_request_rejected"},
+        {"version": 1, "error": "run_once_unqualified"},
+    )
     assert not list(site[1].glob("request-*.json"))
 
 

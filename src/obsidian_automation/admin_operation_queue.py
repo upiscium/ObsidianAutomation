@@ -3,10 +3,10 @@
 This module is not installed and does not execute systemd. A separate,
 explicitly configured, peer-verified OS-local worker may accept a fixed
 operation into a durable one-at-a-time queue, and a different worker context
-may process it using a separately qualified OperationBroker.
+may process it using separately qualified Broker/systemd Manager admission.
 
-No HTTP executor, sudo/polkit authority, production socket unit, bypass of the
-deployment gate, or Run once effect authorization is supplied here.
+No HTTP executor, sudo/polkit authority, production socket unit or bypass of
+the deployment gate is supplied. Run once remains OFF by default.
 """
 from __future__ import annotations
 
@@ -24,8 +24,11 @@ from .admin_operation_broker import (
 )
 from .admin_operation_preflight import _REQUEST_ID
 from .admin_status import SERVICES
+from .admin_systemd_admission import (
+    SystemdJobAdmission, verify_job_admission,
+)
 
-_ACTIONS = frozenset(("pause", "resume"))
+_ACTIONS = frozenset(("pause", "resume", "run_once"))
 _SERVICE_IDS = frozenset(spec.identifier for spec in SERVICES)
 _CURRENT_VERSION = 1
 MAX_AUDIT_ENTRIES = 2048  # a full journal must be archived by a reviewed tool
@@ -43,10 +46,11 @@ _ERROR_CODES = frozenset((
     "queue_missing_receipt", "indeterminate_effect", "queue_internal_error",
     "privileged_worker_required", "run_once_unqualified",
 ))
-_ALLOWED_RESULTS = frozenset(("completed", "indeterminate"))
+_ALLOWED_RESULTS = frozenset(("completed", "indeterminate", "systemd_job_accepted"))
 _ALLOWED_STATES = frozenset((
     "accepted", "processing", "completed", "completed_pending_cleanup",
-    "indeterminate",
+    "indeterminate", "systemd_job_accepted",
+    "systemd_job_accepted_pending_cleanup",
 ))
 
 
@@ -56,13 +60,20 @@ class QueuedOperation:
     service_id: str
     action: str
 
-    def as_public(self, state: str) -> dict[str, object]:
-        return {
+    def as_public(
+        self, state: str, admission: SystemdJobAdmission | None = None,
+    ) -> dict[str, object]:
+        result = {
             "version": 1, "request_id": self.request_id,
             "service_id": self.service_id, "action": self.action,
             "state": state, "authority": "durable_queue_only",
             "can_execute": False,
         }
+        if admission is not None:
+            result["authority"] = "systemd_admission_only"
+            result["systemd_job_path"] = admission.job_path
+            result["boot_id"] = admission.boot_id
+        return result
 
 
 def _request(value: object) -> QueuedOperation:
@@ -177,7 +188,9 @@ class DurableOperationQueue:
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         require_root: bool = True,
         enabled: bool = False,
+        allow_run_once: bool = False,
     ):
+        self.allow_run_once = allow_run_once
         self.queue_root = queue_root
         self.clock = clock
         self.require_root = require_root
@@ -209,6 +222,56 @@ class DurableOperationQueue:
     def _pending(self, dirfd: int) -> dict[str, object] | None:
         return _read_private(dirfd, _ACTIVE_FILE) if _exists(dirfd, _ACTIVE_FILE) else None
 
+    @staticmethod
+    def _validate_result(
+        result: object, request: QueuedOperation,
+    ) -> SystemdJobAdmission | None:
+        base = {
+            "record_version", "request_id", "service_id", "action", "state",
+        }
+        if type(result) is not dict:
+            raise BrokerRejected("queue_state_invalid")
+        state = result.get("state")
+        fields = base | (
+            {"systemd_job_path", "boot_id"}
+            if state == "systemd_job_accepted" else set()
+        )
+        if (
+            set(result) != fields
+            or type(result.get("record_version")) is not int
+            or result["record_version"] != 1
+            or result.get("request_id") != request.request_id
+            or result.get("service_id") != request.service_id
+            or result.get("action") != request.action
+            or type(state) is not str
+            or state not in _ALLOWED_RESULTS
+            or (state == "systemd_job_accepted") !=
+               (request.action == "run_once" and state != "indeterminate")
+            or (request.action == "run_once" and state == "completed")
+        ):
+            raise BrokerRejected("queue_state_invalid")
+        if state != "systemd_job_accepted":
+            return None
+        return verify_job_admission(
+            SystemdJobAdmission(
+                request_id=request.request_id,
+                service_id=request.service_id,
+                job_path=result["systemd_job_path"],
+                boot_id=result["boot_id"],
+            ),
+            request_id=request.request_id, service_id=request.service_id,
+        )
+
+    def _project(self, dirfd: int, request: QueuedOperation) -> dict[str, object]:
+        state = self._state(dirfd, request)
+        if state in ("systemd_job_accepted", "systemd_job_accepted_pending_cleanup"):
+            raw = _read_private(dirfd, self._id_path(request.request_id, "result"))
+            admission = self._validate_result(raw, request)
+            if admission is None:
+                raise BrokerRejected("queue_state_invalid")
+            return request.as_public(state, admission=admission)
+        return request.as_public(state)
+
     def _state(self, dirfd: int, request: QueuedOperation) -> str:
         rid = request.request_id
         record = _read_private(dirfd, self._id_path(rid, "request"))
@@ -227,28 +290,19 @@ class DurableOperationQueue:
         active = self._pending(dirfd)
         if _exists(dirfd, self._id_path(rid, "result")):
             result = _read_private(dirfd, self._id_path(rid, "result"))
-            if (
-                type(result) is not dict or set(result) != _RESULT_FIELDS
-                or type(result["record_version"]) is not int
-                or result["record_version"] != 1
-                or result["request_id"] != rid
-                or result["service_id"] != request.service_id
-                or result["action"] != request.action
-                or result["state"] not in _ALLOWED_RESULTS
-                or not processing_exists
-            ):
-                # A completion without its prior durable processing claim
-                # cannot be accepted as proven; no automatic history repair.
+            admission = self._validate_result(result, request)
+            if not processing_exists:
                 raise BrokerRejected("queue_state_invalid")
             if result["state"] == "indeterminate":
                 if active != record:
                     raise BrokerRejected("queue_state_invalid")
                 return "indeterminate"
             if active == record:
-                return "completed_pending_cleanup"
-            # A *different* accepted or processing operation may now be
-            # active. It does not invalidate this older immutable completion.
-            return "completed"
+                return (
+                    "systemd_job_accepted_pending_cleanup"
+                    if admission is not None else "completed_pending_cleanup"
+                )
+            return "systemd_job_accepted" if admission is not None else "completed"
         if active is None or active != record:
             raise BrokerRejected("queue_state_invalid")
         return "processing" if processing_exists else "accepted"
@@ -299,16 +353,13 @@ class DurableOperationQueue:
             if action.request_id != rid:
                 raise BrokerRejected("queue_state_invalid")
             final = _read_private(dirfd, f"result-{rid}.json")
-            if (
-                type(final) is not dict
-                or set(final) != _RESULT_FIELDS
-                or type(final["record_version"]) is not int
-                or final["record_version"] != 1
-                or final["request_id"] != rid
-                or final["service_id"] != action.service_id
-                or final["action"] != action.action
-                or final["state"] != "completed"
-            ):
+            try:
+                self_admission = DurableOperationQueue._validate_result(final, action)
+            except BrokerRejected:
+                raise BrokerRejected("queue_recovery_required") from None
+            if final["state"] not in ("completed", "systemd_job_accepted"):
+                raise BrokerRejected("queue_recovery_required")
+            if (final["state"] == "systemd_job_accepted") != (self_admission is not None):
                 raise BrokerRejected("queue_recovery_required")
             if rid not in processing:
                 # A finalized action without a durable claim is inconsistent.
@@ -330,11 +381,13 @@ class DurableOperationQueue:
         if self.enabled is not True:
             raise BrokerRejected("queue_disabled")
         action = _request(raw)
+        if action.action == "run_once" and self.allow_run_once is not True:
+            raise BrokerRejected("run_once_unqualified")
         dirfd, lockfd = self._open()
         try:
             existing = self._id_path(action.request_id, "request")
             if _exists(dirfd, existing):
-                return action.as_public(self._state(dirfd, action))
+                return self._project(dirfd, action)
             if _exists(dirfd, self._id_path(action.request_id, "result")):
                 raise BrokerRejected("queue_state_invalid")
             if self._pending(dirfd) is not None:
@@ -362,7 +415,7 @@ class DurableOperationQueue:
                 raise BrokerRejected("queue_missing_receipt")
             raw = _read_private(dirfd, self._id_path(rid, "request"))
             action = _safe_identity(raw)
-            return action.as_public(self._state(dirfd, action))
+            return self._project(dirfd, action)
         finally:
             self._close(dirfd, lockfd)
 
@@ -403,16 +456,28 @@ class DurableOperationQueue:
         finally:
             self._close(dirfd, lockfd)
 
-    def settle(self, action: QueuedOperation, *, completed: bool) -> dict[str, object]:
-        """Worker-only completion after an independent effect result.
+    def settle(
+        self, action: QueuedOperation, *, completed: bool,
+        admission: SystemdJobAdmission | None = None,
+    ) -> dict[str, object]:
+        """Worker-only fixed receipt for an effect or systemd job admission.
 
-        Any unknown/failed return must be indeterminate; never claim an
-        operation was not applied based on a lost response or timeout.
+        For Run once, "systemd_job_accepted" is NOT a business-level
+        success. Only a typed Manager Job object can establish that result.
+        Unknown/failed callbacks must remain indeterminate.
         """
         if self.enabled is not True:
             raise BrokerRejected("queue_disabled")
         if type(action) is not QueuedOperation:
             raise BrokerRejected("invalid_operation")
+        if action.action == "run_once" and completed is True:
+            if admission is None:
+                raise BrokerRejected("systemd_admission_unverifiable")
+            verify_job_admission(
+                admission, request_id=action.request_id, service_id=action.service_id,
+            )
+        elif admission is not None:
+            raise BrokerRejected("systemd_admission_unverifiable")
         dirfd, lockfd = self._open()
         try:
             original = self._pending(dirfd)
@@ -427,21 +492,30 @@ class DurableOperationQueue:
                 raise BrokerRejected("queue_state_invalid")
             if _exists(dirfd, self._id_path(action.request_id, "result")):
                 raise BrokerRejected("queue_recovery_required")
-            state = "completed" if completed is True else "indeterminate"
-            _store_new(dirfd, self._id_path(action.request_id, "result"), {
+            state = (
+                "systemd_job_accepted" if completed is True and admission is not None
+                else "completed" if completed is True
+                else "indeterminate"
+            )
+            final = {
                 "record_version": 1, "request_id": action.request_id,
                 "service_id": action.service_id, "action": action.action,
                 "state": state,
-            })
+            }
+            if admission is not None:
+                final["systemd_job_path"] = admission.job_path
+                final["boot_id"] = admission.boot_id
+            self._validate_result(final, action)
+            _store_new(dirfd, self._id_path(action.request_id, "result"), final)
             if completed is True:
                 _unlink(dirfd, _ACTIVE_FILE)
-                return action.as_public("completed")
+                return action.as_public(state, admission=admission)
             return action.as_public("indeterminate")
         finally:
             self._close(dirfd, lockfd)
 
     def work_once(
-        self, executor: Callable[[QueuedOperation], bool],
+        self, executor: Callable[[QueuedOperation], bool | SystemdJobAdmission],
     ) -> dict[str, object]:
         """Explicit caller-controlled processing; never started from socket.
 
@@ -451,13 +525,24 @@ class DurableOperationQueue:
         """
         action = self.claim_for_worker()
         try:
-            applied = executor(action)
+            outcome = executor(action)
+            if action.action == "run_once":
+                # An old boolean success is NOT a Manager Job receipt. The
+                # only valid completion is a verified typed systemd Job ack.
+                verified = verify_job_admission(
+                    outcome, request_id=action.request_id,
+                    service_id=action.service_id,
+                )
+            else:
+                if outcome is not True:
+                    raise BrokerRejected("indeterminate_effect")
+                verified = None
         except BaseException:
-            # Leave processing evidence intact if executor died/raised or was
-            # interrupted. A new worker must not replay or assume no effect.
+            # A crash or unclear executor response can mean a real systemd
+            # admission occurred. Persist uncertainty, never replay.
             self.settle(action, completed=False)
             raise BrokerRejected("indeterminate_effect") from None
-        if applied is not True:
-            self.settle(action, completed=False)
-            raise BrokerRejected("indeterminate_effect")
-        return self.settle(action, completed=True)
+        # Keep settle OUTSIDE the executor try. A durable completion may have
+        # been written before active-marker cleanup failed. Its receipt must
+        # remain distinguishable from unknown systemd-admission results.
+        return self.settle(action, completed=True, admission=verified)

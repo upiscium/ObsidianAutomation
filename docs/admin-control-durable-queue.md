@@ -1,5 +1,13 @@
 # #300 Phase I — durable, single-LXC operator intake and receipt protocol
 
+> **Phase J accepted scope:** The [minimum systemd Job admission contract](admin-systemd-job-admission.md)
+> supersedes Phase I's former product requirement to prove entire OnSuccess
+> business completion before Run once. The queue now offers a separate
+> allow_run_once=False default, with an explicitly qualified Worker allowed to
+> record systemd_job_accepted (Job path, boot ID), NOT service/business success.
+> Phase I's original assertions below remain a historical baseline.
+
+
 **Status: source-only, NOT installed, NOT activated.** This child contains
 an effect-capable *test bridge*, but the public WebUI Execute button remains
 disabled, the production default queue is disabled, and no root daemon exposes

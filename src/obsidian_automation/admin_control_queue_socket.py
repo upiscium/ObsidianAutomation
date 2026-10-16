@@ -16,20 +16,23 @@ from .admin_broker_socket import (
 from .admin_operation_broker import BrokerRejected
 from .admin_operation_queue import DurableOperationQueue, _request, _receipt_id
 from .admin_status import SERVICES
+from .admin_systemd_admission import _JOB_PATH, _BOOT_ID
 
 DEFAULT_OPERATION_QUEUE_SOCKET = Path(
     "/run/obsidian-automation/admin-operation-queue.sock"
 )
 _ALLOWED_RECEIPT_STATES = frozenset((
     "accepted", "processing", "completed", "indeterminate",
-    "completed_pending_cleanup",
+    "completed_pending_cleanup", "systemd_job_accepted",
+    "systemd_job_accepted_pending_cleanup",
 ))
-_ALLOWED_ACTIONS = frozenset(("pause", "resume"))
+_ALLOWED_ACTIONS = frozenset(("pause", "resume", "run_once"))
 _ALLOWED_SERVICE_IDS = frozenset(spec.identifier for spec in SERVICES)
 _DISPLAY_AUTHORITY = "durable_queue_only"
 _ERROR_CODES = frozenset((
     "queue_disabled", "queue_busy", "admission_lock_busy",
     "queue_recovery_required", "queue_missing_receipt",
+    "run_once_unqualified",
 ))
 
 
@@ -37,12 +40,21 @@ def _validate_projection(
     value: object, *, request_id: str,
     expected_service: str | None = None, expected_action: str | None = None,
 ) -> dict[str, object]:
+    fields = {
+        "version", "request_id", "service_id", "action",
+        "state", "authority", "can_execute",
+    }
+    job_state = (
+        type(value) is dict
+        and value.get("state") in (
+            "systemd_job_accepted", "systemd_job_accepted_pending_cleanup",
+        )
+    )
+    if job_state:
+        fields |= {"systemd_job_path", "boot_id"}
     if (
         type(value) is not dict
-        or set(value) != {
-            "version", "request_id", "service_id", "action",
-            "state", "authority", "can_execute",
-        }
+        or set(value) != fields
         or type(value["version"]) is not int
         or value["version"] != 1
         or type(value["request_id"]) is not str
@@ -56,9 +68,22 @@ def _validate_projection(
         or value["action"] not in _ALLOWED_ACTIONS
         or type(value["state"]) is not str
         or value["state"] not in _ALLOWED_RECEIPT_STATES
-        or value["authority"] != _DISPLAY_AUTHORITY
+        or value["authority"] != (
+            "systemd_admission_only" if job_state else _DISPLAY_AUTHORITY
+        )
+        or (job_state and value["action"] != "run_once")
+        or (not job_state and value["action"] == "run_once"
+            and value["state"] in ("completed", "completed_pending_cleanup"))
         or type(value["can_execute"]) is not bool
         or value["can_execute"] is not False
+        or (
+            job_state and (
+                type(value["systemd_job_path"]) is not str
+                or _JOB_PATH.fullmatch(value["systemd_job_path"]) is None
+                or type(value["boot_id"]) is not str
+                or _BOOT_ID.fullmatch(value["boot_id"]) is None
+            )
+        )
     ):
         raise LocalBrokerProtocolError("unverifiable_queue_receipt")
     return value

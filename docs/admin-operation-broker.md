@@ -1,5 +1,11 @@
 # #300 Phase B — audited local operation broker (UNWIRED, NOT ACTIVATED)
 
+> **Phase J supersession:** The [minimum systemd Job admission path](admin-systemd-job-admission.md)
+> is the intended Run once interface. The Phase-B synchronous Run once branch
+> remains legacy source-only compatibility and is not connected to the new
+> queue Worker or accepted for production. Pause/Resume logic is unchanged.
+
+
 **Status:** isolated implementation, not accepted operator service, no production
 deployment, no WebUI POST endpoint, and **no permission to execute live systemd**.
 This effect-capable Python transaction engine is tested only using synthetic

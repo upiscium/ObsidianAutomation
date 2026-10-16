@@ -69,7 +69,6 @@ def test_root_required_by_default(queue_root, monkeypatch):
 def test_fixed_request_validation_denies_arbitrary_actions_units_and_content(queue_root):
     for payload in [
         None, [], {}, True,
-        {**request(), "action": "run_once"},
         {**request(), "action": "stop"},
         {**request(), "service_id": "sshd.service"},
         {**request(), "action": "pause; rm -rf /"},
@@ -424,3 +423,10 @@ def test_uncertain_receipt_cannot_be_trusted_after_active_marker_loss(queue_root
         q.receipt(RID)
     with pytest.raises(BrokerRejected, match="queue_recovery_required"):
         q.submit(request(RID2))
+
+
+def test_run_once_is_disabled_in_queue_even_when_pause_resume_are_enabled(queue_root):
+    q = queue(queue_root)
+    with pytest.raises(BrokerRejected, match="run_once_unqualified"):
+        q.submit(request(action="run_once"))
+    assert not list(queue_root.iterdir())

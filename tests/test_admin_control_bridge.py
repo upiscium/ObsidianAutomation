@@ -199,7 +199,7 @@ def test_full_bridge_uncertain_systemd_effect_requires_manual_reconciliation(sys
 def test_run_once_cannot_be_admitted_by_queue_or_bridge(system):
     _, queue_root, audit, sock = system
     q = queue(queue_root)
-    with pytest.raises(BrokerRejected, match="invalid_operation"):
+    with pytest.raises(BrokerRejected, match="run_once_unqualified"):
         q.submit(request(action="run_once"))
     assert not (queue_root / "active.json").exists()
     assert not (audit / "pending.json").exists()
