@@ -19,6 +19,7 @@ from .artifact_lifecycle import ArtifactLifecycleError
 VERSION = 1
 STAGE = "github_daily_private_individual_digest_v1"
 MAX_REPORT_BYTES = 128 * 1024
+MAX_PENDING_LIST_ITEMS = 64  # Source-owned, private-only fallback visibility.
 
 
 class IndividualDigestError(ValueError):
@@ -272,16 +273,43 @@ MAX_COMPLETE_DAY_C5_CALLS = 4 * MAX_COMPLETE_DAY_ENTITIES
 MAX_COMPLETE_DAY_SECONDS = 3600
 
 
+def _pending_materiality_markdown(diagnostics: list[dict]) -> str:
+    """Render C3's unselected pending identities, never as actual progress.
+
+    All rows come from the original, verified C3 preview. Names and URLs are
+    reconstructed only from source-owned repository/type/number, not LLM text.
+    This is not a competing source-selection or editorial authority.
+    """
+    pending = [row for row in diagnostics if row["reason"] == "pending_review"]
+    if not pending:
+        return ""
+    lines = ["", "### 重要度判定待ち（進展として未選択）", "",
+             "以下は元イベントに更新がありますが、要約候補の検証または重要度判定が未完了です。",
+             "進展なしと判定したものではありません。", ""]
+    for row in pending[:MAX_PENDING_LIST_ITEMS]:
+        obj = row["entity"]
+        key = c4.c3.EntityKey(obj["repository"], obj["entity_type"], obj["number"])
+        kind = "PR" if key.entity_type == "pull_request" else "Issue"
+        lines.append(
+            f"- [{kind} #{key.number}]({key.github_url()})："
+            f"元イベント {len(row['source_evidence_ids'])}件・判定待ち。"
+        )
+    if len(pending) > MAX_PENDING_LIST_ITEMS:
+        lines.append(f"- その他 {len(pending) - MAX_PENDING_LIST_ITEMS}件：判定待ち（一覧省略）。")
+    return chr(10).join(lines) + chr(10)
+
+
 @dataclass(frozen=True)
 class CompletePrivateDaily:
     """Full selected-day private result, including source-pending skipped items."""
     canonical_bytes: bytes
     digest: PrivateIndividualDigest
     individual_runs: tuple[rt.NarrativeRun, ...]
+    pending_materiality_markdown: str = ""
 
     @property
     def markdown(self):
-        return self.digest.markdown
+        return self.digest.markdown + self.pending_materiality_markdown
 
     def report(self):
         return json.loads(self.canonical_bytes)
@@ -409,6 +437,13 @@ def run_complete_private_daily(
         completed = (bool(identities) and len(runs) == len(identities)
                      and responses_complete
                      and aggregate["pending_summary_entity_count"] == 0)
+        # The core C4 renderer owns all selected progress. Append only an
+        # explicitly non-selected/source-pending *private* view, so malformed
+        # upstream output never hides changed Issue/PR identities from a human.
+        pending_markdown = _pending_materiality_markdown(diagnostics)
+        composed_markdown = digest.markdown + pending_markdown
+        if len(composed_markdown.encode("utf-8")) > c4.MAX_OUTPUT_BYTES:
+            raise IndividualDigestError("private Daily with pending items exceeds bound")
         result = {
             "record_version": VERSION,
             "stage": "github_daily_complete_private_execution_v1",
@@ -422,6 +457,11 @@ def run_complete_private_daily(
             "unselected_entity_count": len(diagnostics) - len(identities),
             "unselected_pending_review_count": len(unselected_pending),
             "unselected_pending_entities": unselected_pending,
+            "pending_materiality_list_displayed": min(
+                len(unselected_pending), MAX_PENDING_LIST_ITEMS),
+            "pending_materiality_list_omitted": max(
+                0, len(unselected_pending) - MAX_PENDING_LIST_ITEMS),
+            "private_markdown_sha256": _sha(composed_markdown.encode("utf-8")),
             "source_selection_requires_review": (
                 bool(unselected_pending) or not upstream_preview["response_set_complete"]),
             "selected_entity_count": len(identities),
@@ -450,7 +490,7 @@ def run_complete_private_daily(
         raw = rt._json(result)
         if len(raw) > MAX_REPORT_BYTES:
             raise IndividualDigestError("complete-day report exceeds budget")
-        return CompletePrivateDaily(raw, digest, tuple(runs))
+        return CompletePrivateDaily(raw, digest, tuple(runs), pending_markdown)
     except IndividualDigestError:
         raise
     except (c4.DailyNarrativeError, rt.NarrativeRuntimeError,

@@ -168,3 +168,16 @@ semantic correctness. The complete-day report explicitly keeps
 `current_day_entity_coverage_verified=false`, even after all selected model
 requests finish. A future production publisher must establish any additional
 freshness and coverage policy independently.
+
+## Source-pending items in the private Markdown
+
+The complete-day read-only helper includes a separate
+**「重要度判定待ち（進展として未選択）」** section for C3's verified
+`pending_review` entities. Such entities are **not** promoted to selected
+progress and are never marked inactive/no updates merely because upstream
+candidate/model Grounding failed. Numeric Issue/PR links are derived from C3's
+original CAS-bound entity identity, not model text. At most 64 such entries
+are displayed; any additional pending entries are explicitly counted as
+omitted. `private_markdown_sha256` binds the complete private output,
+distinct from the unchanged C4-only `digest_sha256`. Neither footer nor
+hashes grant Writer/Timer/publication authority.

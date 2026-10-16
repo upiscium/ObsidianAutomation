@@ -224,6 +224,7 @@ def test_complete_day_private_operator_runs_every_selected_entity(case):
     assert report["current_day_entity_coverage_verified"] is False
     assert len(full.individual_runs) == 2
     assert full.digest.markdown == full.markdown
+    assert full.report()["pending_materiality_list_displayed"] == 0
     assert full.markdown.count("AI下書き（未承認）") == 2
     assert "検証処理" not in full.canonical_bytes.decode()
     # Same original C4 preview as its single bulk C5 run; no rephrasing.
@@ -329,6 +330,24 @@ def test_strict_day_policy_rejects_empty_selection_with_legacy_v2_receipt(case):
     assert not transport.calls
 
 
+def test_private_pending_list_is_source_identity_only_and_bounded(case):
+    from obsidian_automation import github_daily_individual_digest as mod
+    identities = [
+        {"entity": {"repository": "upiscium/ObsidianAutomation",
+                    "entity_type": "issue", "number": 100 + i},
+         "reason": "pending_review", "source_evidence_ids": ["evidence"]}
+        for i in range(mod.MAX_PENDING_LIST_ITEMS + 3)
+    ]
+    markdown = mod._pending_materiality_markdown(identities)
+    assert markdown.count("判定待ち。") == mod.MAX_PENDING_LIST_ITEMS
+    assert "その他 3件：判定待ち（一覧省略）。" in markdown
+    assert "Issue #100" in markdown
+    assert ("https://github.com/upiscium/ObsidianAutomation/issues/100"
+            in markdown)
+    assert "Issue #166" not in markdown
+    assert mod._pending_materiality_markdown([]) == ""
+
+
 def test_complete_day_reports_upstream_pending_entities_not_empty_day(case):
     from obsidian_automation.github_daily_individual_digest import (
         run_complete_private_daily,
@@ -343,6 +362,13 @@ def test_complete_day_reports_upstream_pending_entities_not_empty_day(case):
     assert data["original_source_entity_count"] == 2
     assert data["original_source_event_count"] >= 2
     assert data["unselected_pending_review_count"] == 2
+    assert data["pending_materiality_list_displayed"] == 2
+    assert data["pending_materiality_list_omitted"] == 0
+    assert "### 重要度判定待ち（進展として未選択）" in report.markdown
+    assert "[Issue #" in report.markdown
+    assert "[PR #" in report.markdown
+    assert report.markdown.count("判定待ち。") == 2
+    assert data["private_markdown_sha256"] == rt._sha(report.markdown.encode("utf-8"))
     assert data["unselected_entity_count"] == 2
     assert len(data["unselected_pending_entities"]) == 2
     assert data["source_selection_requires_review"] is True
