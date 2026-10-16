@@ -329,6 +329,14 @@ def run_complete_private_daily(
         plan = c4.build_witnessed_narrative_contexts(**args)
         source_plan = plan.report()
         contexts = source_plan["contexts"]
+        if require_day_policy:
+            # Entity-local observations cannot attest the source policy:
+            # a legacy v2 day with ZERO selected entities has no contexts
+            # and would otherwise pass per-entity checks vacuously.
+            source = c4.cas.read_verified_capture(capture_sha256)
+            index_data = json.loads(source.capture_index.canonical_bytes)
+            if index_data.get("source_receipt_version") != 3:
+                raise IndividualDigestError("missing date-scoped source policy")
         # C3 already accounts for EVERY original Issue/PR entity. C4 only
         # selects meaningful verified progress; non-selected pending-review
         # entities are tracked separately so "all selected" never silently
@@ -429,6 +437,10 @@ def run_complete_private_daily(
                                     if require_day_policy else
                                     "legacy_unverified_explicit_offline"),
             "historical_instant_verified": False,
+            # Replaying an immutable v3 snapshot is not a fresh GitHub read.
+            # Supported selected-text is not current-day completeness.
+            "source_freshness_at_execution_verified": False,
+            "current_day_entity_coverage_verified": False,
             "model_execution_attested": False,
             "semantic_coverage_verified": False,
             "factuality_verified": False,
@@ -442,6 +454,7 @@ def run_complete_private_daily(
     except IndividualDigestError:
         raise
     except (c4.DailyNarrativeError, rt.NarrativeRuntimeError,
-            ArtifactLifecycleError, KeyError, TypeError, ValueError,
-            AttributeError, IndexError, OverflowError, RecursionError):
+            c4.cas.DailyRouteCASError, ArtifactLifecycleError,
+            KeyError, TypeError, ValueError, AttributeError, IndexError,
+            OverflowError, RecursionError):
         raise IndividualDigestError("trusted complete-day input unavailable") from None

@@ -220,6 +220,8 @@ def test_complete_day_private_operator_runs_every_selected_entity(case):
     assert report["complete_and_all_selected_have_supported_text"]
     assert report["source_period_policy"] == "legacy_unverified_explicit_offline"
     assert report["publication_authorized"] is False
+    assert report["source_freshness_at_execution_verified"] is False
+    assert report["current_day_entity_coverage_verified"] is False
     assert len(full.individual_runs) == 2
     assert full.digest.markdown == full.markdown
     assert full.markdown.count("AI下書き（未承認）") == 2
@@ -311,6 +313,20 @@ def test_explicit_day_policy_gate_rejects_partial_metadata_before_model(case):
             **kwargs(case), infer=backend(t), require_day_policy=True)
     assert not t.calls
 
+
+
+def test_strict_day_policy_rejects_empty_selection_with_legacy_v2_receipt(case):
+    from obsidian_automation.github_daily_individual_digest import (
+        run_complete_private_daily,
+    )
+    args = kwargs(case)
+    args["materiality_decisions"] = ()
+    transport = Transport()
+    with pytest.raises(IndividualDigestError, match="date-scoped"):
+        run_complete_private_daily(
+            **args, infer=backend(transport), require_day_policy=True)
+    # Zero selected items must not bypass the global receipt-version gate.
+    assert not transport.calls
 
 
 def test_complete_day_reports_upstream_pending_entities_not_empty_day(case):

@@ -149,3 +149,22 @@ zero selected items and unresolved candidate materiality must never be treated
 as a positively verified empty day. The operator must inspect those pending
 source entities before claiming all important daily updates were included.
 No additional model or semantic contradiction stage is introduced.
+
+## Strict source-period vs execution-time freshness
+
+A strict private complete-day request reads and validates the immutable CAS
+capture index's **source_receipt_version == 3**, even when C3 selected **zero**
+Issue/PR entities. Per-source day-scoped observations are also checked for
+selected entities. Legacy v2 captures cannot advertise the v3 requirement
+through an empty selected set.
+
+A v3 snapshot and a rendered Daily are **not** a live execution-time
+freshness attestation. A previously admitted snapshot may be replayed after
+GitHub changes. `complete_and_all_selected_have_supported_text` describes
+only supported C5 text for the **source-selected** entities of that immutable
+capture; it is not proof of complete day coverage, current GitHub state or
+semantic correctness. The complete-day report explicitly keeps
+`source_freshness_at_execution_verified=false` and
+`current_day_entity_coverage_verified=false`, even after all selected model
+requests finish. A future production publisher must establish any additional
+freshness and coverage policy independently.
