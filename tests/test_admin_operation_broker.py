@@ -19,6 +19,9 @@ from obsidian_automation.admin_operation_broker import (
     TIMER_READ_FIELDS, SERVICE_READ_FIELDS, _command,
 )
 from obsidian_automation.admin_operation_preflight import MAX_OBSERVATION_AGE
+from obsidian_automation.admin_workflow_quiescence import (
+    GROUP_UNITS, TIMER_TARGETS, WorkflowObservation, WorkflowNotQuiescent,
+)
 
 
 NOW = datetime(2026, 10, 16, 7, 0, tzinfo=timezone.utc)
@@ -139,7 +142,40 @@ def audit(tmp_path):
     return root
 
 
-def configured(root, adapter, *, enabled=True, gate=None, clock=None, require_root=False):
+def quiescent_workflow(spec):
+    role = spec.identifier
+    if role in ("ai-vault-pull", "pre-review"):
+        timers = (SERVICES[0].timer, SERVICES[1].timer)
+    elif role in ("github-sync", "github-daily"):
+        timers = (SERVICES[2].timer, SERVICES[3].timer)
+    else:
+        timers = (SERVICES[4].timer,)
+    return WorkflowObservation(
+        timers={
+            timer: {
+                "LoadState": "loaded", "UnitFileState": "disabled",
+                "ActiveState": "inactive", "SubState": "dead",
+                "Unit": TIMER_TARGETS[timer], "Job": "0",
+                "FragmentPath": f"/etc/systemd/system/{timer}",
+            }
+            for timer in timers
+        },
+        services={
+            name: {
+                "LoadState": "loaded", "ActiveState": "inactive",
+                "SubState": "dead", "Type": "oneshot", "Job": "0",
+                "MainPID": "0", "ControlPID": "0",
+                "FragmentPath": f"/etc/systemd/system/{name}",
+            }
+            for name in GROUP_UNITS[role]
+        },
+    )
+
+
+def configured(
+    root, adapter, *, enabled=True, gate=None, clock=None, require_root=False,
+    workflow_observer=quiescent_workflow,
+):
     if gate is None:
         @contextmanager
         def gate():
@@ -147,7 +183,7 @@ def configured(root, adapter, *, enabled=True, gate=None, clock=None, require_ro
     return OperationBroker(
         audit_root=root, adapter=adapter, maintenance_gate=gate,
         clock=clock or (lambda: NOW), require_root=require_root,
-        effects_enabled=enabled,
+        effects_enabled=enabled, workflow_observer=workflow_observer,
     )
 
 
@@ -669,3 +705,137 @@ def test_systemctl_show_rejects_nonzero_child_exit():
     factory, _ = fake_show_process(lambda args: "", result_code=42)
     with pytest.raises(BrokerRejected, match="systemd_observation_failed"):
         SystemctlAdapter(popen=factory).observe(SPEC)
+
+
+def test_run_once_requires_explicit_workflow_observer_even_if_effects_enabled(tmp_path):
+    root, adapter = audit(tmp_path), FakeUnits(timer_state="paused")
+    broker = configured(root, adapter, workflow_observer=None)
+    with pytest.raises(BrokerRejected, match="workflow_observer_unavailable"):
+        broker.apply(request("run_once"), snapshot(adapter))
+    assert adapter.calls == []
+    assert not (root / "pending.json").exists()
+
+
+def test_run_once_fails_before_journal_when_other_role_timer_scheduled(tmp_path):
+    root, adapter = audit(tmp_path), FakeUnits(timer_state="paused")
+    def raced(spec):
+        result = quiescent_workflow(spec)
+        result.timers[SERVICES[3].timer]["UnitFileState"] = "enabled"
+        result.timers[SERVICES[3].timer]["ActiveState"] = "active"
+        result.timers[SERVICES[3].timer]["SubState"] = "waiting"
+        return result
+    broker = configured(root, adapter, workflow_observer=raced)
+    with pytest.raises(BrokerRejected, match="workflow_timer_not_quiescent"):
+        broker.apply(request("run_once"), snapshot(adapter))
+    assert adapter.calls == []
+    assert not (root / "pending.json").exists()
+
+
+def test_run_once_blocks_on_busy_hidden_prerequisite(tmp_path):
+    root, adapter = audit(tmp_path), FakeUnits(timer_state="paused")
+    def hidden_running(spec):
+        result = quiescent_workflow(spec)
+        result.services["obsidian-github-daily-collect.service"]["Job"] = "4"
+        return result
+    broker = configured(root, adapter, workflow_observer=hidden_running)
+    with pytest.raises(BrokerRejected, match="workflow_service_not_quiescent"):
+        broker.apply(request("run_once"), snapshot(adapter))
+    assert adapter.calls == []
+    assert not (root / "pending.json").exists()
+
+
+def test_workflow_observer_exception_must_not_leak_secret_or_write_journal(tmp_path):
+    root, adapter = audit(tmp_path), FakeUnits(timer_state="paused")
+    def broken(_):
+        raise RuntimeError("admin-broker-bearer=secret-exception-value")
+    broker = configured(root, adapter, workflow_observer=broken)
+    with pytest.raises(BrokerRejected, match="workflow_observation_failed") as exc:
+        broker.apply(request("run_once"), snapshot(adapter))
+    assert "secret-" not in str(exc.value)
+    assert adapter.calls == []
+    assert not (root / "pending.json").exists()
+
+
+def test_pause_and_resume_not_blocked_by_run_once_dependency_snapshot(tmp_path):
+    root, adapter = audit(tmp_path), FakeUnits()
+    def forbidden(_):
+        raise RuntimeError("must not inspect unrelated dependencies for pause")
+    broker = configured(root, adapter, workflow_observer=forbidden)
+    assert broker.apply(request("pause"), snapshot(adapter)).state == "completed"
+    assert broker.apply(request("resume", RID2), snapshot(adapter)).state == "completed"
+
+
+def test_systemctl_adapter_observes_only_full_fixed_github_domain():
+    from obsidian_automation.admin_workflow_quiescence import (
+        WORKFLOW_READ_FIELDS, TIMER_READ_FIELDS, require_run_once_quiescent,
+    )
+    expected = quiescent_workflow(SPEC)
+    seen = set()
+    def payload(args):
+        unit = args[2]
+        fields = [arg.partition("=")[2] for arg in args[4:]]
+        assert unit in set(expected.timers) | set(expected.services)
+        observed = expected.timers.get(unit) or expected.services[unit]
+        assert set(fields) == set(observed)
+        seen.add(unit)
+        return "".join(f"{key}={observed[key]}\n" for key in fields)
+    factory, _events = fake_show_process(payload)
+    result = SystemctlAdapter(popen=factory).observe_workflow(SPEC)
+    require_run_once_quiescent(SPEC, result)
+    assert seen == set(expected.timers) | set(expected.services)
+
+
+def test_workflow_observer_cannot_inject_custom_rejection_code(tmp_path):
+    root, adapter = audit(tmp_path), FakeUnits(timer_state="paused")
+    def malicious(_):
+        raise WorkflowNotQuiescent("Authorization: bearer=private-data")
+    broker = configured(root, adapter, workflow_observer=malicious)
+    with pytest.raises(BrokerRejected, match="workflow_observation_failed") as exc:
+        broker.apply(request("run_once"), snapshot(adapter))
+    assert "private-data" not in str(exc.value)
+    assert "Authorization" not in str(exc.value)
+    assert adapter.calls == []
+    assert not (root / "pending.json").exists()
+
+
+def test_workflow_observer_returned_mapping_cannot_inject_error_code(tmp_path):
+    root, adapter = audit(tmp_path), FakeUnits(timer_state="paused")
+    class MaliciousMapping(dict):
+        def __iter__(self):
+            raise WorkflowNotQuiescent("Bearer private-token-from-unsafe-mapping")
+    def malicious(_):
+        original = quiescent_workflow(SPEC)
+        return WorkflowObservation(
+            timers=MaliciousMapping(original.timers),
+            services=original.services,
+        )
+    broker = configured(root, adapter, workflow_observer=malicious)
+    with pytest.raises(BrokerRejected, match="workflow_inventory_unverified") as exc:
+        broker.apply(request("run_once"), snapshot(adapter))
+    assert "private-token" not in str(exc.value)
+    assert adapter.calls == []
+    assert not (root / "pending.json").exists()
+
+
+def test_workflow_observer_malicious_string_key_cannot_leak_code(tmp_path):
+    root, adapter = audit(tmp_path), FakeUnits(timer_state="paused")
+    class StrangeKey(str):
+        attack = False
+        def __hash__(self):
+            if self.attack:
+                raise WorkflowNotQuiescent("auth-token=must-not-leak")
+            return super().__hash__()
+    key = StrangeKey(SERVICES[3].timer)
+    def malicious(spec):
+        original = quiescent_workflow(spec)
+        replacement = dict(original.timers)
+        current = replacement.pop(SERVICES[3].timer)
+        replacement[key] = current
+        key.attack = True
+        return WorkflowObservation(timers=replacement, services=original.services)
+    broker = configured(root, adapter, workflow_observer=malicious)
+    with pytest.raises(BrokerRejected, match="workflow_inventory_unverified") as exc:
+        broker.apply(request("run_once"), snapshot(adapter))
+    assert "must-not-leak" not in str(exc.value)
+    assert adapter.calls == []
+    assert not (root / "pending.json").exists()

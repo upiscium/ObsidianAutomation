@@ -26,6 +26,12 @@ from .admin_status import (
     SERVICE_FIELDS, SERVICES, TIMER_FIELDS, ServiceSpec,
     classify_service, classify_timer,
 )
+from .admin_workflow_quiescence import (
+    UNIT_NAMES, GROUP_UNITS, TIMER_TARGETS,
+    TIMER_READ_FIELDS as WORKFLOW_TIMER_READ_FIELDS,
+    WORKFLOW_READ_FIELDS, WORKFLOW_REJECTION_CODES,
+    WorkflowObservation, WorkflowNotQuiescent, require_run_once_quiescent,
+)
 
 # Never accept arbitrary unit names, shell fragments, or commands from HTTP.
 TIMER_READ_FIELDS = (*TIMER_FIELDS, "Unit", "Job", "FragmentPath")
@@ -324,10 +330,12 @@ class OperationBroker:
         self, *, audit_root: Path, adapter: UnitAdapter,
         maintenance_gate: MaintenanceGateFactory, clock: Clock,
         require_root: bool = True, effects_enabled: bool = False,
+        workflow_observer: Callable[[ServiceSpec], WorkflowObservation] | None = None,
     ):
         self.audit_root = audit_root
         self.adapter = adapter
         self.maintenance_gate = maintenance_gate
+        self.workflow_observer = workflow_observer
         self.clock = clock
         self.require_root = require_root
         self.effects_enabled = effects_enabled
@@ -408,6 +416,37 @@ class OperationBroker:
                         # A paused timer cannot race with its own scheduled
                         # activation; never run an uncontrolled live recurrence.
                         raise BrokerRejected("run_once_requires_paused_idle_timer")
+                    # A final service being inactive does NOT establish its
+                    # Requires/OnSuccess role chain is idle. All other role
+                    # timers must be paused and every fixed dependent unit
+                    # verified idle before a manually triggered full cycle.
+                    # This does not replace full launcher/update exclusion.
+                    if intent.action == "run_once":
+                        if self.workflow_observer is None:
+                            raise BrokerRejected("workflow_observer_unavailable")
+                        try:
+                            workflow = self.workflow_observer(spec)
+                        except Exception:
+                            # The observer is an independently supplied local
+                            # source, not a fixed-code rejection authority.
+                            # Never copy its exception body or .code to logs,
+                            # HTTP results, or durable evidence.
+                            raise BrokerRejected("workflow_observation_failed") from None
+                        try:
+                            require_run_once_quiescent(spec, workflow)
+                        except WorkflowNotQuiescent as exc:
+                            # A synthetic/broken injected map can raise the
+                            # same exception class from key hashing/equality.
+                            # Only exact reviewed reason codes may escape.
+                            code = (
+                                exc.code if type(exc) is WorkflowNotQuiescent
+                                and type(exc.code) is str
+                                and exc.code in WORKFLOW_REJECTION_CODES
+                                else "workflow_validation_unavailable"
+                            )
+                            raise BrokerRejected(code) from None
+                        except Exception:
+                            raise BrokerRejected("workflow_validation_unavailable") from None
                     entry = {
                         "record_version": 1, "request_id": rid,
                         "service_id": intent.service_id, "action": intent.action,
@@ -605,7 +644,10 @@ class SystemctlAdapter:
                     proc.stdout.close()
 
     def _read_properties(self, unit: str, fields: tuple[str, ...]) -> dict[str, str]:
-        if unit not in {v for spec in SERVICES for v in (spec.timer, spec.service)}:
+        if unit not in (
+            {v for spec in SERVICES for v in (spec.timer, spec.service)}
+            | UNIT_NAMES
+        ):
             raise BrokerRejected("unknown_unit")
         import subprocess
         try:
@@ -632,6 +674,27 @@ class SystemctlAdapter:
             timer=self._read_properties(spec.timer, TIMER_READ_FIELDS),
             service=self._read_properties(spec.service, SERVICE_READ_FIELDS),
         )
+
+    def observe_workflow(self, spec: ServiceSpec) -> WorkflowObservation:
+        """Read only the complete frozen role inventory, never arbitrary units."""
+        if spec not in SERVICES:
+            raise BrokerRejected("unknown_service")
+        timers = {
+            timer: self._read_properties(timer, WORKFLOW_TIMER_READ_FIELDS)
+            for timer in TIMER_TARGETS
+            if timer in (
+                (SERVICES[0].timer, SERVICES[1].timer)
+                if spec.identifier in ("ai-vault-pull", "pre-review")
+                else (SERVICES[2].timer, SERVICES[3].timer)
+                if spec.identifier in ("github-sync", "github-daily")
+                else (SERVICES[4].timer,)
+            )
+        }
+        services = {
+            name: self._read_properties(name, WORKFLOW_READ_FIELDS)
+            for name in GROUP_UNITS[spec.identifier]
+        }
+        return WorkflowObservation(timers=timers, services=services)
 
     def boot_id(self) -> str:
         handle = None
