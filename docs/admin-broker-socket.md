@@ -1,5 +1,11 @@
 # #300 Phase C — peer-verified local broker IPC (read-only only)
 
+**Phase H extension:** A separate, not-installed no-effect preview listener
+and loopback CSRF/Origin-protected preview endpoint are documented in
+[admin-operator-preview.md](admin-operator-preview.md). The original
+ReadOnlyBrokerSocket remains capabilities-only. The new sibling listener does
+not invoke or authorize systemd effects; no privileged worker is enabled.
+
 **Status:** experimental source only, not accepted/deployed. No production
 systemd effect, root listener service, or write HTTP endpoint is introduced.
 
