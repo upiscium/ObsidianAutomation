@@ -95,6 +95,16 @@ as a *schema/preview hint*: the returned candidate still requires actual
 deployment and worker exclusion, live root revalidation, durable audit and
 independent privileged authorization before any future execution.
 
+## Phase I durable intake (separate, not installed)
+
+[Phase I operation queue and receipt contract](admin-control-durable-queue.md)
+adds a second **disabled-by-default** root-owned Unix intake, immutable
+operation/processing/result records, and a separately invoked fake-adapter
+worker bridge for **pause/resume only**. The Phase H preview socket, disabled
+Execute control and HTTP endpoints are unchanged. No durable admission or
+service effect can be triggered from the browser, and Run once remains
+unqualified because downstream OnSuccess completion is not proven.
+
 ## Remaining effect and deployment gates
 
 This is a **no-effect vertical slice**. The actual #300 privileged operation
