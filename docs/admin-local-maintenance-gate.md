@@ -18,8 +18,12 @@ caller's context. Synthetic tests use disposable paths and current UID.
 
 **Important boundary:** the existing host updater and pre-review updater use
 these locks, but not every local launch/update path has been qualified.
-Specifically, the GitHub updater, Core Promotion, independent timer/OnSuccess
-jobs and worker dependency chain may not honor this pair. Therefore successful
+Specifically, the old uncoordinated GitHub updater, Core Promotion,
+independent timer/OnSuccess jobs and worker dependency chains do not universally
+honor this pair. A reviewed --single-lxc-coordinated opt-in path for the
+legacy GitHub updater uses these locks and a durable inhibit marker, but the
+old executable does not automatically acquire this protection. See
+admin-github-single-lxc-updater.md. Therefore successful
 acquisition does **not** authorize OperationBroker.apply, and this gate is
 not wired to effects_enabled. It only excludes *cooperating* updaters.
 

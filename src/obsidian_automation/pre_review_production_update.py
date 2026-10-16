@@ -79,7 +79,7 @@ class PreReviewProductionUpdateError(RuntimeError):
 
 
 class RefreshUpdateInhibit:
-    """Prevent queued success handlers from starting during either updater.
+    """Prevent queued success handlers during coordinated local updaters.
 
     PID1 checks the marker before activating each refresh stage. A separate,
     stable inode serializes both updater paths; an interrupted owner must retry
@@ -91,7 +91,7 @@ class RefreshUpdateInhibit:
         self.require_root = require_root
         self.value = {"record_version": 1, "target_sha": target_sha, "owner": owner}
         self.lock_fd: int | None = None
-        if _SHA_RE.fullmatch(target_sha) is None or owner not in {"host-runtime", "pre-review"}:
+        if _SHA_RE.fullmatch(target_sha) is None or owner not in {"host-runtime", "pre-review", "github-updater"}:
             raise PreReviewProductionUpdateError("invalid semantic refresh update owner")
 
     def _safe_path(self, path: Path) -> None:

@@ -14,6 +14,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
+from .admin_local_maintenance_gate import (
+    HOST_RECEIPT_DIR, single_lxc_host_updater_lock,
+)
+from .admin_operation_broker import BrokerRejected, SystemctlAdapter
+from .admin_status import SERVICES
+from .admin_workflow_quiescence import require_run_once_quiescent, WorkflowNotQuiescent
+from .pre_review_production_update import (
+    DEFAULT_REFRESH_INHIBIT, PreReviewProductionUpdateError,
+    RefreshUpdateInhibit,
+)
+
 
 DEFAULT_APP_ROOT = Path("/opt/obsidian-github-sync/app")
 DEFAULT_VENV_ROOT = Path("/opt/obsidian-github-sync/venv")
@@ -384,7 +395,7 @@ def _persist_receipt(receipt_dir: Path, receipt: DeploymentReceipt) -> Path:
     return target
 
 
-def execute_update(
+def _execute_update_impl(
     *,
     target_sha: str,
     app_root: Path = DEFAULT_APP_ROOT,
@@ -395,6 +406,8 @@ def execute_update(
     runner: CommandRunner = _default_runner,
     require_root: bool = True,
     bootstrap_pre_disabled_timer: bool = False,
+    before_timer_effect: Callable[[], None] | None = None,
+    verify_quiescence: Callable[[], None] | None = None,
 ) -> tuple[DeploymentReceipt, Path]:
     stage = "preflight"
     previous_sha: str | None = None
@@ -484,7 +497,18 @@ def execute_update(
             timer_was_enabled = observed_timer_enabled
             timer_was_active = observed_timer_active
 
+        # Under single-LXC coordination, the invariant is published while
+        # host-update and semantic-refresh locks are owned, BEFORE changing
+        # any timer. If interrupted, the marker remains and blocks a future
+        # updater/broker until explicitly reconciled.
+        if before_timer_effect is not None:
+            before_timer_effect()
         stage = "stop_timers"
+        if verify_quiescence is not None:
+            # A coordinated update has a durable inhibit marker already
+            # published. Even a failure stopping the FIRST timer must drive
+            # best-effort containment of both timers before returning.
+            timers_stopped = True
         for unit, state in managed_timer_states.items():
             if state["enabled"] is None and state["active"] is None:
                 continue
@@ -494,6 +518,13 @@ def execute_update(
                 label=f"timer stop {unit}",
             )
         timers_stopped = True
+
+        # Timer disable alone is NOT a drain. In coordinated mode require the
+        # full GitHub Sync+Daily dependency chain idle before checkout/package
+        # changes; otherwise leave recurrence disabled and marker intact.
+        if verify_quiescence is not None:
+            stage = "quiesce_workflow"
+            verify_quiescence()
 
         stage = "checkout_target"
         _git(
@@ -680,6 +711,91 @@ def execute_update(
         raise ProductionUpdateError(f"{stage}: unexpected update failure") from exc
 
 
+
+
+def execute_update(
+    *,
+    target_sha: str,
+    app_root: Path = DEFAULT_APP_ROOT,
+    venv_root: Path = DEFAULT_VENV_ROOT,
+    systemd_dir: Path = DEFAULT_SYSTEMD_DIR,
+    receipt_dir: Path = DEFAULT_RECEIPT_DIR,
+    daily_revision_env: Path = DEFAULT_DAILY_REVISION_ENV,
+    runner: CommandRunner = _default_runner,
+    require_root: bool = True,
+    bootstrap_pre_disabled_timer: bool = False,
+    single_lxc_coordinated: bool = False,
+    host_receipt_dir: Path = HOST_RECEIPT_DIR,
+    refresh_inhibit_path: Path = DEFAULT_REFRESH_INHIBIT,
+) -> tuple[DeploymentReceipt, Path]:
+    """Legacy updater with opt-in, fail-closed same-LXC update coordination.
+
+    On the supported consolidated host, the *preferred* update entrypoint is
+    host-runtime lifecycle. This opt-in exists to prevent accidental overlap
+    when the legacy GitHub updater must be used in a controlled migration.
+    It is NOT a general Broker effect-authorization flag.
+    """
+    if type(single_lxc_coordinated) is not bool:
+        raise ProductionUpdateError("invalid_single_lxc_mode")
+    arguments = dict(
+        target_sha=target_sha, app_root=app_root, venv_root=venv_root,
+        systemd_dir=systemd_dir, receipt_dir=receipt_dir,
+        daily_revision_env=daily_revision_env, runner=runner,
+        require_root=require_root,
+        bootstrap_pre_disabled_timer=bootstrap_pre_disabled_timer,
+    )
+    if not single_lxc_coordinated:
+        return _execute_update_impl(**arguments)
+    if require_root and os.geteuid() != 0:
+        raise ProductionUpdateError("production update must run as root")
+    if not isinstance(target_sha, str) or _SHA_RE.fullmatch(target_sha) is None:
+        raise ProductionUpdateError("invalid_single_lxc_target_sha")
+
+    def verify_workflow() -> None:
+        try:
+            # Production ALWAYS obtains the fixed-role snapshot directly from
+            # local systemd. No external/caller-supplied positive observation
+            # is accepted by the public updater entrypoint.
+            snapshot = SystemctlAdapter().observe_workflow(SERVICES[2])
+            require_run_once_quiescent(SERVICES[2], snapshot)
+        except Exception:
+            # No arbitrary properties, paths or diagnostic content in updater
+            # result or durable receipt. Timer and inhibitor remain stopped.
+            raise ProductionUpdateError("single_lxc_workflow_not_quiescent") from None
+
+    try:
+        # Canonical lock order matches the host updater: host-update first,
+        # semantic-refresh second. The shared refresh marker is recognized by
+        # the host updater as belonging to a different owner, and it blocks
+        # new callbacks or control while a prior update is uncertain.
+        with single_lxc_host_updater_lock(
+            host_dir=host_receipt_dir, require_root=require_root,
+        ):
+            inhibit = RefreshUpdateInhibit(
+                refresh_inhibit_path, target_sha, "github-updater",
+                require_root=require_root,
+            )
+            try:
+                inhibit.acquire(publish=False)
+                if os.path.lexists(inhibit.path):
+                    # No silent same-target re-run after a crash or failed
+                    # update; previous timer restoration intent is uncertain.
+                    raise ProductionUpdateError("single_lxc_update_needs_reconciliation")
+                result = _execute_update_impl(
+                    **arguments,
+                    before_timer_effect=inhibit.publish,
+                    verify_quiescence=verify_workflow,
+                )
+                inhibit.release()
+                return result
+            finally:
+                inhibit.close()
+    except (BrokerRejected, PreReviewProductionUpdateError) as exc:
+        # Failures to qualify/exclude updaters must precede ANY systemd
+        # mutation. Keep the public failure fixed and non-diagnostic.
+        raise ProductionUpdateError("single_lxc_exclusion_unavailable") from None
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="obsidian-github-production-update",
@@ -689,6 +805,14 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--target-sha", required=True)
+    parser.add_argument(
+        "--single-lxc-coordinated", action="store_true",
+        help=(
+            "Require existing host/semantic updater locks, a durable inhibit "
+            "marker and a complete idle GitHub role before changing units. "
+            "For reviewed single-LXC migration only; not a production cutover."
+        ),
+    )
     parser.add_argument("--app-root", type=Path, default=DEFAULT_APP_ROOT)
     parser.add_argument("--venv-root", type=Path, default=DEFAULT_VENV_ROOT)
     parser.add_argument("--systemd-dir", type=Path, default=DEFAULT_SYSTEMD_DIR)
@@ -721,6 +845,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             receipt_dir=args.receipt_dir,
             daily_revision_env=args.daily_revision_env,
             bootstrap_pre_disabled_timer=args.bootstrap_pre_disabled_timer,
+            single_lxc_coordinated=args.single_lxc_coordinated,
         )
     except ProductionUpdateError as exc:
         print(

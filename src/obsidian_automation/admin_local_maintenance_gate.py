@@ -148,3 +148,35 @@ def cooperating_updater_gate(
         for fd in (refresh_lock_fd, host_lock_fd, refresh_fd, host_fd):
             if fd is not None:
                 os.close(fd)
+
+
+
+@contextmanager
+def single_lxc_host_updater_lock(
+    *, host_dir: Path = HOST_RECEIPT_DIR, require_root: bool = True,
+) -> Iterator[None]:
+    """One shared host-update lock for a coordinated legacy updater.
+
+    This is the FIRST lock of the host-runtime lock order. A coordinated
+    legacy updater next acquires RefreshUpdateInhibit's shared refresh lock,
+    and persists its marker before touching units. This does not authorize
+    the Dashboard broker or worker execution.
+    """
+    if require_root and os.geteuid() != 0:
+        raise BrokerRejected("privileged_broker_required")
+    owner = 0 if require_root else os.geteuid()
+    host_fd = lock_fd = None
+    try:
+        host_fd = _open_pinned_dir(
+            host_dir, owner=owner, allowed_modes=frozenset((0o700, 0o750)),
+        )
+        lock_fd = _lock_existing(host_fd, HOST_LOCK, owner)
+        _absent(host_fd, HOST_PENDING)
+        yield
+    finally:
+        try:
+            if lock_fd is not None:
+                os.close(lock_fd)
+        finally:
+            if host_fd is not None:
+                os.close(host_fd)
