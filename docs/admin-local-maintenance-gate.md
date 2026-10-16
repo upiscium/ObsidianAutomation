@@ -20,7 +20,10 @@ caller's context. Synthetic tests use disposable paths and current UID.
 these locks, but not every local launch/update path has been qualified.
 Specifically, the old uncoordinated GitHub updater, Core Promotion,
 independent timer/OnSuccess jobs and worker dependency chains do not universally
-honor this pair. A reviewed --single-lxc-coordinated opt-in path for the
+honor this pair. Core Promotion is instead serialized by its own
+role-local promotion.lock; the #300 hardening now makes contention fail-fast
+rather than wait for a second remote-effectful cycle. See
+admin-core-local-lock.md. A reviewed --single-lxc-coordinated opt-in path for the
 legacy GitHub updater uses these locks and a durable inhibit marker, but the
 old executable does not automatically acquire this protection. See
 admin-github-single-lxc-updater.md. Therefore successful
