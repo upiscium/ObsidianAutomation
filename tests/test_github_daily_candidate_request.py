@@ -196,3 +196,117 @@ def test_compact_accepted_reply_preserves_original_c2a_source_identity(
     assert len(rows)==1
     assert rows[0]["candidates"][0]["evidence_ids"]==list(batch.candidates[0].evidence_ids)
     assert rollup.report()["publication_authorized"] is False
+
+
+def test_recent_full_v2_contains_exact_uncut_projected_source_and_original_refs(
+    tmp_path, safe_layout
+):
+    _, saved, _, ctx = _fixture(tmp_path)
+    req = compact.build_recent_full_candidate_request(
+        ctx, capture_sha256=saved.index_sha256)
+    same = compact.build_recent_full_candidate_request(
+        ctx, capture_sha256=saved.index_sha256)
+    assert req == same
+    assert req.prompt_version == compact.RECENT_FULL_PROMPT_VERSION
+    assert req.system_prompt == compact.RECENT_FULL_PROMPT
+    assert "最大2件" in req.system_prompt
+    assert len(req.source_view_bytes) <= compact.MAX_VIEW_BYTES
+    view = req.model_source_view()
+    assert view["view_policy"] == compact.RECENT_FULL_PROMPT_VERSION
+    assert view["original_event_count"] == len(ctx.events)
+    assert view["shown_source_refs"] == list(req.shown_source_refs)
+    assert view["omitted_source_refs"] == list(req.omitted_source_refs)
+    assert set(req.shown_source_refs).isdisjoint(req.omitted_source_refs)
+    assert sorted((*req.shown_source_refs, *req.omitted_source_refs)) == list(range(len(ctx.events)))
+    assert len(req.shown_source_refs) <= compact.MAX_RECENT_FULL_EVENTS
+    eligible = []
+    for i, part in enumerate(ctx.events):
+        ev=part.original
+        if ev["kind"] in compact._SNAPSHOT_KINDS:
+            continue
+        if ev["kind"] in ("pull_request_created","issue_created") and all(
+                ev[k] is None for k in ("title","body","message")):
+            continue
+        eligible.append(i)
+    if not eligible:
+        eligible = list(range(len(ctx.events)))
+    assert list(req.shown_source_refs) == eligible[-len(req.shown_source_refs):]
+    for item in view["events"]:
+        original=ctx.events[item["source_ref"]].original
+        for field in ("title", "body", "message"):
+            captured=original[field]
+            if captured is None:
+                assert item["original_event"][field] is None
+            else:
+                assert item["original_event"][field] == {
+                    "text": captured["text"],
+                    "truncated": captured["truncated"]}
+        assert item["original_event"]["kind"] == original["kind"]
+        assert item["original_event"]["occurred_at"] == original["occurred_at"]
+    schema=req.model_schema()
+    assert schema["properties"]["candidates"]["items"]["properties"]["source_refs"]["items"]["enum"] == list(req.shown_source_refs)
+    assert req.report()["prompt_version"] == compact.RECENT_FULL_PROMPT_VERSION
+    assert "original_event" not in req.report()
+    assert req.report()["publication_authorized"] is False
+
+
+def test_recent_full_v2_accepts_only_unmodified_original_c1b_and_in_view_citations(
+    tmp_path, safe_layout
+):
+    _, saved, _, ctx = _fixture(tmp_path)
+    req=compact.build_recent_full_candidate_request(
+        ctx,capture_sha256=saved.index_sha256,max_shown_events=1)
+    assert len(req.shown_source_refs) == 1
+    ref = req.shown_source_refs[0]
+    raw=_reply([{"summary":"元イベントで検証が進みました。","source_refs":[ref]}])
+    batch=compact.admit_bounded_candidate_reply(
+        ctx,req,raw,capture_sha256=saved.index_sha256)
+    assert batch.candidates[0].evidence_ids == (ctx.evidence_ids[ref],)
+    assert len(batch.uncited_evidence_ids) == len(ctx.events)-1
+    if req.omitted_source_refs:
+        wrong=_reply([{"summary":"進展あり。",
+                       "source_refs":[req.omitted_source_refs[0]]}])
+        with pytest.raises(compact.BoundedCandidateRequestError,match="outside"):
+            compact.admit_bounded_candidate_reply(
+                ctx,req,wrong,capture_sha256=saved.index_sha256)
+    invalid=_reply([{"summary":"1行目です。\n2行目です。","source_refs":[ref]}])
+    with pytest.raises(c1b.DailyWitnessedCandidateError):
+        compact.admit_bounded_candidate_reply(
+            ctx,req,invalid,capture_sha256=saved.index_sha256)
+    for forged in (
+            replace(req,source_view_sha256="f"*64),
+            replace(req,request_sha256="f"*64),
+            replace(req,prompt_version=compact.PROMPT_VERSION),
+            replace(req,requested_max_shown_events=compact.MAX_RECENT_FULL_EVENTS+1)):
+        with pytest.raises(compact.BoundedCandidateRequestError):
+            compact.admit_bounded_candidate_reply(
+                ctx,forged,raw,capture_sha256=saved.index_sha256)
+
+
+@pytest.mark.parametrize("limit", [0,True,-1,4,None,"2"])
+def test_recent_full_v2_rejects_bad_event_window(tmp_path,safe_layout,limit):
+    _, saved, _, ctx = _fixture(tmp_path)
+    with pytest.raises(compact.BoundedCandidateRequestError):
+        compact.build_recent_full_candidate_request(
+            ctx,capture_sha256=saved.index_sha256,max_shown_events=limit)
+
+
+def test_recent_full_v2_fails_when_even_one_full_event_exceeds_byte_bound(
+    tmp_path,safe_layout,monkeypatch
+):
+    _, saved, _, ctx=_fixture(tmp_path)
+    monkeypatch.setattr(compact,"MAX_VIEW_BYTES",64)
+    with pytest.raises(compact.BoundedCandidateRequestError,match="no whole recent"):
+        compact.build_recent_full_candidate_request(
+            ctx,capture_sha256=saved.index_sha256)
+
+
+def test_recent_full_v2_cannot_promote_forged_context(tmp_path,safe_layout):
+    _, saved, _, ctx=_fixture(tmp_path)
+    changed=replace(ctx,route_receipt_sha256="f"*64)
+    with pytest.raises(c1b.DailyWitnessedCandidateError):
+        compact.build_recent_full_candidate_request(
+            changed,capture_sha256=saved.index_sha256)
+    with pytest.raises(c1b.DailyWitnessedCandidateError):
+        compact.build_recent_full_candidate_request(
+            ctx,capture_sha256="f"*64)

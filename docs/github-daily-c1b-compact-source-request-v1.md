@@ -83,3 +83,66 @@ legibility. Do not substitute a different model, reinstall a removed
 multi-GB model, or declare the prompts successful based only on code tests.
 No default adoption, source-provenance relaxation, main merge, Writer,
 Timer, Vault or Nextcloud modification is authorized by this Draft.
+
+## v2 candidate-generation mode: most recent full events (opt-in)
+
+The first compact v1 view retained many original event indices but clipped
+every large body to a short head/tail fragment. In an independent native
+Gemma 4 experiment on 2026-10-17 JST, the initial v1 model returned
+empty candidates for actual Issue #300 and PR #311 despite progress-bearing
+messages. Thus zero schema errors alone did NOT improve Daily coverage.
+
+The new opt-in build_recent_full_candidate_request function uses the
+versioned c1b-recent-full-source-ja-v2 prompt and the same C1b/C2a pipeline.
+It preserves source indices but defaults to showing only the last **two**
+substantial non-snapshot dated source events, including complete captured
+title/body/message (subject to original Collector truncation). A bare
+created-event with no retained title/body/message is omitted from the
+model view; C3 still retains its structural status. Omitted original event
+indices are always disclosed; no original event is deleted from CAS.
+
+The caller can opt in to at most three recent full events. The JSON source
+view must fit the same 16-KiB bound. If not, earlier whole events are omitted
+and indexed; the original text is never silently clipped or rejoined.
+If even one whole event cannot fit, request construction fails closed.
+The strict original C1b normalizer first validates the raw model reply,
+then the extra compact request policy checks at most two statements of
+160 characters and citations to only actually displayed original refs.
+C2a Grounding verifies the original complete source again.
+
+admit_bounded_candidate_reply picks the expected source builder based on
+the versioned request and recomputes exact bytes before accepting output.
+A model cannot gain source or publication authority through either variant.
+
+### New pinned-model comparison (not exact old-model recovery)
+
+The earlier model Digest
+a3d2b95350da03ff9b1943a753bb6617c49a3ee462b632a758518ec817743986
+is absent from Adam's Ollama manifest/blob store and is not currently
+recoverable from the checked remote manifest locations.
+The available gemma4:e4b-it-q8_0 has a different pinned Digest:
+3721c8128dc2e6cabed512039c22f63629c0ad6786b0fc852a9e4da47a6953f3.
+These were NOT misrepresented as the same model.
+
+A new one-shot controlled A/B used the latter revision, temperature=0,
+num_predict=2048, identical saved 2026-10-16 JST Capture, and the exact
+original C1b/C2a validators:
+
+- Original long-view C1b rejected Issue #300 and PR #311 with multi-line
+  summary. PR #367 admitted one model-Grounding-supported claim, while PR
+  #374 admitted one that Grounding rejected.
+- Compact v1 returned zero candidates for Issue #300, PR #311 and PR #367.
+  For PR #374 it admitted two, of which one Grounding model-supported.
+- Recent-full v2 with the last two substantial source events admitted
+  two model-Grounding-supported claims each for Issue #300, PR #311 and
+  PR #367; control PR #374 admitted one model-Grounding-supported claim.
+
+An earlier three-event pilot produced Grounding rejections on one run,
+so these results are NOT proof of repeatable semantic accuracy. Source
+omission and current-day completeness remain subject to separate review,
+and model-supported does NOT mean human factuality approval. No model
+reinstall, production mode, Writer/Timer/Nextcloud/Vault, or main merge
+is authorized by this Draft.
+
+Private exact model requests/replies/receipts remain only on Adam at
+/tmp/obsa379-native-ab-tmH7O4/ and are not GitHub attachments.
