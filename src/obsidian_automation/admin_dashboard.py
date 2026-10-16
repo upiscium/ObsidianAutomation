@@ -15,13 +15,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable, Sequence
 
 from .admin_broker_socket import capabilities_from_socket, _unavailable_capabilities
-from .admin_status import aggregate_status
-from .admin_ai_status import load_ai_health
 from .admin_operation_preview import preview_from_socket
 from .admin_operation_web import (
     MAX_REQUEST_BYTES, OneTimePreviewCsrf, PreviewRequestRejected,
     parse_operation_preview_request, strict_browser_preview, unavailable_preview,
 )
+from .admin_status import aggregate_status
+from .admin_ai_status import load_ai_health
 
 HTML = """<!doctype html>
 <html lang="ja">
@@ -545,17 +545,12 @@ class Handler(BaseHTTPRequestHandler):
         if not self._origin_allowed():
             self._reply(403, b"Forbidden")
             return
-        if self.path == "/":
-            self._reply(200, HTML.encode("utf-8"), "text/html; charset=utf-8")
-        elif self.path == "/static/style.css":
-            self._reply(200, CSS.encode("utf-8"), "text/css; charset=utf-8")
-        elif self.path == "/static/app.js":
-            self._reply(200, JS.encode("utf-8"), "text/javascript; charset=utf-8")
-        elif self.path == "/api/v1/operation-capabilities":
+        if self.path == "/api/v1/operation-capabilities":
             self._reply(
                 200, self.server.capabilities_singleflight.get(),
                 "application/json; charset=utf-8",
             )
+            return
         elif self.path == "/api/v1/operation-session":
             try:
                 session = self.server.preview_csrf.issue()
@@ -567,6 +562,13 @@ class Handler(BaseHTTPRequestHandler):
                 session, sort_keys=True, separators=(",", ":"),
             ).encode("utf-8")
             self._reply(200, data, "application/json; charset=utf-8")
+            return
+        if self.path == "/":
+            self._reply(200, HTML.encode("utf-8"), "text/html; charset=utf-8")
+        elif self.path == "/static/style.css":
+            self._reply(200, CSS.encode("utf-8"), "text/css; charset=utf-8")
+        elif self.path == "/static/app.js":
+            self._reply(200, JS.encode("utf-8"), "text/javascript; charset=utf-8")
         elif self.path == "/api/v1/status":
             code, payload = self.server.status_singleflight.get()
             self._reply(code, payload, "application/json; charset=utf-8")
