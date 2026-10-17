@@ -31,6 +31,13 @@ MAX_REQUEST_BYTES = 8192
 MAX_RESPONSE_BYTES = 8192
 MAX_SHADOW_CALLS = 128
 MODEL = "d1-3B"
+# Exact existing installed TSUMGI decision contract, not a user-defined alias.
+# A future Daily-specific d1 profile requires independent requalification.
+PINNED_D1_PROFILE_ID = "dual-systemone-v1"
+PINNED_D1_PROFILE_REVISION = "sha256:949c53c95f5d9cde5b457a9c41f1a54823f2aa36f7e5d5f243523caa540f4ee7"
+PINNED_D1_SEMANTICS_ID = "sha256:a205bcadf619d8173bd56f091e9d5bfcf043c2bc5d05c10b2a72767cf691c4cd"
+PINNED_D1_DEPLOYMENT_REVISION = "sha256:cb3c03a5a9bd4b917b7d1e2fa3ef6b23b8cb2e21c9a75705d31df2f606bc621d"
+PINNED_D1_SERVING_CONTRACT_REVISION = "sha256:5898c20d4f6cd02844180bb91925e0a42b199768dc62560555afd0161bdf55c9"
 CATEGORIES = ("must_include", "supporting", "background")
 CHOICES = (
     {"id": "must_include", "label":
@@ -290,8 +297,9 @@ def build_d1_decision_request(plan: PriorityPlan, segment_id: str, *,
                               profile: str, profile_revision: str) -> DecisionRequest:
     """Compile existing managed TSUMGI POST /v1/decisions schema without IO."""
     if (type(plan) is not PriorityPlan or type(segment_id) is not str
-            or type(profile) is not str or not profile or len(profile) > 128
-            or type(profile_revision) is not str or _REVISION.fullmatch(profile_revision) is None):
+            or type(profile) is not str or profile != PINNED_D1_PROFILE_ID
+            or type(profile_revision) is not str
+            or profile_revision != PINNED_D1_PROFILE_REVISION):
         raise D1PriorityShadowError("invalid pinned decision configuration")
     doc = plan.report()
     if (doc.get("stage") != "daily_c5_d1_priority_plan"
@@ -364,10 +372,12 @@ def admit_tsumgi_d1_observation(request: DecisionRequest, raw: bytes) -> dict:
             or type(usage.get("output_tokens")) is not int or usage["output_tokens"] != 0
             or usage["input_tokens"] < 0):
         raise D1PriorityShadowError("unknown/unauthorized decision semantics")
-    for key in ("decision_semantics_id", "deployment_revision", "serving_contract_revision"):
-        value = meta.get(key)
-        if type(value) is not str or _REVISION.fullmatch(value) is None:
-            raise D1PriorityShadowError("decision identity missing")
+    for key, pinned in (
+            ("decision_semantics_id", PINNED_D1_SEMANTICS_ID),
+            ("deployment_revision", PINNED_D1_DEPLOYMENT_REVISION),
+            ("serving_contract_revision", PINNED_D1_SERVING_CONTRACT_REVISION)):
+        if meta.get(key) != pinned:
+            raise D1PriorityShadowError("observed decision binding changed")
     scores = response.get("scores")
     if type(scores) is not list or len(scores) != len(CATEGORIES):
         raise D1PriorityShadowError("wrong choice vector")
@@ -376,8 +386,16 @@ def admit_tsumgi_d1_observation(request: DecisionRequest, raw: bytes) -> dict:
         if type(row) is not dict or set(row) != {"id", "score"} or row["id"] != expected:
             raise D1PriorityShadowError("wrong choice order")
         value = row["score"]
-        if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 1:
-            raise D1PriorityShadowError("non-finite decision score")
+        if type(value) is int:
+            # Comparing a 400-digit integer before float conversion avoids
+            # OverflowError from math.isfinite(huge_int), including in shadow.
+            if value not in (0, 1):
+                raise D1PriorityShadowError("invalid integer decision score")
+        elif type(value) is float:
+            if not math.isfinite(value) or not 0 <= value <= 1:
+                raise D1PriorityShadowError("non-finite decision score")
+        else:
+            raise D1PriorityShadowError("non-numeric decision score")
         values[expected] = float(value)
     if abs(sum(values.values()) - 1) > 1e-4:
         raise D1PriorityShadowError("unnormalized decision distribution")
@@ -433,7 +451,10 @@ def run_private_d1_priority_shadow(plan: PriorityPlan, *, profile: str,
                 plan, identifier, profile=profile, profile_revision=profile_revision)
             raw = infer(request.canonical_bytes)
             row = admit_tsumgi_d1_observation(request, raw)
-        except (D1PriorityShadowError, TimeoutError, OSError, ValueError) as exc:
+        except Exception as exc:
+            # Transport callbacks can fail with arbitrary ordinary exceptions.
+            # A single failure must not abort the remaining bounded shadow
+            # observations; BaseException interruptions are not concealed.
             row = {"segment_id": identifier, "status": "pending",
                    "reason": type(exc).__name__,
                    "recommendation": None, "authority": "advisory_only",

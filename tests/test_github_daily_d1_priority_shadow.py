@@ -16,11 +16,11 @@ from test_github_daily_route_cas import safe_layout
 
 
 CAP = "a" * 64
-PROFILE_REVISION = "sha256:" + "b" * 64
-PROFILE = "d1-3b-system-one-v1"
-SEMANTICS = "sha256:" + "c" * 64
-DEPLOYMENT = "sha256:" + "d" * 64
-CONTRACT = "sha256:" + "e" * 64
+PROFILE_REVISION = d1.PINNED_D1_PROFILE_REVISION
+PROFILE = d1.PINNED_D1_PROFILE_ID
+SEMANTICS = d1.PINNED_D1_SEMANTICS_ID
+DEPLOYMENT = d1.PINNED_D1_DEPLOYMENT_REVISION
+CONTRACT = d1.PINNED_D1_SERVING_CONTRACT_REVISION
 COMMIT = "f" * 40
 
 
@@ -403,3 +403,59 @@ def test_previously_withheld_source_does_not_become_a_model_visible_text():
     assert not any(x["source_ref"]==3 and x["entity"]["number"]==374
                    for x in plan.report()["paragraphs"])
     assert plan.report()["source_original_event_count"]==5
+
+
+def test_independent_review_p2_huge_integer_score_rejected_as_pending():
+    plan=build()
+    segment=plan.report()["paragraphs"][0]["id"]
+    req=d1.build_d1_decision_request(
+        plan,segment,profile=PROFILE,profile_revision=PROFILE_REVISION)
+    forged=json.loads(response(req))
+    forged["scores"][0]["score"]=10**400
+    def huge_score(_):
+        return json.dumps(forged).encode()
+    record=d1.run_private_d1_priority_shadow(
+        plan,profile=PROFILE,profile_revision=PROFILE_REVISION,
+        infer=huge_score,max_calls=1,selected_segment_ids=(segment,)).report()
+    assert record["summary"]=={"observed":0,"abstained":0,"pending":1}
+    assert record["observations"][0]["reason"]=="D1PriorityShadowError"
+    assert record["may_filter_C5_source"] is False
+
+
+def test_independent_review_p2_transport_runtime_error_never_aborts_other_cases():
+    plan=build()
+    ids=tuple(r["id"] for r in plan.report()["paragraphs"][:2])
+    seen=[]
+    def intermittent(req):
+        seen.append(req)
+        if len(seen)==1:
+            raise RuntimeError("worker unavailable")
+        return response(d1.DecisionRequest(
+            "ignored",req,PROFILE_REVISION,plan.sha256))
+    r=d1.run_private_d1_priority_shadow(
+        plan,profile=PROFILE,profile_revision=PROFILE_REVISION,
+        infer=intermittent,max_calls=2,selected_segment_ids=ids).report()
+    assert len(seen)==2
+    assert r["summary"]=={"observed":1,"abstained":0,"pending":1}
+    assert r["observations"][0]["reason"]=="RuntimeError"
+    assert all(v["source_deleted"] is False for v in r["observations"])
+
+
+def test_independent_review_p2_other_pinned_or_model_profile_must_not_be_d1():
+    plan=build()
+    seg=plan.report()["paragraphs"][0]["id"]
+    for wrong_profile,wrong_rev in (
+            ("clef-shadow-v1",PROFILE_REVISION),
+            (PROFILE,"sha256:"+"a"*64),
+            ("d1-3b-system-one-v1","sha256:"+"b"*64)):
+        with pytest.raises(d1.D1PriorityShadowError):
+            d1.build_d1_decision_request(
+                plan,seg,profile=wrong_profile,profile_revision=wrong_rev)
+    req=d1.build_d1_decision_request(
+        plan,seg,profile=PROFILE,profile_revision=PROFILE_REVISION)
+    for key in ("deployment_revision","decision_semantics_id",
+                "serving_contract_revision"):
+        x=json.loads(response(req))
+        x["x_astrumweaver"][key]="sha256:"+"9"*64
+        with pytest.raises(d1.D1PriorityShadowError,match="binding changed"):
+            d1.admit_tsumgi_d1_observation(req,d1._json(x))

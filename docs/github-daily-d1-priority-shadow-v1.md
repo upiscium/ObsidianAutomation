@@ -56,15 +56,20 @@ source or its trust/citation indexes.
   full Collector source remains unchanged. If the source/plan exceeds
   bounded budgets, fail closed instead of fabricating head/tail text.
 - Compile one existing TSUMGI POST /v1/decisions contract per fragment:
-  profile, exact pinned profile_revision, original data state, one
-  three-way choice question, and ordered category IDs
+  the reviewed existing d1 Profile ID and exact pinned profile_revision,
+  Semantics ID, Deployment revision, and Serving Contract revision,
+  original data state, one three-way choice question, and ordered category IDs
   must_include / supporting / background. A verified reused commit SHA is
   kept in host provenance metadata; the model receives a short
   duplicate-PR hint rather than bulky SHA strings.
 - Admission checks TSUMGI's normalized result shape: profile revision,
   decision-semantics identity syntax, shadow/recommendation-only mode,
   uncalibrated choice-set_probability scores, ordered finite normalized
-  scores, legal abstention, and zero output tokens.
+  scores, legal abstention, and zero output tokens. Any other otherwise
+  syntactically valid TSUMGI/Clef profile is rejected rather than
+  mislabelled as d1-3B. Huge integer/NaN responses are rejected as
+  pending instead of triggering float-conversion exceptions. Ordinary
+  transport exceptions including RuntimeError also remain pending.
 - The bounded shadow runner uses an **injected transport**. No network or
   durable Job is submitted merely by importing/building a plan. An invalid
   request, abstention, invalid result, or transport error remains pending,
@@ -75,9 +80,13 @@ source or its trust/citation indexes.
 
 ## Existing managed TSUMGI gateway bounds
 
-The already-running d1-based dual-systemone-v1 profile has a **pinned
-Profile Revision**:
-sha256:949c53c95f5d9cde5b457a9c41f1a54823f2aa36f7e5d5f243523caa540f4ee7.
+The only admitted profile in this exact source revision is the already
+running d1-based dual-systemone-v1, with these **pinned identities**:
+
+- Profile Revision: sha256:949c53c95f5d9cde5b457a9c41f1a54823f2aa36f7e5d5f243523caa540f4ee7
+- Decision Semantics ID: sha256:a205bcadf619d8173bd56f091e9d5bfcf043c2bc5d05c10b2a72767cf691c4cd
+- Deployment Revision: sha256:cb3c03a5a9bd4b917b7d1e2fa3ef6b23b8cb2e21c9a75705d31df2f606bc621d
+- Serving Contract Revision: sha256:5898c20d4f6cd02844180bb91925e0a42b199768dc62560555afd0161bdf55c9
 
 Observed by private read-only GET /v1/decision-profiles on the existing
 Control host on 2026-10-17 JST:
@@ -125,9 +134,21 @@ removed redundant SHA/metadata **without truncating actual source text**:
 Private receipts, error bodies, source samples and plan on Adam:
 ~/Documents/ResearchEvidence/ObsidianAutomation-DailyV2-D1-Shadow-20261017/
 
+## P2 review and resolution
+
+The first exact-source read-only correctness and security reviewer runs found
+three P2 advisory-boundary defects: a malicious 400-digit integer model score
+could raise uncaught OverflowError instead of being pending; a RuntimeError
+from a callback could abort all remaining shadow observations; and a caller
+could bind an unrelated otherwise valid TSUMGI decision Profile while the
+output still asserted d1-3B. All three were fixed with focused regressions
+before progressing this Draft. The pinned existing d1 profile and four
+identity values are now mandatory. An independently re-reviewed final HEAD
+and full Ubuntu/Nix test are separate gates.
+
 ## Remaining acceptance
 
-1. Independent source review and full test suite on exact Draft HEAD.
+1. Independent source follow-up and full test suite on exact fixed Draft HEAD.
 2. Human-reviewed relevance labels covering other dates/repositories and
    harder short/long/negated source passages; measure must-include Recall,
    especially no-live/Draft caveats. A score is not calibrated correctness.
