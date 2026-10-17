@@ -137,3 +137,87 @@ original C5 v4 input and other model contracts remain unchanged. Release
 still depends on exact-source full regression, independent read-only source
 review, another complete private day in the opt-in mode, human-calibrated
 readability and separate main/Writer/Timer approval.
+
+## Review correction: omitted-source status, updated snapshots, superseded commits
+
+The first independent source reviews identified three narrow P2 risks
+in the initial opt-in presentation (without claiming C4 source tampering):
+
+1. An unshown lifecycle merge could still appear to the model as the
+   full-context source_status_ja label, allowing it to cite an unrelated
+   shown comment. The corrected focused model view **does not include that
+   derived label**. C3/C4's separately source-authenticated UI lifecycle
+   status remains available when rendering original Evidence.
+2. Excluding every Issue/PR snapshot could hide a new decision made in
+   an actually updated target-day Issue body. The corrected input can
+   **add the latest independently verified day-updated snapshot after
+   the last action/comment** as an auxiliary, citable original source with
+   unchanged source_ref and time-scope caveats. It remains distinct from
+   the actual action events and may contain accumulated historical text.
+   If the most recent action plus an eligible updated snapshot cannot
+   jointly fit the 16-KiB view, the opt-in path fails closed; it does not
+   silently truncate either into an apparent complete source.
+3. Leading with a commit regardless of later comments could misreport an
+   abandoned/reverted implementation. The corrected view orders *actual
+   action events newest first* (by independently verified original event
+   timestamp), supplies earlier implementation commits as additional
+   supporting refs, and explicitly says later correction/retraction may
+   supersede the commit. An auxiliary updated snapshot appears separately
+   after those action events. This never claims source order itself proves
+   a completed production effect.
+
+The new effective source/prompt version is c5-recent-milestone-ja-v4.
+The original full C4 context, original source refs, raw response hashes,
+C2a grounding and all omitted-event accounting are unaffected. These
+changes mitigate the identified cross-source citation and salience risks;
+they do not guarantee flawless model judgment about a complex source.
+
+## Source-only P2 correction follow-up: effective v5
+
+A first P2 correction v4 was safe in its structure but reduced actual native
+quality: the model was shown a full current-day Issue snapshot *after* its
+latest action events, causing Issue #300 to regress to old responsibility
+discussion. A read-only diagnostic changed only model-facing event order:
+auxiliary snapshot first, then original action events from earlier to later.
+Original source-ref identities, event times, original C4 admission, C2
+Grounding and omitted-ref accounting did not change. The diagnostic restored
+Draft #374 handoff progress while keeping the current-day Issue snapshot
+available as separate citable context.
+
+The effective opt-in source-view version is c5-recent-milestone-ja-v5.
+When a later independently verified target-day updated snapshot exists, it
+appears FIRST as supplementary cumulative context. The final meaningful
+action/comment is placed last. An older implementation commit cannot
+suppress a newer correction or retraction. Presentation order never proves
+historical snapshot content at the event instant. A full-source derived
+source_status_ja is never copied into the narrowed model view, because the
+lifecycle source for that state might be omitted. C4 still separately displays
+the lifecycle status independently derived from the original full Evidence.
+
+This is a source-view salience preference, NOT a semantic truth or
+complete-coverage guarantee. Omitted original events are always pending
+and checked against the unchanged CAS in post-edit Grounding. If a required
+whole recent source and a newer updated snapshot exceed the 16-KiB budget,
+the opt-in request fails closed rather than silently discarding that
+independently verified snapshot.
+
+### Actual native v5 source-bound sample (fixed model and fixed day)
+
+On Oct 16 JST actual GitHub CAS, the C5 view for Issue #300 uses original
+source refs [9,7,8] (supplemental updated Issue body, then Phase H/Phase I);
+PR #311 uses [7,8], PR #374 uses [10,12].
+On the pinned current Gemma 4 model, their private per-entity drafts were
+admitted and model-Grounding-supported, saying respectively:
+
+- Issue #300: latest Draft #374 durable operator-intent handoff implemented,
+  but no privileged worker/systemd acceptance or production cutover.
+- PR #311: only the local integration test-only branch was changed; the
+  actual integration and main branches were not modified or merged.
+- PR #374: durable pause/resume queue and receipt handoff implemented,
+  but privileged effects / Execute remain unavailable.
+
+The earlier unavailable a3d2... model has not been restored. These are
+controlled limited samples, not human factuality or full-source coverage
+certificates. All raw source/model receipts remain in private operator
+evidence, not GitHub text attachments. No production, main, Writer/Timer,
+Nextcloud or Vault privileges have been changed.

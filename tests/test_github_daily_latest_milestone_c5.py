@@ -44,15 +44,17 @@ def test_select_last_two_material_dated_events_not_later_issue_snapshot():
          "sources":[{"source_ref":i,"original_event":e} for i,e in enumerate(sources)]}
     original=deepcopy(ctx)
     projection, refs=rt._latest_milestone_view(ctx)
-    assert refs == (2,1)
-    assert projection["shown_source_refs"] == [2,1]
-    assert projection["omitted_source_refs"] == [0,3]
+    assert refs == (3,1,2)
+    assert projection["shown_source_refs"] == [3,1,2]
+    assert projection["omitted_source_refs"] == [0]
+    assert projection["auxiliary_updated_snapshot_ref"] == 3
     assert projection["original_source_event_count"] == 4
     assert projection["source_event_coverage_verified"] is False
-    assert [x["original_event"] for x in projection["sources"]] == [sources[2],sources[1]]
+    assert [x["original_event"] for x in projection["sources"]] == [sources[3],sources[1],sources[2]]
     assert ctx == original  # no mutation of host's full source
     assert "no privileged worker" in rt._json(projection).decode()
-    assert "old overall design" not in rt._json(projection).decode()
+    assert "old overall design" in rt._json(projection).decode()
+    assert "source_status_ja" not in projection
     assert len(rt._json(projection)) < rt.MAX_LATEST_MILESTONE_VIEW_BYTES
 
 
@@ -73,9 +75,80 @@ def test_latest_commit_is_prioritized_over_later_review_without_ref_renumbering(
     assert view["sources"][1]["original_event"]["kind"] == "pull_request_comment"
     assert view["sources"][0]["source_ref"] == 0
     assert "content_addressed_commit_not_push_time" in rt._json(view).decode()
-    assert "コミットが追加した機能" in rt.LATEST_MILESTONE_PROMPT
+    assert "後続の原文で撤回" in rt.LATEST_MILESTONE_PROMPT
     assert "対象Issue/PRそれ自体" in rt.LATEST_MILESTONE_PROMPT
     assert "mainにはマージしていない" in rt.LATEST_MILESTONE_PROMPT
+
+
+def test_omitted_lifecycle_status_is_not_laundered_into_model_input():
+    ctx={"entity":{"repository":"upiscium/Test","entity_type":"pull_request","number":2},
+         "date":"2026-10-16","source_status_ja":"PRがマージされました。",
+         "sources":[{"source_ref":i,"original_event":event}
+                    for i,event in enumerate([
+                        _event("pull_request_merged","2026-10-16T07:00:00Z"),
+                        _event("pull_request_comment","2026-10-16T09:00:00Z",
+                               "No more worker calls in this draft."),
+                        _event("pull_request_comment","2026-10-16T10:00:00Z",
+                               "Local test-only checkpoint remains."),
+                    ])]}
+    view,refs=rt._latest_milestone_view(ctx)
+    assert refs == (1,2)
+    assert view["omitted_source_refs"] == [0]
+    assert "source_status_ja" not in view
+    assert "PRがマージされました" not in rt._json(view).decode()
+
+
+def test_all_snapshot_fallback_does_not_readd_older_auxiliary_snapshot():
+    events=[
+        _event("issue_snapshot","2026-10-16T08:00:00Z","old state"),
+        _event("issue_snapshot","2026-10-16T10:00:00Z","updated state"),
+        _event("issue_snapshot","2026-10-16T12:00:00Z","latest state"),
+    ]
+    ctx={"entity":{"repository":"upiscium/T","entity_type":"issue","number":8},
+         "date":"2026-10-16","source_status_ja":"",
+         "sources":[{"source_ref":i,"original_event":e} for i,e in enumerate(events)]}
+    view,refs=rt._latest_milestone_view(ctx)
+    assert refs == (1,2)
+    assert view["auxiliary_updated_snapshot_ref"] is None
+    assert view["omitted_source_refs"] == [0]
+
+
+def test_later_retraction_is_present_before_superseded_commit():
+    items=[
+        _event("pull_request_commit","2026-10-16T08:00:00Z",
+               "feat: proposed preliminary queue handler",
+               status="content_addressed_commit_not_push_time"),
+        _event("pull_request_comment","2026-10-16T11:00:00Z",
+               "This handler was reverted after failure; it is no longer implemented."),
+    ]
+    ctx={"entity":{"repository":"upiscium/T","entity_type":"pull_request","number":5},
+         "date":"2026-10-16","source_status_ja":"",
+         "sources":[{"source_ref":i,"original_event":e} for i,e in enumerate(items)]}
+    view,refs=rt._latest_milestone_view(ctx)
+    assert refs == (0,1)
+    assert "reverted after failure" in view["sources"][-1]["original_event"]["body"]["text"]
+    assert view["shown_implementation_commit_refs"] == [0]
+    assert "撤回" in rt.LATEST_MILESTONE_PROMPT
+
+
+def test_day_updated_snapshot_remains_citable_even_with_comments():
+    events=[
+        _event("issue_comment","2026-10-16T08:00:00Z",
+               "Earlier context."),
+        _event("issue_comment","2026-10-16T11:00:00Z",
+               "Latest progress call."),
+        _event("issue_snapshot","2026-10-16T14:00:00Z",
+               "A newly recorded decision changes the accepted rollout scope."),
+    ]
+    ctx={"entity":{"repository":"upiscium/T","entity_type":"issue","number":3},
+         "date":"2026-10-16","source_status_ja":"",
+         "sources":[{"source_ref":i,"original_event":e} for i,e in enumerate(events)]}
+    view,refs=rt._latest_milestone_view(ctx)
+    assert refs == (2,0,1)
+    assert view["auxiliary_updated_snapshot_ref"] == 2
+    assert set(view["shown_source_refs"]) == {0,1,2}
+    assert view["omitted_source_refs"] == []
+    assert "newly recorded decision" in view["sources"][0]["original_event"]["body"]["text"]
 
 
 def test_too_large_recent_full_event_dropped_or_fails_before_model(monkeypatch):
