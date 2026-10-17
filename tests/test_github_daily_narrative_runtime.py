@@ -779,3 +779,102 @@ def test_language_guidance_does_not_admit_english_only_provider_sentence(case):
     assert not out.narrative_replies and not out.grounding_replies
     assert json.loads(out.attempts[0].raw_response_bytes) == raw
     assert all(row["pending_evidence_ids"] for row in out.preview.report()["entities"])
+
+
+def test_latest_milestone_opt_in_contract_keeps_existing_c4_response_shape(case):
+    from obsidian_automation import github_daily_narrative_runtime as rt
+    assert rt.LATEST_MILESTONE_CONTRACT != rt.SENTENCES_ONLY_CONTRACT
+    assert rt.LATEST_MILESTONE_PROMPT_VERSION != rt.SENTENCES_ONLY_PROMPT_VERSION
+    assert "最後の実質的な進展" in rt.LATEST_MILESTONE_PROMPT
+    assert "未マージ" in rt.LATEST_MILESTONE_PROMPT
+    assert "本番未反映" in rt.LATEST_MILESTONE_PROMPT
+    assert "元イベントが表示されていない場合は推測しない" in rt.LATEST_MILESTONE_PROMPT
+    assert "最新の進捗と残る制約" in rt.LATEST_MILESTONE_PROMPT
+    context=case[5].report()["contexts"][0]["context"]
+    raw=rt._json({"sentences":[{"text":"対象日の実装が進展しました。",
+                                "source_refs":[0]}]})
+    accepted=rt._admit_editorial(context,raw,rt.LATEST_MILESTONE_CONTRACT)
+    decoded=json.loads(accepted)
+    assert decoded["sentences"] == json.loads(raw)["sentences"]
+    assert decoded["pending_source_refs"] == list(range(1,len(context["sources"])))
+    assert rt._admit_editorial(context,raw,rt.SENTENCES_ONLY_CONTRACT)==accepted
+    with pytest.raises(rt.NarrativeRuntimeError):
+        rt._admit_editorial(context,b'{"sentences":[],"pending_source_refs":[]}',
+                           rt.LATEST_MILESTONE_CONTRACT)
+
+
+class RecentSourceTransport(Transport):
+    """Mock Ollama accepts the v3 wire subset while preserving raw receipts."""
+    def __call__(self, base_url, *, method, path, payload, timeout):
+        import copy
+        self.calls.append((method, path, copy.deepcopy(payload), timeout))
+        if path == "/api/tags":
+            return {"models": [{"name": MODEL, "model": MODEL, "digest": self.digest}]}
+        assert method=="POST" and path=="/api/chat"
+        ctx=json.loads(payload["messages"][1]["content"])
+        if "view_version" in ctx:
+            assert ctx["view_version"]==rt.recent_c5.VERSION
+            assert payload["messages"][0]["content"]==rt.RECENT_SOURCE_PROMPT
+            assert payload["format"]["properties"]["sentences"]["maxItems"]==2
+            refs=ctx["shown_source_refs"]
+            assert refs
+            assert payload["format"]["properties"]["sentences"]["items"]["properties"]["source_refs"]["items"]["enum"]==refs
+            answer={"sentences":[{"text":TEXT,"source_refs":[refs[-1]]}]}
+        else:
+            assert payload["messages"][0]["content"]==rt.SEMANTIC_GROUND_PROMPT
+            assert "original_events" in ctx
+            answer={"verdict":"supported","reason":"fixture only"}
+        return {"done":True,"done_reason":"stop","model":MODEL,
+                "message":{"role":"assistant",
+                           "content":json.dumps(answer,ensure_ascii=False)}}
+
+
+def test_v3_recent_source_model_wire_and_original_full_C4_binding(case):
+    target=("upiscium/Test","issue",1)
+    t=RecentSourceTransport()
+    infer=backend(t,editorial_contract=rt.RECENT_SOURCE_CONTRACT)
+    run=rt.run_witnessed_narrative_inference(
+        **kwargs(case),target_entity=target,max_entities=1,max_calls=4,
+        infer=infer)
+    assert run.report()["inference_responses_complete"] is True
+    assert [x.stage for x in run.attempts]==["editorial","grounding"]
+    assert [x.state for x in run.attempts]==["accepted","accepted"]
+    reqs=[x[2] for x in t.calls if x[1]=="/api/chat"]
+    assert len(reqs)==2
+    editorial,ground=reqs
+    src=json.loads(editorial["messages"][1]["content"])
+    assert src["view_version"]==rt.recent_c5.VERSION
+    assert len(src["sources"])<=rt.recent_c5.MAX_SHOWN
+    assert editorial["format"]["properties"]["sentences"]["items"]["properties"]["source_refs"]["items"]["enum"]==src["shown_source_refs"]
+    assert sorted(src["shown_source_refs"]+src["omitted_source_refs"])==list(range(src["source_event_count"]))
+    assert "pending_source_refs" not in editorial["format"]["properties"]
+    meta=json.loads(run.attempts[0].receipt_bytes)
+    assert meta["response_contract"]==rt.RECENT_SOURCE_CONTRACT
+    assert meta["effective_prompt_version"]==rt.RECENT_SOURCE_PROMPT_VERSION
+    assert meta["model_input_version"]==rt.RECENT_SOURCE_PROMPT_VERSION
+    assert meta["model_input_sha256"]==rt._sha(editorial["messages"][1]["content"].encode("utf-8"))
+    assert meta["request_sha256"]==rt._sha(rt._json(editorial).removesuffix(b"\n"))
+    assert meta["effective_system_prompt_sha256"]==rt._sha(rt.RECENT_SOURCE_PROMPT.encode())
+    assert run.narrative_replies[0].context_sha256==run.attempts[0].context_sha256
+    admitted=json.loads(run.narrative_replies[0].response_bytes)
+    assert admitted["sentences"][0]["source_refs"]==[src["shown_source_refs"][-1]]
+    assert len(admitted["pending_source_refs"])+1==src["source_event_count"]
+    assert run.report()["publication_authorized"] is False
+    assert run.report()["model_execution_attested"] is False
+    assert run.report()["semantic_coverage_verified"] is False
+    assert ground["messages"][0]["content"]==rt.SEMANTIC_GROUND_PROMPT
+    assert "original_events" in json.loads(ground["messages"][1]["content"])
+
+
+def test_v3_recent_source_policy_is_opt_in_and_does_not_change_legacy_wire(case):
+    t=SentencesTransport()
+    old=single(case,t)
+    assert old.report()["inference_responses_complete"] is True
+    payload=next(c[2] for c in t.calls if c[1]=="/api/chat")
+    visible=json.loads(payload["messages"][1]["content"])
+    assert visible["prompt_version"]==rt.SENTENCES_ONLY_PROMPT_VERSION
+    assert "view_version" not in visible
+    assert "capture_sha256" in visible
+    assert "「一度実行すると」や「Run onceを実行しても」" in rt.RECENT_SOURCE_PROMPT
+    assert "その操作自体が現在利用不可" in rt.RECENT_SOURCE_PROMPT
+    assert "2文目は存在すれば実際の未マージ・未導入・未稼働の制約" in rt.RECENT_SOURCE_PROMPT
