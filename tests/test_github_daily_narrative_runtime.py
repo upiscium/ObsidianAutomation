@@ -779,3 +779,25 @@ def test_language_guidance_does_not_admit_english_only_provider_sentence(case):
     assert not out.narrative_replies and not out.grounding_replies
     assert json.loads(out.attempts[0].raw_response_bytes) == raw
     assert all(row["pending_evidence_ids"] for row in out.preview.report()["entities"])
+
+
+def test_latest_milestone_opt_in_contract_keeps_existing_c4_response_shape(case):
+    from obsidian_automation import github_daily_narrative_runtime as rt
+    assert rt.LATEST_MILESTONE_CONTRACT != rt.SENTENCES_ONLY_CONTRACT
+    assert rt.LATEST_MILESTONE_PROMPT_VERSION != rt.SENTENCES_ONLY_PROMPT_VERSION
+    assert "最後の実質的な進展" in rt.LATEST_MILESTONE_PROMPT
+    assert "未マージ" in rt.LATEST_MILESTONE_PROMPT
+    assert "本番未反映" in rt.LATEST_MILESTONE_PROMPT
+    assert "元イベントが表示されていない場合は推測しない" in rt.LATEST_MILESTONE_PROMPT
+    assert "最新の進捗と残る制約" in rt.LATEST_MILESTONE_PROMPT
+    context=case[5].report()["contexts"][0]["context"]
+    raw=rt._json({"sentences":[{"text":"対象日の実装が進展しました。",
+                                "source_refs":[0]}]})
+    accepted=rt._admit_editorial(context,raw,rt.LATEST_MILESTONE_CONTRACT)
+    decoded=json.loads(accepted)
+    assert decoded["sentences"] == json.loads(raw)["sentences"]
+    assert decoded["pending_source_refs"] == list(range(1,len(context["sources"])))
+    assert rt._admit_editorial(context,raw,rt.SENTENCES_ONLY_CONTRACT)==accepted
+    with pytest.raises(rt.NarrativeRuntimeError):
+        rt._admit_editorial(context,b'{"sentences":[],"pending_source_refs":[]}',
+                           rt.LATEST_MILESTONE_CONTRACT)
