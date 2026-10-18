@@ -54,3 +54,21 @@ Human-reviewed other-day/project semantic quality, Daily Writer/Timer
 production rollout and parent Draft merges remain separate approval
 gates. d1-3B remains Primary System One; Clef and three-model production
 co-residency stay deferred.
+
+## Exact-head source review follow-up
+
+The first independent read-only correctness/security reviews of this child
+Draft identified two additional P2 escaping cases: a composite heading
+such as "## Current status: Sample output" without a terminal colon and
+a valid ATX Markdown heading such as "## Example output ##" with closing
+hash markers. Both could previously expose illustrative worker-installed
+text as a direct operational update.
+
+The source parser now strips optional closing ATX marker runs from headings
+and recognizes known illustration phrases even inside composite labels,
+regardless of the final colon. Legitimate exact operational headings such
+as "## Actual status: ##" still terminate illustrations and admit an
+independent following original source report. This was verified with
+additional source-only negative and positive regressions. Neither model
+scores nor this parser can assert a real site deployment, delete CAS text
+or authorize Writer publication.

@@ -125,16 +125,25 @@ def _status_source_lines(value: dict, ref: int, field: str):
         normalized=stripped.lower().strip()
         heading=re.match(r"^#{1,6}\s+",normalized)
         label=normalized[heading.end():] if heading else normalized
-        # Exact heading equality is required. A composite label such as
-        # "Current status: Sample output:" is not an actual-status heading.
+        if heading is not None:
+            # ATX Markdown headings may have optional terminal hash markers:
+            # "## Example output ##" and "## Actual status: ##" are valid.
+            label=re.sub(r"\s+#+\s*$","",label).strip()
+        # Fail closed for an illustration phrase anywhere in the heading,
+        # including "Current status: Sample output" without trailing colon.
+        # A conditional source-display hint is not a deployment authority.
+        illustrative = any(
+            re.search(r"(?<![a-z])"+re.escape(name)+r"(?![a-z])",label)
+            for name in illustrative_heading_names
+        )
         if not label:
             active_unfenced_example=False
-        elif (label.removesuffix(":") in illustrative_heading_names
+        elif (illustrative
               or (label.endswith(":") and label not in operational_heading)):
             active_unfenced_example=True
         elif label in operational_heading:
-            # A separately authored explicit operational heading may end a
-            # preceding illustration. Composite headings were already held.
+            # Only an exact standalone operational status label can reopen
+            # a real status line after a preceding illustration.
             active_unfenced_example=False
         elif heading is not None:
             active_unfenced_example=False
