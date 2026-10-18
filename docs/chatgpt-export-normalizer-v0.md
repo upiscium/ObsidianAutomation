@@ -69,8 +69,10 @@ acceptance step: python -B -m obsidian_automation.chatgpt_export_inspect
   selected path's **retained role/content-type/exact visible text sequence**:
   non-visible reasoning, opaque node/message IDs, timestamps, omissions and
   off-branch content do not cause unnecessary LLM regeneration. The separate
-  source_revision_sha256 binds selected raw message JSON and node lineage for
-  provenance; metadata-only changes may affect it without changing content.
+  source_revision_sha256 binds the **entire parsed conversation** (including
+  title, metadata and alternate branches) for provenance; metadata-only and
+  off-branch changes affect raw source revision without forcing regeneration.
+  The separate archive SHA binds exact original ZIP bytes.
 - inventory_delta(previous, current) reports added, changed, unchanged,
   and absent_not_deleted counts. It **never interprets absence in a later
   Export as canonical note deletion**. The same Export is idempotent.

@@ -221,7 +221,6 @@ def _normalize_one(conversation: object, limits: Limits) -> SelectedConversation
     omissions: Counter[str] = Counter()
     retained: list[SelectedMessage] = []
     semantic: list[dict] = []
-    provenance: list[dict] = []
     seen_message_ids: set[str] = set()
     for node_id, node in path:
         item, omitted = _select_message(node_id, node)
@@ -231,15 +230,11 @@ def _normalize_one(conversation: object, limits: Limits) -> SelectedConversation
             if message_id in seen_message_ids:
                 raise NormalizeError("duplicate_selected_message_id")
             seen_message_ids.add(message_id)
-        revision_node = {
-            "node": node_id, "parent": node["parent"], "message": message_id,
-            "message_digest": _hash(message),
-        }
-        provenance.append(revision_node)
         if omitted:
             omissions[omitted] += 1
             # Internal reasoning, placeholders and unsupported attachments are
-            # tracked in provenance, but must not cause semantic regeneration.
+            # retained only in the raw archive/source revision, never in
+            # semantic content or LLM generation input.
         else:
             assert item is not None
             retained.append(item)
@@ -253,7 +248,10 @@ def _normalize_one(conversation: object, limits: Limits) -> SelectedConversation
         unverified_child_links=unverified_child_links,
         omitted_reasons=tuple(sorted(omissions.items())),
         content_sha256=_hash({"version": NORMALIZER_VERSION, "conversation": conv_id, "path": semantic}),
-        source_revision_sha256=_hash({"version": NORMALIZER_VERSION, "conversation": conv_id, "path": provenance}),
+        # Full parsed conversation revision (including titles, metadata and
+        # alternate branches), separate from user-visible semantic contents.
+        # The archive_sha256 also binds exact original ZIP bytes.
+        source_revision_sha256=_hash({"version": NORMALIZER_VERSION, "source": conversation}),
     )
 
 

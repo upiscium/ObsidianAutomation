@@ -91,6 +91,7 @@ def test_off_branch_edit_no_content_delta_but_changes_archive(tmp_path):
     assert second.archive_sha256 != first.archive_sha256
     assert inventory_delta(first, second).unchanged == 1
     assert first.conversations[0].content_sha256 == second.conversations[0].content_sha256
+    assert first.conversations[0].source_revision_sha256 != second.conversations[0].source_revision_sha256
 
 
 def test_title_update_no_generation_change(tmp_path):
@@ -100,7 +101,7 @@ def test_title_update_no_generation_change(tmp_path):
     data["update_time"] = 983223.0
     second = run(archive(tmp_path, [data]))
     assert inventory_delta(first, second).unchanged == 1
-    assert first.conversations[0].source_revision_sha256 == second.conversations[0].source_revision_sha256
+    assert first.conversations[0].source_revision_sha256 != second.conversations[0].source_revision_sha256
 
 
 def test_changed_text_and_changed_branch_detected(tmp_path):
