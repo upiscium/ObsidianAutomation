@@ -67,7 +67,7 @@ _CONTROLS_POSITIVE = re.compile(
 _NON_ACTUAL_STATUS = re.compile(
     r"\b(?:not|never|no\s+|without|if|when|would|could|should|may|"
     r"might|will|plan(?:ned)?|intend(?:ed)?|expect(?:ed)?|"
-    r"simulation|simulated|mock|fixture|test-only|hypothetical|tests?|ci|continuous\s+integration|staging|sandbox|development|dev|llm|output|generated|model|runbook|test\s+environment|documentation|documented|docs?|examples?|sample|quot(?:es?|ed|ing)?)\b",
+    r"simulation|simulated|mock|fixture|test-only|hypothetical|tests?|ci|github\s+actions|github\s+workflow|actions\s+runner|continuous\s+integration|staging|sandbox|development|dev|llm|output|generated|model|runbook|test\s+environment|documentation|documented|docs?|examples?|sample|quot(?:es?|ed|ing)?)\b",
     re.IGNORECASE,
 )
 
@@ -83,8 +83,41 @@ def _status_source_lines(value: dict, ref: int, field: str):
     skipped_offsets=set()
     cursor=0
     active_fence=None
+    active_unfenced_example=False
     for line in text.splitlines(keepends=True):
         stripped=line.lstrip()
+        normalized=stripped.lower().strip()
+        # Unfenced examples are common in GitHub comments. Do not promote
+        # standalone literal lines after "Example output:" to real system
+        # state, even when they look like valid installation announcements.
+        # A blank line or a Markdown heading ends the illustrative block.
+        example_starts=(
+            "example output:", "example:", "sample output:",
+            "sample:", "expected output:", "generated output:",
+            "model output:", "illustrative output:",
+            "test output:", "example response:")
+        # A colon-terminated preceding label (including a Markdown heading)
+        # can turn the *next* fluent standalone sentence into quoted/example
+        # data. Only a deliberately explicit operational-status heading is
+        # admitted as a candidate context; ambiguous headings fail closed.
+        operational_heading=(
+            "current status:", "actual status:", "production status:",
+            "current production status:", "operator status:",
+            "actual deployment status:")
+        heading=re.match(r"^#{1,6}\s+",normalized)
+        label=normalized[heading.end():] if heading else normalized
+        if heading is not None:
+            active_unfenced_example=False
+        if not label:
+            active_unfenced_example=False
+        elif (label.startswith(example_starts) or
+              (label.endswith(":") and
+               not label.startswith(operational_heading))):
+            active_unfenced_example=True
+        elif heading is not None:
+            active_unfenced_example=False
+        if active_unfenced_example:
+            skipped_offsets.add(cursor)
         candidate=(
             chr(96)*3 if stripped.startswith(chr(96)*3)
             else chr(126)*3 if stripped.startswith(chr(126)*3)
