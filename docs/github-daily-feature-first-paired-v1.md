@@ -168,3 +168,16 @@ composite, records the source_ref/SHA and changed scope for human
 review, and leaves the complete original C4 event available to the
 baseline C5 and strict Grounding. It does **not** infer that Execute
 became available or automatically edit the source sentence.
+
+The independent source correctness/security review on the initial scoped
+status revision exposed further P2 examples: an inline quoted worker
+installation, a test expectation, and a CI worker starting could all
+displace a *production privileged effect worker* blocker. The revised
+source rule is conservative: only a direct original declarative sentence
+about a privileged, production or effect worker (or live browser controls)
+may be a later positive status report; unrelated CI workers, tests, quoted
+text, documentation examples, hypothetical or planned actions and stale
+snapshots do not qualify. A positive report merely influences which
+*source quote* the optional model sees. It does not authorize a deployment
+claim or bypass original CAS/Grounding. Original line/status hashes and
+mixed-scope withholding remain attached to the private view version v4.

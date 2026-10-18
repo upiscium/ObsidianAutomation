@@ -483,3 +483,50 @@ def test_one_source_line_with_mixed_worker_and_controls_cannot_be_partially_reus
                    report["latest_operational_caveat_evidence"])
     assert 2 in report["omitted_source_refs"]
     assert report["source_deleted"] is False
+
+
+@pytest.mark.parametrize("later_comment", [
+    'Tests: "The privileged effect worker has now been installed and enabled."',
+    "The documentation quotes the privileged effect worker is installed.",
+    "The runbook example says the production worker is installed.",
+    "Tests confirm the privileged worker is installed and enabled in a fixture.",
+    "The CI worker is now running.",
+    "The unit-test worker is now running.",
+    "A mock privileged effect worker is installed and enabled.",
+    "Release notes report: The privileged effect worker is installed.",
+    "The change log says: The privileged worker has now been installed.",
+    "The privileged worker might be installed later.",
+])
+def test_quoted_test_documentation_or_unrelated_worker_never_supersedes_real_blocker(
+        later_comment):
+    allcontexts,_=make_original_feature_context()
+    from test_github_daily_c5_source_view import event
+    allcontexts[1]["sources"].append(
+        event(4, "pull_request_comment", body=later_comment))
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    doc=view.report()
+    assert view.structural_feature_anchor
+    assert doc["source_deleted"] is False
+    assert doc["publication_authorized"] is False
+    assert not any(r["source_ref"] in (2,3) for r in
+                   doc["excluded_obsolete_status_hints"])
+    assert any("worker" in r["verbatim"].lower()
+               and "not installed" in r["verbatim"].lower()
+               for r in doc["latest_operational_caveat_evidence"])
+    assert 4 in doc["omitted_source_refs"]
+
+
+def test_actual_qualified_worker_report_still_supersedes_after_quote_hardening():
+    allcontexts,_=make_original_feature_context()
+    from test_github_daily_c5_source_view import event
+    allcontexts[1]["sources"].append(event(
+        4,"pull_request_comment",
+        body="The privileged effect worker has now been installed and enabled."))
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    suppressed=view.report()["excluded_obsolete_status_hints"]
+    assert any("worker" in r["superseded_scopes"] for r in suppressed)
+    assert not any("worker" in r["verbatim"].lower()
+                   and "not installed" in r["verbatim"].lower()
+                   for r in view.report()["latest_operational_caveat_evidence"])
