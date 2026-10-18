@@ -187,5 +187,107 @@ def test_optional_feature_failure_does_not_invalidate_completed_baseline(monkeyp
     assert len(counter)==2
     assert res.baseline is not None
     assert res.feature_first is None
-    assert res.report()["feature_first_failure_class"]=="source_or_inference_preflight_failed"
+    assert res.report()["feature_first_failure_class"]=="NarrativeRuntimeError"
     assert res.report()["baseline_complete"] is True
+
+
+def test_optional_feature_callback_missing_keeps_completed_baseline(monkeypatch):
+    contexts,plan=context_plan()
+    class ContextList:
+        def report(self):
+            return {"contexts":[
+                {"context":contexts[0],"context_sha256":"b"*64},
+                {"context":contexts[1],"context_sha256":"a"*64}]}
+    monkeypatch.setattr(pair.c4,"build_witnessed_narrative_contexts",lambda *a,**kw:ContextList())
+    calls=[]
+    def fake_run(*args,**kwargs):
+        calls.append(kwargs)
+        return FakeRun()
+    monkeypatch.setattr(pair.rt,"run_witnessed_narrative_inference",fake_run)
+    result=pair.run_private_feature_pair(CAP,(),(),target_entity=(
+        "upiscium/Test","pull_request",374),source_plan=plan,
+        baseline_infer=lambda _:None,feature_infer=None)
+    assert len(calls)==1 and "feature_source_plan" not in calls[0]
+    assert result.baseline is not None and result.feature_first is None
+    assert result.report()["baseline_complete"] is True
+    assert result.report()["feature_first_failure_class"]=="NarrativeRuntimeError"
+    assert result.report()["publication_authorized"] is False
+
+
+def test_invalid_vote_or_optional_source_plan_does_not_stop_baseline(monkeypatch):
+    contexts,plan=context_plan()
+    class ContextList:
+        def report(self):
+            return {"contexts":[
+                {"context":contexts[0],"context_sha256":"b"*64},
+                {"context":contexts[1],"context_sha256":"a"*64}]}
+    monkeypatch.setattr(pair.c4,"build_witnessed_narrative_contexts",lambda *a,**kw:ContextList())
+    calls=[]
+    monkeypatch.setattr(pair.rt,"run_witnessed_narrative_inference",
+                        lambda *a,**kw: calls.append(kw) or FakeRun())
+    fake_vote=feature.GateVote(feature._json({
+        "feature_source_view_sha256":"f"*64,"model_primary":"d1-3B",
+        "status":"observed","uncalibrated":True,
+        "publication_authorized":False,"source_deleted":False,
+    }))
+    outcome=pair.run_private_feature_pair(CAP,(),(),target_entity=(
+        "upiscium/Test","pull_request",374),source_plan=plan,
+        baseline_infer=lambda _:None,feature_infer=lambda _:None,
+        gate_vote=fake_vote)
+    assert len(calls)==1
+    assert outcome.report()["feature_first_failure_class"]=="FeatureStageError"
+    outcome2=pair.run_private_feature_pair(CAP,(),(),target_entity=(
+        "upiscium/Test","pull_request",374),source_plan=None,
+        baseline_infer=lambda _:None,feature_infer=None)
+    assert len(calls)==2
+    assert outcome2.report()["baseline_complete"] is True
+    assert outcome2.report()["feature_first_failure_class"]=="NarrativeRuntimeError"
+
+
+def test_optional_feature_only_grounding_disambiguates_unavailable_ui_labels():
+    assert rt.FEATURE_FIRST_GROUND_PROMPT != rt.SEMANTIC_GROUND_PROMPT
+    assert "X and Y stay unavailable" in rt.FEATURE_FIRST_GROUND_PROMPT
+    assert "Run once" in rt.FEATURE_FIRST_GROUND_PROMPT
+    from test_github_daily_narrative_runtime import MODEL as NAME, DIGEST as REV
+    from obsidian_automation import github_daily_witnessed_narrative as verified
+    seen=[]
+    def transport(base_url,*,method,path,payload,timeout):
+        if path=="/api/tags":
+            return {"models":[{"name":NAME,"digest":REV,"model":NAME}]}
+        assert path=="/api/chat" and method=="POST"
+        seen.append(payload["messages"][0]["content"])
+        assert payload["format"]["required"]==["verdict","reason"]
+        return {"done":True,"model":NAME,"done_reason":"stop",
+                "message":{"role":"assistant","content":
+                           json.dumps({"verdict":"supported","reason":"同じ両操作の利用不可。"},
+                                      ensure_ascii=False)}}
+    stage={
+        "record_version":verified.VERSION,
+        "stage":"github_daily_narrative_ground_context_v4",
+        "publication_authorized":False,
+        "system_prompt":verified.GROUND_PROMPT,
+        "prompt_version":"github-daily-narrative-ground-ja-v1",
+        "entity":{"repository":"upiscium/Test","entity_type":"pull_request","number":374},
+        "date":"2026-10-16",
+        "sentence":{"text":"「Run once」とブラウザの「Execute」は利用できません。"},
+        "original_events":[{"source_ref":12,"body":{
+             "text":"Run once and all browser Execute paths stay unavailable.",
+             "truncated":False}}],
+    }
+    profile=d1.PriorityPlan(b'{"private":"source-bound-fixture"}')
+    specialized=rt.ollama_narrative_infer(
+        base_url="http://127.0.0.1:11434",model="fixture",
+        editorial_contract=rt.FEATURE_FIRST_SOURCE_CONTRACT,
+        feature_source_plan=profile,transport=transport)
+    adapted=specialized(rt._json(stage))
+    receipt=json.loads(adapted.receipt_bytes)
+    assert receipt["effective_prompt_version"]==rt.FEATURE_FIRST_GROUND_PROMPT_VERSION
+    assert seen[-1]==rt.FEATURE_FIRST_GROUND_PROMPT
+    assert json.loads(adapted.raw_response_bytes)["verdict"]=="supported"
+    standard=rt.ollama_narrative_infer(
+        base_url="http://127.0.0.1:11434",model="fixture",
+        editorial_contract=rt.RECENT_SOURCE_CONTRACT,transport=transport)
+    normal=standard(rt._json(stage))
+    normal_receipt=json.loads(normal.receipt_bytes)
+    assert normal_receipt["effective_prompt_version"]==rt.SEMANTIC_GROUND_PROMPT_VERSION
+    assert seen[-1]==rt.SEMANTIC_GROUND_PROMPT

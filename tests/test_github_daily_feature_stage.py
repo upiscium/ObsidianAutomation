@@ -231,3 +231,108 @@ def test_stale_snapshot_must_not_override_recent_operational_gate():
     assert 4 not in view.status_source_refs
     assert all(x["source_ref"]!=4 for x in
                view.report()["latest_operational_caveat_evidence"])
+
+
+def test_collection_truncated_final_line_never_becomes_feature_claim():
+    allcontexts,_=make_original_feature_context()
+    event=allcontexts[1]["sources"][3]["original_event"]
+    event["title"]=None
+    event["body"]={
+        "text":"### Implemented\n- Added source-verified queue.\n"
+               "- Added live operation without",
+        "truncated":True,
+    }
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    assert view.structural_feature_anchor
+    features=[row["verbatim"] for row in view.report()["feature_implementation_evidence"]]
+    assert features==["- Added source-verified queue.\n"]
+    assert all("live operation" not in text for text in features)
+
+
+def test_only_truncated_final_line_is_not_a_feature_anchor():
+    allcontexts,_=make_original_feature_context()
+    event=allcontexts[1]["sources"][3]["original_event"]
+    event["title"]=None
+    event["body"]={"text":"### Implemented\n- Added live operation without", "truncated":True}
+    # No fallback new feature commit may override the intended created-body
+    # truncation test; all commit messages in this fixture are historical docs.
+    for item in allcontexts[1]["sources"]:
+        if item["original_event"]["kind"]=="pull_request_commit":
+            item["original_event"]["message"]["text"]="docs: pre-existing notes"
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    assert view.structural_feature_anchor is False
+
+
+def test_later_installed_worker_avoids_outdated_negative_status():
+    allcontexts,_=make_original_feature_context()
+    source=allcontexts[1]["sources"][3]["original_event"]
+    source["body"]["text"]+= "- Privileged effect worker is not installed.\n"
+    from test_github_daily_c5_source_view import event
+    update=event(4,"pull_request_comment",
+        body="The privileged effect worker is installed and enabled.")
+    allcontexts[1]["sources"].append(update)
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    assert view.structural_feature_anchor
+    selected=[row["verbatim"] for row in view.report()["latest_operational_caveat_evidence"]]
+    assert not any("worker is not installed" in x for x in selected)
+
+
+def test_no_worker_not_translated_as_installed_positive_status():
+    allcontexts,_=make_original_feature_context()
+    source=allcontexts[1]["sources"][3]["original_event"]
+    source["body"]["text"]+= "- No production worker is installed.\n"
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    assert view.structural_feature_anchor
+    assert any("No production worker" in row["verbatim"] for row in
+               view.report()["latest_operational_caveat_evidence"])
+
+
+def test_cannot_accept_conditional_run_once_for_explicitly_unavailable_action():
+    allcontexts,_=make_original_feature_context()
+    event=allcontexts[1]["sources"][3]["original_event"]
+    event["body"]["text"]+=(
+        "- Explicit blocker: Run once and all browser Execute paths stay unavailable.\n")
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    assert view.structural_feature_anchor
+    facts=view.report()["protected_operational_terms"]
+    assert len(facts)==1
+    assert facts[0]["canonical_japanese"]=="「Run once」とブラウザの「Execute」は利用できません。"
+    assert facts[0]["source_ref"]==3
+    wrong=stage.inspect_operational_translation(view,[
+       {"text":"Run onceを実行してもブラウザのExecuteパスは利用できません。","source_refs":[3]}
+    ])
+    assert wrong["status"]=="needs_human_review"
+    assert "conditionalized_unavailable_action" in wrong["known_rule_violations"]
+    correct=stage.inspect_operational_translation(view,[
+       {"text":"「Run once」とブラウザの「Execute」は利用できません。","source_refs":[3]}
+    ])
+    assert correct["known_rule_violations"]==[]
+    assert correct["status"]=="no_known_inversion_detected"
+
+
+def test_unwired_inverted_japanese_flagged_even_when_grounding_supported():
+    allcontexts,_=make_original_feature_context()
+    event=allcontexts[1]["sources"][3]["original_event"]
+    event["body"]["text"]=(
+        "### Implemented\n"
+        "- A deliberately **unwired**, disabled-by-default OperationBroker was added.\n"
+        "### Required\n"
+        "- No production systemd effect was invoked.\n"
+    )
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    assert any(f["rule_id"]=="unwired-disabled-component-v1" for f in
+               view.report()["protected_operational_terms"])
+    wrong=stage.inspect_operational_translation(view,[
+       {"text":"このコードは配線されたままに保たれる必要があります。","source_refs":[3]}
+    ])
+    assert "unwired_component_status_inverted" in wrong["known_rule_violations"]
+    with pytest.raises(stage.FeatureStageError):
+        stage.inspect_operational_translation(view,[
+            {"text":"コードが実装されました。","source_refs":[999]}
+        ])

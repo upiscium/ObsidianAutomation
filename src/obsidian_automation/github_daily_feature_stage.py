@@ -106,6 +106,12 @@ def _lines(value: dict, ref: int, field: str):
     for line in text.splitlines(keepends=True):
         start = cursor
         cursor += len(line)
+        # A collector-truncated final line has unknown continuation, which
+        # may negate the claim. It cannot be a self-contained feature fact.
+        if (value["truncated"] and cursor == len(text)
+                and not line.endswith(("\n","\r","\x85","\u2028","\u2029",
+                                       "\v","\f","\x1c","\x1d","\x1e"))):
+            continue
         if line.strip() and len(line) <= MAX_SOURCE_LINE_CHARS:
             yield {
                 "source_ref": ref, "field": field,
@@ -238,6 +244,28 @@ def build_feature_first_view(context: dict, source_plan: d1.PriorityPlan) -> Fea
     # Prioritize actual no-live / not-installed conditions, not tests or
     # later snapshots. The original C4 sources remain fully intact.
     status_candidates = []
+    # A later explicit positive state can invalidate an older negative
+    # availability statement. This is an exclusion safety check only, not
+    # an affirmative claim that deployment or installation succeeded.
+    later_worker_installed_refs = set()
+    for src in sources:
+        if src["original_event"]["kind"] in recent.SNAPSHOT_KINDS:
+            continue
+        for field in ("body","message"):
+            value=_field(src["original_event"],field)
+            if value is None:
+                continue
+            for span in _lines(value,src["source_ref"],field):
+                word=span["verbatim"].lower()
+                if (any(term in word for term in (
+                        "worker is installed", "worker has been installed",
+                        "worker is now installed", "worker installed and enabled"))
+                        and not any(term in word for term in (
+                            "no production worker", "no worker", "not installed",
+                            "not yet", "never installed", "would be installed",
+                            "when the worker is installed", "if the worker is installed"))):
+                    later_worker_installed_refs.add(src["source_ref"])
+    latest_installed = max(later_worker_installed_refs,default=-1)
     seen = {(r["source_ref"],r["field"],r["start"]) for r in features}
     strong = ("not installed", "no production", "no live", "unavailable",
               "not merged", "not complete", "must remain unwired",
@@ -256,6 +284,12 @@ def build_feature_first_view(context: dict, source_plan: d1.PriorityPlan) -> Fea
                     continue
                 content = row["verbatim"].lower()
                 if any(marker in content for marker in _STATUS_MARKERS):
+                    if (latest_installed > ref and
+                            "worker" in content and
+                            any(neg in content for neg in (
+                                "no production", "not installed",
+                                "no worker", "nothing in", "not yet"))):
+                        continue  # later explicit state makes old blocker stale
                     direct=("not installed","no production","no live",
                             "unavailable","not deployed","本番未","未導入")
                     priority=(2 if any(m in content for m in direct)
@@ -265,6 +299,30 @@ def build_feature_first_view(context: dict, source_plan: d1.PriorityPlan) -> Fea
     status_candidates.sort(key=lambda x:(-x[0],-x[1],-x[2]))
     statuses = [row for _,_,_,row in status_candidates[:MAX_STATUS_LINES]]
 
+    # Source-exact operational facts are *hints*, not new evidence or facts.
+    # Narrow rules for actual documented operator UI; no general translation
+    # engine, no creative rewriting and no support for quoted invented claims.
+    protected=[]
+    for original in features+statuses:
+        low=original["verbatim"].lower().replace("*","")
+        if "run once and all browser execute paths stay unavailable" in low:
+            protected.append({
+                "rule_id":"run-once-execute-unavailable-v1",
+                "source_ref":original["source_ref"],
+                "exact_fragment_sha256":original["exact_fragment_sha256"],
+                "operation_names":["Run once","Execute"],
+                "availability":"unavailable",
+                "canonical_japanese":"「Run once」とブラウザの「Execute」は利用できません。",
+            })
+        elif ("deliberately unwired" in low and
+              "disabled-by-default" in low):
+            protected.append({
+                "rule_id":"unwired-disabled-component-v1",
+                "source_ref":original["source_ref"],
+                "exact_fragment_sha256":original["exact_fragment_sha256"],
+                "availability":"unwired_disabled",
+                "canonical_japanese":"この機能は未接続で、デフォルトでは無効です。",
+            })
     allowed = tuple(sorted({r["source_ref"] for r in features + statuses}))
     if not features or not allowed:
         # No fabricated feature assertion; caller uses baseline only.
@@ -276,6 +334,7 @@ def build_feature_first_view(context: dict, source_plan: d1.PriorityPlan) -> Fea
         "date": context["date"],
         "feature_implementation_evidence": features,
         "latest_operational_caveat_evidence": statuses,
+        "protected_operational_terms": protected,
         "shown_source_refs": list(allowed),
         "omitted_source_refs": [i for i in range(len(sources)) if i not in allowed],
         "original_source_event_count": len(sources),
@@ -444,4 +503,58 @@ def route_feature_pair(view: FeatureFirstView, vote: GateVote | None) -> dict:
         "source_ref_inventory_preserved":True,
         "publication_authorized":False,
         "feature_gate_not_deletion_authority":True,
+    }
+
+
+
+def inspect_operational_translation(
+        view: FeatureFirstView, source_grounded_sentences: list[dict]) -> dict:
+    """Conservative advisory check for known source-backed UI term reversals.
+
+    This does not replace the source, redact provider output, or certify
+    semantic completeness. It flags a dangerous source-known negation
+    inversion even if the upstream Grounding answered "supported".
+    """
+    if (type(view) is not FeatureFirstView or not view.structural_feature_anchor
+            or type(source_grounded_sentences) is not list
+            or len(source_grounded_sentences)>8):
+        raise FeatureStageError("invalid bounded translation quality check")
+    original=view.report()
+    facts=original.get("protected_operational_terms")
+    if type(facts) is not list:
+        raise FeatureStageError("missing original operational constraints")
+    sentences=[]
+    for row in source_grounded_sentences:
+        if (type(row) is not dict or type(row.get("text")) is not str
+                or type(row.get("source_refs")) is not list):
+            raise FeatureStageError("invalid source-grounded sentence")
+        if any(type(r) is not int or r not in view.shown_source_refs
+               for r in row["source_refs"]):
+            raise FeatureStageError("translation sentence cites hidden original")
+        if len(row["text"])>720:
+            raise FeatureStageError("translation sentence exceeds check budget")
+        sentences.append(row["text"])
+    full=" ".join(sentences)
+    rules=[]
+    for fact in facts:
+        if (type(fact) is not dict
+                or fact.get("source_ref") not in view.shown_source_refs
+                or type(fact.get("rule_id")) is not str):
+            raise FeatureStageError("unbound original operation rule")
+        if fact["rule_id"]=="run-once-execute-unavailable-v1":
+            # Conditional "Run onceを実行しても" suggests an unavailable
+            # action can execute. It was a real observed PR #374 error.
+            if re.search(r"Run once\s*を.{0,8}実行しても",full,re.I):
+                rules.append("conditionalized_unavailable_action")
+            if re.search(r"Run once.{0,28}(?:実行可能|利用可能|使えます)",full,re.I):
+                rules.append("unavailable_action_claimed_enabled")
+        if fact["rule_id"]=="unwired-disabled-component-v1":
+            if "配線されたまま" in full or "接続されたまま" in full:
+                rules.append("unwired_component_status_inverted")
+    return {
+        "status":"needs_human_review" if rules else "no_known_inversion_detected",
+        "known_rule_violations":sorted(set(rules)),
+        "protected_source_fact_count":len(facts),
+        "model_or_grounding_is_semantic_authority":False,
+        "publication_authorized":False,
     }

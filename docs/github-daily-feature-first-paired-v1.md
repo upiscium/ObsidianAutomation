@@ -43,3 +43,82 @@ These tests are limited to one day and provisional labels. They do not establish
 - Only later and with human approval: consider production default selection, Writer/Timer access or any merge.
 
 Private inputs, C5 raw model envelopes, managed d1 requests and Grounding replies are stored on Adam at ~/Documents/ResearchEvidence/ObsidianAutomation-DailyV2-FeatureMentionGate-20261018/. Never upload original private source material to public GitHub.
+
+## Follow-up: original-source negation and cross-project checks (2026-10-18 JST)
+
+The first independent read-only correctness and security reviews on Draft #387
+identified three P2 failure modes. All received narrow corrections:
+
+1. An unavailable optional feature infer, rejected gate vote or invalid optional
+   source plan could prevent the baseline C5 from starting. The baseline now
+   executes after verified C4 target selection but before any optional
+   feature-view, model-vote or callback preflight. Optional preflight failure
+   becomes a recorded optional error; the completed original baseline survives.
+2. An earlier unavailable-worker statement was previously ranked ahead of a
+   later explicit installed/enabled-worker update. The optional view now avoids
+   presenting an outdated worker-not-installed statement when a later
+   verified source explicitly reports the worker installed/enabled. This is
+   conservative source exclusion only: it does not assert deployment or
+   validate the later report's actual operational truth.
+3. A collector-truncated final line could be promoted as a complete
+   implementation claim. That incomplete last line is no longer a model-visible
+   original quote, while earlier fully captured lines remain eligible.
+
+The actual C5 prompt had mistranslated the unavailable Run once operation as
+a conditional action. An opt-in source-exact UI availability glossary now
+provides the correct operator label and narrow Japanese wording, plus a
+host-only advisory quality guard against the observed inversion. The first
+glossary-guided editorial output was semantically correct but the existing
+semantic Grounding *misread the English coordinated unavailable status*
+as an after-execution condition and rejected it. The revised **feature-only**
+Grounding prompt explicitly disambiguates unavailable actions. It does not
+override unsupported verdicts, and the baseline Grounding policy is unchanged.
+
+Replays on the same frozen October 16 CAS and exact pinned Gemma 4 digest
+demonstrated:
+- PR #367: real disabled/unwired OperationBroker implementation and its
+  test-only/nonproduction nature are stated without negation reversal.
+- PR #373: Preview UI and preview-only / can_execute=false constraints remain.
+- PR #374: durable pause/resume queue plus explicit Run once and Execute
+  unavailability; both statements supported by original-evidence Grounding
+  after the feature-only UI glossary fix. This passed twice in private
+  independent invocations of the same model/settings; uncalibrated semantic
+  quality across dates is not certified.
+- A narrow source-bound guard flags the *old known wrong* PR #374 sentence
+  with a conditional Run once as needs_human_review even if another
+  model would Ground it. The guard and private quality report never
+  edit source text, rewrite a normalized verdict or grant Writer authority.
+
+Separate-project holdout: real, current October 18 GitHub PR metadata,
+created body and discussion from upiscium/PROJECT-SUZKA #328 and #330
+and upiscium/TSUMGI #155. This external-source probe is not an
+ObsidianAutomation C4/CAS end-to-end capture. Three actual managed d1-3B
+binary decisions marked feature PR #328 YES, test-only PR #330 NO, and
+feature PR #155 YES, but the sample is much too small for model acceptance.
+On unchanged pinned Gemma 4 settings, five summaries were admitted:
+- SUZKA #328: feature-first supplied more concrete module-level source
+  details than the already reasonable baseline and retained nonpersistent hold.
+- SUZKA #330: test-only PR correctly did not trigger feature-first, but the
+  baseline contained an ambiguous 'feature implementation complete' phrase
+  despite explicit no-product-code limits. This is a real quality review item.
+- TSUMGI #155: both named the opt-in Bonsai 2 Nix backend, but feature-first
+  dropped the explicit Draft/no-GA-rollout qualifier that baseline preserved;
+  choosing new feature-first for every YES would be a quality regression.
+
+Therefore, cross-project evidence is **mixed**, not proof of overall quality.
+The exact source, model messages and source-linked provisional judgments
+remain private under the Issue #386 ResearchEvidence directory on Adam.
+Future quality work must explicitly test product vs test-only wording,
+status-caveat retention and other-day/other-project source provenance.
+Do not auto-promote a feature-first candidate on model YES or Grounding PASS
+alone. No human-independent labels or production-Writer qualification yet.
+
+Final opt-in paired #374 run, with equal pinned model revision and identical
+generation options on both C5 paths, completed independently and Grounded
+both outputs. The unchanged baseline still translated Run once as an
+after-execution condition, whereas the new feature-first path correctly
+stated that Run once and browser Execute are both unavailable. The
+source-bound protected-status check reported zero known inversions for
+the new feature-first result, not a claim of generalized factuality.
+The private guarded paired receipt and original post-edit Grounding are
+saved in the Issue #386 ResearchEvidence directory under real_pair_guarded.
