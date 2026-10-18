@@ -858,3 +858,63 @@ def test_atx_closed_exact_actual_status_can_follow_illustration(heading):
     view=stage.build_feature_first_view(allcontexts[1],plan)
     assert any("worker" in x["superseded_scopes"] for x in
                view.report()["excluded_obsolete_status_hints"])
+
+
+@pytest.mark.parametrize("heading", [
+    "## Model reply ###",
+    "## Example output ##",
+    "Current status: Sample output:",
+    "### State excerpt",
+])
+def test_blank_after_illustrative_heading_cannot_open_fake_worker_update(heading):
+    allcontexts,_=make_original_feature_context()
+    from test_github_daily_c5_source_view import event
+    allcontexts[1]["sources"].append(event(
+        4,"pull_request_comment",body=(
+            heading+"\n"
+            "\n"
+            "The privileged effect worker is installed and enabled."
+        )))
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    assert not any("worker" in x["superseded_scopes"]
+                   for x in view.report()["excluded_obsolete_status_hints"])
+    assert any("worker" in x["verbatim"].lower()
+               and "not installed" in x["verbatim"].lower()
+               for x in view.report()["latest_operational_caveat_evidence"])
+    assert view.report()["publication_authorized"] is False
+    assert view.report()["source_deleted"] is False
+
+
+def test_blank_after_actual_example_payload_then_real_status_is_admitted():
+    allcontexts,_=make_original_feature_context()
+    from test_github_daily_c5_source_view import event
+    allcontexts[1]["sources"].append(event(4,"pull_request_comment",body=(
+        "## Example output ##\n"
+        "\n"
+        "The privileged effect worker is installed and enabled.\n"
+        "\n"
+        "The privileged effect worker has now been installed and enabled."
+    )))
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    assert any("worker" in x["superseded_scopes"]
+               for x in view.report()["excluded_obsolete_status_hints"])
+
+
+def test_blank_after_fenced_example_then_real_status_is_admitted():
+    allcontexts,_=make_original_feature_context()
+    from test_github_daily_c5_source_view import event
+    fence=chr(96)*4
+    allcontexts[1]["sources"].append(event(4,"pull_request_comment",body=(
+        "## Example output ##\n"
+        +fence+"text\n"
+        "The privileged effect worker is installed and enabled.\n"
+        +fence+"\n"
+        "\n"
+        "The privileged effect worker has now been installed and enabled."
+    )))
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    assert any("worker" in x["superseded_scopes"]
+               for x in view.report()["excluded_obsolete_status_hints"])

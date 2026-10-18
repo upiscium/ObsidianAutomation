@@ -100,6 +100,7 @@ def _status_source_lines(value: dict, ref: int, field: str):
         "actual deployment status:",
     ))
     active_fence=None
+    illustrative_payload_seen=False
     for line in text.splitlines(keepends=True):
         stripped=line.lstrip()
         marker=fence_marker_pattern.match(stripped)
@@ -119,6 +120,8 @@ def _status_source_lines(value: dict, ref: int, field: str):
             continue
         if marker is not None:
             skipped_offsets.add(cursor)
+            if active_unfenced_example:
+                illustrative_payload_seen=True  # fenced example is real payload
             active_fence=(marker_type,marker_length)
             cursor+=len(line)
             continue
@@ -137,16 +140,26 @@ def _status_source_lines(value: dict, ref: int, field: str):
             for name in illustrative_heading_names
         )
         if not label:
-            active_unfenced_example=False
+            # A blank *between* the example heading and its first content
+            # line is not an example terminator. Once one payload line (or
+            # fenced example) has actually occurred, a blank starts a new
+            # paragraph and can end this illustration.
+            if illustrative_payload_seen:
+                active_unfenced_example=False
+                illustrative_payload_seen=False
         elif (illustrative
               or (label.endswith(":") and label not in operational_heading)):
             active_unfenced_example=True
+            illustrative_payload_seen=False
         elif label in operational_heading:
-            # Only an exact standalone operational status label can reopen
-            # a real status line after a preceding illustration.
+            # Exact actual-status heading may end a preceding illustration.
             active_unfenced_example=False
+            illustrative_payload_seen=False
         elif heading is not None:
             active_unfenced_example=False
+            illustrative_payload_seen=False
+        elif active_unfenced_example:
+            illustrative_payload_seen=True
         if active_unfenced_example:
             skipped_offsets.add(cursor)
         cursor+=len(line)

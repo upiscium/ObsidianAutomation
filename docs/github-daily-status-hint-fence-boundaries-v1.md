@@ -72,3 +72,14 @@ independent following original source report. This was verified with
 additional source-only negative and positive regressions. Neither model
 scores nor this parser can assert a real site deployment, delete CAS text
 or authorize Writer publication.
+
+A second read-only Security reviewer of the follow-up source found that a
+blank line immediately after an illustrative heading (but **before** the
+example body) could prematurely terminate the example and accept a fake
+worker-installed line. The parser now tracks whether an example has
+actually had a payload line or fenced payload. A blank before its first
+payload remains inside the illustration; a blank *after* its payload can
+end the example and allow a later genuine source status report.
+Targeted negative and legitimate positive tests cover both cases.
+This remains conservative optional source presentation only, not a
+mechanism for changing the original event or claiming actual deployment.
