@@ -22,6 +22,27 @@ from obsidian_automation.admin_operation_broker import BrokerRejected
 ROOT_SHA = "c" * 40
 
 
+def _source_tool(module_name: str, filename: str):
+    """Load standalone tools exactly as source without assuming repo PYTHONPATH.
+
+    The Linux CI installs the package under src/, not the repository root.
+    Importing top-level tools as a package is therefore not portable. This
+    test helper mirrors the established independent source-file loaders.
+    """
+    import importlib.util
+    import sys
+    source = Path(__file__).resolve().parents[1]/"tools"/filename
+    spec = importlib.util.spec_from_file_location(module_name, source)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(spec.name, None)
+    return module
+
+
 def test_root_stage_refuses_redirected_shared_authority_paths(tmp_path):
     with pytest.raises(legacy.ProductionUpdateError, match="authority roots are fixed"):
         with staged._lock(
@@ -125,7 +146,7 @@ def test_root_pre_review_cannot_select_a_different_semantic_lock(tmp_path,monkey
 
 
 def test_root_host_runtime_cannot_relocate_receipt_or_semantic_lock(tmp_path):
-    from tools import host_runtime_lifecycle as life
+    life = _source_tool("_r5_host_lifecycle", "host_runtime_lifecycle.py")
     args=dict(
         source_root=tmp_path,
         target_sha=ROOT_SHA,
@@ -144,7 +165,7 @@ def test_root_host_runtime_cannot_relocate_receipt_or_semantic_lock(tmp_path):
 
 
 def test_root_source_bootstrap_rejects_redirected_host_lock_before_git(tmp_path,monkeypatch):
-    from tools import production_bootstrap as bootstrap
+    bootstrap = _source_tool("_r5_source_bootstrap", "production_bootstrap.py")
     with monkeypatch.context() as ctx:
         ctx.setattr(bootstrap.os, "geteuid", lambda: 0)
         with pytest.raises(
@@ -162,7 +183,8 @@ def test_real_three_file_first_stage_import_has_no_extra_module_dependency(tmp_p
     import subprocess
     import sys
     import shutil
-    from tools.bootstrap_github_stage import REQUIRED_MODULES
+    first_stage = _source_tool("_r5_first_stage", "bootstrap_github_stage.py")
+    REQUIRED_MODULES = first_stage.REQUIRED_MODULES
     assert len(REQUIRED_MODULES) == 3
     root = Path(__file__).resolve().parents[1]
     package = tmp_path/"obsidian_automation"
@@ -190,7 +212,7 @@ def test_real_three_file_first_stage_import_has_no_extra_module_dependency(tmp_p
 def test_root_bootstrap_handoff_rejects_redirect_before_git_or_temp(
     tmp_path,monkeypatch,
 ):
-    from tools import production_bootstrap as bootstrap
+    bootstrap = _source_tool("_r5_source_bootstrap", "production_bootstrap.py")
     executed=[]
     def fake_run(cmd):
         executed.append(cmd)
