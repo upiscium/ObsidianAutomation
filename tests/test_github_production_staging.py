@@ -1701,9 +1701,40 @@ def _simulated_privileged_stage(tmp_path, monkeypatch):
     )
     host = tmp_path / "host-receipts"
     host.mkdir(mode=0o700)
+    # The production Stage/Activate root path requires the same pre-existing
+    # root-owned lock inode as the runtime host updater. The disposable
+    # privileged fixture must provision it before stage, never inside stage.
+    shared_lock = host / "host-update.lock"
+    shared_lock.touch(mode=0o600)
+    shared_lock.chmod(0o600)
     monkeypatch.setattr(staged, "PRODUCTION_STAGE_VENV_ROOT", venv)
     monkeypatch.setattr(staged.legacy, "DEFAULT_RECEIPT_DIR", opts["receipt_dir"])
     monkeypatch.setattr(staged.legacy, "HOST_RECEIPT_DIR", host)
+
+    # In root mode Stage also requires the already-existing immutable semantic
+    # update lock. Use a disposable ROOT-owned test inode rather than touching
+    # /run/obsidian-automation. Exercise the actual reviewed primitive with
+    # the fixture path explicitly supplied; root production paths remain
+    # immutable and independently tested.
+    from contextlib import contextmanager
+    semantic = tmp_path/"semantic-refresh"
+    semantic.mkdir(mode=0o700)
+    lock = semantic/"semantic-refresh-inhibited.lock"
+    lock.touch(mode=0o600)
+    lock.chmod(0o600)
+    marker = semantic/"semantic-refresh-inhibited.json"
+    verified_semantic = staged.legacy._verified_semantic_exclusion
+    monkeypatch.setattr(staged.legacy, "DEFAULT_REFRESH_INHIBIT", marker)
+
+    @contextmanager
+    def disposable_root_semantic_gate():
+        with verified_semantic(path=marker, require_root=True):
+            yield
+
+    monkeypatch.setattr(
+        staged.legacy, "_verified_semantic_exclusion",
+        disposable_root_semantic_gate,
+    )
     opts["require_root"] = True
     return runner, opts, site
 

@@ -18,7 +18,7 @@ import stat
 import subprocess
 import sys
 import tempfile
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
@@ -148,23 +148,40 @@ def _lock(root: Path, *, require_root: bool = True,
     if host_root is None:
         host_root = (legacy.HOST_RECEIPT_DIR if require_root
                      else root.parent / "host-receipts")
-    # Lock order is always host-wide first, Stage second. Both remain held
-    # until effects and receipts complete; host lifecycle uses the same inode.
-    with legacy._host_update_guard(host_root, require_root=require_root):
-        state = _state_dir(root, create=True)
-        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
-        fd = os.open(state / "transaction.lock", flags, 0o600)
-        try:
-            info = os.fstat(fd)
-            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.geteuid() or info.st_mode & 0o077:
-                raise legacy.ProductionUpdateError("staging lock identity invalid")
+    # Stage first acquires the PRE-EXISTING pinned host update lock, then
+    # the PRE-EXISTING pinned semantic lock, before any package/unit effect.
+    # Both source modules are included in the three-module first Stage pinned
+    # Git bootstrap, so no installed #300 module is imported prematurely.
+    if require_root and (
+        root != legacy.DEFAULT_RECEIPT_DIR
+        or host_root != legacy.HOST_RECEIPT_DIR
+    ):
+        raise legacy.ProductionUpdateError(
+            "production Stage authority roots are fixed"
+        )
+    with legacy._host_update_guard(
+        host_root, require_root=require_root,
+        require_existing_lock=require_root,
+    ):
+        semantic = (
+            legacy._verified_semantic_exclusion()
+            if require_root else nullcontext()
+        )
+        with semantic:
+            state = _state_dir(root, create=True)
+            flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(state / "transaction.lock", flags, 0o600)
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError as exc:
-                raise legacy.ProductionUpdateError("a staged update is already running") from exc
-            yield state
-        finally:
-            os.close(fd)
+                info = os.fstat(fd)
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+                    raise legacy.ProductionUpdateError("staging lock identity invalid")
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError as exc:
+                    raise legacy.ProductionUpdateError("a staged update is already running") from exc
+                yield state
+            finally:
+                os.close(fd)
 
 def _write_all(fd: int, data: bytes) -> None:
     view = memoryview(data)
@@ -1226,6 +1243,11 @@ def stage_update(*, target_sha: str, app_root: Path, venv_root: Path,
     """Stage a pinned commit with only safe smoke; keep managed timers inert."""
     if require_root and os.geteuid() != 0:
         raise legacy.ProductionUpdateError("root required for staging")
+    if not require_root and os.geteuid() == 0:
+        # Synthetic tests may redirect state only as an unprivileged caller.
+        # A real root call must retain fixed production paths, stable shared
+        # lock inodes, and Stage's trusted build-via-venv admission.
+        raise legacy.ProductionUpdateError("root_must_not_disable_privileged_guard")
     if require_root and receipt_dir != legacy.DEFAULT_RECEIPT_DIR:
         raise legacy.ProductionUpdateError("production Stage receipt root is fixed")
     if not isinstance(target_sha, str) or not SHA_RE.fullmatch(target_sha):
@@ -1376,6 +1398,10 @@ def activate_update(*, stage_sha256: str, approve_live_github_writer: bool,
     """Activate one exact Stage, with explicit live and timer approvals."""
     if require_root and os.geteuid() != 0:
         raise legacy.ProductionUpdateError("root required for activation")
+    if not require_root and os.geteuid() == 0:
+        # Never interpret require_root=False as permission for an actual root
+        # caller to choose a new lock inode or skip Stage provenance.
+        raise legacy.ProductionUpdateError("root_must_not_disable_privileged_guard")
     if require_root and receipt_dir != legacy.DEFAULT_RECEIPT_DIR:
         raise legacy.ProductionUpdateError("production Stage receipt root is fixed")
     if not approve_live_github_writer:
