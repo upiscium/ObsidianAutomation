@@ -4,6 +4,8 @@ Documentation=man:systemd.service(5)
 After=network-online.target
 Wants=network-online.target
 ConditionPathExists=/etc/obsidian-admin/authority.json
+StartLimitBurst=3
+StartLimitIntervalSec=60s
 
 [Service]
 Type=simple
@@ -14,8 +16,6 @@ ExecStart=/usr/bin/python3 -I -S -B /usr/local/libexec/obsidian-admin-root-launc
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=180s
-StartLimitBurst=3
-StartLimitIntervalSec=60s
 RuntimeDirectory=obsidian-admin
 RuntimeDirectoryMode=0710
 StateDirectory=obsidian-admin/queue obsidian-admin/broker
