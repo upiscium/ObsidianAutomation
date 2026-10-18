@@ -107,6 +107,9 @@ def _status_source_lines(value: dict, ref: int, field: str):
             "actual verified status:")
         heading=re.match(r"^#{1,6}\s+",normalized)
         label=normalized[heading.end():] if heading else normalized
+        # Markdown emphasis on the *label* is presentation, not authority.
+        # "**Model output:**" remains an illustrative block label.
+        label=label.strip().strip("*_").strip()
         has_operational_heading=label in operational_heading
         if not label:
             active_unfenced_example=False
@@ -141,10 +144,14 @@ def _status_source_lines(value: dict, ref: int, field: str):
     for item in _lines(value,ref,field):
         original_line=item["verbatim"]
         stripped=original_line.lstrip()
+        list_item=re.match(r"^(?:[-*+]|\d+[.)])\s+(.+)", stripped)
+        list_quoted=(list_item is not None and
+                     list_item.group(1).startswith(
+                         (">", chr(96), chr(34), chr(39), "“", "‘")))
         quoted=(
             original_line.startswith(("    ", chr(9)))
             or stripped.startswith((">", chr(96), chr(34), chr(39), "“", "‘"))
-            or re.match(r"^(?:[-*+]\s+|\d+[.)]\s+)>", stripped) is not None
+            or list_quoted
         )
         if item["start"] not in skipped_offsets and not quoted:
             yield item

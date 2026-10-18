@@ -19,3 +19,23 @@ These guards identify untrusted source presentation boundaries, not generalized 
 106 dedicated source tests passed, including new adverse and positive controls. 294 targeted original-C4/C5, d1 and Grounding regressions passed. Read-only immutable 2026-10-16 CAS replay recovered 10 Issue/PR entities and the same implementation/operational-gate refs for PR #367, #373 and #374. Full exact-head regression, CI and independent follow-up review are separate gates. Another date and independently labelled external-project semantic recall have not been certified.
 
 All source data and model outputs remain private. Draft PR is not authorized to merge, alter production services or publish Daily output.
+
+## Follow-up on source-only reviewer findings
+
+Independent initial source-only follow-up on the first Draft HEAD found
+two more presentation aliases within the same limited scope:
+- a Markdown-bold label, e.g. **Model output:**, was not previously
+  recognized as a sample introducer because the final emphasis marker
+  followed the colon; after stripping *only* heading emphasis, the
+  model-generated text remains excluded as an optional operational hint;
+- a list item containing a direct quoted negative, e.g.
+  - "No live controls are available.", could displace an actual earlier
+  worker blocker. Quoted list payloads and list-blockquotes are now treated
+  the same as standalone quotes for **optional status hints only**.
+
+These are narrow source presentation controls, not broader contradiction
+analysis or proof that any worker was actually installed. The verified
+full original C4 events and default C5 are unchanged. Regressions
+include Markdown-bold example and real-status heading positive controls
+and list-quoted negative controls. The technical acceptance counts below
+are attached to the latest pushed Draft HEAD and are verified separately.

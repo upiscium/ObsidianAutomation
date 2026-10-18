@@ -799,3 +799,60 @@ def test_quoted_negative_does_not_displace_actual_worker_blocker(quoted_blocker)
                for row in x["latest_operational_caveat_evidence"])
     assert all(row["source_ref"] in (2, 3)
                for row in x["latest_operational_caveat_evidence"])
+
+
+@pytest.mark.parametrize("intro", [
+    "**Model output:**",
+    "**Example output:**",
+    "__Generated output:__",
+    "## **Model output:**",
+    "### __Sample output:__",
+])
+def test_emphasized_unfenced_example_label_never_grants_worker_state(intro):
+    allcontexts, _ = make_original_feature_context()
+    from test_github_daily_c5_source_view import event
+    allcontexts[1]["sources"].append(event(
+        4, "pull_request_comment", body=(
+            intro + "\nThe privileged effect worker is installed and enabled.")))
+    plan = d1._original_plan(allcontexts, CAP)
+    view = stage.build_feature_first_view(allcontexts[1], plan)
+    assert not view.report()["excluded_obsolete_status_hints"]
+    assert any("worker" in row["verbatim"].lower()
+               and "not installed" in row["verbatim"].lower()
+               for row in view.report()["latest_operational_caveat_evidence"])
+
+
+@pytest.mark.parametrize("quoted", [
+    '- "No live controls are available."',
+    "* 'No live controls are available.'",
+    "1. “No live controls are available.”",
+    "- `No live controls are available.`",
+    '+ > No live controls are available.',
+])
+def test_markdown_listed_quote_not_a_new_actual_status_hint(quoted):
+    allcontexts, _ = make_original_feature_context()
+    from test_github_daily_c5_source_view import event
+    allcontexts[1]["sources"].append(
+        event(4, "pull_request_comment", body=quoted))
+    plan = d1._original_plan(allcontexts, CAP)
+    view = stage.build_feature_first_view(allcontexts[1], plan)
+    x = view.report()
+    assert all(item["source_ref"] != 4
+               for item in x["latest_operational_caveat_evidence"])
+    assert any("worker" in item["verbatim"].lower()
+               and "not installed" in item["verbatim"].lower()
+               for item in x["latest_operational_caveat_evidence"])
+    assert x["publication_authorized"] is False
+
+
+def test_explicit_bold_actual_status_label_preserves_real_update():
+    allcontexts, _ = make_original_feature_context()
+    from test_github_daily_c5_source_view import event
+    body = ("**Actual status:**\n"
+            "The privileged effect worker is installed and enabled.")
+    allcontexts[1]["sources"].append(event(4, "pull_request_comment", body=body))
+    plan = d1._original_plan(allcontexts, CAP)
+    x = stage.build_feature_first_view(allcontexts[1], plan).report()
+    assert any("worker" in item["superseded_scopes"]
+               for item in x["excluded_obsolete_status_hints"])
+    assert x["source_deleted"] is False
