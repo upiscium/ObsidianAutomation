@@ -45,23 +45,17 @@ def build_line_priority_plan(plan: d1.PriorityPlan) -> d1.PriorityPlan:
         key=(ent.get("repository"),ent.get("entity_type"),ent.get("number"),
              old.get("source_ref"),old.get("field"),old.get("field_text_sha256"))
         groups.setdefault(key,[]).append(old)
+    # Parent paragraph segmentation omits whitespace-only chunks; physical
+    # line continuity cannot be recovered from gaps in the projected plan.
+    # If any chunk hit the upstream cap, treat all chunks from that original
+    # field as pending. No partial-line fragment may acquire independent
+    # classification authority.
     unsafe_parents=set()
     for group in groups.values():
-        items=sorted(group,key=lambda x:x.get("start") if type(x.get("start")) is int else -1)
-        chains=[]
-        chain=[]
-        for item in items:
-            if chain and chain[-1].get("end") != item.get("start"):
-                chains.append(chain)
-                chain=[]
-            chain.append(item)
-        if chain:
-            chains.append(chain)
-        for chunk in chains:
-            if any(type(item.get("text")) is str
-                   and len(item["text"]) >= d1.MAX_SEGMENT_CHARS
-                   for item in chunk):
-                unsafe_parents.update(item.get("id") for item in chunk)
+        if any(type(item.get("text")) is str
+               and len(item["text"]) >= d1.MAX_SEGMENT_CHARS
+               for item in group):
+            unsafe_parents.update(item.get("id") for item in group)
     segments = []
     seen = set()
     for old in old_spans:

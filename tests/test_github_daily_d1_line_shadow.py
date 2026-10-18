@@ -108,3 +108,25 @@ def test_long_original_line_split_upstream_must_never_classify_trailing_negation
         with pytest.raises(d1.D1PriorityShadowError,match="profile input limit"):
             d1.build_d1_decision_request(projected,item["id"],
                                          profile=PROFILE,profile_revision=PROFILE_REVISION)
+
+
+def test_whitespace_gap_in_original_long_line_cannot_certify_short_suffix():
+    source=contexts()
+    source[1]["sources"][2]["original_event"]["body"]["text"]=(
+        "A"*1500 + " "*1500 + "not installed; run once unavailable")
+    parent=d1._original_plan(source,CAP)
+    grouped=[x for x in parent.report()["paragraphs"] if
+             x["entity"]["number"]==374 and x["source_ref"]==2
+             and x["field"]=="body"]
+    assert len(grouped)==2
+    assert grouped[0]["start"]==0 and grouped[1]["start"]==3000
+    plan=lines.build_line_priority_plan(parent)
+    items=[x for x in plan.report()["paragraphs"] if
+           x["entity"]["number"]==374 and x["source_ref"]==2
+           and x["field"]=="body"]
+    assert len(items)==2
+    assert all(x["line_exceeds_safe_char_hint"] for x in items)
+    for item in items:
+        with pytest.raises(d1.D1PriorityShadowError,match="profile input limit"):
+            d1.build_d1_decision_request(plan,item["id"],
+                                         profile=PROFILE,profile_revision=PROFILE_REVISION)

@@ -32,3 +32,16 @@ reproduce the 1500-character prefix plus short negative suffix failure.
 The 2026-10-16 40 selected short line fragments remained unchanged under the
 fix (none newly unsafe), so the previous native observations still bind to the
 byte-identical fixed private line plan; qualitative C5 limits also remain.
+
+Second independent Security review identified a whitespace-gap edge case:
+the upstream original paragraph projector can omit whitespace-only spans
+between two parts of the *same original physical line*. Merely checking
+contiguous parent offsets would allow a short final 'not installed' suffix
+to be classified independently. Because the projected plan cannot prove
+the missing gap contains a line break, the final implementation conservatively
+flags **every segment of the same original field** when any parent reached
+the upstream 1500-character hard split cap. Such segments stay pending.
+The regression includes a 1500-character prefix, a 1500-space gap, and a
+short negative suffix. On the saved 2026-10-16 fixture this correction did
+not alter the 40 previously sampled fragments or the canonical 383-line
+plan SHA, but it remains a meaningful structural safety rule for other days.
