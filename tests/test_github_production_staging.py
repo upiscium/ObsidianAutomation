@@ -1701,6 +1701,12 @@ def _simulated_privileged_stage(tmp_path, monkeypatch):
     )
     host = tmp_path / "host-receipts"
     host.mkdir(mode=0o700)
+    # The production Stage/Activate root path requires the same pre-existing
+    # root-owned lock inode as the runtime host updater. The disposable
+    # privileged fixture must provision it before stage, never inside stage.
+    shared_lock = host / "host-update.lock"
+    shared_lock.touch(mode=0o600)
+    shared_lock.chmod(0o600)
     monkeypatch.setattr(staged, "PRODUCTION_STAGE_VENV_ROOT", venv)
     monkeypatch.setattr(staged.legacy, "DEFAULT_RECEIPT_DIR", opts["receipt_dir"])
     monkeypatch.setattr(staged.legacy, "HOST_RECEIPT_DIR", host)

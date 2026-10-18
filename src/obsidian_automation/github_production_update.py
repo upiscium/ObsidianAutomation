@@ -16,16 +16,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
-from .admin_local_maintenance_gate import (
-    HOST_RECEIPT_DIR, single_lxc_host_updater_lock,
-)
-from .admin_operation_broker import BrokerRejected, SystemctlAdapter
-from .admin_status import SERVICES
-from .admin_workflow_quiescence import require_run_once_quiescent, WorkflowNotQuiescent
-from .pre_review_production_update import (
-    DEFAULT_REFRESH_INHIBIT, PreReviewProductionUpdateError,
-    RefreshUpdateInhibit,
-)
+# Do not import #300 privileged broker/semantic components at module load.
+# The current-main Stage/Activate bootstrap imports this module from an
+# isolated, fixed four-file target tree before #300 is installed. Additional
+# operator modules are needed ONLY for the explicitly coordinated legacy
+# effect path and must be imported lazily after Stage/Inspect are available.
 
 
 DEFAULT_APP_ROOT = Path("/opt/obsidian-github-sync/app")
@@ -33,6 +28,7 @@ DEFAULT_VENV_ROOT = Path("/opt/obsidian-github-sync/venv")
 DEFAULT_SYSTEMD_DIR = Path("/etc/systemd/system")
 DEFAULT_RECEIPT_DIR = Path("/var/lib/obsidian-github-sync/deployments")
 HOST_RECEIPT_DIR = Path("/var/lib/obsidian-automation/deployments")
+DEFAULT_REFRESH_INHIBIT = Path("/run/obsidian-automation/semantic-refresh-inhibited.json")
 STAGE_TRANSACTION_DIR = "staged-github-production-v1"
 TIMER_UNIT = "obsidian-github-sync.timer"
 DAILY_TIMER_UNIT = "obsidian-github-daily-progress.timer"
@@ -842,14 +838,17 @@ def execute_update(
     # An imported Python function must not bypass two user-consent and
     # shared-lock requirements enforced by the public CLI. Nonroot
     # require_root=False invocations are strictly synthetic test runners.
-    if require_root and not approve_legacy_live_effects:
-        raise ProductionUpdateError("legacy_live_effects_not_approved")
-    if require_root and not single_lxc_coordinated:
-        raise ProductionUpdateError("single_lxc_coordination_required")
+    # Canonical root path rejection must run before any consent check, as in
+    # the existing current-main Stage authority. A refused redirected path
+    # cannot be masked by a missing live-effect approval.
     if require_root and receipt_dir != DEFAULT_RECEIPT_DIR:
         raise ProductionUpdateError("production Stage receipt root is fixed")
     if require_root and host_receipt_dir not in (None, HOST_RECEIPT_DIR):
         raise ProductionUpdateError("production host lock path is fixed")
+    if require_root and not approve_legacy_live_effects:
+        raise ProductionUpdateError("legacy_live_effects_not_approved")
+    if require_root and not single_lxc_coordinated:
+        raise ProductionUpdateError("single_lxc_coordination_required")
     if single_lxc_coordinated and (
         type(target_sha) is not str or _SHA_RE.fullmatch(target_sha) is None
     ):
@@ -873,6 +872,17 @@ def execute_update(
         require_root=require_root,
         bootstrap_pre_disabled_timer=bootstrap_pre_disabled_timer,
     )
+
+    if single_lxc_coordinated:
+        # Deliberately defer these imports. A current-main isolated Stage
+        # inspect target contains only __init__, the legacy updater and
+        # staging module; other #300 files must not be prerequisites.
+        from .admin_operation_broker import BrokerRejected, SystemctlAdapter
+        from .admin_status import SERVICES
+        from .admin_workflow_quiescence import require_run_once_quiescent
+        from .pre_review_production_update import (
+            PreReviewProductionUpdateError, RefreshUpdateInhibit,
+        )
 
     def verify_workflow() -> None:
         try:

@@ -20,6 +20,18 @@ from obsidian_automation.pre_review_production_update import (
 SHA = "b" * 40
 
 
+def test_legacy_module_isolated_stage_import_keeps_privileged_modules_lazy():
+    import ast
+    body = ast.parse(Path(update.__file__).read_text(encoding="utf-8")).body
+    assert not any(
+        isinstance(node, ast.ImportFrom)
+        and node.level == 1
+        and isinstance(node.module, str)
+        and node.module.startswith("admin_")
+        for node in body
+    ), "isolated main Stage inspect cannot import absent #300 modules"
+
+
 def test_existing_main_stage_activate_inspect_dispatch_preserved():
     source = inspect.getsource(update.main)
     assert 'arguments[0] in {"stage", "activate", "inspect"}' in source
