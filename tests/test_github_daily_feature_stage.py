@@ -671,3 +671,42 @@ def test_markdown_example_heading_followed_by_actual_heading_status():
     view=stage.build_feature_first_view(allcontexts[1],plan)
     assert any("worker" in row["superseded_scopes"] for row in
                view.report()["excluded_obsolete_status_hints"])
+
+
+@pytest.mark.parametrize("intro", [
+    "State excerpt:",
+    "Model reply:",
+    "LLM response:",
+    "Quoted deployment report:",
+    "## State excerpt:",
+    "### Model reply:",
+    "Some unstated source:",
+])
+def test_ambiguous_label_must_not_be_operational_status_authority(intro):
+    allcontexts,_=make_original_feature_context()
+    from test_github_daily_c5_source_view import event
+    allcontexts[1]["sources"].append(event(
+        4,"pull_request_comment",
+        body=intro+"\nThe privileged effect worker is installed and enabled."))
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    assert not any("worker" in row["superseded_scopes"] for row in
+                   view.report()["excluded_obsolete_status_hints"])
+    assert any("not installed" in row["verbatim"].lower()
+               for row in view.report()["latest_operational_caveat_evidence"])
+
+
+@pytest.mark.parametrize("intro", [
+    "Current status:", "Production status:", "## Actual status:",
+    "### Current production status:",
+])
+def test_explicit_actual_operational_status_header_still_admits_update(intro):
+    allcontexts,_=make_original_feature_context()
+    from test_github_daily_c5_source_view import event
+    allcontexts[1]["sources"].append(event(
+        4,"pull_request_comment",
+        body=intro+"\nThe privileged effect worker is installed and enabled."))
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    assert any("worker" in row["superseded_scopes"] for row in
+               view.report()["excluded_obsolete_status_hints"])

@@ -96,16 +96,26 @@ def _status_source_lines(value: dict, ref: int, field: str):
             "sample:", "expected output:", "generated output:",
             "model output:", "illustrative output:",
             "test output:", "example response:")
+        # A colon-terminated preceding label (including a Markdown heading)
+        # can turn the *next* fluent standalone sentence into quoted/example
+        # data. Only a deliberately explicit operational-status heading is
+        # admitted as a candidate context; ambiguous headings fail closed.
+        operational_heading=(
+            "current status:", "actual status:", "production status:",
+            "current production status:", "operator status:",
+            "actual deployment status:")
         heading=re.match(r"^#{1,6}\s+",normalized)
+        label=normalized[heading.end():] if heading else normalized
         if heading is not None:
-            # A heading can itself introduce an illustrative block, e.g.
-            # "## Example output:". Do not reset then treat its next line
-            # as an actual production worker update.
-            active_unfenced_example=normalized[heading.end():].startswith(example_starts)
-        elif not normalized:
             active_unfenced_example=False
-        elif normalized.startswith(example_starts):
+        if not label:
+            active_unfenced_example=False
+        elif (label.startswith(example_starts) or
+              (label.endswith(":") and
+               not label.startswith(operational_heading))):
             active_unfenced_example=True
+        elif heading is not None:
+            active_unfenced_example=False
         if active_unfenced_example:
             skipped_offsets.add(cursor)
         candidate=(
