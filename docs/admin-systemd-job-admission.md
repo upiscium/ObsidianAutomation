@@ -77,6 +77,18 @@ A separate disposable kernel-flock test confirmed cooperating host/semantic
 update lock exclusion, inhibitor markers and safe release. Neither test
 authorizes installed root Broker actions or uncooperative launchers.
 
+## #300 operator runtime non-overlap contract
+
+For a production Run once, the runtime now supplies
+SystemctlAdapter.observe_workflow to the dispatcher under the SAME reviewed
+update lock as StartUnit. The fixed-domain read checks every related service
+for loaded/idle/known systemd Job/PID and canonical FragmentPath before
+submitting a new Job; the target timer must be paused. A sibling timer can
+remain scheduled while none of its actual dependency chain is currently
+running. This prevents an already-running hidden dependency overlap at
+admission, but does not claim to fence arbitrary future activity or an
+uncooperative root host process. See admin-operator-operational-runbook.md.
+
 ## Legacy path and remaining acceptance
 
 Earlier Phase-B OperationBroker.apply(run_once) retained synchronous

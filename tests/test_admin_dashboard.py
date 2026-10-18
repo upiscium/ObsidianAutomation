@@ -178,7 +178,13 @@ def test_head_no_response_body() -> None:
 
 def test_failed_refresh_drops_previous_healthy_observations() -> None:
     # A request error must not leave the old "healthy" cards as current.
-    error_branch = JS.split("} catch {", 1)[1].split("} finally {", 1)[0]
+    # Only inspect refresh()'s catch block. Other independent bounded API
+    # calls may have their own catch/finally before refresh() in the bundle.
+    error_branch = (
+        JS.split("async function refresh() {", 1)[1]
+        .split("} catch {", 1)[1]
+        .split("} finally {", 1)[0]
+    )
     assert '"services").replaceChildren()' in error_branch
     assert '"pipeline-details").replaceChildren()' in error_branch
     assert '"pipeline-summary").textContent' in error_branch

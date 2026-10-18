@@ -25,6 +25,9 @@ from .admin_operation_broker import (
 )
 from .admin_operation_preflight import PreflightRejected, preflight_operation, _REQUEST_ID
 from .admin_status import SERVICES, ServiceSpec
+from .admin_workflow_quiescence import (
+    WorkflowObservation, WorkflowNotQuiescent, require_run_once_nonoverlap,
+)
 
 _JOB_PATH = re.compile(r"/org/freedesktop/systemd1/job/([1-9][0-9]{0,18})\Z")
 _BUSCTL_OBJECT_LINE = re.compile(r'o "(/org/freedesktop/systemd1/job/[1-9][0-9]{0,18})"\n?\Z')
@@ -150,7 +153,9 @@ class RunOnceJobDispatcher:
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         require_root: bool = True,
         enabled: bool = False,
+        workflow_observer: Callable[[ServiceSpec], WorkflowObservation] | None = None,
     ):
+        self.workflow_observer = workflow_observer
         self.adapter = adapter
         self.manager = manager
         self.maintenance_gate = maintenance_gate
@@ -194,6 +199,23 @@ class RunOnceJobDispatcher:
                     or state[1] == "failed"
                 ):
                     raise BrokerRejected("systemd_run_once_state_mismatch")
+                # The root-owned production path MUST inspect actual hidden
+                # prerequisite/OnSuccess services before dispatch. An enabled
+                # source-only unit test with require_root=False may explicitly
+                # use the fake adapter without a workflow observer.
+                if self.workflow_observer is None:
+                    if self.require_root:
+                        raise BrokerRejected("workflow_observer_unavailable")
+                else:
+                    try:
+                        observed = self.workflow_observer(spec)
+                        require_run_once_nonoverlap(spec, observed)
+                    except WorkflowNotQuiescent as exc:
+                        raise BrokerRejected(exc.code) from None
+                    except BrokerRejected:
+                        raise
+                    except Exception:
+                        raise BrokerRejected("workflow_observation_failed") from None
                 boot = _boot_identity(self.adapter)
                 # Manager mode='fail' refuses transactions that would replace
                 # queued conflicting jobs. Systemd serializes its own unit Job

@@ -1,0 +1,31 @@
+[Unit]
+Description=ObsidianAutomation private loopback management Dashboard
+Documentation=man:systemd.service(5)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=obsidian-admin-web
+Group=obsidian-admin-web
+UMask=0077
+ExecStart=/opt/obsidian-automation/venv/bin/obsidian-admin-dashboard --port 8370 --operator-ui
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET
+IPAddressDeny=any
+IPAddressAllow=localhost
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

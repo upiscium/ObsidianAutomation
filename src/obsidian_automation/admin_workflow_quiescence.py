@@ -167,3 +167,67 @@ def require_run_once_quiescent(
             or fields["FragmentPath"] != f"/etc/systemd/system/{name}"
         ):
             raise WorkflowNotQuiescent("workflow_service_not_quiescent")
+
+
+def require_run_once_nonoverlap(
+    spec: ServiceSpec, snapshot: WorkflowObservation,
+) -> None:
+    """Minimal same-domain live conflict guard, not business completion.
+
+    Different from require_run_once_quiescent(), sibling timers may still be
+    scheduled, but cannot have pending systemd jobs. Every *existing* role
+    dependency must be idle, loaded and pinned. The selected timer itself
+    must be fully paused, so only one systemd Manager manual Job is submitted.
+    The reviewed maintenance exclusion gate must cover both these reads and
+    StartUnit. Other automatic future timer launches are owned by systemd and
+    underlying workflow idempotency, not falsely claimed globally excluded.
+    """
+    if spec not in SERVICES or type(snapshot) is not WorkflowObservation:
+        raise WorkflowNotQuiescent("workflow_identity_unverified")
+    timers = _GROUP_TIMERS[spec.identifier]
+    services = GROUP_UNITS[spec.identifier]
+    if (
+        type(snapshot.timers) is not dict
+        or type(snapshot.services) is not dict
+        or set(snapshot.timers) != set(timers)
+        or set(snapshot.services) != set(services)
+    ):
+        raise WorkflowNotQuiescent("workflow_inventory_unverified")
+    for timer in timers:
+        props = snapshot.timers[timer]
+        if not _fixed_fields(props, TIMER_READ_FIELDS):
+            raise WorkflowNotQuiescent("workflow_timer_unverified")
+        if (
+            props["LoadState"] != "loaded"
+            or props["Unit"] != TIMER_TARGETS[timer]
+            or props["FragmentPath"] != f"/etc/systemd/system/{timer}"
+            or props["Job"] not in ("", "0")
+        ):
+            raise WorkflowNotQuiescent("workflow_timer_not_quiescent")
+        paused = (
+            props["UnitFileState"] == "disabled"
+            and props["ActiveState"] == "inactive"
+            and props["SubState"] == "dead"
+        )
+        scheduled = (
+            props["UnitFileState"] in ("enabled", "enabled-runtime")
+            and props["ActiveState"] == "active"
+            and props["SubState"] == "waiting"
+        )
+        if not paused and (timer == spec.timer or not scheduled):
+            raise WorkflowNotQuiescent("workflow_timer_not_quiescent")
+    for unit in services:
+        props = snapshot.services[unit]
+        if not _fixed_fields(props, WORKFLOW_READ_FIELDS):
+            raise WorkflowNotQuiescent("workflow_service_unverified")
+        if (
+            props["LoadState"] != "loaded"
+            or props["Type"] != "oneshot"
+            or props["ActiveState"] != "inactive"
+            or props["SubState"] != "dead"
+            or props["Job"] not in ("", "0")
+            or props["MainPID"] != "0"
+            or props["ControlPID"] != "0"
+            or props["FragmentPath"] != f"/etc/systemd/system/{unit}"
+        ):
+            raise WorkflowNotQuiescent("workflow_service_not_quiescent")
