@@ -103,31 +103,35 @@ def _status_source_lines(value: dict, ref: int, field: str):
         operational_heading=(
             "current status:", "actual status:", "production status:",
             "current production status:", "operator status:",
-            "actual deployment status:")
+            "actual deployment status:", "actual verified status",
+            "actual verified status:")
         heading=re.match(r"^#{1,6}\s+",normalized)
         label=normalized[heading.end():] if heading else normalized
-        if heading is not None:
-            active_unfenced_example=False
+        has_operational_heading=label in operational_heading
         if not label:
             active_unfenced_example=False
         elif (label.startswith(example_starts) or
-              (label.endswith(":") and
-               not label.startswith(operational_heading))):
+              (label.endswith(":") and not has_operational_heading)):
             active_unfenced_example=True
-        elif heading is not None:
+        elif heading is not None and has_operational_heading:
             active_unfenced_example=False
+        # An arbitrary heading ("## Notes") inside an unfenced example
+        # is NOT evidence that the example ended. Only a blank line or
+        # an explicit current/actual status heading can end it.
         if active_unfenced_example:
             skipped_offsets.add(cursor)
-        candidate=(
-            chr(96)*3 if stripped.startswith(chr(96)*3)
-            else chr(126)*3 if stripped.startswith(chr(126)*3)
-            else None
-        )
-        if candidate is not None:
+        fence=re.match(r"^(" + chr(96) + r"{3,}|~{3,})", stripped)
+        if fence is not None:
+            marker=fence.group(1)
+            tail=stripped[len(marker):].strip()
             skipped_offsets.add(cursor)
             if active_fence is None:
-                active_fence=candidate
-            elif candidate==active_fence:
+                active_fence=marker
+            elif (marker[0]==active_fence[0] and
+                  len(marker)>=len(active_fence) and not tail):
+                # Opening fences can have language info strings.
+                # A closing fence must have the same marker family,
+                # at least the opening length, and NO info string.
                 active_fence=None
         elif active_fence is not None:
             skipped_offsets.add(cursor)
@@ -135,7 +139,14 @@ def _status_source_lines(value: dict, ref: int, field: str):
     if cursor!=len(text):
         raise FeatureStageError("unreconciled source fence boundaries")
     for item in _lines(value,ref,field):
-        if item["start"] not in skipped_offsets:
+        original_line=item["verbatim"]
+        stripped=original_line.lstrip()
+        quoted=(
+            original_line.startswith(("    ", chr(9)))
+            or stripped.startswith((">", chr(96), chr(34), chr(39), "“", "‘"))
+            or re.match(r"^(?:[-*+]\s+|\d+[.)]\s+)>", stripped) is not None
+        )
+        if item["start"] not in skipped_offsets and not quoted:
             yield item
 
 
@@ -177,7 +188,14 @@ def _positive_status_scopes(raw: str) -> tuple[str, ...]:
 
 
 def _negative_status_scopes(raw: str) -> tuple[str, ...]:
-    """Operational scope affected by an exact original negative quote."""
+    """Operational scope affected by an original negative statement.
+
+    Quoted/indented examples may mention blockers, but must not replace
+    an actual source status merely because their source_ref is later.
+    This limits *optional* hints; original C4 evidence stays untouched.
+    """
+    if type(raw) is not str:
+        raise FeatureStageError("invalid original negative status text")
     line = raw.lower().replace("*", "")
     scopes = []
     if "worker" in line and any(x in line for x in
@@ -440,7 +458,7 @@ def build_feature_first_view(context: dict, source_plan: d1.PriorityPlan) -> Fea
                 content = row["verbatim"].lower()
                 if not any(marker in content for marker in _STATUS_MARKERS):
                     continue
-                scopes = _negative_status_scopes(content)
+                scopes = _negative_status_scopes(row["verbatim"])
                 # A single source line may contain *two* independently
                 # scoped blockers. If a later event lifts only one, quoting
                 # the original line verbatim would reassert an obsolete
