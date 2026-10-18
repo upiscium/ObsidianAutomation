@@ -311,6 +311,10 @@ def build_d1_decision_request(plan: PriorityPlan, segment_id: str, *,
     if len(matches) != 1:
         raise D1PriorityShadowError("missing or ambiguous paragraph")
     item = matches[0]
+    if item.get("line_exceeds_safe_char_hint") is True:
+        # An unchanged original long line is not shortened until its negation
+        # or qualification may have been lost. Shadow only: mark it pending.
+        raise D1PriorityShadowError("existing d1 profile input limit exceeded")
     if _sha(item["text"].encode("utf-8")) != item["text_sha256"]:
         raise D1PriorityShadowError("original paragraph changed")
     others = item["same_commit_other_pr_numbers"]
