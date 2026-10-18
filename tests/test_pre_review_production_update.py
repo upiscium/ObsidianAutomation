@@ -663,3 +663,49 @@ def test_unsafe_inhibit_is_rejected_without_replacement(tmp_path: Path, unsafe: 
     with pytest.raises(PreReviewProductionUpdateError, match="unsafe"):
         gate.acquire()
     assert outside.read_bytes() == before
+
+
+
+def test_directory_fsync_error_after_unlink_restores_original_inhibitor(tmp_path, monkeypatch):
+    """Never leave a cooperating updater with a missing runtime blocker."""
+    import os
+    from obsidian_automation import pre_review_production_update as pre_review
+    path = tmp_path / "semantic-refresh-inhibited.json"
+    gate = RefreshUpdateInhibit(path, TARGET, "github-updater", require_root=False)
+    gate.acquire()
+    before = path.read_bytes()
+    original_fsync = os.fsync
+    fault = {"once": False}
+
+    def transient_failed_release_fsync(fd):
+        try:
+            target = os.readlink(f"/proc/self/fd/{fd}")
+        except OSError:
+            target = ""
+        if (not fault["once"] and target == str(path.parent)
+                and not path.exists()):
+            fault["once"] = True
+            raise OSError("injected_release_directory_fsync")
+        return original_fsync(fd)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(pre_review.os, "fsync", transient_failed_release_fsync)
+        with pytest.raises(PreReviewProductionUpdateError, match="inhibitor restored"):
+            gate.release()
+    try:
+        assert fault["once"], "injection must have hit AFTER marker unlink"
+        assert path.is_file()
+        assert path.read_bytes() == before
+        assert path.stat().st_mode & 0o777 == 0o600
+        assert gate.lock_fd is not None
+    finally:
+        gate.close()
+    # Subsequent reviewed operator reconciliation can re-acquire the same
+    # inode, verify matching owner/SHA and cleanly finish after evidence review.
+    retry = RefreshUpdateInhibit(path, TARGET, "github-updater", require_root=False)
+    retry.acquire(publish=False, require_existing_lock=True)
+    try:
+        retry.release()
+    finally:
+        retry.close()
+    assert not path.exists()

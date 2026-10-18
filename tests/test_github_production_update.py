@@ -858,7 +858,67 @@ def test_coordinated_inhibitor_release_failure_contains_restored_timers(
     assert not fake.enabled and not fake.active
     assert not fake.daily_enabled and not fake.daily_active
     assert inhibit.is_file()
-    assert _receipt_payload(receipts)["failed_stage"] == "release_inhibit"
+    # The completed effects were persisted BEFORE attempting the final
+    # inhibitor release. If that release fails, BOTH the completed-effects
+    # proof and a failed release-stage record remain, while the inhibitor
+    # prevents any new coordinated update until manual reconciliation.
+    records = [
+        json.loads(file.read_text(encoding="utf-8"))
+        for file in receipts.glob("*.json")
+    ]
+    assert len(records) == 2
+    assert {entry["result"] for entry in records} == {"success", "failed"}
+    assert next(item for item in records if item["result"] == "failed")["failed_stage"] == "release_inhibit"
+
+
+def test_success_receipt_is_durable_before_shared_inhibitor_release(
+    tmp_path, guarded_systemd_observer, monkeypatch,
+):
+    layout = _coordinated_layout(tmp_path)
+    app, venv, _, receipts, _, inhibit = layout
+    fake = FakeRunner(app, venv)
+    original_release = RefreshUpdateInhibit.release
+
+    def verify_and_release(self):
+        records = [
+            json.loads(file.read_text(encoding="utf-8"))
+            for file in receipts.glob("*.json")
+        ]
+        assert len(records) == 1 and records[0]["result"] == "success"
+        assert inhibit.is_file()
+        return original_release(self)
+
+    monkeypatch.setattr(RefreshUpdateInhibit, "release", verify_and_release)
+    result, path = execute_update(**_coordinated_args(tmp_path, layout, fake))
+    assert result.result == "success"
+    assert path.is_file()
+    assert not inhibit.exists()
+
+
+def test_receipt_persistence_failure_retains_inhibitor_and_contains_timers(
+    tmp_path, guarded_systemd_observer, monkeypatch,
+):
+    from obsidian_automation import github_production_update as update_module
+    layout = _coordinated_layout(tmp_path)
+    app, venv, _, receipts, _, inhibit = layout
+    fake = FakeRunner(
+        app, venv, daily_present=True, daily_enabled=True, daily_active=True,
+    )
+    real_persist = update_module._persist_receipt
+
+    def fail_completed_receipt(directory, receipt):
+        if receipt.result == "success":
+            assert inhibit.is_file()
+            raise ProductionUpdateError("injected_success_receipt_failure")
+        return real_persist(directory, receipt)
+
+    monkeypatch.setattr(update_module, "_persist_receipt", fail_completed_receipt)
+    with pytest.raises(ProductionUpdateError, match="persist_receipt"):
+        execute_update(**_coordinated_args(tmp_path, layout, fake))
+    assert inhibit.is_file()
+    assert not fake.enabled and not fake.active
+    assert not fake.daily_enabled and not fake.daily_active
+    assert _receipt_payload(receipts)["failed_stage"] == "persist_receipt"
 
 
 def test_standalone_live_guard_validates_extra_installed_github_inventory():

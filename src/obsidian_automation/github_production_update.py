@@ -226,6 +226,85 @@ def _host_update_guard(host_receipt_dir: Path, *, require_root: bool,
         os.close(fd)
 
 
+@contextmanager
+def _verified_semantic_exclusion(
+    *, path: Path = DEFAULT_REFRESH_INHIBIT, require_root: bool = True,
+):
+    """Pin the existing shared semantic lock without importing installed #300.
+
+    The first-install Stage bootstrap intentionally loads only this stdlib
+    legacy module plus github_production_staging, from reviewed Git objects.
+    Stage acquires the host lock FIRST, then this same semantic lock inode.
+    A missing/replaced lock, an unresolved marker or unknown path fails closed.
+    """
+    if require_root:
+        if os.geteuid() != 0 or path != DEFAULT_REFRESH_INHIBIT:
+            raise ProductionUpdateError("fixed semantic update authority required")
+        owner = 0
+    else:
+        if os.geteuid() == 0:
+            raise ProductionUpdateError("root_must_not_disable_privileged_guard")
+        owner = os.geteuid()
+    if (not isinstance(path, Path) or not path.is_absolute()
+        or ".." in path.parts or path.name != "semantic-refresh-inhibited.json"):
+        raise ProductionUpdateError("invalid semantic update authority path")
+
+    directory = path.parent
+    root_fd = lock_fd = None
+    try:
+        # The directory and lock are opened by inode with O_NOFOLLOW. Real
+        # production dir is /run/obsidian-automation (root-managed); tests use
+        # a disposable 0700 directory owned by the test UID.
+        root_fd = os.open(
+            directory, os.O_RDONLY | os.O_DIRECTORY
+            | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+        dinfo = os.fstat(root_fd)
+        dpath = os.stat(directory, follow_symlinks=False)
+        if (not stat.S_ISDIR(dinfo.st_mode)
+            or dinfo.st_uid != owner or stat.S_IMODE(dinfo.st_mode) & 0o022
+            or (dinfo.st_dev,dinfo.st_ino)!=(dpath.st_dev,dpath.st_ino)):
+            raise ProductionUpdateError("untrusted semantic update directory")
+        lock_fd = os.open(
+            "semantic-refresh-inhibited.lock",
+            os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=root_fd,
+        )
+        info = os.fstat(lock_fd)
+        current = os.stat(
+            "semantic-refresh-inhibited.lock",
+            dir_fd=root_fd, follow_symlinks=False,
+        )
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != owner
+            or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600
+            or (info.st_dev,info.st_ino)!=(current.st_dev,current.st_ino)):
+            raise ProductionUpdateError("untrusted semantic update lock")
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ProductionUpdateError("semantic update lock busy") from None
+        after = os.stat(
+            "semantic-refresh-inhibited.lock",
+            dir_fd=root_fd, follow_symlinks=False,
+        )
+        if (info.st_dev,info.st_ino)!=(after.st_dev,after.st_ino):
+            raise ProductionUpdateError("replaced semantic update lock")
+        try:
+            os.stat(path.name, dir_fd=root_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise ProductionUpdateError("semantic update reconciliation required")
+        yield
+    except OSError:
+        raise ProductionUpdateError("semantic update lock unavailable") from None
+    finally:
+        if lock_fd is not None:
+            os.close(lock_fd)
+        if root_fd is not None:
+            os.close(root_fd)
+
+
 def _run(
     runner: CommandRunner,
     argv: Sequence[str],
@@ -694,6 +773,13 @@ def _execute_update_unlocked(
             ("systemctl", "daemon-reload"),
             label="systemd daemon-reload",
         )
+        if require_root and verify_quiescence is not None:
+            # The checked-out target may install a NEW obsidian-github-*.timer
+            # that did not exist during pre-check. Before live smoke and any
+            # timer restoration, refuse any unexpected installed/loaded timer
+            # or active service under the same stable coordinator locks.
+            stage = "post_install_quiescence"
+            verify_quiescence()
 
         smoke = venv_root / "bin" / "obsidian-github-production-smoke"
         if not smoke.is_file():
@@ -750,14 +836,13 @@ def _execute_update_unlocked(
                 was_active=state["active"],
             )
 
-        # Release the coordinated durable inhibitor in the SAME transaction
-        # as timer restoration. If it fails, this function's existing
-        # containment branch disables both managed timers and records a failed
-        # release_inhibit stage instead of returning a false success receipt.
-        if after_restore_effect is not None:
-            stage = "release_inhibit"
-            after_restore_effect()
-
+        # Persist/fsync proof of the completed local transaction BEFORE
+        # removing the shared semantic-refresh inhibitor. An interrupted
+        # receipt write must leave the durable inhibitor in place; removing it
+        # first would allow another updater to proceed after a crash with
+        # no durable evidence that package/live effects already happened.
+        # The receipt attests to completed effects; a still-present inhibitor
+        # independently means cleanup/reconciliation remains mandatory.
         stage = "persist_receipt"
         completed_at = _utc_now()
         receipt = DeploymentReceipt(
@@ -776,6 +861,15 @@ def _execute_update_unlocked(
             completed_at=completed_at,
         )
         path = _persist_receipt(receipt_dir, receipt)
+
+        # Release only after the completion receipt is DURABLE. A failed
+        # release keeps the inhibitor and triggers timer containment and a
+        # separately recorded failure. Both receipt records can coexist;
+        # the inhibitor (not a positive historical receipt alone) is the
+        # authoritative block on further coordinated effects.
+        if after_restore_effect is not None:
+            stage = "release_inhibit"
+            after_restore_effect()
         return receipt, path
 
     except Exception as exc:
