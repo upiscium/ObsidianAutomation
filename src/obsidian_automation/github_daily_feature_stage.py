@@ -91,15 +91,20 @@ def _status_source_lines(value: dict, ref: int, field: str):
         # standalone literal lines after "Example output:" to real system
         # state, even when they look like valid installation announcements.
         # A blank line or a Markdown heading ends the illustrative block.
-        if normalized.startswith(("# ","## ","### ","#### ")):
-            active_unfenced_example=False
+        example_starts=(
+            "example output:", "example:", "sample output:",
+            "sample:", "expected output:", "generated output:",
+            "model output:", "illustrative output:",
+            "test output:", "example response:")
+        heading=re.match(r"^#{1,6}\s+",normalized)
+        if heading is not None:
+            # A heading can itself introduce an illustrative block, e.g.
+            # "## Example output:". Do not reset then treat its next line
+            # as an actual production worker update.
+            active_unfenced_example=normalized[heading.end():].startswith(example_starts)
         elif not normalized:
             active_unfenced_example=False
-        elif normalized.startswith((
-                "example output:", "example:", "sample output:",
-                "sample:", "expected output:", "generated output:",
-                "model output:", "illustrative output:",
-                "test output:", "example response:")):
+        elif normalized.startswith(example_starts):
             active_unfenced_example=True
         if active_unfenced_example:
             skipped_offsets.add(cursor)
