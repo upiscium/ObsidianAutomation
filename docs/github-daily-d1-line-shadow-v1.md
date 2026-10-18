@@ -17,3 +17,18 @@ A follow-up C5 native run on PR #367, #373 and #374 using the pinned Gemma 4 mod
 Pure opt-in `build_line_priority_plan` subdivides the already-verified d1 C4 source plan only along exact original newline boundaries. The original field and offsets remain the authority. Any unrepresentable long line or model abstention stays pending; the partial original text cannot itself prove a milestone. Review/model abstention cannot authorize source exclusion, publication or merge. This small, one-day evaluation is not a general relevance benchmark.
 
 Private source, actual managed requests and C5 model/grounding receipts on Adam: `~/Documents/ResearchEvidence/ObsidianAutomation-DailyV2-D1-LineShadow-20261018/`. Do not upload original GitHub text to public GitHub.
+
+## Independent source-review finding and correction
+
+The first Correctness review found that the *parent* d1 paragraph projector
+could already split a single long physical line at 1500 characters. A short
+remainder containing e.g. "not installed" could then be incorrectly
+classified as an independent complete line in the new linewise view. This was
+remediated before accepting this Draft: contiguous parent source spans in the
+same original field are now conservatively grouped, and **all** members of a
+group containing a 1500-character parent are marked unsafe/pending. This
+ensures no isolated suffix is promoted after an arbitrary earlier cut. Tests
+reproduce the 1500-character prefix plus short negative suffix failure.
+The 2026-10-16 40 selected short line fragments remained unchanged under the
+fix (none newly unsafe), so the previous native observations still bind to the
+byte-identical fixed private line plan; qualitative C5 limits also remain.

@@ -31,6 +31,37 @@ def build_line_priority_plan(plan: d1.PriorityPlan) -> d1.PriorityPlan:
             or type(original.get("paragraphs")) is not list):
         raise d1.D1PriorityShadowError("unverified parent plan")
     old_spans = original["paragraphs"]
+    # Earlier d1 parent segmentation may have split a *single physical
+    # original line* at 1500 characters. The remainder is often short.
+    # Identify contiguous parent groups within the same original field
+    # and mark the *entire* connected group unsafe if one parent reached
+    # that cap. A short trailing "not installed" must not become an
+    # independent classifier input divorced from its long preceding line.
+    groups = {}
+    for old in old_spans:
+        if type(old) is not dict or type(old.get("entity")) is not dict:
+            raise d1.D1PriorityShadowError("invalid original parent group")
+        ent=old["entity"]
+        key=(ent.get("repository"),ent.get("entity_type"),ent.get("number"),
+             old.get("source_ref"),old.get("field"),old.get("field_text_sha256"))
+        groups.setdefault(key,[]).append(old)
+    unsafe_parents=set()
+    for group in groups.values():
+        items=sorted(group,key=lambda x:x.get("start") if type(x.get("start")) is int else -1)
+        chains=[]
+        chain=[]
+        for item in items:
+            if chain and chain[-1].get("end") != item.get("start"):
+                chains.append(chain)
+                chain=[]
+            chain.append(item)
+        if chain:
+            chains.append(chain)
+        for chunk in chains:
+            if any(type(item.get("text")) is str
+                   and len(item["text"]) >= d1.MAX_SEGMENT_CHARS
+                   for item in chunk):
+                unsafe_parents.update(item.get("id") for item in chunk)
     segments = []
     seen = set()
     for old in old_spans:
@@ -41,6 +72,11 @@ def build_line_priority_plan(plan: d1.PriorityPlan) -> d1.PriorityPlan:
                 or d1._sha(old["text"].encode("utf-8")) != old.get("text_sha256")):
             raise d1.D1PriorityShadowError("invalid original CAS-bound span")
         original_text = old["text"]
+        # C4-bound d1 parent may already have divided a physical line at
+        # its 1500-character cap. Never classify *any* fragments of that
+        # parent as an independent complete line: a trailing negation can
+        # otherwise become a false standalone relevance recommendation.
+        parent_may_be_cut_midline = old["id"] in unsafe_parents
         cursor = old["start"]
         substrings = original_text.splitlines(keepends=True)
         if not substrings and original_text:
@@ -63,7 +99,8 @@ def build_line_priority_plan(plan: d1.PriorityPlan) -> d1.PriorityPlan:
             piece["text_sha256"] = d1._sha(text.encode("utf-8"))
             piece["line_original_parent_id"] = old["id"]
             piece["line_boundary_version"] = VERSION
-            piece["line_exceeds_safe_char_hint"] = len(text) > MAX_LINE_CHARS
+            piece["line_exceeds_safe_char_hint"] = (
+                parent_may_be_cut_midline or len(text) > MAX_LINE_CHARS)
             if piece["id"] in seen:
                 raise d1.D1PriorityShadowError("duplicate original line")
             seen.add(piece["id"])

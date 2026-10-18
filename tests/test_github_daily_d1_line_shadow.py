@@ -87,3 +87,24 @@ def test_d1_managed_binding_and_original_sha_unaffected_by_line_plan():
     assert x["text"] in req.report()["state"]
     assert req.plan_sha256==projected.sha256
     assert req.report()["profile"]==d1.PINNED_D1_PROFILE_ID
+
+
+
+def test_long_original_line_split_upstream_must_never_classify_trailing_negation():
+    original=contexts()
+    original[1]["sources"][2]["original_event"]["body"]["text"] = (
+        "A" * 1500 + " not installed; actual controls remain unavailable.")
+    parent=d1._original_plan(original,CAP)
+    rows=[x for x in parent.report()["paragraphs"] if x["entity"]["number"]==374
+          and x["source_ref"]==2 and x["field"]=="body"]
+    assert len(rows)==2 and len(rows[0]["text"])==1500
+    projected=lines.build_line_priority_plan(parent)
+    items=[x for x in projected.report()["paragraphs"] if x["entity"]["number"]==374
+           and x["source_ref"]==2 and x["field"]=="body"]
+    assert len(items)==2
+    assert all(x["line_exceeds_safe_char_hint"] for x in items)
+    assert "not installed" in items[-1]["text"]
+    for item in items:
+        with pytest.raises(d1.D1PriorityShadowError,match="profile input limit"):
+            d1.build_d1_decision_request(projected,item["id"],
+                                         profile=PROFILE,profile_revision=PROFILE_REVISION)
