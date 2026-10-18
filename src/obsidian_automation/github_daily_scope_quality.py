@@ -14,18 +14,22 @@ VERSION = "daily-c5-scope-quality-review-v1"
 _TEST_TITLE = re.compile(r"^test(?:\([^\r\n)]*\))?:", re.IGNORECASE)
 _FALSE_PRODUCT_COMPLETION = re.compile(
     r"(?:機能|製品|プロダクト)(?:.{0,10})(?:実装(?:は|が)?(?:完了|済み)|完成)|"
-    r"(?:機能実装|製品実装|プロダクト実装)(?:は|が)?完了"
+    r"(?:機能実装|製品実装|プロダクト実装)(?:は|が)?完了|"
+    r"(?:[A-Z][A-Za-z0-9_-]{2,30})(?:.{0,12})"
+    r"(?:実装|開発)(?:が|は)?(?:完了|済み)"
 )
 _TEST_SCOPE_JA = re.compile(
     r"(?:テスト専用|テストのみ|テストだけ|テスト用|事前検証|検証専用|試験専用|"
     r"製品コード[^。]{0,20}変更(?:は|を)?(?:していない|なし|されていない))"
 )
 _NOT_LIVE_JA = re.compile(
-    r"(?:本番未(?:導入|反映|適用|展開)|未(?:デプロイ|導入|反映)|"
-    r"本番.{0,20}(?:未|していない|されていない|保留|変更なし)|"
-    r"デプロイ.{0,24}(?:未|されていない|されていません|していない|保留)|"
-    r"稼働(?:中|環境|GA).{0,25}(?:変更なし|未変更|変更されていない|変更していない)|"
-    r"running GA services.{0,24}(?:unchanged|not changed))",
+    r"(?:本番未(?:導入|反映|適用|展開)|"
+    r"本番.{0,38}(?:未|していない|されていない|保留|変更なし|承認が必要|別途承認)|"
+    r"(?:デプロイ|反映).{0,20}(?:本番|稼働GA|稼働サービス)|"
+    r"稼働(?:中|環境|GA|サービス).{0,38}"
+    r"(?:変更なし|未変更|変更されていない|変更していない|承認が必要|別途承認)|"
+    r"(?:running (?:GA )?services|production site).{0,48}"
+    r"(?:unchanged|not changed|approval required|not deployed))",
     re.IGNORECASE,
 )
 
@@ -78,7 +82,7 @@ def inspect_scope_quality(context: dict, sentences: list[dict]) -> dict:
             value = feature._field(event, field)
             if value is None:
                 continue
-            if len(value["text"].encode("utf-8")) > 65536:
+            if value["truncated"] or len(value["text"].encode("utf-8")) > 65536:
                 # Unknown context; mark review, never silently certify.
                 # The full original C4 remains available independently.
                 source_scan_incomplete = True

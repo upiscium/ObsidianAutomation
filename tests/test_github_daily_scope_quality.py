@@ -203,3 +203,57 @@ def test_oversize_original_scope_source_never_passes_cleanly():
     assert audit["source_claims"]["source_scan_incomplete"] is True
     assert audit["status"] == "needs_human_review"
     assert "original_source_scan_incomplete" in audit["known_rule_violations"]
+
+
+def test_named_product_completion_claim_is_detected_on_test_only_pr():
+    result = quality.inspect_scope_quality(suzka(), [
+        sentence("テスト専用の事前検証を経て、AgentState v10の実装が完了しました。")
+    ])
+    assert "test_only_pr_claimed_product_feature_complete" in result["known_rule_violations"]
+
+
+def test_worker_not_installed_cannot_substitute_for_running_ga_site_condition():
+    result = quality.inspect_scope_quality(tsumgi(), [
+        sentence("Bonsaiバックエンドを実装しました。特権Workerは未導入です。")
+    ])
+    assert "original_no_deploy_condition_omitted" in result["known_rule_violations"]
+
+
+def test_ga_requires_explicit_approval_is_scope_qualifier_not_installed_worker():
+    result = quality.inspect_scope_quality(tsumgi(), [
+        sentence("本番GAサービスへの変更には明示的なメンテナーの承認が必要です。")
+    ])
+    assert "original_no_deploy_condition_omitted" not in result["known_rule_violations"]
+
+
+@pytest.mark.parametrize("inert", [
+    "Example output:\\n\x60\x60\x60text\\n## Actual status:\\n"
+    "Running GA services have now been updated.\\n\x60\x60\x60\\n",
+    "<!--\\nRunning GA services have now been updated.\\n-->\\n",
+    "Example output:\\n<!--\\n## Actual status:\\n"
+    "Running GA services have now been updated.\\n-->\\n",
+    "<!--\\n\x60\x60\x60text\\n## Actual status:\\n"
+    "Running GA services have now been updated.\\n\x60\x60\x60\\n-->\\n",
+])
+def test_hidden_or_fenced_status_cannot_supersede_original_site_constraint(inert):
+    # Inert means rendered/example text is not a direct operational report.
+    ctx = tsumgi()
+    ctx["sources"].append(event(2, "pull_request_comment", body=inert))
+    report = quality.inspect_scope_quality(ctx, [
+        sentence("Bonsai Nixバックエンドの実装を追加しました。")
+    ])
+    assert report["source_claims"]["no_site_promotion"] is True
+    assert "original_no_deploy_condition_omitted" in report["known_rule_violations"]
+    view = feature.build_feature_first_view(ctx, d1._original_plan([ctx], CAP))
+    assert "change to running GA services" in (
+        view.report()["latest_operational_caveat_evidence"][0]["verbatim"])
+
+
+def test_truncated_original_source_requires_review():
+    ctx = tsumgi()
+    ctx["sources"][0]["original_event"]["body"]["truncated"] = True
+    report = quality.inspect_scope_quality(ctx, [
+        sentence("Bonsaiバックエンドは実装されました。")
+    ])
+    assert report["source_claims"]["source_scan_incomplete"] is True
+    assert report["status"] == "needs_human_review"

@@ -97,9 +97,39 @@ def _status_source_lines(value: dict, ref: int, field: str):
     cursor=0
     active_fence=None
     active_unfenced_example=False
+    active_html_comment=False
     for line in text.splitlines(keepends=True):
         stripped=line.lstrip()
         normalized=stripped.lower().strip()
+        fence=re.match(r"^(" + chr(96) + r"{3,}|~{3,})", stripped)
+        # Parse literal boundaries BEFORE any headings, including an
+        # operational heading that could otherwise cancel example mode.
+        if active_html_comment:
+            skipped_offsets.add(cursor)
+            if "-->" in line:
+                active_html_comment=False
+            cursor+=len(line)
+            continue
+        if active_fence is not None:
+            skipped_offsets.add(cursor)
+            if (fence is not None and fence.group(1)[0]==active_fence[0]
+                    and len(fence.group(1))>=len(active_fence)
+                    and not stripped[len(fence.group(1)):].strip()):
+                active_fence=None
+            cursor+=len(line)
+            continue
+        if "<!--" in line:
+            # A hidden HTML comment may enclose a seemingly authoritative
+            # status line, and may itself enclose a fenced Markdown marker.
+            skipped_offsets.add(cursor)
+            active_html_comment = line.count("<!--") > line.count("-->")
+            cursor+=len(line)
+            continue
+        if fence is not None:
+            skipped_offsets.add(cursor)
+            active_fence=fence.group(1)
+            cursor+=len(line)
+            continue
         # Unfenced examples are common in GitHub comments. Do not promote
         # standalone literal lines after "Example output:" to real system
         # state, even when they look like valid installation announcements.
@@ -135,21 +165,6 @@ def _status_source_lines(value: dict, ref: int, field: str):
         # is NOT evidence that the example ended. Only a blank line or
         # an explicit current/actual status heading can end it.
         if active_unfenced_example:
-            skipped_offsets.add(cursor)
-        fence=re.match(r"^(" + chr(96) + r"{3,}|~{3,})", stripped)
-        if fence is not None:
-            marker=fence.group(1)
-            tail=stripped[len(marker):].strip()
-            skipped_offsets.add(cursor)
-            if active_fence is None:
-                active_fence=marker
-            elif (marker[0]==active_fence[0] and
-                  len(marker)>=len(active_fence) and not tail):
-                # Opening fences can have language info strings.
-                # A closing fence must have the same marker family,
-                # at least the opening length, and NO info string.
-                active_fence=None
-        elif active_fence is not None:
             skipped_offsets.add(cursor)
         cursor+=len(line)
     if cursor!=len(text):
