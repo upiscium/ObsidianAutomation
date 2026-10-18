@@ -84,52 +84,61 @@ def _status_source_lines(value: dict, ref: int, field: str):
     cursor=0
     active_fence=None
     active_unfenced_example=False
+    # A fence closes only with the same character and at least as many
+    # markers as the opener. Smaller nested markers inside longer fences
+    # cannot expose code/example output as a live production status.
+    fence_marker_pattern=re.compile(r"^(%s{3,}|~{3,})" % re.escape(chr(96)))
+    illustrative_heading_names=frozenset((
+        "example output", "example", "sample output", "sample",
+        "expected output", "generated output", "model output",
+        "model reply", "model response", "llm response", "state excerpt",
+        "illustrative output", "test output", "example response",
+    ))
+    operational_heading=frozenset((
+        "current status:", "actual status:", "production status:",
+        "current production status:", "operator status:",
+        "actual deployment status:",
+    ))
+    active_fence=None
     for line in text.splitlines(keepends=True):
         stripped=line.lstrip()
+        marker=fence_marker_pattern.match(stripped)
+        if marker is not None:
+            token=marker.group(1)
+            marker_type, marker_length=token[0],len(token)
+            remaining=stripped[len(token):].strip()
+        if active_fence is not None:
+            # Never reclassify enclosed headings or nested code fences.
+            skipped_offsets.add(cursor)
+            if (marker is not None
+                    and marker_type==active_fence[0]
+                    and marker_length>=active_fence[1]
+                    and not remaining):
+                active_fence=None
+            cursor+=len(line)
+            continue
+        if marker is not None:
+            skipped_offsets.add(cursor)
+            active_fence=(marker_type,marker_length)
+            cursor+=len(line)
+            continue
         normalized=stripped.lower().strip()
-        # Unfenced examples are common in GitHub comments. Do not promote
-        # standalone literal lines after "Example output:" to real system
-        # state, even when they look like valid installation announcements.
-        # A blank line or a Markdown heading ends the illustrative block.
-        example_starts=(
-            "example output:", "example:", "sample output:",
-            "sample:", "expected output:", "generated output:",
-            "model output:", "illustrative output:",
-            "test output:", "example response:")
-        # A colon-terminated preceding label (including a Markdown heading)
-        # can turn the *next* fluent standalone sentence into quoted/example
-        # data. Only a deliberately explicit operational-status heading is
-        # admitted as a candidate context; ambiguous headings fail closed.
-        operational_heading=(
-            "current status:", "actual status:", "production status:",
-            "current production status:", "operator status:",
-            "actual deployment status:")
         heading=re.match(r"^#{1,6}\s+",normalized)
         label=normalized[heading.end():] if heading else normalized
-        if heading is not None:
-            active_unfenced_example=False
+        # Exact heading equality is required. A composite label such as
+        # "Current status: Sample output:" is not an actual-status heading.
         if not label:
             active_unfenced_example=False
-        elif (label.startswith(example_starts) or
-              (label.endswith(":") and
-               not label.startswith(operational_heading))):
+        elif (label.removesuffix(":") in illustrative_heading_names
+              or (label.endswith(":") and label not in operational_heading)):
             active_unfenced_example=True
+        elif label in operational_heading:
+            # A separately authored explicit operational heading may end a
+            # preceding illustration. Composite headings were already held.
+            active_unfenced_example=False
         elif heading is not None:
             active_unfenced_example=False
         if active_unfenced_example:
-            skipped_offsets.add(cursor)
-        candidate=(
-            chr(96)*3 if stripped.startswith(chr(96)*3)
-            else chr(126)*3 if stripped.startswith(chr(126)*3)
-            else None
-        )
-        if candidate is not None:
-            skipped_offsets.add(cursor)
-            if active_fence is None:
-                active_fence=candidate
-            elif candidate==active_fence:
-                active_fence=None
-        elif active_fence is not None:
             skipped_offsets.add(cursor)
         cursor+=len(line)
     if cursor!=len(text):
