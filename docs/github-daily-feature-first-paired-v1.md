@@ -181,3 +181,23 @@ snapshots do not qualify. A positive report merely influences which
 *source quote* the optional model sees. It does not authorize a deployment
 claim or bypass original CAS/Grounding. Original line/status hashes and
 mixed-scope withholding remain attached to the private view version v4.
+
+### Nonproduction-worker and quoted-source safeguard
+
+A second independent source review found two other misleading source reports:
+an *effect worker running only in CI*, and a *privileged effect worker
+installed only for a CI/staging test*. Those reports are not changes to the
+production effect worker. The optional status update selector now admits
+an affirmative worker transition only when the **source sentence directly
+reports a privileged or production worker**, without CI, staging,
+development/sandbox, test, documentation or inline quoted-sample context.
+A generic CI worker or a hypothetical future installation cannot suppress a
+real, earlier production blocker. An actual direct later report of a
+privileged/production worker installation still supersedes the stale
+same-scope negative quote. The private model-facing view is versioned v5;
+no original C4 event, post-edit Grounding or baseline C5 is mutated.
+
+This is narrow literal evidence presentation, not a machine assertion that
+the remote site truly installed or started a worker. Ambiguous language
+continues to require human review, and the new feature-first path remains
+Draft/nonpublishing only.

@@ -15,7 +15,7 @@ import re
 from . import github_daily_d1_priority_shadow as d1
 from . import github_daily_c5_source_view as recent
 
-VERSION = "daily-feature-mention-paired-stage-v4"
+VERSION = "daily-feature-mention-paired-stage-v5"
 QUESTION_VERSION = "d1-binary-feature-mention-v1"
 MAX_VIEW_BYTES = 16 * 1024
 MAX_REQUEST_BYTES = 8192
@@ -49,7 +49,7 @@ _STATUS_MARKERS = (
 # supersede a prior same-scope negative availability hint. A later report
 # is still a report, not proof production is really enabled.
 _WORKER_POSITIVE = re.compile(
-    r"\b(?:privileged(?:\s+effect)?|production|effect)\s+worker\b"
+    r"\b(?:privileged(?:\s+effect)?|production(?:\s+effect)?)\s+worker\b"
     r"[^.!?]{0,66}\b(?:is\s+now|is|has\s+now\s+been|has\s+been|"
     r"was|now)\s+(?:fully\s+)?(?:installed|enabled|running|operational)\b",
     re.IGNORECASE,
@@ -67,7 +67,7 @@ _CONTROLS_POSITIVE = re.compile(
 _NON_ACTUAL_STATUS = re.compile(
     r"\b(?:not|never|no\s+|without|if|when|would|could|should|may|"
     r"might|will|plan(?:ned)?|intend(?:ed)?|expect(?:ed)?|"
-    r"simulation|simulated|mock|fixture|test-only|hypothetical|tests?|documentation|documented|docs?|examples?|sample|quot(?:es?|ed|ing)?)\b",
+    r"simulation|simulated|mock|fixture|test-only|hypothetical|tests?|ci|continuous\s+integration|staging|sandbox|development|dev\s+environment|test\s+environment|documentation|documented|docs?|examples?|sample|quot(?:es?|ed|ing)?)\b",
     re.IGNORECASE,
 )
 
@@ -93,7 +93,7 @@ def _positive_status_scopes(raw: str) -> tuple[str, ...]:
         claim=claim[4:]
     if not claim.startswith((
         "privileged effect worker ", "privileged worker ",
-        "production worker ", "effect worker ",
+        "production effect worker ", "production worker ",
         "live controls ", "live control ",
         "browser execute ", "execute paths ", "execute path ",
         "run once ",

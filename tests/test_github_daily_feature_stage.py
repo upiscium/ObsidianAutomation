@@ -492,6 +492,11 @@ def test_one_source_line_with_mixed_worker_and_controls_cannot_be_partially_reus
     "Tests confirm the privileged worker is installed and enabled in a fixture.",
     "The CI worker is now running.",
     "The unit-test worker is now running.",
+    "The effect worker is now running in CI.",
+    "The privileged effect worker for CI is now installed.",
+    "The privileged effect worker for staging is now installed.",
+    "The privileged worker is now running in the sandbox.",
+    "The production worker is now installed in a development environment.",
     "A mock privileged effect worker is installed and enabled.",
     "Release notes report: The privileged effect worker is installed.",
     "The change log says: The privileged worker has now been installed.",
@@ -530,3 +535,24 @@ def test_actual_qualified_worker_report_still_supersedes_after_quote_hardening()
     assert not any("worker" in r["verbatim"].lower()
                    and "not installed" in r["verbatim"].lower()
                    for r in view.report()["latest_operational_caveat_evidence"])
+
+
+@pytest.mark.parametrize("report", [
+    "The privileged effect worker has now been installed and enabled.",
+    "The production worker is now installed.",
+    "The production effect worker has been installed and enabled.",
+])
+def test_explicit_source_claim_for_actual_production_effect_worker_still_supersedes(
+        report):
+    allcontexts,_=make_original_feature_context()
+    from test_github_daily_c5_source_view import event
+    allcontexts[1]["sources"].append(event(
+        4,"pull_request_comment",body=report))
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    assert view.structural_feature_anchor
+    assert any("worker" in x["superseded_scopes"] for x in
+               view.report()["excluded_obsolete_status_hints"])
+    assert not any("worker is not installed" in x["verbatim"].lower() for x in
+                   view.report()["latest_operational_caveat_evidence"])
+    assert view.report()["publication_authorized"] is False
