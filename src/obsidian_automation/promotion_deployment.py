@@ -93,7 +93,23 @@ def _safe_directory(path: Path, *, create: bool = False, mode: int = 0o700) -> P
 
 @contextmanager
 def _production_lock(path: Path) -> Iterator[None]:
+    """Fail-closed single-LXC Core Promotion lock, never queue a second run.
+
+    Canonical writer and the managed Live audit use this same inode. Refuse
+    symlink/hardlink/replaced/over-permissive files, and do not wait behind a
+    promotion that may have started a long-running remote operation.
+    """
     parent = _safe_directory(path.parent, create=True)
+    parent_info = parent.stat()
+    if (
+        not stat.S_ISDIR(parent_info.st_mode)
+        or parent_info.st_uid != os.geteuid()
+        or stat.S_IMODE(parent_info.st_mode) & 0o022
+    ):
+        # In production StateDirectory=obsidian-core-promotion is owned by the
+        # dedicated promoter UID. A different/world-writable parent could let
+        # another identity swap the lock pathname between checks.
+        raise PromotionDeploymentError("unsafe_promotion_lock_directory")
     flags = os.O_RDWR | os.O_CREAT
     if hasattr(os, "O_CLOEXEC"):
         flags |= os.O_CLOEXEC
@@ -101,16 +117,36 @@ def _production_lock(path: Path) -> Iterator[None]:
         flags |= os.O_NOFOLLOW
     try:
         fd = os.open(parent / path.name, flags, 0o600)
-    except OSError as exc:
-        raise PromotionDeploymentError("cannot open Core promotion production lock") from exc
+    except OSError:
+        raise PromotionDeploymentError("promotion_lock_unavailable") from None
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        yield
-    finally:
+        info = os.fstat(fd)
+        actual = os.stat(parent / path.name, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or (info.st_dev, info.st_ino) != (actual.st_dev, actual.st_ino)
+        ):
+            raise PromotionDeploymentError("unsafe_promotion_lock")
         try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        finally:
-            os.close(fd)
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise PromotionDeploymentError("promotion_already_running") from None
+        # The stable inode cannot be renamed/replaced by a different role UID
+        # inside the separately owned StateDirectory. A forged pathname from
+        # a same-UID process is still refused if detected after lock capture.
+        now = os.stat(parent / path.name, follow_symlinks=False)
+        if (now.st_dev, now.st_ino) != (info.st_dev, info.st_ino):
+            raise PromotionDeploymentError("promotion_lock_replaced")
+        yield
+    except OSError:
+        raise PromotionDeploymentError("promotion_lock_unavailable") from None
+    finally:
+        # Releasing through close is enough and avoids an unlock error hiding
+        # the original effect or remote-CAS failure.
+        os.close(fd)
 
 
 def _assert_clean_core_repository(repository: Path, *, git_runner: GitRunner) -> None:

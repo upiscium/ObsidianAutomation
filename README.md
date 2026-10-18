@@ -12,6 +12,22 @@ For the Human-facing AI workflow, including `04-AI` projection, Human Review, po
 
 The detailed projection contract is documented in [Human-facing AI lifecycle projection](docs/human-ai-projection.md).
 
+## Optional fixed-service operator console (#300)
+
+The independently released #300 operator console supports five fixed systemd
+timer/service pairs, with read-only status and explicitly confirmed
+Pause/Resume/Run once requests. Operation receipts distinguish systemd Job
+admission from service-level GitHub/Gitea/Nextcloud success. This is a
+separately reviewed LAN/VPN-only operator feature, not the unfinished
+#298/#311 single-LXC setup Wizard, Connections, Vault Gateway, folder mapping,
+or Snapshot/Publisher migration. **Only one automation execution LXC per
+managed Vault is supported**; multi-instance active control is unsupported.
+The privileged Worker is OFF until its installed source, Unix ACLs, shared
+updater locks and private ingress pass exact-revision acceptance.
+
+See [the #300 standalone release scope](docs/releases/300-standalone-20261018.md)
+and [operator deployment boundary](docs/admin-operator-operational-runbook.md).
+
 ## Trust boundary
 
 This repository may contain reusable automation code, schemas, tests, prompts, and container definitions. It must not contain production credentials, private Vault contents, internal endpoints, runner registration data, or environment-specific secrets.

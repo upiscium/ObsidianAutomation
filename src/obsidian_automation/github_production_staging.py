@@ -150,7 +150,13 @@ def _lock(root: Path, *, require_root: bool = True,
                      else root.parent / "host-receipts")
     # Lock order is always host-wide first, Stage second. Both remain held
     # until effects and receipts complete; host lifecycle uses the same inode.
-    with legacy._host_update_guard(host_root, require_root=require_root):
+    # Stage/Activate mutate the same live install/unit identities. Root
+    # callers must never manufacture a new host-lock inode if another
+    # installed updater still owns the previous inode.
+    with legacy._host_update_guard(
+        host_root, require_root=require_root,
+        require_existing_lock=require_root,
+    ):
         state = _state_dir(root, create=True)
         flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
         fd = os.open(state / "transaction.lock", flags, 0o600)

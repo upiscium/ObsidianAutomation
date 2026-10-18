@@ -16,6 +16,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
+from .admin_local_maintenance_gate import (
+    HOST_RECEIPT_DIR, single_lxc_host_updater_lock,
+)
+from .admin_operation_broker import BrokerRejected, SystemctlAdapter
+from .admin_status import SERVICES
+from .admin_workflow_quiescence import require_run_once_quiescent, WorkflowNotQuiescent
+from .pre_review_production_update import (
+    DEFAULT_REFRESH_INHIBIT, PreReviewProductionUpdateError,
+    RefreshUpdateInhibit,
+)
+
 
 DEFAULT_APP_ROOT = Path("/opt/obsidian-github-sync/app")
 DEFAULT_VENV_ROOT = Path("/opt/obsidian-github-sync/venv")
@@ -173,7 +184,8 @@ def _require_no_unresolved_stage(stage_receipt_dir: Path) -> None:
 
 @contextmanager
 def _host_update_guard(host_receipt_dir: Path, *, require_root: bool,
-                       stage_receipt_dir: Path | None = None):
+                       stage_receipt_dir: Path | None = None,
+                       require_existing_lock: bool = False):
     """Share host-update.lock with the consolidated lifecycle and deny pending effects."""
     if require_root and host_receipt_dir != HOST_RECEIPT_DIR:
         raise ProductionUpdateError("production host lock path is fixed")
@@ -183,18 +195,31 @@ def _host_update_guard(host_receipt_dir: Path, *, require_root: bool,
     info = host_receipt_dir.lstat()
     if (info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o022):
         raise ProductionUpdateError("untrusted host lifecycle receipt directory")
-    fd = os.open(host_receipt_dir / "host-update.lock",
-                 os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    lock_path = host_receipt_dir / "host-update.lock"
+    open_flags = os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC
+    if not require_existing_lock:
+        open_flags |= os.O_CREAT
+    try:
+        fd = os.open(lock_path, open_flags, 0o600)
+    except OSError:
+        raise ProductionUpdateError("untrusted host-wide update lock") from None
     try:
         info = os.fstat(fd)
+        original = os.stat(lock_path, follow_symlinks=False)
+        if (info.st_dev, info.st_ino) != (original.st_dev, original.st_ino):
+            raise ProductionUpdateError("untrusted host-wide update lock")
         if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
                 or info.st_uid != os.geteuid()
-                or stat.S_IMODE(info.st_mode) & 0o077):
+                or stat.S_IMODE(info.st_mode) & 0o077
+                or (require_existing_lock and stat.S_IMODE(info.st_mode) != 0o600)):
             raise ProductionUpdateError("untrusted host-wide update lock")
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise ProductionUpdateError("host-wide update already in progress") from exc
+        after = os.stat(lock_path, follow_symlinks=False)
+        if (info.st_dev, info.st_ino) != (after.st_dev, after.st_ino):
+            raise ProductionUpdateError("untrusted host-wide update lock")
         # An unresolved host intent means Stage/legacy has no authority to mutate.
         if os.path.lexists(host_receipt_dir / "pending-runtime.json"):
             raise ProductionUpdateError("host lifecycle reconciliation required")
@@ -472,6 +497,9 @@ def _execute_update_unlocked(
     runner: CommandRunner = _default_runner,
     require_root: bool = True,
     bootstrap_pre_disabled_timer: bool = False,
+    before_timer_effect: Callable[[], None] | None = None,
+    verify_quiescence: Callable[[], None] | None = None,
+    after_restore_effect: Callable[[], None] | None = None,
 ) -> tuple[DeploymentReceipt, Path]:
     stage = "preflight"
     previous_sha: str | None = None
@@ -561,7 +589,18 @@ def _execute_update_unlocked(
             timer_was_enabled = observed_timer_enabled
             timer_was_active = observed_timer_active
 
+        # Under single-LXC coordination, the invariant is published while
+        # host-update and semantic-refresh locks are owned, BEFORE changing
+        # any timer. If interrupted, the marker remains and blocks a future
+        # updater/broker until explicitly reconciled.
+        if before_timer_effect is not None:
+            before_timer_effect()
         stage = "stop_timers"
+        if verify_quiescence is not None:
+            # A coordinated update has a durable inhibit marker already
+            # published. Even a failure stopping the FIRST timer must drive
+            # best-effort containment of both timers before returning.
+            timers_stopped = True
         for unit, state in managed_timer_states.items():
             if state["enabled"] is None and state["active"] is None:
                 continue
@@ -571,6 +610,13 @@ def _execute_update_unlocked(
                 label=f"timer stop {unit}",
             )
         timers_stopped = True
+
+        # Timer disable alone is NOT a drain. In coordinated mode require the
+        # full GitHub Sync+Daily dependency chain idle before checkout/package
+        # changes; otherwise leave recurrence disabled and marker intact.
+        if verify_quiescence is not None:
+            stage = "quiesce_workflow"
+            verify_quiescence()
 
         stage = "checkout_target"
         _git(
@@ -708,6 +754,14 @@ def _execute_update_unlocked(
                 was_active=state["active"],
             )
 
+        # Release the coordinated durable inhibitor in the SAME transaction
+        # as timer restoration. If it fails, this function's existing
+        # containment branch disables both managed timers and records a failed
+        # release_inhibit stage instead of returning a false success receipt.
+        if after_restore_effect is not None:
+            stage = "release_inhibit"
+            after_restore_effect()
+
         stage = "persist_receipt"
         completed_at = _utc_now()
         receipt = DeploymentReceipt(
@@ -757,6 +811,8 @@ def _execute_update_unlocked(
         raise ProductionUpdateError(f"{stage}: unexpected update failure") from exc
 
 
+
+
 def execute_update(
     *,
     target_sha: str,
@@ -768,25 +824,98 @@ def execute_update(
     runner: CommandRunner = _default_runner,
     require_root: bool = True,
     bootstrap_pre_disabled_timer: bool = False,
+    single_lxc_coordinated: bool = False,
+    approve_legacy_live_effects: bool = False,
     host_receipt_dir: Path | None = None,
+    refresh_inhibit_path: Path = DEFAULT_REFRESH_INHIBIT,
 ) -> tuple[DeploymentReceipt, Path]:
-    """Legacy live effects are break-glass only, never parallel to a Stage/host update."""
+    """Legacy live transaction with explicit, fail-closed same-host gate.
+
+    Never bypass the existing main Stage/Activate guard, and never acquire
+    host-update.lock twice. A requested coordinated run holds one stable host
+    lock then the existing stable semantic-refresh lock before timer effects.
+    """
+    if type(single_lxc_coordinated) is not bool or type(approve_legacy_live_effects) is not bool:
+        raise ProductionUpdateError("invalid_single_lxc_mode")
     if require_root and os.geteuid() != 0:
         raise ProductionUpdateError("production update must run as root")
+    # An imported Python function must not bypass two user-consent and
+    # shared-lock requirements enforced by the public CLI. Nonroot
+    # require_root=False invocations are strictly synthetic test runners.
+    if require_root and not approve_legacy_live_effects:
+        raise ProductionUpdateError("legacy_live_effects_not_approved")
+    if require_root and not single_lxc_coordinated:
+        raise ProductionUpdateError("single_lxc_coordination_required")
     if require_root and receipt_dir != DEFAULT_RECEIPT_DIR:
         raise ProductionUpdateError("production Stage receipt root is fixed")
+    if require_root and host_receipt_dir not in (None, HOST_RECEIPT_DIR):
+        raise ProductionUpdateError("production host lock path is fixed")
+    if single_lxc_coordinated and (
+        type(target_sha) is not str or _SHA_RE.fullmatch(target_sha) is None
+    ):
+        raise ProductionUpdateError("invalid_single_lxc_target_sha")
+    if require_root and (
+        app_root != DEFAULT_APP_ROOT
+        or venv_root != DEFAULT_VENV_ROOT
+        or systemd_dir != DEFAULT_SYSTEMD_DIR
+        or daily_revision_env != DEFAULT_DAILY_REVISION_ENV
+        or refresh_inhibit_path != DEFAULT_REFRESH_INHIBIT
+    ):
+        raise ProductionUpdateError("production legacy effect paths must be fixed")
+
     host_root = host_receipt_dir
     if host_root is None:
         host_root = HOST_RECEIPT_DIR if require_root else receipt_dir.parent / "host-receipts"
-    with _host_update_guard(host_root, require_root=require_root,
-                            stage_receipt_dir=receipt_dir):
-        return _execute_update_unlocked(
-            target_sha=target_sha, app_root=app_root, venv_root=venv_root,
-            systemd_dir=systemd_dir, receipt_dir=receipt_dir,
-            daily_revision_env=daily_revision_env, runner=runner,
+    args = dict(
+        target_sha=target_sha, app_root=app_root, venv_root=venv_root,
+        systemd_dir=systemd_dir, receipt_dir=receipt_dir,
+        daily_revision_env=daily_revision_env, runner=runner,
+        require_root=require_root,
+        bootstrap_pre_disabled_timer=bootstrap_pre_disabled_timer,
+    )
+
+    def verify_workflow() -> None:
+        try:
+            snapshot = SystemctlAdapter().observe_workflow(SERVICES[2])
+            require_run_once_quiescent(SERVICES[2], snapshot)
+            if require_root:
+                # The fixed workflow registry alone may miss an extra loaded
+                # obsolete GitHub service. Stage's independently reviewed
+                # actual installed/loaded inventory additionally rejects
+                # unexpected service names and anything not confirmed idle.
+                from .github_production_staging import _require_idle_services
+                _require_idle_services(runner, systemd_dir)
+        except Exception:
+            raise ProductionUpdateError("single_lxc_workflow_not_quiescent") from None
+
+    # Stage/Activate already take the same host-update lock in main. Nested
+    # acquisition would immediately fail or deadlock even for this process.
+    with _host_update_guard(
+        host_root, require_root=require_root, stage_receipt_dir=receipt_dir,
+        require_existing_lock=single_lxc_coordinated,
+    ):
+        if not single_lxc_coordinated:
+            return _execute_update_unlocked(**args)
+        # A pre-existing, same-inode, mode-0600 lock is required in this
+        # coordinated path. O_CREAT here would allow lock-inode replacement.
+        inhibit = RefreshUpdateInhibit(
+            refresh_inhibit_path, target_sha, "github-updater",
             require_root=require_root,
-            bootstrap_pre_disabled_timer=bootstrap_pre_disabled_timer,
         )
+        try:
+            inhibit.acquire(publish=False, require_existing_lock=True)
+            if os.path.lexists(inhibit.path):
+                raise ProductionUpdateError("single_lxc_update_needs_reconciliation")
+            return _execute_update_unlocked(
+                **args, before_timer_effect=inhibit.publish,
+                verify_quiescence=verify_workflow,
+                after_restore_effect=inhibit.release,
+            )
+        except (BrokerRejected, PreReviewProductionUpdateError):
+            raise ProductionUpdateError("single_lxc_exclusion_unavailable") from None
+        finally:
+            inhibit.close()
+
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -800,7 +929,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--target-sha", required=True)
     parser.add_argument(
         "--approve-legacy-live-effects", action="store_true",
-        help="Explicit authorization for the legacy full-transaction live Writer/Sync smoke",
+        help="Separate explicit consent for legacy full-transaction live Writer/Sync smoke",
+    )
+    parser.add_argument(
+        "--single-lxc-coordinated", action="store_true",
+        help="Require existing pinned host/semantic locks and idle GitHub workflow",
+
     )
     parser.add_argument("--app-root", type=Path, default=DEFAULT_APP_ROOT)
     parser.add_argument("--venv-root", type=Path, default=DEFAULT_VENV_ROOT)
@@ -836,6 +970,11 @@ def main(argv: Iterable[str] | None = None) -> int:
                           "status": "failed",
                           "reason": "legacy_live_effects_not_approved"}), file=sys.stderr)
         return 2
+    if os.geteuid() == 0 and not args.single_lxc_coordinated:
+        print(json.dumps({"event": "obsidian-github-production-update",
+                          "status": "failed",
+                          "reason": "single_lxc_coordination_required"}), file=sys.stderr)
+        return 2
     try:
         receipt, path = execute_update(
             target_sha=args.target_sha,
@@ -845,6 +984,8 @@ def main(argv: Iterable[str] | None = None) -> int:
             receipt_dir=args.receipt_dir,
             daily_revision_env=args.daily_revision_env,
             bootstrap_pre_disabled_timer=args.bootstrap_pre_disabled_timer,
+            single_lxc_coordinated=args.single_lxc_coordinated,
+            approve_legacy_live_effects=args.approve_legacy_live_effects,
         )
     except ProductionUpdateError as exc:
         print(
