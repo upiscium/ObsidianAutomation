@@ -154,13 +154,16 @@ def test_human_visible_flag_and_tool_recipient_excluded(tmp_path):
     assert ("nonfinal_assistant_message", 1) in conv.omitted_reasons
 
 
-def test_message_parts_delimiters_distinct(tmp_path):
+def test_exact_rendered_text_hash_not_parts_encoding(tmp_path):
     data = conversation()
     data["mapping"]["last"]["message"]["content"]["parts"] = ["a", "b"]
-    a = run(archive(tmp_path, [data])).conversations[0].messages[-1].text_sha256
+    first = run(archive(tmp_path, [data])).conversations[0]
     data["mapping"]["last"]["message"]["content"]["parts"] = ["a\nb"]
-    b = run(archive(tmp_path, [data])).conversations[0].messages[-1].text_sha256
-    assert a != b
+    second = run(archive(tmp_path, [data])).conversations[0]
+    assert first.messages[-1].text == second.messages[-1].text
+    assert first.messages[-1].text_sha256 == second.messages[-1].text_sha256
+    assert first.content_sha256 == second.content_sha256
+    assert first.source_revision_sha256 != second.source_revision_sha256
 
 
 @pytest.mark.parametrize("change,code", [
@@ -252,3 +255,87 @@ def test_error_display_excludes_untrusted_value_and_path(tmp_path):
         run(path)
     assert SECRET not in str(exc.value)
     assert str(path) not in str(exc.value)
+
+
+def test_real_export_style_mapping_parent_only_and_unverified_edges(tmp_path):
+    data = conversation()
+    for node in data["mapping"].values():
+        del node["children"]
+    result = run(archive(tmp_path, [data]))
+    conv = result.conversations[0]
+    assert [m.text for m in conv.messages] == ["question", "answer", SECRET]
+    assert conv.unverified_child_links == 3
+    assert result.graph_reciprocity_unverified is True
+    assert conv.selected_path_nodes == 4
+    assert result.real_schema_accepted is False
+
+
+def test_empty_export_slot_is_counted_quarantined_not_skipped_silently(tmp_path):
+    result = run(archive(tmp_path, [{}, conversation()]))
+    assert len(result.conversations) == 1
+    assert result.quarantined_conversation_slots == 1
+    assert result.quarantine_reasons == (("empty_conversation_slot", 1),)
+    assert result.real_schema_accepted is False
+    with pytest.raises(NormalizeError, match="conversation_limit"):
+        run(archive(tmp_path, [{}, {}, conversation()]), limits=replace(Limits(), conversations=2))
+
+
+def test_unsupported_nonempty_conversation_still_fails_closed(tmp_path):
+    with pytest.raises(NormalizeError, match="invalid_conversation_id"):
+        run(archive(tmp_path, [{"mapping": {"root": {}}}, conversation()]))
+
+
+def test_thoughts_and_reasoning_recap_omitted_from_semantic_hash(tmp_path):
+    data = conversation()
+    data["mapping"]["second"]["message"]["content"] = {
+        "content_type": "thoughts", "thoughts": [{"private": SECRET}],
+    }
+    first = run(archive(tmp_path, [data])).conversations[0]
+    assert [m.text for m in first.messages] == ["question", SECRET]
+    assert ("internal_reasoning", 1) in first.omitted_reasons
+    data["mapping"]["second"]["message"]["content"] = {
+        "content_type": "reasoning_recap", "content": SECRET,
+    }
+    second = run(archive(tmp_path, [data])).conversations[0]
+    assert second.content_sha256 == first.content_sha256
+    assert second.source_revision_sha256 != first.source_revision_sha256
+    assert ("internal_reasoning", 1) in second.omitted_reasons
+    assert SECRET not in repr(second)
+
+
+def test_opaque_node_and_message_identity_not_in_semantic_content_hash(tmp_path):
+    data = conversation()
+    original = run(archive(tmp_path, [data])).conversations[0]
+    mapping = data["mapping"]
+    renamed = {"root": "root-v2", "first": "first-v2",
+               "second": "second-v2", "last": "last-v2", "alt": "alt-v2"}
+    updated = {}
+    for old_id, node in mapping.items():
+        node = deepcopy(node)
+        node["id"] = renamed[old_id]
+        node["parent"] = renamed.get(node["parent"])
+        node["children"] = [renamed[c] for c in node["children"]]
+        if node["message"] is not None:
+            node["message"]["id"] += "-new"
+        updated[renamed[old_id]] = node
+    data["mapping"] = updated
+    data["current_node"] = "last-v2"
+    newer = run(archive(tmp_path, [data])).conversations[0]
+    assert newer.content_sha256 == original.content_sha256
+    assert newer.source_revision_sha256 != original.source_revision_sha256
+
+
+def test_conflicting_conversation_ids_rejected(tmp_path):
+    data = conversation()
+    data["conversation_id"] = "different"
+    with pytest.raises(NormalizeError, match="conversation_id_mismatch"):
+        run(archive(tmp_path, [data]))
+
+
+def test_missing_children_not_a_license_for_missing_parent(tmp_path):
+    data = conversation()
+    for node in data["mapping"].values():
+        del node["children"]
+    data["mapping"]["first"].pop("parent")
+    with pytest.raises(NormalizeError, match="missing_branch_parent"):
+        run(archive(tmp_path, [data]))

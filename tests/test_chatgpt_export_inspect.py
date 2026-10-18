@@ -218,3 +218,24 @@ def test_zip64_locator_rejected_even_without_sentinel_fields(tmp_path):
     path.write_bytes(data[:pos] + locator + data[pos:])
     with pytest.raises(InspectionError, match="zip64"):
         inspect_export(path)
+
+
+def test_real_export_internal_reasoning_buckets_and_empty_slot(tmp_path):
+    conv = conversation()
+    a = conv["mapping"]["leaf"]["message"]
+    a["author"]["role"] = "assistant"
+    a["content"] = {"content_type": "thoughts", "thoughts": [{"private": SECRET}]}
+    root = [conv, {}]
+    report = inspect_export(archive(tmp_path, root))
+    assert report["status"] == "schema_review_required"
+    assert report["counts"]["empty_conversation_slots"] == 1
+    assert report["content_types"] == {"thoughts": 1}
+    assert report["import_compatibility_established"] is False
+    assert SECRET not in json.dumps(report)
+    conv["mapping"]["leaf"]["message"]["content"] = {
+        "content_type": "reasoning_recap", "content": SECRET,
+    }
+    report = inspect_export(archive(tmp_path, [conv]))
+    assert report["status"] == "inspected"
+    assert report["content_types"] == {"reasoning_recap": 1}
+    assert SECRET not in json.dumps(report)

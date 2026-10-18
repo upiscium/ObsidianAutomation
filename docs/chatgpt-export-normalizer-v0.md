@@ -1,9 +1,11 @@
 # ChatGPT Export selected-branch normalization v0 (Issue #62)
 
-Status: **synthetic contract only / not accepted on a real Export / not deployed**.
-This branch is a preparatory slice of #62, independent of the private intake,
-external Source/Context contract, Generation/Validation/Evaluation and Human
-Review integration. It does not close #66.
+Status: **private real-Export read-only dry-run completed; not production accepted,
+not deployed**. Synthetic tests and private aggregate reports validate the
+observed input shape only, not Knowledge quality or downstream safety. This
+branch remains a preparatory slice of #62, independent of the private intake,
+Source/Context contract, Generation/Validation/Evaluation and Human Review.
+It does not close #66.
 
 ## Trust boundary
 
@@ -34,7 +36,14 @@ acceptance step: python -B -m obsidian_automation.chatgpt_export_inspect
   JSON decoder. No ZIP extraction, no recursive filesystem traversal.
 - Reads only selected JSON members and demands a top-level conversation list,
   unique nonempty conversation IDs, mapping and current_node. Rejects
-  cycles/missing parent, inconsistent selected parent/child edge and node IDs.
+  cycles/missing parent, mismatched IDs and inconsistent selected parent/child
+  links **when children exists**. Real 2026-10 data has no node.children:
+  its parent chain can be reconstructed, but reciprocal edge verification is
+  explicitly flagged incomplete with unverified_child_links counts.
+- An empty object {} in the conversations array is explicitly quarantined and
+  counted (not assigned a fabricated conversation ID). Other non-empty
+  malformed conversations fail closed. Quarantine is a production acceptance
+  blocker, not automatic data loss.
 - Reconstructs **only** current_node -> parent then reverses the chain.
   Alternate branches are neither merged by timestamps nor imported; off-branch
   graph structure is not claimed to be fully verified.
@@ -42,22 +51,26 @@ acceptance step: python -B -m obsidian_automation.chatgpt_export_inspect
   recipient unset/all and assistant channel unset/final; visibly hidden
   messages, internal/system/developer/tool messages, unresolved rich content,
   oversize content, and placeholders are omitted **with fixed reason counts**.
-  Unknown author roles are errors. text/multimodal_text content is accepted
-  only when every part is a string. No partial multimodal reconstruction.
-  The visibility rules require further checks against a real Export.
+  Actual Export content types thoughts and reasoning_recap are explicitly
+  excluded as internal assistant reasoning. Unknown author roles are errors.
+  text/multimodal_text content is accepted only when every part is a string.
+  Mixed image/text records are deferred, never partially reconstructed.
+  Because real text records lack explicit channel/visibility confirmation,
+  selected-branch assistant text is a **candidate**, not independently proven
+  to be final/visible. This must be accepted before job submission.
 - Preserves selected node ID, parent, message ID, role, timestamp, content
-  type and exact parts hash. Text is kept in memory for future *private*
+  type and SHA-256 of rendered text. Text is kept in memory for future *private*
   bounded extraction units, not emitted to logs.
 - Maximum 128 KiB per retained text message, 24 MiB per invocation for
   retained text, along with existing inspector ZIP/JSON/node limits. An
   oversized text message is omitted and counted rather than truncated.
 - Import-run digest binds **raw archive SHA**, selection, parser version and
-  source scope. Separate per-conversation content_sha256 considers the
-  selected path's IDs/role/content and omission decisions, ignoring off-branch
-  content and titles. source_revision_sha256 additionally includes selected
-  raw message JSON for provenance. Metadata-only changes to selected messages
-  may change source revision without changing content, and should not force
-  LLM regeneration.
+  source scope. Separate per-conversation content_sha256 considers only the
+  selected path's **retained role/content-type/exact visible text sequence**:
+  non-visible reasoning, opaque node/message IDs, timestamps, omissions and
+  off-branch content do not cause unnecessary LLM regeneration. The separate
+  source_revision_sha256 binds selected raw message JSON and node lineage for
+  provenance; metadata-only changes may affect it without changing content.
 - inventory_delta(previous, current) reports added, changed, unchanged,
   and absent_not_deleted counts. It **never interprets absence in a later
   Export as canonical note deletion**. The same Export is idempotent.
@@ -74,18 +87,19 @@ backfill scheduling, extraction unit provenance, external Source/Context
 contract, AI Job submission, Human Review UI, canonical writer, nor automatic
 Export download. Do not claim the feature is end-to-end complete.
 
-**Do not enable any automation** until a private real-Export structural report
-is reviewed, unexpected role/content/metadata shapes are handled, branch
-reconstruction is verified on sanitized examples, and an explicit production
-acceptance gate is approved. CI success with synthetic fixtures is insufficient.
+**Do not enable any automation** based on this dry-run. The private real-Export
+structural report is available locally, but one quarantined slot, missing
+child-edge reciprocity, unresolved multimodal records, visibility assumptions
+and full downstream acceptance still require explicit disposition. CI success
+and a parser that completes without exceptions are insufficient.
 
 ## Next gated work
 
-1. Run the existing read-only #66 inspector locally against a finished *real*
-   ChatGPT Export ZIP. Share only the vetted aggregate report, not the archive.
-2. Compare observed shape with this experimental parser and add sanitized
-   synthetic fixtures for actual role/content/branch variants; revise strict
-   handling where justified and rerun CI.
+1. Completed: run the read-only #66 inspector on a private real Export,
+   aggregate shape only; no archive upload. A quarantine/review flag remains.
+2. Completed in the preparatory branch: adapt to observed parent-only graph,
+   known internal reasoning types, empty placeholder and semantic content hash;
+   test sanitized synthetic variants. CI and independent review remain gates.
 3. In a separate slice, implement the private non-privileged intake root,
    atomic ready publication, durable import journal, immutable selected
    revisions, and restart-safe no-op/changed handling.

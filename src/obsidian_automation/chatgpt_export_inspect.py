@@ -46,7 +46,8 @@ FIELDS = {
     "content": ("content_type", "parts"),
 }
 ROLES = ("user", "assistant", "system", "developer", "tool")
-CONTENT_TYPES = ("text", "multimodal_text", "image", "audio", "audio_transcription", "tether_browsing_display_text")
+CONTENT_TYPES = ("text", "multimodal_text", "image", "audio", "audio_transcription", "tether_browsing_display_text",
+                 "thoughts", "reasoning_recap")
 
 
 def _type(value: object) -> str:
@@ -204,6 +205,13 @@ class _Profile:
                 raise InspectionError("conversation_limit")
             if not isinstance(conv, dict):
                 self.counts["nonobject_conversations"] += 1
+                self.review = True
+                continue
+            if not conv:
+                # Actual Export may contain an empty {} conversation slot.
+                # Preserve this as an explicit review-required quarantine,
+                # rather than disguising it as a valid conversation.
+                self.counts["empty_conversation_slots"] += 1
                 self.review = True
                 continue
             self.fields("conversation", conv)

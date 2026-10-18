@@ -52,6 +52,7 @@ class SelectedConversation:
     messages: tuple[SelectedMessage, ...]
     selected_path_nodes: int
     off_branch_nodes: int
+    unverified_child_links: int
     omitted_reasons: tuple[tuple[str, int], ...]
     content_sha256: str
     source_revision_sha256: str
@@ -66,6 +67,9 @@ class SelectedBatch:
     conversations: tuple[SelectedConversation, ...]
     selected_json_members: int
     unselected_json_members: int
+    quarantined_conversation_slots: int
+    quarantine_reasons: tuple[tuple[str, int], ...]
+    graph_reciprocity_unverified: bool
     # This MUST NOT be reinterpreted as a real-Export or production acceptance.
     real_schema_accepted: bool = False
 
@@ -98,11 +102,13 @@ def _timestamp(value: object) -> int | float | None:
     return value
 
 
-def _selected_path(mapping: dict, current: object) -> list[tuple[str, dict]]:
+def _selected_path(mapping: dict, current: object) -> tuple[list[tuple[str, dict]], int]:
+    """Follow selected parent chain. Optional children cannot prove reciprocity."""
     node_id = _identifier(current, "missing_current_node")
     path: list[tuple[str, dict]] = []
     visited: set[str] = set()
     child_id: str | None = None
+    unverified_child_links = 0
     while True:
         if node_id in visited:
             raise NormalizeError("selected_branch_cycle")
@@ -112,17 +118,24 @@ def _selected_path(mapping: dict, current: object) -> list[tuple[str, dict]]:
             raise NormalizeError("selected_branch_missing_node")
         if "id" in node and node["id"] != node_id:
             raise NormalizeError("node_id_mismatch")
-        children = node.get("children")
-        if not isinstance(children, list) or any(not isinstance(x, str) for x in children):
-            raise NormalizeError("invalid_branch_children")
-        if child_id is not None and child_id not in children:
-            raise NormalizeError("nonreciprocal_parent_edge")
+
+        # The actual 2026-10 Export does not contain node.children at all.
+        # Missing children is not evidence of reciprocity, and never permits
+        # a missing/invalid parent. Track the verification gap explicitly.
+        if "children" in node:
+            children = node["children"]
+            if not isinstance(children, list) or any(not isinstance(x, str) for x in children):
+                raise NormalizeError("invalid_branch_children")
+            if child_id is not None and child_id not in children:
+                raise NormalizeError("nonreciprocal_parent_edge")
+        elif child_id is not None:
+            unverified_child_links += 1
         if "parent" not in node:
             raise NormalizeError("missing_branch_parent")
         path.append((node_id, node))
         parent = node["parent"]
         if parent is None:
-            return list(reversed(path))
+            return list(reversed(path)), unverified_child_links
         node_id = _identifier(parent, "invalid_branch_parent")
         child_id = path[-1][0]
 
@@ -168,6 +181,10 @@ def _select_message(node_id: str, node: dict) -> tuple[SelectedMessage | None, s
     if not isinstance(content, dict):
         return None, "unsupported_content"
     content_type = content.get("content_type")
+    # Real Export contains assistant-only thoughts/reasoning_recap records.
+    # They are NOT final user-visible answers or independent knowledge evidence.
+    if isinstance(content_type, str) and content_type in {"thoughts", "reasoning_recap"}:
+        return None, "internal_reasoning"
     if not isinstance(content_type, str) or content_type not in _VISIBLE_CONTENT:
         return None, "unsupported_content"
     parts = content.get("parts")
@@ -187,7 +204,7 @@ def _select_message(node_id: str, node: dict) -> tuple[SelectedMessage | None, s
         created_at=_timestamp(message.get("create_time")),
         content_type=content_type,
         text=text,
-        text_sha256=_hash(parts),
+        text_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
     ), ""
 
 
@@ -195,10 +212,12 @@ def _normalize_one(conversation: object, limits: Limits) -> SelectedConversation
     if not isinstance(conversation, dict):
         raise NormalizeError("invalid_conversation")
     conv_id = _identifier(conversation.get("id", conversation.get("conversation_id")), "invalid_conversation_id")
+    if "conversation_id" in conversation and conversation["conversation_id"] != conv_id:
+        raise NormalizeError("conversation_id_mismatch")
     mapping = conversation.get("mapping")
     if not isinstance(mapping, dict) or not mapping or len(mapping) > limits.nodes:
         raise NormalizeError("invalid_conversation_mapping")
-    path = _selected_path(mapping, conversation.get("current_node"))
+    path, unverified_child_links = _selected_path(mapping, conversation.get("current_node"))
     omissions: Counter[str] = Counter()
     retained: list[SelectedMessage] = []
     semantic: list[dict] = []
@@ -219,22 +238,19 @@ def _normalize_one(conversation: object, limits: Limits) -> SelectedConversation
         provenance.append(revision_node)
         if omitted:
             omissions[omitted] += 1
-            # Omitted content is not a Knowledge source, including alternate
-            # assistant channels, tools, and unsupported multimodal parts.
-            semantic.append({"node": node_id, "parent": node["parent"],
-                             "message": message_id, "omitted": omitted})
+            # Internal reasoning, placeholders and unsupported attachments are
+            # tracked in provenance, but must not cause semantic regeneration.
         else:
             assert item is not None
             retained.append(item)
-            semantic.append({"node": node_id, "parent": node["parent"],
-                             "message": item.message_id, "role": item.role,
-                             "content_type": item.content_type,
+            semantic.append({"role": item.role, "content_type": item.content_type,
                              "content_hash": item.text_sha256})
     return SelectedConversation(
         conversation_id=conv_id,
         messages=tuple(retained),
         selected_path_nodes=len(path),
         off_branch_nodes=len(mapping) - len(path),
+        unverified_child_links=unverified_child_links,
         omitted_reasons=tuple(sorted(omissions.items())),
         content_sha256=_hash({"version": NORMALIZER_VERSION, "conversation": conv_id, "path": semantic}),
         source_revision_sha256=_hash({"version": NORMALIZER_VERSION, "conversation": conv_id, "path": provenance}),
@@ -258,6 +274,7 @@ def normalize_export(
         raise NormalizeError("invalid_limits")
     seen_conversations: set[str] = set()
     normalized: list[SelectedConversation] = []
+    quarantine: Counter[str] = Counter()
     node_count = 0
     text_bytes = 0
 
@@ -266,8 +283,14 @@ def normalize_export(
         if not isinstance(root, list):
             raise NormalizeError("unsupported_conversations_root")
         for item in root:
-            if len(normalized) >= limits.conversations:
+            if len(normalized) + sum(quarantine.values()) >= limits.conversations:
                 raise NormalizeError("conversation_limit")
+            # One structurally empty {} entry is present in the actual
+            # 2026-10 Export. Explicit quarantine: never silently import
+            # it or claim full coverage, while allowing valid conversations.
+            if item == {}:
+                quarantine["empty_conversation_slot"] += 1
+                continue
             if isinstance(item, dict):
                 mapping = item.get("mapping")
                 if isinstance(mapping, dict):
@@ -343,6 +366,9 @@ def normalize_export(
         archive_sha256=raw_digest, import_run_sha256=run_digest,
         conversations=tuple(normalized), selected_json_members=len(chosen_names),
         unselected_json_members=unselected,
+        quarantined_conversation_slots=sum(quarantine.values()),
+        quarantine_reasons=tuple(sorted(quarantine.items())),
+        graph_reciprocity_unverified=any(c.unverified_child_links for c in normalized),
     )
 
 

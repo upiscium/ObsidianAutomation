@@ -68,6 +68,9 @@ fixed field names, fixed enum/type buckets, booleans, and aggregate counts:
 - types/missing counts of allowlisted conversation/node/message/author/content fields;
 - unknown-key occurrence counts, never the unknown keys;
 - allowlisted role/content-type and part-type counts; unfamiliar values are `other`;
+  the observed `thoughts` and `reasoning_recap` types have separate known
+  buckets but are **not** Knowledge content eligibility claims;
+- explicit counts of empty-object conversation slots (schema review required);
 - resolution status of the current_node -> parent path, without IDs or contents.
 
 No title, text, source IDs, timestamp values, filenames, input paths, arbitrary
@@ -81,8 +84,9 @@ all graph branches, reciprocal children relationships, visibility, or semantics.
 Exit codes:
 
 - `0`: inspection finished (`inspected`), NOT import success;
-- `3`: structural review required, including empty/unknown roots, missing mapping,
-  an unresolved current path, or unknown role/content shapes;
+- `3`: structural review required, including empty/unknown roots, empty
+  conversation slots, missing mapping, an unresolved current path, or unknown
+  role/content shapes;
 - `2`: unsafe/unsupported input, limits, invalid JSON, unreadable input, or bad arguments.
 
 Always retain `full_graph_validated=false` and
