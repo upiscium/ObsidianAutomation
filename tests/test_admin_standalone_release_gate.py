@@ -62,6 +62,20 @@ def test_direct_root_python_api_also_requires_explicit_live_consent(monkeypatch)
         )
 
 
+def test_root_cannot_disable_privilege_checks_via_synthetic_mode(monkeypatch):
+    monkeypatch.setattr(update.os, "geteuid", lambda: 0)
+    with pytest.raises(update.ProductionUpdateError, match="root_must_not_disable_privileged_guard"):
+        update.execute_update(target_sha=SHA, require_root=False)
+
+
+def test_unknown_github_timers_are_checked_before_legacy_live_update():
+    source = inspect.getsource(update.execute_update)
+    assert "_assert_known_timer_inventory(runner, systemd_dir)" in source
+    assert source.index("_assert_known_timer_inventory(runner, systemd_dir)") < source.index(
+        "_require_idle_services(runner, systemd_dir)"
+    )
+
+
 def test_no_replacement_host_lock_inode(tmp_path):
     root = tmp_path / "host"
     root.mkdir(mode=0o700)

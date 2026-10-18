@@ -835,6 +835,11 @@ def execute_update(
         raise ProductionUpdateError("invalid_single_lxc_mode")
     if require_root and os.geteuid() != 0:
         raise ProductionUpdateError("production update must run as root")
+    if not require_root and os.geteuid() == 0:
+        # require_root=False is ONLY a synthetic nonroot test mode. A root
+        # caller cannot opt into that path and bypass live-effect consent or
+        # stable shared updater locks while still possessing root privileges.
+        raise ProductionUpdateError("root_must_not_disable_privileged_guard")
     # An imported Python function must not bypass two user-consent and
     # shared-lock requirements enforced by the public CLI. Nonroot
     # require_root=False invocations are strictly synthetic test runners.
@@ -893,7 +898,13 @@ def execute_update(
                 # obsolete GitHub service. Stage's independently reviewed
                 # actual installed/loaded inventory additionally rejects
                 # unexpected service names and anything not confirmed idle.
-                from .github_production_staging import _require_idle_services
+                from .github_production_staging import (
+                    _assert_known_timer_inventory, _require_idle_services,
+                )
+                # A third installed or loaded timer targeting an existing
+                # service can fire after the snapshot. Stage's reviewed
+                # inventory checks both installed and loaded timer names.
+                _assert_known_timer_inventory(runner, systemd_dir)
                 _require_idle_services(runner, systemd_dir)
         except Exception:
             raise ProductionUpdateError("single_lxc_workflow_not_quiescent") from None

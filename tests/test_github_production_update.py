@@ -868,5 +868,11 @@ def test_standalone_live_guard_validates_extra_installed_github_inventory():
     import inspect
     source = inspect.getsource(execute_update)
     assert 'if require_root:' in source
-    assert 'from .github_production_staging import _require_idle_services' in source
+    # Keep this regression resilient to Python multiline import layout while
+    # checking that BOTH actual installed service and timer inventories are
+    # called under the root-only coordinated guard before any package update.
+    assert '_assert_known_timer_inventory(runner, systemd_dir)' in source
     assert '_require_idle_services(runner, systemd_dir)' in source
+    assert source.index('_assert_known_timer_inventory(runner, systemd_dir)') < source.index(
+        '_require_idle_services(runner, systemd_dir)'
+    )
