@@ -186,11 +186,28 @@ class RefreshUpdateInhibit:
             raise PreReviewProductionUpdateError("semantic refresh inhibit is not owned")
         self._read()
         self.path.unlink()
-        fd = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY)
         try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
+            fd = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except OSError as exc:
+            # A failed directory fsync AFTER unlink means deletion durability
+            # is unknown and the marker may already be absent. While the
+            # immutable shared lock is still held, restore the SAME update
+            # intent atomically instead of returning an unguarded failure.
+            # The caller must treat this release as failed even when
+            # restoration succeeds, preserving containment/reconciliation.
+            try:
+                self.publish()
+            except Exception as restore_exc:
+                raise PreReviewProductionUpdateError(
+                    "semantic refresh release and marker restoration unconfirmed"
+                ) from restore_exc
+            raise PreReviewProductionUpdateError(
+                "semantic refresh release not durable; inhibitor restored"
+            ) from exc
 
     def close(self) -> None:
         if self.lock_fd is not None:
@@ -686,6 +703,18 @@ def execute_update(
             raise PreReviewProductionUpdateError(
                 "pre-review production update must run as root"
             )
+        if not require_root and os.geteuid() == 0:
+            # A real root invocation may not opt into a synthetic fixture
+            # context that creates replacement shared update locks.
+            raise PreReviewProductionUpdateError(
+                "root_must_not_disable_privileged_guard"
+            )
+        if require_root and refresh_inhibit_path != DEFAULT_REFRESH_INHIBIT:
+            # Owning a DIFFERENT existing .lock inode would not exclude the
+            # single-LXC Broker, Stage, host lifecycle or legacy updater.
+            raise PreReviewProductionUpdateError(
+                "production_semantic_lock_path_is_fixed"
+            )
         _require_directory(app_root, label="production app root")
         _require_directory(venv_root, label="production venv root")
         receipt_dir.mkdir(parents=True, exist_ok=True)
@@ -709,7 +738,11 @@ def execute_update(
         refresh_inhibit = RefreshUpdateInhibit(
             refresh_inhibit_path, target_sha, "pre-review", require_root=require_root,
         )
-        refresh_inhibit.acquire(publish=False)
+        # Root production must reuse the PRE-EXISTING shared semantic lock.
+        # Creating a new inode could bypass an updater holding the old one.
+        refresh_inhibit.acquire(
+            publish=False, require_existing_lock=require_root,
+        )
         # Another updater may have restored timers or advanced HEAD after our
         # preflight. Capture restoration state and receipt provenance only once
         # both updater paths are excluded by the shared lock.

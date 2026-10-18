@@ -429,6 +429,13 @@ def handoff_to_target(
 ) -> None:
     if require_root and os.geteuid() != 0:
         raise BootstrapError("bootstrap_requires_root")
+    if not require_root and os.geteuid() == 0:
+        raise BootstrapError("root_must_not_disable_privileged_guard")
+    if require_root and receipt_dir != DEFAULT_RECEIPT_DIR:
+        # Reject BEFORE fetch, clone or worktree creation, not just at the
+        # target-owned handoff. A redirected root host journal would coordinate
+        # on a different lock domain.
+        raise BootstrapError("production_host_receipt_root_is_fixed")
     target_sha = _validate_target_sha(target_sha)
     profile = _require_profile(profile)
     _ensure_production_checkout(
@@ -712,6 +719,12 @@ def apply_from_target(
     """Complete one exact-target update; never re-enable timers on failed smoke."""
     if require_root and os.geteuid() != 0:
         raise BootstrapError("bootstrap_requires_root")
+    if not require_root and os.geteuid() == 0:
+        raise BootstrapError("root_must_not_disable_privileged_guard")
+    if require_root and receipt_dir != DEFAULT_RECEIPT_DIR:
+        # A redirected root journal would coordinate on a different host
+        # update lock inode and bypass the actual production updater.
+        raise BootstrapError("production_host_receipt_root_is_fixed")
     _validate_target_sha(target_sha)
     _require_profile(profile)
     _require_directory(source_root, label="source_root")

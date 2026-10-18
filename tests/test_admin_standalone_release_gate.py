@@ -38,8 +38,14 @@ def test_existing_main_stage_activate_inspect_dispatch_preserved():
     assert "from .github_production_staging import main as staged_main" in source
 
 
-def test_root_stage_requires_existing_host_update_inode():
+def test_root_stage_uses_both_preexisting_shared_lock_inodes():
     source = inspect.getsource(staging._lock)
+    # Stage/Activate on root use the reviewed host+semantic gate. It checks
+    # BOTH pinned existing lock inodes and the semantic pending marker.
+    # More than a source string assertion: the fixture below exercises the
+    # real OS flock and pending/missing-semantic-lock rejection.
+    assert "legacy._verified_semantic_exclusion()" in source
+    assert "production Stage authority roots are fixed" in source
     assert "require_existing_lock=require_root" in source
 
 
@@ -137,3 +143,59 @@ def test_src_documentation_refuses_implicitly_releasing_dashboard_subsystems():
     assert "Wizard (#304)" in content
     assert "#311 remains Draft" in content
     assert "enabled=false" in content
+
+
+def test_actual_root_cannot_turn_off_stage_or_activate_guards(monkeypatch, tmp_path):
+    # Synthetic require_root=False allows fixtures for ordinary unprivileged
+    # tests, but may not be used by real UID 0 to bypass authority/lock checks.
+    monkeypatch.setattr(staging.os, "geteuid", lambda: 0)
+    inputs = {
+        "app_root": tmp_path / "app",
+        "venv_root": tmp_path / "venv",
+        "systemd_dir": tmp_path / "systemd",
+        "receipt_dir": tmp_path / "receipts",
+        "daily_revision_env": tmp_path / "revision.env",
+        "config_files": (),
+        "require_root": False,
+    }
+    with pytest.raises(update.ProductionUpdateError, match="root_must_not_disable_privileged_guard"):
+        staging.stage_update(target_sha=SHA, **inputs)
+    with pytest.raises(update.ProductionUpdateError, match="root_must_not_disable_privileged_guard"):
+        staging.activate_update(
+            stage_sha256="a" * 64, approve_live_github_writer=True,
+            **inputs,
+        )
+    from obsidian_automation.pre_review_production_update import (
+        execute_update as pre_review_update,
+        PreReviewProductionUpdateError,
+    )
+    with pytest.raises(PreReviewProductionUpdateError, match="root_must_not_disable_privileged_guard"):
+        pre_review_update(
+            target_sha=SHA,
+            app_root=tmp_path / "pre-review-app",
+            require_root=False,
+        )
+    assert not any(tmp_path.iterdir())
+
+
+def test_every_root_cooperator_reuses_existing_semantic_lock():
+    # Source contract for the two real root update entrypoints. The primitive
+    # has behavioral inode, symlink and missing-lock tests in this module.
+    import inspect
+    from obsidian_automation import pre_review_production_update as pre_review
+    source = inspect.getsource(pre_review.execute_update)
+    assert "require_existing_lock=require_root" in source
+    lifecycle = Path(__file__).resolve().parents[1] / "tools/host_runtime_lifecycle.py"
+    assert "require_existing_lock=self.require_root" in lifecycle.read_text(encoding="utf-8")
+
+
+def test_legacy_completion_proof_precedes_removing_refresh_inhibitor():
+    from obsidian_automation.github_production_update import _execute_update_unlocked
+    source = inspect.getsource(_execute_update_unlocked)
+    assert source.index('path = _persist_receipt(receipt_dir, receipt)') < source.index(
+        'after_restore_effect()'
+    )
+    # A target may install an extra GitHub timer AFTER preflight.
+    assert source.index('label="systemd daemon-reload"') < source.index(
+        'stage = "post_install_quiescence"'
+    ) < source.index('stage = "live_smoke"')

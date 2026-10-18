@@ -254,6 +254,11 @@ class RuntimeTransaction:
         )
         if require_root and self.stage_receipt_dir != DEFAULT_GITHUB_STAGE_RECEIPT:
             raise LifecycleError("production_stage_receipt_root_is_fixed")
+        if require_root and (
+            self.receipt_dir != Path("/var/lib/obsidian-automation/deployments")
+            or self.refresh_inhibit_path != DEFAULT_REFRESH_INHIBIT
+        ):
+            raise LifecycleError("production_host_update_paths_are_fixed")
 
     def _run(self, args: Sequence[str], code: str) -> str:
         result = self.runner(tuple(str(arg) for arg in args))
@@ -346,13 +351,29 @@ class RuntimeTransaction:
         _fsync_receipt_parents(self.receipt_dir)
         lock = self.receipt_dir / "host-update.lock"
         _safe_path(lock)
-        fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        flags = os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC
+        # Root production must never silently create a replacement inode.
+        # An already-running updater may still hold a deleted predecessor.
+        if not self.require_root:
+            flags |= os.O_CREAT
+        try:
+            fd = os.open(lock, flags, 0o600)
+        except OSError:
+            raise LifecycleError("host_update_lock_not_qualified") from None
         try:
             info = os.fstat(fd)
-            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_mode & 0o077
-                or (self.require_root and info.st_uid != 0)):
+            before = os.stat(lock, follow_symlinks=False)
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or info.st_mode & 0o077
+                or (self.require_root and (
+                    info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o600
+                ))
+                or (info.st_dev, info.st_ino) != (before.st_dev, before.st_ino)):
                 raise LifecycleError("unsafe_runtime_lock")
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            after = os.stat(lock, follow_symlinks=False)
+            if (info.st_dev, info.st_ino) != (after.st_dev, after.st_ino):
+                raise LifecycleError("host_update_lock_replaced")
             _require_no_unresolved_stage(self.stage_receipt_dir, require_root=self.require_root)
         except BaseException:
             os.close(fd)
@@ -398,7 +419,11 @@ class RuntimeTransaction:
             require_root=self.require_root,
         )
         try:
-            self.refresh_inhibit.acquire(publish=False)
+            # The host-runtime coordinator must never create a replacement
+            # semantic lock inode while a different updater holds the old.
+            self.refresh_inhibit.acquire(
+                publish=False, require_existing_lock=self.require_root,
+            )
         except (updater.PreReviewProductionUpdateError, OSError) as exc:
             raise LifecycleError("semantic_refresh_inhibit_failed") from exc
         # The legacy updater may have restored its timers between preflight and
@@ -538,10 +563,14 @@ class RuntimeTransaction:
         # An immutable history entry survives removal of the pending intent.
         history = self.receipt_dir / (f"{time.time_ns()}-{self.target_sha[:12]}.runtime.json")
         _write_json(history, self.intent)
-        self.intent_path.unlink()
-        _fsync_directory(self.receipt_dir)
+        # Preserve the durable host pending intent until AFTER the semantic
+        # inhibitor has been successfully and durably released. If release
+        # fails after its unlink, host-update admission still sees the host
+        # pending marker and cannot start an overlapping update.
         assert self.refresh_inhibit is not None
         self.refresh_inhibit.release()
+        self.intent_path.unlink()
+        _fsync_directory(self.receipt_dir)
         self.finished = True
 
     def __exit__(self, exc_type, exc, traceback):

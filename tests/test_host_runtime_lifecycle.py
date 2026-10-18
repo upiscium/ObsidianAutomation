@@ -630,3 +630,27 @@ def test_host_and_stage_timer_parsers_remain_equivalent(value):
         _finite_monotonic_elapse as stage_parser,
     )
     assert life._finite_monotonic_elapse(value) is stage_parser(value)
+
+
+
+def test_host_finish_release_failure_keeps_durable_host_pending_intent(setup):
+    """Host cannot drop its durable backup gate before inhibitor release."""
+    from obsidian_automation.pre_review_production_update import PreReviewProductionUpdateError
+    kwargs, system, _ = setup
+    system.states[life.TIMERS[0]].update(
+        UnitFileState="enabled", ActiveState="active",
+    )
+    with pytest.raises(PreReviewProductionUpdateError, match="injected_release_failure"):
+        with life.RuntimeTransaction(**kwargs) as tx:
+            tx.prepare()
+            tx.stage_and_smoke()
+            tx.restore()
+            assert tx.refresh_inhibit is not None
+            def fail_release():
+                raise PreReviewProductionUpdateError("injected_release_failure")
+            tx.refresh_inhibit.release = fail_release
+            tx.finish()
+    pending = kwargs["receipt_dir"] / "pending-runtime.json"
+    assert pending.is_file()
+    assert kwargs["refresh_inhibit_path"].is_file()
+    assert all(system.states[t]["ActiveState"] == "inactive" for t in life.TIMERS)
