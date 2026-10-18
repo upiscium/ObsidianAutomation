@@ -154,9 +154,26 @@ def classify_service(props: Mapping[str, str] | None) -> str:
     return "unknown"
 
 
-def aggregate_status(*, runner: Runner = subprocess.run) -> list[dict[str, object]]:
+def aggregate_status(
+    *, runner: Runner = subprocess.run,
+    service_ids: tuple[str, ...] | None = None,
+) -> list[dict[str, object]]:
+    if service_ids is not None:
+        if (
+            type(service_ids) is not tuple
+            or len(service_ids) != len(set(service_ids))
+            or not service_ids
+            or any(
+                type(item) is not str
+                or item not in {s.identifier for s in SERVICES}
+                for item in service_ids
+            )
+        ):
+            raise ValueError("invalid_fixed_service_scope")
     results: list[dict[str, object]] = []
     for spec in SERVICES:
+        if service_ids is not None and spec.identifier not in service_ids:
+            continue
         timer = classify_timer(_run_properties(spec.timer, TIMER_FIELDS, runner=runner))
         service = classify_service(_run_properties(spec.service, SERVICE_FIELDS, runner=runner))
         if service == "failed" or timer in {"blocked", "failed"}:

@@ -285,3 +285,37 @@ def test_client_rejects_forged_service_identity_even_with_false_authority(
     monkeypatch.setattr(BrokerSocketClient, "query", lambda *a, **kw: forged)
     with pytest.raises(LocalBrokerProtocolError, match="unverifiable_queue_receipt"):
         OperationQueueClient(site[0]).receipt(RID)
+
+
+def test_production_worker_health_guard_blocks_submit_but_allows_receipt(site):
+    from obsidian_automation.admin_control_queue_socket import OperationQueueSocket
+    from obsidian_automation.admin_operation_queue import DurableOperationQueue
+    from obsidian_automation.admin_broker_socket import BrokerSocketClient
+    path,root=site
+    queue=DurableOperationQueue(
+        queue_root=root,require_root=False,enabled=True,
+    )
+    def listener(ready):
+        return OperationQueueSocket(
+            path,queue=queue,allowed_peer_uid=os.geteuid(),
+            allowed_peer_gid=os.getegid(),require_root=False,
+            ready=lambda:ready,enforce_worker_readiness=True,
+        )
+    rejected=call(
+        listener(False),lambda:OperationQueueClient(path).submit(request()),
+    )
+    assert rejected=={"version":1,"error":"operator_worker_unavailable"}
+    assert not list(root.glob("request-*.json"))
+    accepted=call(
+        listener(True),lambda:OperationQueueClient(path).submit(request()),
+    )
+    assert accepted["state"]=="accepted"
+    # A Worker can fail or exit after admission; no new request is accepted.
+    other=call(
+        listener(False),lambda:OperationQueueClient(path).submit(request(RID2)),
+    )
+    assert other=={"version":1,"error":"operator_worker_unavailable"}
+    assert not (root/f"request-{RID2}.json").exists()
+    assert call(
+        listener(False),lambda:OperationQueueClient(path).receipt(RID),
+    )["state"]=="accepted"

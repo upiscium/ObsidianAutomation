@@ -1,0 +1,44 @@
+[Unit]
+Description=ObsidianAutomation reviewed fixed-service control broker
+Documentation=man:systemd.service(5)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/obsidian-admin/authority.json
+
+[Service]
+Type=simple
+User=root
+Group=obsidian-admin-web
+UMask=0077
+ExecStart=/usr/bin/python3 -I -S -B /usr/local/libexec/obsidian-admin-root-launch.py
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=180s
+StartLimitBurst=3
+StartLimitIntervalSec=60s
+RuntimeDirectory=obsidian-admin
+RuntimeDirectoryMode=0710
+StateDirectory=obsidian-admin/queue obsidian-admin/broker
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+# The two stable updater-lock inodes must be OPENED O_RDWR for flock;
+# a read-only systemd mount makes the gate fail even when lock ACLs allow it.
+# These paths must EXIST (or service startup fails closed) in the reviewed
+# installed profile; systemd isolation does not replace inode-owner checks.
+ReadWritePaths=/run/obsidian-admin /var/lib/obsidian-admin /var/lib/obsidian-automation/deployments /run/obsidian-automation
+ReadOnlyPaths=/etc/obsidian-admin /etc/systemd/system
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

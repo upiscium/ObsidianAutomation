@@ -16,6 +16,12 @@ from typing import Callable, Sequence
 
 from .admin_broker_socket import capabilities_from_socket, _unavailable_capabilities
 from .admin_operation_preview import preview_from_socket
+from .admin_operator_http import (
+    OperatorHTTPClient, ConfirmationTickets, disabled_capabilities,
+    safe_capabilities, safe_operator_receipt, parse_confirm_request,
+)
+from .admin_operation_preflight import _REQUEST_ID
+from .admin_control_queue_socket import DEFAULT_OPERATION_QUEUE_SOCKET
 from .admin_operation_web import (
     MAX_REQUEST_BYTES, OneTimePreviewCsrf, PreviewRequestRejected,
     parse_operation_preview_request, strict_browser_preview, unavailable_preview,
@@ -69,9 +75,12 @@ HTML = """<!doctype html>
           </select>
         </label>
         <button id="preview-check" type="button" disabled>プレビュー</button>
-        <button type="button" disabled aria-label="実際のサービス操作は未対応">実行不可</button>
+        <button id="preview-confirm" type="button" disabled
+          aria-label="実際のサービス操作は未対応">実行不可</button>
+        <button id="preview-receipt-check" type="button" disabled>結果を再取得</button>
       </div>
       <p id="preview-message" role="status" aria-live="polite">状態を取得してからプレビューを行えます。</p>
+      <p id="preview-receipt" role="status" aria-live="polite">操作の受付記録はありません。</p>
     </section>
     <p id="error" class="error" role="status"></p>
     <footer>状態はsystemdの直近の観測結果です。成功履歴やVaultの完全性を証明するものではありません。</footer>
@@ -127,7 +136,8 @@ button:disabled { opacity:.55; cursor:wait }
 .operation-controls select { width:100%; min-height:42px; border:1px solid var(--border);
   background:var(--surface); color:var(--ink); border-radius:9px; font:inherit; padding:7px 9px }
 .operation-controls button { flex:0 0 auto; }
-#preview-message { overflow-wrap:anywhere }
+#preview-message, #preview-receipt { overflow-wrap:anywhere; }
+#preview-confirm:not(:disabled) { border:2px solid currentColor; }
 footer { margin-top:32px; font-size:.78rem }
 @media (max-width:620px) { .frame { padding:26px 14px } header { align-items:start; flex-direction:column }
   button { width:100% } .notice { margin-top:18px } }
@@ -217,8 +227,36 @@ function renderAi(p) {
   }
 }
 let previewGeneration = 0;
+let pendingConfirmation = null;
+let latestOperationId = null;
+let enabledOperations = {pause:false, resume:false, run_once:false};
+function invalidateConfirmation() {
+  pendingConfirmation = null;
+  $("preview-confirm").disabled = true;
+  $("preview-confirm").textContent = "実行不可";
+  $("preview-confirm").setAttribute("aria-label", "実際のサービス操作は未対応");
+}
+async function fetchOperatorReadiness() {
+  try {
+    const response = await fetch("/api/v1/operator-ready", {
+      cache:"no-store", credentials:"same-origin",
+    });
+    if (!response.ok) throw Error("operator_unavailable");
+    const cap = await response.json();
+    if (cap.version !== 1 || cap.authority !== "operator_ready"
+        || cap.reason !== "worker_ready"
+        || !cap.operations
+        || !["pause","resume","run_once"].every(x => typeof cap.operations[x] === "boolean")) {
+      throw Error("operator_not_ready");
+    }
+    enabledOperations = cap.operations;
+  } catch {
+    enabledOperations = {pause:false, resume:false, run_once:false};
+  }
+}
 async function refresh() {
   ++previewGeneration; // Invalidate any in-flight operation preview.
+  invalidateConfirmation();
   $("preview-check").disabled = true;
   $("preview-message").textContent = "状態の更新中です。";
   $("refresh").disabled = true;
@@ -240,7 +278,10 @@ async function refresh() {
     }));
     $("preview-service").disabled = selectable.length === 0;
     $("preview-check").disabled = selectable.length === 0;
-    $("preview-message").textContent = "操作をプレビューできます。実行は無効です。";
+    await fetchOperatorReadiness();
+    $("preview-message").textContent = Object.values(enabledOperations).some(Boolean)
+      ? "プレビュー結果を確認した後、操作を確定できます。"
+      : "操作をプレビューできます。実行は現在無効です。";
     $("updated").textContent = "観測日時: " + data.generated_at;
     $("count").textContent = data.services.length + " services";
   } catch {
@@ -249,6 +290,8 @@ async function refresh() {
     $("preview-service").replaceChildren();
     $("preview-service").disabled = true;
     $("preview-check").disabled = true;
+    invalidateConfirmation();
+    enabledOperations = {pause:false, resume:false, run_once:false};
     $("preview-message").textContent = "観測できないためプレビューできません。";
     $("pipeline-details").replaceChildren();
     $("pipeline-summary").textContent = "Pipeline: 現在の状態は未確認";
@@ -267,6 +310,7 @@ async function previewOperation() {
   const serviceId = $("preview-service").value;
   const action = $("preview-action").value;
   const generation = ++previewGeneration;
+  invalidateConfirmation();
   const stillCurrent = () => (
     generation === previewGeneration
     && $("preview-service").value === serviceId
@@ -307,9 +351,20 @@ async function previewOperation() {
       throw Error("untrusted_preview_response");
     }
     if (stillCurrent()) {
-      $("preview-message").textContent = result.status === "compatible"
-        ? "現在の状態では操作候補です。ただし実行権限は未承認のため、変更はできません。"
-        : "操作の状態検証が完了しませんでした。操作は実行されていません。";
+      if (result.status === "compatible"
+          && enabledOperations[action] === true
+          && typeof result.confirmation_ticket === "string") {
+        pendingConfirmation = {request, ticket:result.confirmation_ticket};
+        $("preview-confirm").disabled = false;
+        $("preview-confirm").textContent = "確認して実行";
+        $("preview-confirm").setAttribute("aria-label", "プレビューした操作を確認して実行");
+        $("preview-message").textContent =
+          "現在の観測では実行候補です。ボタンで対象と操作を最終確認してください。";
+      } else {
+        $("preview-message").textContent = result.status === "compatible"
+          ? "状態は適合していますが、権限付きWorkerは実行可能ではありません。"
+          : "操作の状態検証が完了しませんでした。操作は実行されていません。";
+      }
     }
   } catch {
     if (stillCurrent()) {
@@ -324,11 +379,97 @@ async function previewOperation() {
 for (const id of ["preview-service", "preview-action"]) {
   $(id).addEventListener("change", () => {
     ++previewGeneration;
+    invalidateConfirmation();
     $("preview-message").textContent = "対象・操作が変わりました。プレビューをやり直してください。";
     $("preview-check").disabled = $("preview-service").disabled;
   });
 }
 $("preview-check").addEventListener("click", previewOperation);
+
+async function newCsrfToken() {
+  const response = await fetch("/api/v1/operation-session", {
+    cache:"no-store", credentials:"same-origin",
+  });
+  if (!response.ok) throw Error("csrf_unavailable");
+  const body = await response.json();
+  if (body.version !== 1 || body.authority !== "preview_only"
+      || body.can_execute !== false || typeof body.csrf_token !== "string") {
+    throw Error("invalid_csrf");
+  }
+  return body.csrf_token;
+}
+function receiptText(result) {
+  const status = result && typeof result.state === "string" ? result.state : "";
+  switch (status) {
+    case "accepted": return "受付済み・実行待ち";
+    case "processing": return "systemdへ操作要求中";
+    case "completed": return "タイマー操作が完了しました";
+    case "systemd_job_accepted": return "systemdジョブを受付済み（処理の成功は未確認）";
+    case "indeterminate": return "結果不明：自動再実行せず管理者確認が必要";
+    case "completed_pending_cleanup":
+    case "systemd_job_accepted_pending_cleanup":
+      return "処理は記録済みですが監査データの後片付けが未完了です";
+    default: return "操作結果を確認できません。要求IDから再照会してください。";
+  }
+}
+async function refreshReceipt() {
+  if (!latestOperationId) return;
+  $("preview-receipt-check").disabled = true;
+  try {
+    const response = await fetch("/api/v1/operations/" + latestOperationId, {
+      cache:"no-store", credentials:"same-origin",
+    });
+    if (!response.ok) throw Error("receipt_unavailable");
+    const receipt = await response.json();
+    if (receipt.version !== 1 || receipt.request_id !== latestOperationId
+        || receipt.can_execute === true) throw Error("untrusted_receipt");
+    $("preview-receipt").textContent = "要求ID " + latestOperationId + " — " + receiptText(receipt);
+  } catch {
+    $("preview-receipt").textContent = "要求ID " + latestOperationId +
+      " — 取得失敗。受付された可能性があるため新しいIDで再実行せず照会してください。";
+  } finally {
+    $("preview-receipt-check").disabled = false;
+  }
+}
+$("preview-receipt-check").addEventListener("click", refreshReceipt);
+
+async function confirmOperation() {
+  const choice = pendingConfirmation;
+  if (!choice) return;
+  if ($("preview-service").value !== choice.request.service_id
+      || $("preview-action").value !== choice.request.action) return;
+  const description = choice.request.service_id + " に " + choice.request.action +
+    " を実行します。既存の処理へ影響する可能性があります。確定しますか？";
+  if (!window.confirm(description)) return;
+  invalidateConfirmation(); // prevent double clicks while request in flight
+  latestOperationId = choice.request.request_id;
+  $("preview-receipt-check").disabled = false;
+  $("preview-receipt").textContent = "要求ID " + latestOperationId + " — 受付を確認中";
+  try {
+    const token = await newCsrfToken();
+    const response = await fetch("/api/v1/operations", {
+      method:"POST", cache:"no-store", credentials:"same-origin",
+      headers:{"Content-Type":"application/json", "X-Obsidian-CSRF":token},
+      body:JSON.stringify({
+        ...choice.request, confirmation_ticket:choice.ticket, confirm:true,
+      }),
+    });
+    if (!response.ok) throw Error("operation_unavailable");
+    const result = await response.json();
+    if (result.version !== 1) throw Error("invalid_response");
+    if (typeof result.error === "string") {
+      $("preview-receipt").textContent = "要求ID " + latestOperationId +
+        " — 操作結果を確認できません。管理者に要求IDを提示してください。";
+    } else if (result.request_id === latestOperationId && result.can_execute === false) {
+      $("preview-receipt").textContent = "要求ID " + latestOperationId + " — " + receiptText(result);
+    } else throw Error("untrusted_response");
+  } catch {
+    $("preview-receipt").textContent = "要求ID " + latestOperationId +
+      " — 応答不明です。二重実行を避けるため要求IDから照会してください。";
+  }
+  await refreshReceipt();
+}
+$("preview-confirm").addEventListener("click", confirmOperation);
 """
 
 Observer = Callable[[], list[dict[str, object]]]
@@ -541,9 +682,59 @@ class Handler(BaseHTTPRequestHandler):
             origin is None or origin in {f"http://{host}" for host in hosts}
         ))
 
+    def _operator_network_allowed(self) -> bool:
+        """LAN/VPN-only operator console, with no per-user Web login.
+
+        The Web server is bound to loopback. A trusted reverse proxy/firewall
+        must restrict external access to LAN and authenticated VPN peers.
+        Every permitted network client is an operator under the accepted
+        deployment trust model. Reject obsolete client-supplied ingress
+        capability headers, but retain strict Host/Origin/CSRF controls.
+        """
+        return (
+            self.server.operator_ui_enabled is True
+            and self.server.server_address[0] == "127.0.0.1"
+            and not self.headers.get_all("X-Obsidian-Private-Ingress", [])
+        )
+
+    def _operator_capabilities(self) -> dict[str, object]:
+        if not self._operator_network_allowed():
+            return disabled_capabilities()
+        try:
+            return safe_capabilities(self.server.operator.capabilities())
+        except Exception:
+            return disabled_capabilities()
+
     def do_GET(self) -> None:
         if not self._origin_allowed():
             self._reply(403, b"Forbidden")
+            return
+        if self.path == "/api/v1/operator-ready":
+            result = self._operator_capabilities()
+            self._reply(200, json.dumps(
+                result, sort_keys=True, separators=(",", ":"),
+            ).encode("utf-8"), "application/json; charset=utf-8")
+            return
+        if self.path.startswith("/api/v1/operations/"):
+            value = self.path[len("/api/v1/operations/"):]
+            if _REQUEST_ID.fullmatch(value) is None:
+                self._reply(404, b"Not found")
+                return
+            if not self._operator_network_allowed():
+                self._reply(403, b'{"error":"operator_network_required"}', "application/json")
+                return
+            try:
+                receipt = safe_operator_receipt(
+                    self.server.operator.receipt(value), value,
+                )
+            except Exception:
+                receipt = {
+                    "version": 1, "request_id": value,
+                    "status": "unavailable", "authority": "observation_only",
+                }
+            self._reply(200, json.dumps(
+                receipt, sort_keys=True, separators=(",", ":"),
+            ).encode("utf-8"), "application/json; charset=utf-8")
             return
         if self.path == "/api/v1/operation-capabilities":
             self._reply(
@@ -636,16 +827,74 @@ class Handler(BaseHTTPRequestHandler):
         return b"".join(chunks)
 
     def do_POST(self) -> None:
-        if self.path != "/api/v1/operation-previews":
+        if self.path not in (
+            "/api/v1/operation-previews", "/api/v1/operations",
+        ):
+            self._reply(405, b"Method not allowed")
+            return
+        if (
+            self.path == "/api/v1/operations"
+            and self.server.operator_ui_enabled is not True
+        ):
+            # Disabled mode preserves the existing strict no-mutation API
+            # contract. No CSRF ticket or payload is consumed on this route.
             self._reply(405, b"Method not allowed")
             return
         if not self._write_origin_allowed():
             self._reply(403, b'{"error":"origin_rejected"}', "application/json")
             return
+        if (
+            self.path == "/api/v1/operations"
+            and not self._operator_network_allowed()
+        ):
+            self._reply(403, b'{"error":"operator_network_required"}', "application/json")
+            return
         tokens = self.headers.get_all("X-Obsidian-CSRF", [])
         if len(tokens) != 1 or not self.server.preview_csrf.consume(tokens[0]):
             self._reply(403, b'{"error":"csrf_rejected"}', "application/json")
             return
+
+        if self.path == "/api/v1/operations":
+            if self.server.operator_ui_enabled is not True:
+                self._reply(503, b'{"error":"operator_unavailable"}', "application/json")
+                return
+            try:
+                payload, ticket = parse_confirm_request(self._read_bounded_json())
+            except (PreviewRequestRejected, ValueError):
+                self._reply(400, b'{"error":"invalid_operation_request"}', "application/json")
+                return
+            if not self.server.operator_tickets.verify(payload, ticket):
+                self._reply(403, b'{"error":"confirmation_required"}', "application/json")
+                return
+            caps = self._operator_capabilities()
+            if caps["operations"][payload["action"]] is not True:
+                self._reply(503, b'{"error":"operator_unavailable"}', "application/json")
+                return
+            try:
+                result = self.server.operator.submit(payload)
+            except Exception:
+                result = {"version": 1, "error": "operator_submission_unconfirmed"}
+            if (
+                type(result) is not dict
+                or set(result) == {"version", "error"} and (
+                    type(result.get("version")) is not int or result["version"] != 1
+                    or type(result.get("error")) is not str
+                    or result["error"] not in {
+                        "queue_disabled", "queue_busy", "admission_lock_busy",
+                        "queue_recovery_required", "queue_missing_receipt",
+                        "run_once_unqualified", "queue_request_rejected",
+                        "operator_submission_unconfirmed", "operator_worker_unavailable",
+                    }
+                )
+            ):
+                result = {"version": 1, "error": "operator_submission_unconfirmed"}
+            elif "error" not in result:
+                result = safe_operator_receipt(result, payload["request_id"])
+            self._reply(200, json.dumps(
+                result, sort_keys=True, separators=(",", ":"),
+            ).encode("utf-8"), "application/json; charset=utf-8")
+            return
+
         try:
             request = parse_operation_preview_request(self._read_bounded_json())
         except PreviewRequestRejected:
@@ -659,6 +908,22 @@ class Handler(BaseHTTPRequestHandler):
             preview = strict_browser_preview(preview, request)
         except Exception:
             preview = unavailable_preview()
+        if (
+            preview["status"] == "compatible"
+            and self._operator_capabilities()["operations"][request["action"]] is True
+        ):
+            # A ticket proves only the *exact* Preview selection that was
+            # shown. The root Worker still observes actual systemd state.
+            payload = {
+                "version": 1, "request_id": request["request_id"],
+                "service_id": request["service_id"],
+                "action": request["action"],
+            }
+            try:
+                preview = dict(preview)
+                preview["confirmation_ticket"] = self.server.operator_tickets.issue(payload)
+            except Exception:
+                preview = unavailable_preview()
         data = json.dumps(
             preview, sort_keys=True, separators=(",", ":"),
         ).encode("utf-8")
@@ -676,6 +941,8 @@ def make_server(
     ai_observer: AIObserver = load_ai_health,
     capabilities_observer: Callable[[], dict[str, object]] = _unavailable_capabilities,
     preview_observer: Callable[[dict[str, object]], dict[str, object]] = lambda _: unavailable_preview(),
+    operator: OperatorHTTPClient | None = None,
+    operator_ui_enabled: bool = False,
 ) -> ThreadingHTTPServer:
     if not isinstance(port, int) or not 0 <= port <= 65535:
         raise ValueError("port must be between 0 and 65535")
@@ -687,6 +954,11 @@ def make_server(
     server.capabilities_singleflight = _CapabilitiesSingleFlight(capabilities_observer)
     server.preview_observer = preview_observer
     server.preview_csrf = OneTimePreviewCsrf()
+    server.operator_tickets = ConfirmationTickets()
+    server.operator = operator if operator is not None else OperatorHTTPClient()
+    # Operator UI trusts the configured LAN/VPN network perimeter.
+    # It remains disabled unless --operator-ui is explicitly selected.
+    server.operator_ui_enabled = operator_ui_enabled is True
     server.daemon_threads = True
     return server
 
@@ -694,10 +966,20 @@ def make_server(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Experimental no-effect localhost Dashboard")
     parser.add_argument("--port", type=int, default=8370)
+    parser.add_argument(
+        "--operator-ui", action="store_true",
+        help="Allow confirmed operations on a network-restricted loopback console.",
+    )
     args = parser.parse_args(argv)
+    operator = OperatorHTTPClient()
     with make_server(
-        port=args.port, capabilities_observer=capabilities_from_socket,
-        preview_observer=preview_from_socket,
+        port=args.port,
+        capabilities_observer=capabilities_from_socket,
+        preview_observer=lambda request: preview_from_socket(
+            request, socket_path=DEFAULT_OPERATION_QUEUE_SOCKET,
+        ),
+        operator=operator,
+        operator_ui_enabled=args.operator_ui,
     ) as server:
         server.serve_forever(poll_interval=0.25)
     return 0

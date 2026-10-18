@@ -25,7 +25,7 @@ from .admin_status import SERVICES, aggregate_status
 WEB_SERVICE_USER = "obsidian-admin-web"
 
 
-def _production_observation() -> dict[str, object]:
+def _production_observation(service_id: str | None = None) -> dict[str, object]:
     """Fixed, bounded systemd property reads, never client-provided state.
 
     Reuse the existing read-model classification while replacing its ordinary
@@ -61,7 +61,10 @@ def _production_observation() -> dict[str, object]:
             argv, 0, "".join(f"{k}={values[k]}\n" for k in props), "",
         )
 
-    services = aggregate_status(runner=bounded_runner)
+    services = aggregate_status(
+        runner=bounded_runner,
+        service_ids=(service_id,) if service_id is not None else None,
+    )
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "services": services,

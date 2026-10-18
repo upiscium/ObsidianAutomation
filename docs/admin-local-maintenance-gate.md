@@ -48,3 +48,14 @@ both lock inodes, host updater/pre-review contention, pending inhibitor
 markers, rejected unsafe lock names and release. This proves *cooperating*
 updater exclusion only; old uncoordinated binaries or arbitrary manual root
 jobs are outside the guarantee.
+
+
+### #300 production operator cutover precondition
+
+See admin-operator-operational-runbook.md. Two explicit root-owned positive
+attestations are now required BEFORE root effect code is loaded:
+coordinated_updaters_verified and uncoordinated_launchers_retired. Both are
+false in the staging helper. This requires review of actual installed
+binary/update launchers and single-active-LXC deployment, NOT an inference
+from acquiring cooperative lock files. Run once also checks all existing
+same-domain hidden dependency services for in-flight jobs under the lock.
