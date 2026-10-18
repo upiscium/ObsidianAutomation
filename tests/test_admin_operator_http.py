@@ -136,7 +136,10 @@ def test_ticket_is_bound_to_exact_request_service_action_and_expiry():
     assert not signer.verify(request("resume"), ticket)
     assert not signer.verify(request(rid="aaaaaaaa-1234-4234-8234-123456789abc"), ticket)
     assert not signer.verify({**old, "service_id": "core-promotion"}, ticket)
-    assert not signer.verify(old, ticket[:-1]+"0")
+    # Tamper deterministically: replacing with "0" alone is a no-op
+    # if the original random HMAC digest already ends with "0".
+    flipped = "0" if ticket[-1] != "0" else "1"
+    assert not signer.verify(old, ticket[:-1] + flipped)
     assert not ConfirmationTickets(now=lambda: now[0]).verify(old, ticket)
     now[0]+=91
     assert not signer.verify(old,ticket)
