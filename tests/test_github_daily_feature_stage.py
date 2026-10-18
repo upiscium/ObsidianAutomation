@@ -599,3 +599,41 @@ def test_true_status_report_after_fenced_example_remains_eligible():
     view=stage.build_feature_first_view(allcontexts[1],plan)
     assert any("worker" in row["superseded_scopes"] for row in
                view.report()["excluded_obsolete_status_hints"])
+
+
+@pytest.mark.parametrize("later", [
+    "Example output:\nThe privileged effect worker is installed and enabled.",
+    "Expected output:\nThe privileged effect worker has now been installed and enabled.",
+    "Generated output:\nThe production effect worker is installed and enabled.",
+    "Sample output:\nThe privileged worker is now installed.",
+    "The privileged effect worker is installed and enabled on GitHub Actions.",
+    "The privileged effect worker is now installed in a GitHub workflow.",
+    "The production worker is now running on the Actions runner.",
+])
+def test_unfenced_examples_and_github_ci_status_cannot_supersede_production(
+        later):
+    allcontexts,_=make_original_feature_context()
+    from test_github_daily_c5_source_view import event
+    allcontexts[1]["sources"].append(event(4,"pull_request_comment",body=later))
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    assert view.structural_feature_anchor
+    result=view.report()
+    assert not any("worker" in row["superseded_scopes"] for row in
+                   result["excluded_obsolete_status_hints"])
+    assert any("not installed" in row["verbatim"].lower() for row in
+               result["latest_operational_caveat_evidence"])
+
+
+def test_unfenced_example_followed_by_new_paragraph_actual_update_is_admitted():
+    allcontexts,_=make_original_feature_context()
+    from test_github_daily_c5_source_view import event
+    text=("Example output:\n"
+          "The privileged effect worker is installed and enabled.\n"
+          "\n"
+          "The privileged effect worker has now been installed and enabled.")
+    allcontexts[1]["sources"].append(event(4,"pull_request_comment",body=text))
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    assert any("worker" in row["superseded_scopes"] for row in
+               view.report()["excluded_obsolete_status_hints"])
