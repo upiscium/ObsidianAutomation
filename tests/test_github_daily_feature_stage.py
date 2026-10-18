@@ -336,3 +336,150 @@ def test_unwired_inverted_japanese_flagged_even_when_grounding_supported():
         stage.inspect_operational_translation(view,[
             {"text":"コードが実装されました。","source_refs":[999]}
         ])
+
+
+@pytest.mark.parametrize("later_text", [
+    "The privileged effect worker has now been installed and enabled.",
+    "The privileged effect worker is now installed and enabled.",
+    "The privileged effect worker is installed and enabled.",
+])
+def test_later_explicit_worker_installation_supersedes_same_scope_blocker(later_text):
+    allcontexts,_=make_original_feature_context()
+    source=allcontexts[1]["sources"][3]["original_event"]
+    source["body"]["text"]+= "- Privileged effect worker is not installed.\n"
+    from test_github_daily_c5_source_view import event
+    allcontexts[1]["sources"].append(event(4,"pull_request_comment",body=later_text))
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    assert view.structural_feature_anchor
+    details=view.report()
+    assert any(x["source_ref"]==3 and "worker" in x["scopes"] for x in
+               details["excluded_obsolete_status_hints"])
+    assert not any("worker is not installed" in x["verbatim"].lower() for x in
+                   details["latest_operational_caveat_evidence"])
+    assert details["source_deleted"] is False
+    assert 4 in details["omitted_source_refs"]  # positive event not fake claim
+
+
+@pytest.mark.parametrize("later_text", [
+    "Live controls are now enabled.",
+    "The live controls are now enabled.",
+    "Browser Execute paths are now available.",
+])
+def test_later_enabled_live_controls_supersede_outdated_disabled_status(later_text):
+    allcontexts,_=make_original_feature_context()
+    created=allcontexts[1]["sources"][3]["original_event"]
+    created["body"]["text"]+= "- No live controls are available.\n"
+    from test_github_daily_c5_source_view import event
+    allcontexts[1]["sources"].append(event(4,"pull_request_comment",body=later_text))
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    shown=view.report()
+    assert any("controls" in x["scopes"] and x["source_ref"]==3
+               for x in shown["excluded_obsolete_status_hints"])
+    assert not any("no live controls" in x["verbatim"].lower()
+                   for x in shown["latest_operational_caveat_evidence"])
+
+
+def test_later_controls_enablement_does_not_obscure_worker_installation_blocker():
+    allcontexts,_=make_original_feature_context()
+    from test_github_daily_c5_source_view import event
+    allcontexts[1]["sources"].append(event(4,"pull_request_comment",
+                                            body="Live controls are now enabled."))
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    rows=[x["verbatim"].lower() for x in
+          view.report()["latest_operational_caveat_evidence"]]
+    assert any("worker" in x and "not installed" in x for x in rows)
+    assert any(x["source_ref"]==2 and x["mixed_scope_requires_review"]
+               and x["superseded_scopes"]==["controls"]
+               for x in view.report()["excluded_obsolete_status_hints"])
+    # A separate later "worker not installed" quote remains when controls
+    # become available; neither status is inferred from the model.
+
+
+def test_later_disable_reenables_negative_status_selection():
+    allcontexts,_=make_original_feature_context()
+    created=allcontexts[1]["sources"][3]["original_event"]
+    created["body"]["text"]+= "- No live controls are available.\n"
+    from test_github_daily_c5_source_view import event
+    allcontexts[1]["sources"].append(event(4,"pull_request_comment",
+                                            body="Live controls are now enabled."))
+    allcontexts[1]["sources"].append(event(5,"pull_request_comment",
+                                            body="Live controls are now disabled again."))
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    rows=view.report()["latest_operational_caveat_evidence"]
+    assert any(r["source_ref"]==5 for r in rows)
+    assert any("disabled again" in r["verbatim"] for r in rows)
+
+
+@pytest.mark.parametrize("unreliable", [
+    "When the privileged worker has been installed, you may enable controls.",
+    "The privileged worker should be installed after the next review.",
+    "Tests expect the worker is installed and enabled in a simulated fixture.",
+    "> The privileged worker is installed and enabled.",
+    "The worker is not installed and enabled.",
+])
+def test_planned_hypothetical_test_or_quoted_positive_cannot_override_blocker(unreliable):
+    allcontexts,_=make_original_feature_context()
+    from test_github_daily_c5_source_view import event
+    allcontexts[1]["sources"].append(event(4,"pull_request_comment",body=unreliable))
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    assert any("worker" in r["verbatim"].lower()
+               and "not installed" in r["verbatim"].lower()
+               for r in view.report()["latest_operational_caveat_evidence"])
+    assert not any(x["source_ref"]==2 for x in
+                   view.report()["excluded_obsolete_status_hints"])
+
+
+def test_same_original_event_later_positive_can_supersede_earlier_blocker():
+    allcontexts,_=make_original_feature_context()
+    allcontexts[1]["sources"][3]["original_event"]["body"]["text"]+=(
+        "- No live controls are available.\n"
+        "- Live controls are now enabled.\n")
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    assert any(x["source_ref"]==3 and "controls" in x["scopes"] for x
+               in view.report()["excluded_obsolete_status_hints"])
+
+
+def test_stale_snapshot_positive_is_not_a_source_state_transition():
+    allcontexts,_=make_original_feature_context()
+    created=allcontexts[1]["sources"][3]["original_event"]
+    created["body"]["text"]+= "- No live controls are available.\n"
+    from test_github_daily_c5_source_view import event
+    allcontexts[1]["sources"].append(event(4,"pull_request_snapshot",
+                                            body="Live controls are now enabled."))
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    assert any("no live controls" in r["verbatim"].lower()
+               for r in view.report()["latest_operational_caveat_evidence"])
+    assert not any(x["source_ref"]==3 for x in
+                   view.report()["excluded_obsolete_status_hints"])
+
+
+def test_one_source_line_with_mixed_worker_and_controls_cannot_be_partially_reused():
+    allcontexts,_=make_original_feature_context()
+    from test_github_daily_c5_source_view import event
+    # The earlier original event contains two distinct operational gates in
+    # the same source line. Installation alone does not enable Execute.
+    old=allcontexts[1]["sources"][2]["original_event"]["body"]
+    assert "worker" in old["text"].lower() and "Execute" in old["text"]
+    allcontexts[1]["sources"].append(event(4,"pull_request_comment",
+         body="The privileged effect worker has now been installed and enabled."))
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    report=view.report()
+    assert report["publication_authorized"] is False
+    mixed=[x for x in report["excluded_obsolete_status_hints"]
+           if x["source_ref"]==2]
+    assert len(mixed)==1
+    assert mixed[0]["mixed_scope_requires_review"] is True
+    assert mixed[0]["superseded_scopes"]==["worker"]
+    assert set(mixed[0]["scopes"])=={"worker","controls"}
+    assert not any(row["source_ref"]==2 for row in
+                   report["latest_operational_caveat_evidence"])
+    assert 2 in report["omitted_source_refs"]
+    assert report["source_deleted"] is False

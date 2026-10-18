@@ -122,3 +122,49 @@ source-bound protected-status check reported zero known inversions for
 the new feature-first result, not a claim of generalized factuality.
 The private guarded paired receipt and original post-edit Grounding are
 saved in the Issue #386 ResearchEvidence directory under real_pair_guarded.
+
+### Scoped source-status correction (Draft #387 follow-up)
+
+The independent exact-source correctness and security reviews identified
+remaining P2 cases in which the feature-first view could put an older
+operational blocker ahead of a later explicit state change. For example,
+an earlier source report that a privileged worker is not installed followed
+by a later report that the worker **has now been installed and enabled**, or
+an earlier report that live browser controls are unavailable followed by
+the source statement **Live controls are now enabled**.
+
+The private input builder now:
+- Examines bounded, exact original non-Snapshot source lines for a later
+  *explicit* positive update, and records only the narrow operational
+  scope (worker installation vs browser-control availability).
+- Excludes an older negative snippet from the *optional model presentation*
+  only if a strictly later original source line reports that **same**
+  operational scope as enabled/installed. It never treats that source report
+  as independent proof of real production deployment. Plans, conditional
+  statements, test fixtures and quoted text do not qualify.
+- Retains a separately affected worker blocker when browser controls are
+  enabled, and vice versa. A later explicit disablement becomes the new
+  selected blocker. Within a source event, original text offsets are used;
+  across events, only verified C4 source-ref ordering is used, not a
+  supposed Git push timestamp.
+- Records suppressed *presentation hints* in
+  excluded_obsolete_status_hints with their original source_ref, exact
+  fragment SHA256 and scope for private review. Every original C4 event
+  and the complete Grounding sources remain unchanged.
+
+Optional view version changes to v3 so older model source-view receipts
+cannot bind to the modified status selection. The unchanged baseline C5
+remains runnable even when this optional input fails or has no status quote.
+These are bounded literal source observations, not a new semantic
+contradiction checker or a Writer/Timer release authorization.
+
+A single original source line may describe **multiple** independent
+operational blockers: for example, the effect worker is not installed
+AND browser Execute is disabled. When a later original source reports
+only the worker installed, repeating this mixed earlier line would
+reassert an obsolete installation failure. The optional presentation
+therefore withholds the entire mixed-status line as an unresolved
+composite, records the source_ref/SHA and changed scope for human
+review, and leaves the complete original C4 event available to the
+baseline C5 and strict Grounding. It does **not** infer that Execute
+became available or automatically edit the source sentence.

@@ -15,7 +15,7 @@ import re
 from . import github_daily_d1_priority_shadow as d1
 from . import github_daily_c5_source_view as recent
 
-VERSION = "daily-feature-mention-paired-stage-v2"
+VERSION = "daily-feature-mention-paired-stage-v3"
 QUESTION_VERSION = "d1-binary-feature-mention-v1"
 MAX_VIEW_BYTES = 16 * 1024
 MAX_REQUEST_BYTES = 8192
@@ -44,6 +44,81 @@ _STATUS_MARKERS = (
     "not complete", "remain blocked", "no actual",
     "未導入", "未マージ", "本番未", "無効", "未完了",
 )
+
+# Only explicit original source statements, never a model inference, can
+# supersede a prior same-scope negative availability hint. A later report
+# is still a report, not proof production is really enabled.
+_WORKER_POSITIVE = re.compile(
+    r"\b(?:privileged\s+|production\s+|effect\s+|installed\s+)*worker\b"
+    r"[^.!?]{0,66}\b(?:is\s+now|is|has\s+now\s+been|has\s+been|"
+    r"was|now)\s+(?:fully\s+)?(?:installed|enabled|running|operational)\b",
+    re.IGNORECASE,
+)
+_CONTROLS_POSITIVE = re.compile(
+    r"\b(?:live\s+controls?|browser\s+execute\s+(?:paths?|controls?|buttons?)|"
+    r"execute\s+(?:paths?|controls?|buttons?)|run\s+once)\b"
+    r"[^.!?]{0,66}\b(?:are\s+now|are|is\s+now|is|have\s+now\s+been|"
+    r"have\s+been|has\s+been|were)\s+"
+    r"(?:fully\s+)?(?:enabled|available|operational|active)\b",
+    re.IGNORECASE,
+)
+# A future plan, hypothetical sentence, test fixture or explicit negation is
+# not a completed state transition. Keep the source when uncertain.
+_NON_ACTUAL_STATUS = re.compile(
+    r"\b(?:not|never|no\s+|without|if|when|would|could|should|may|"
+    r"might|will|plan(?:ned)?|intend(?:ed)?|expect(?:ed)?|"
+    r"simulation|simulated|mock|fixture|test-only|hypothetical)\b",
+    re.IGNORECASE,
+)
+
+
+def _positive_status_scopes(raw: str) -> tuple[str, ...]:
+    """Scopes of literal positive reports, not evidence of real deployment."""
+    if type(raw) is not str:
+        raise FeatureStageError("invalid original status text")
+    line = raw.lower().replace("*", "")
+    if line.lstrip().startswith((">", chr(96) * 3, "#", "assert ", "test ")):
+        return ()
+    if _NON_ACTUAL_STATUS.search(line):
+        return ()
+    scopes = []
+    if _WORKER_POSITIVE.search(line):
+        scopes.append("worker")
+    if _CONTROLS_POSITIVE.search(line):
+        scopes.append("controls")
+    return tuple(scopes)
+
+
+def _negative_status_scopes(raw: str) -> tuple[str, ...]:
+    """Operational scope affected by an exact original negative quote."""
+    line = raw.lower().replace("*", "")
+    scopes = []
+    if "worker" in line and any(x in line for x in
+                               ("not installed","no production","no worker",
+                                "not yet","unavailable","disabled",
+                                "nothing in", "does not install")):
+        scopes.append("worker")
+    if (any(x in line for x in ("live control","browser execute",
+                                "execute path","run once","can_execute",
+                                "execute remains","execute is"))
+            and any(x in line for x in ("no live","unavailable","disabled",
+                                        "not installed", "not available",
+                                        "can_execute=false","no actual"))):
+        scopes.append("controls")
+    return tuple(scopes)
+
+
+def _status_after(candidate: dict, later: dict) -> bool:
+    """Collection order only; no push timestamp or deployment inference.
+
+    For a single original source event, only same-field character offsets
+    have an ordering. Different fields cannot supersede each other.
+    """
+    if later["source_ref"] > candidate["source_ref"]:
+        return True
+    return (later["source_ref"] == candidate["source_ref"]
+            and later["field"] == candidate["field"]
+            and later["start"] > candidate["start"])
 
 
 class FeatureStageError(ValueError):
@@ -243,33 +318,26 @@ def build_feature_first_view(context: dict, source_plan: d1.PriorityPlan) -> Fea
     # the model's inferred feature status. A negative quote is not a feature.
     # Prioritize actual no-live / not-installed conditions, not tests or
     # later snapshots. The original C4 sources remain fully intact.
-    status_candidates = []
-    # A later explicit positive state can invalidate an older negative
-    # availability statement. This is an exclusion safety check only, not
-    # an affirmative claim that deployment or installation succeeded.
-    later_worker_installed_refs = set()
+    # Group later explicit positive reports by operational scope without
+    # conflating worker installation with browser control availability.
+    # Full original C4 source stays available to Grounding.
+    later_positive = []
     for src in sources:
         if src["original_event"]["kind"] in recent.SNAPSHOT_KINDS:
             continue
-        for field in ("body","message"):
-            value=_field(src["original_event"],field)
+        for field in ("body", "message"):
+            value = _field(src["original_event"],field)
             if value is None:
                 continue
-            for span in _lines(value,src["source_ref"],field):
-                word=span["verbatim"].lower()
-                if (any(term in word for term in (
-                        "worker is installed", "worker has been installed",
-                        "worker is now installed", "worker installed and enabled"))
-                        and not any(term in word for term in (
-                            "no production worker", "no worker", "not installed",
-                            "not yet", "never installed", "would be installed",
-                            "when the worker is installed", "if the worker is installed"))):
-                    later_worker_installed_refs.add(src["source_ref"])
-    latest_installed = max(later_worker_installed_refs,default=-1)
+            for line in _lines(value,src["source_ref"],field):
+                for scope in _positive_status_scopes(line["verbatim"]):
+                    later_positive.append((scope,line))
+    status_candidates = []
+    superseded_negatives = []
     seen = {(r["source_ref"],r["field"],r["start"]) for r in features}
-    strong = ("not installed", "no production", "no live", "unavailable",
-              "not merged", "not complete", "must remain unwired",
-              "explicit blocker", "not deploy")
+    strong = ("not installed","no production","no live","unavailable",
+              "not merged","not complete","must remain unwired",
+              "explicit blocker","not deploy")
     for src in sources:
         ref = src["source_ref"]
         event = src["original_event"]
@@ -283,20 +351,40 @@ def build_feature_first_view(context: dict, source_plan: d1.PriorityPlan) -> Fea
                 if (row["source_ref"],row["field"],row["start"]) in seen:
                     continue
                 content = row["verbatim"].lower()
-                if any(marker in content for marker in _STATUS_MARKERS):
-                    if (latest_installed > ref and
-                            "worker" in content and
-                            any(neg in content for neg in (
-                                "no production", "not installed",
-                                "no worker", "nothing in", "not yet"))):
-                        continue  # later explicit state makes old blocker stale
-                    direct=("not installed","no production","no live",
-                            "unavailable","not deployed","本番未","未導入")
-                    priority=(2 if any(m in content for m in direct)
-                              else 1 if any(m in content for m in strong)
-                              else 0)
-                    status_candidates.append((priority,ref,row["start"],row))
-    status_candidates.sort(key=lambda x:(-x[0],-x[1],-x[2]))
+                if not any(marker in content for marker in _STATUS_MARKERS):
+                    continue
+                scopes = _negative_status_scopes(content)
+                # A single source line may contain *two* independently
+                # scoped blockers. If a later event lifts only one, quoting
+                # the original line verbatim would reassert an obsolete
+                # fact alongside a still-live blocker. Keep it for full C4
+                # Grounding/human review but exclude the *whole* optional
+                # hint rather than presenting a misleading partial truth.
+                changed_scopes = [
+                    scope for scope in scopes
+                    if any(later_scope == scope and _status_after(row,updated)
+                           for later_scope,updated in later_positive)
+                ]
+                if changed_scopes:
+                    superseded_negatives.append({
+                        "source_ref":row["source_ref"],
+                        "field":row["field"],
+                        "start":row["start"],
+                        "exact_fragment_sha256":row["exact_fragment_sha256"],
+                        "scopes":list(scopes),
+                        "superseded_scopes":changed_scopes,
+                        "mixed_scope_requires_review":len(changed_scopes)<len(scopes),
+                    })
+                    continue
+                direct=("not installed","no production","no live",
+                        "unavailable","not deployed","本番未","未導入")
+                priority=(2 if any(m in content for m in direct)
+                          else 1 if any(m in content for m in strong)
+                          else 0)
+                status_candidates.append((priority,ref,row["start"],row))
+    # The last relevant source update wins over an older, more keyword-rich
+    # blocker. Specificity only breaks ties *within the same source event*.
+    status_candidates.sort(key=lambda x:(-x[1],-x[0],-x[2]))
     statuses = [row for _,_,_,row in status_candidates[:MAX_STATUS_LINES]]
 
     # Source-exact operational facts are *hints*, not new evidence or facts.
@@ -334,6 +422,7 @@ def build_feature_first_view(context: dict, source_plan: d1.PriorityPlan) -> Fea
         "date": context["date"],
         "feature_implementation_evidence": features,
         "latest_operational_caveat_evidence": statuses,
+        "excluded_obsolete_status_hints": superseded_negatives,
         "protected_operational_terms": protected,
         "shown_source_refs": list(allowed),
         "omitted_source_refs": [i for i in range(len(sources)) if i not in allowed],
