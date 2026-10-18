@@ -43,12 +43,12 @@ HTML = """<!doctype html>
     <header>
       <div><p class="eyebrow">OBSIDIAN AUTOMATION</p>
         <h1>サービスの稼働状況</h1>
-        <p class="desc">読み取り専用の管理Dashboard（試作版）</p></div>
+        <p class="desc" id="dashboard-mode-detail">読み取り専用の状態表示です。実操作はWorker有効化時のみ可能です。</p></div>
       <button id="refresh" type="button">状態を更新</button>
     </header>
     <section aria-label="システムの説明" class="notice">
-      <strong>Observation only</strong>
-      <span>この画面からサービスの起動・停止やVaultへの書き込みはできません。</span>
+      <strong id="dashboard-mode-title">Observation only</strong>
+      <span id="dashboard-mode-description">現在は状態確認のみ可能です。サービス操作には権限付きWorkerが必要です。Vaultや設定の変更はできません。</span>
     </section>
     <div class="summary">
       <span id="updated" aria-live="polite">状態を取得しています…</span>
@@ -236,6 +236,21 @@ function invalidateConfirmation() {
   $("preview-confirm").textContent = "実行不可";
   $("preview-confirm").setAttribute("aria-label", "実際のサービス操作は未対応");
 }
+function updateOperatorMode() {
+  const available = ["pause", "resume", "run_once"]
+    .some(action => enabledOperations[action] === true);
+  const heading = $("dashboard-mode-title");
+  const description = $("dashboard-mode-description");
+  const detail = $("dashboard-mode-detail");
+  if (heading) heading.textContent = available
+    ? "サービス操作が有効" : "Observation only";
+  if (description) description.textContent = available
+    ? "権限付きWorkerが利用可能な場合、固定サービスのPause・Resume・Run onceを確認後に実行できます。Vaultと設定の変更はできません。"
+    : "現在は状態確認のみ可能です。サービス操作には権限付きWorkerが必要です。Vaultや設定の変更はできません。";
+  if (detail) detail.textContent = available
+    ? "管理操作はWorkerの現在の状態に依存します。実行時にも再検証します。"
+    : "読み取り専用の状態表示です。実操作はWorker有効化時のみ可能です。";
+}
 async function fetchOperatorReadiness() {
   try {
     const response = await fetch("/api/v1/operator-ready", {
@@ -252,6 +267,8 @@ async function fetchOperatorReadiness() {
     enabledOperations = cap.operations;
   } catch {
     enabledOperations = {pause:false, resume:false, run_once:false};
+  } finally {
+    updateOperatorMode();
   }
 }
 async function refresh() {
@@ -292,6 +309,7 @@ async function refresh() {
     $("preview-check").disabled = true;
     invalidateConfirmation();
     enabledOperations = {pause:false, resume:false, run_once:false};
+    updateOperatorMode();
     $("preview-message").textContent = "観測できないためプレビューできません。";
     $("pipeline-details").replaceChildren();
     $("pipeline-summary").textContent = "Pipeline: 現在の状態は未確認";

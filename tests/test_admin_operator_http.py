@@ -346,3 +346,15 @@ def test_forged_ingress_header_rejected():
         assert f.calls==[]
     finally:
         stop_server(server,t)
+
+
+def test_operator_status_messaging_does_not_claim_read_only_when_available():
+    from obsidian_automation.admin_dashboard import HTML, JS
+    assert 'id="dashboard-mode-title"' in HTML
+    assert 'id="dashboard-mode-description"' in HTML
+    assert 'id="dashboard-mode-detail"' in HTML
+    assert "function updateOperatorMode()" in JS
+    assert "サービス操作が有効" in JS
+    assert "現在は状態確認のみ可能" in HTML
+    assert "権限付きWorkerが利用可能な場合" in JS
+    assert "updateOperatorMode();" in JS
