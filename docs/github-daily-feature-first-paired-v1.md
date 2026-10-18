@@ -201,3 +201,18 @@ This is narrow literal evidence presentation, not a machine assertion that
 the remote site truly installed or started a worker. Ambiguous language
 continues to require human review, and the new feature-first path remains
 Draft/nonpublishing only.
+
+### Source-context safety for status examples
+
+A further independent source-only review found that a code fenced Markdown
+example, a generated LLM output line, or an installation explicitly limited
+to a standalone dev site could still be treated as a production source
+status update. The optional view now scans the complete original source
+field to track fenced-code boundaries, even for long or omitted lines.
+Neither positive nor negative status snippets from fenced code are eligible
+for the optional view. Inline generated/LLM/model output and dev-only
+statements also cannot supersede a production worker blocker. A later
+direct, source-reported production installation *outside* such examples
+remains usable as a scoped hint. No corresponding source text is deleted,
+and unchanged baseline C5 sees full C4 events as before. This is view
+version v6 and must not reuse older view hashes/receipts for publication.

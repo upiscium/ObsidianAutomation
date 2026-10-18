@@ -15,7 +15,7 @@ import re
 from . import github_daily_d1_priority_shadow as d1
 from . import github_daily_c5_source_view as recent
 
-VERSION = "daily-feature-mention-paired-stage-v5"
+VERSION = "daily-feature-mention-paired-stage-v6"
 QUESTION_VERSION = "d1-binary-feature-mention-v1"
 MAX_VIEW_BYTES = 16 * 1024
 MAX_REQUEST_BYTES = 8192
@@ -67,9 +67,43 @@ _CONTROLS_POSITIVE = re.compile(
 _NON_ACTUAL_STATUS = re.compile(
     r"\b(?:not|never|no\s+|without|if|when|would|could|should|may|"
     r"might|will|plan(?:ned)?|intend(?:ed)?|expect(?:ed)?|"
-    r"simulation|simulated|mock|fixture|test-only|hypothetical|tests?|ci|continuous\s+integration|staging|sandbox|development|dev\s+environment|test\s+environment|documentation|documented|docs?|examples?|sample|quot(?:es?|ed|ing)?)\b",
+    r"simulation|simulated|mock|fixture|test-only|hypothetical|tests?|ci|continuous\s+integration|staging|sandbox|development|dev|llm|output|generated|model|runbook|test\s+environment|documentation|documented|docs?|examples?|sample|quot(?:es?|ed|ing)?)\b",
     re.IGNORECASE,
 )
+
+
+def _status_source_lines(value: dict, ref: int, field: str):
+    """Exact original full lines outside Markdown fenced code blocks.
+
+    Unlike a line-only keyword check this scans the *whole original field*,
+    including long lines that the bounded model excerpt may omit, so the
+    enclosing code-fence state cannot be bypassed by splitting chunks.
+    """
+    text=value["text"]
+    skipped_offsets=set()
+    cursor=0
+    active_fence=None
+    for line in text.splitlines(keepends=True):
+        stripped=line.lstrip()
+        candidate=(
+            chr(96)*3 if stripped.startswith(chr(96)*3)
+            else chr(126)*3 if stripped.startswith(chr(126)*3)
+            else None
+        )
+        if candidate is not None:
+            skipped_offsets.add(cursor)
+            if active_fence is None:
+                active_fence=candidate
+            elif candidate==active_fence:
+                active_fence=None
+        elif active_fence is not None:
+            skipped_offsets.add(cursor)
+        cursor+=len(line)
+    if cursor!=len(text):
+        raise FeatureStageError("unreconciled source fence boundaries")
+    for item in _lines(value,ref,field):
+        if item["start"] not in skipped_offsets:
+            yield item
 
 
 def _positive_status_scopes(raw: str) -> tuple[str, ...]:
@@ -81,7 +115,9 @@ def _positive_status_scopes(raw: str) -> tuple[str, ...]:
         return ()
     # A quoted source or inline test fixture is not an observed operator
     # action, even if its *embedded* text says a privileged worker is live.
-    if any(quote in line for quote in ('"', "“", "”", "‘", "’")):
+    if any(quote in line for quote in ('"', "“", "”", "‘", "’", chr(96))):
+        return ()
+    if raw.startswith(("    ", chr(9))):  # indented Markdown/code example
         return ()
     if _NON_ACTUAL_STATUS.search(line):
         return ()
@@ -347,7 +383,7 @@ def build_feature_first_view(context: dict, source_plan: d1.PriorityPlan) -> Fea
             value = _field(src["original_event"],field)
             if value is None:
                 continue
-            for line in _lines(value,src["source_ref"],field):
+            for line in _status_source_lines(value,src["source_ref"],field):
                 for scope in _positive_status_scopes(line["verbatim"]):
                     later_positive.append((scope,line))
     status_candidates = []
@@ -365,7 +401,7 @@ def build_feature_first_view(context: dict, source_plan: d1.PriorityPlan) -> Fea
             value = _field(event,field)
             if value is None:
                 continue
-            for row in _lines(value,ref,field):
+            for row in _status_source_lines(value,ref,field):
                 if (row["source_ref"],row["field"],row["start"]) in seen:
                     continue
                 content = row["verbatim"].lower()
