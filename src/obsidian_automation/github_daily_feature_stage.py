@@ -15,7 +15,7 @@ import re
 from . import github_daily_d1_priority_shadow as d1
 from . import github_daily_c5_source_view as recent
 
-VERSION = "daily-feature-mention-paired-stage-v6"
+VERSION = "daily-feature-mention-paired-stage-v7"
 QUESTION_VERSION = "d1-binary-feature-mention-v1"
 MAX_VIEW_BYTES = 16 * 1024
 MAX_REQUEST_BYTES = 8192
@@ -43,6 +43,19 @@ _STATUS_MARKERS = (
     "critical blocking", "explicit blocker", "still blocking",
     "not complete", "remain blocked", "no actual",
     "未導入", "未マージ", "本番未", "無効", "未完了",
+    "no merge", "not yet qualified", "no change to running",
+    "change to running ga services",
+)
+
+# A current PR may implement an opt-in backend while explicitly leaving the
+# running GA site unchanged. This product-deployment qualifier outranks a
+# later CI/review-only caveat in the *optional* feature-first view. It never
+# proves current production state; historical status is still day-scoped.
+_SITE_NOT_PROMOTED = re.compile(
+    r"\b(?:not (?:yet )?deployed|"
+    r"no (?:merge|new release|change).{0,110}change to running (?:ga )?services|"
+    r"no change to running (?:ga )?services|"
+    r"no production (?:deployment|rollout|promotion))\b", re.IGNORECASE,
 )
 
 # Only explicit original source statements, never a model inference, can
@@ -183,7 +196,9 @@ def _positive_status_scopes(raw: str) -> tuple[str, ...]:
         "production effect worker ", "production worker ",
         "live controls ", "live control ",
         "browser execute ", "execute paths ", "execute path ",
-        "run once ",
+        "run once ", "running ga services ", "running services ",
+        "production site ", "production ga site ",
+        "production services ", "production ga services ",
     )):
         return ()
     scopes = []
@@ -191,6 +206,13 @@ def _positive_status_scopes(raw: str) -> tuple[str, ...]:
         scopes.append("worker")
     if _CONTROLS_POSITIVE.search(line):
         scopes.append("controls")
+    # A later exact site-promotion report can make an older no-live hint
+    # stale. It is still an unverified original-source report, not a probe.
+    if re.fullmatch(
+            r"(?:running (?:ga )?services|production (?:ga )?(?:site|services)) "
+            r"(?:are now|have now been|have been|were|is now|has been) "
+            r"(?:deployed|updated|promoted|replaced)[.!]?", claim):
+        scopes.append("site")
     return tuple(scopes)
 
 
@@ -217,6 +239,8 @@ def _negative_status_scopes(raw: str) -> tuple[str, ...]:
                                         "not installed", "not available",
                                         "can_execute=false","no actual"))):
         scopes.append("controls")
+    if _SITE_NOT_PROMOTED.search(line):
+        scopes.append("site")
     return tuple(scopes)
 
 
@@ -494,10 +518,19 @@ def build_feature_first_view(context: dict, source_plan: d1.PriorityPlan) -> Fea
                           else 1 if any(m in content for m in strong)
                           else 0)
                 status_candidates.append((priority,ref,row["start"],row))
-    # The last relevant source update wins over an older, more keyword-rich
-    # blocker. Specificity only breaks ties *within the same source event*.
-    status_candidates.sort(key=lambda x:(-x[1],-x[0],-x[2]))
-    statuses = [row for _,_,_,row in status_candidates[:MAX_STATUS_LINES]]
+    # A concrete not-promoted/running-site-unchanged statement belongs to
+    # the feature's delivery scope. Prefer it over an unrelated later review
+    # result; ordinary blockers still use latest-original-source precedence.
+    # Scope-specific explicit later positive state changes are *not* inferred
+    # from CI green, merge or test success. The quote is not a live-state proof.
+    site_gates = [item for item in status_candidates
+                  if _SITE_NOT_PROMOTED.search(item[3]["verbatim"])]
+    if site_gates:
+        site_gates.sort(key=lambda x:(-x[1],-x[2]))
+        statuses = [site_gates[0][3]]
+    else:
+        status_candidates.sort(key=lambda x:(-x[1],-x[0],-x[2]))
+        statuses = [row for _,_,_,row in status_candidates[:MAX_STATUS_LINES]]
 
     # Source-exact operational facts are *hints*, not new evidence or facts.
     # Narrow rules for actual documented operator UI; no general translation

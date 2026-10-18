@@ -14,6 +14,7 @@ from typing import Callable
 from . import github_daily_witnessed_narrative as c4
 from . import github_daily_d1_priority_shadow as d1
 from . import github_daily_feature_stage as feature
+from . import github_daily_scope_quality as scope_quality
 from . import github_daily_narrative_runtime as rt
 
 VERSION = "daily-feature-two-path-private-v1"
@@ -118,6 +119,29 @@ def run_private_feature_pair(
                 "model_or_grounding_is_semantic_authority":False,
                 "publication_authorized":False,
             }
+    # Independent source-scope acceptance audit, even when the classifier
+    # chooses baseline-only (e.g. a test-only PR). Advisory flags never
+    # select a winner, hide source, or affect existing C5 admission.
+    def scope_audit(run):
+        if run is None:
+            return None
+        try:
+            grounded = [sentence
+                for entity in run.preview.report()["entities"]
+                for sentence in entity.get("sentences", ())
+                if sentence.get("verdict") == "supported"]
+            return scope_quality.inspect_scope_quality(
+                source_contexts[0]["context"], grounded)
+        except (ValueError, KeyError, TypeError, AttributeError):
+            return {
+                "status": "needs_human_review",
+                "known_rule_violations": ["invalid_scope_quality_input"],
+                "publication_authorized": False,
+                "semantic_completeness_certified": False,
+            }
+
+    baseline_scope = scope_audit(baseline)
+    feature_scope = scope_audit(alternate)
     doc = {
         "record_version":VERSION,
         "stage":"daily_private_feature_first_paired_comparison",
@@ -137,6 +161,8 @@ def run_private_feature_pair(
             alternate.report()["inference_responses_complete"] if alternate is not None else False),
         "feature_first_failure_class":alternate_error,
         "protected_operational_translation_check":protected_quality,
+        "baseline_development_scope_check":baseline_scope,
+        "feature_first_development_scope_check":feature_scope,
         "feature_first_has_no_known_operational_inversion":bool(
             protected_quality is not None and
             protected_quality.get("status")=="no_known_inversion_detected"),
