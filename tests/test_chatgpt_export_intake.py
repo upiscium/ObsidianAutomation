@@ -324,7 +324,7 @@ def test_selector_change_cannot_roll_back_latest_to_older_export(tmp_path):
     inventory_ready(root, scope="scope", commit=True)
     publish_archive(root, export(source, [conversation(text="newer")]))
     inventory_ready(root, scope="scope", commit=True)
-    with pytest.raises(IntakeError, match="out_of_order_selection_requires_new_scope"):
+    with pytest.raises(IntakeError, match="scope_contract_changed"):
         inventory_ready(root, scope="scope", members=["conversations.json"], commit=True)
     assert count(root, "runs") == 2
     assert count(root, "latest") == 1
@@ -383,3 +383,103 @@ def test_empty_conversation_export_never_reports_inventory_only(tmp_path):
     assert result.retained_messages == 0
     assert result.eligible_for_generation is False
     assert count(root, "runs") == 1
+
+
+def test_changed_identity_salt_never_reimports_existing_conversation(tmp_path):
+    root = tmp_path / "private"
+    source = export(tmp_path / "test.zip", [conversation()])
+    publish_archive(root, source)
+    inventory_ready(root, scope="scope", commit=True)
+    salt = root / "state" / "identity-salt.bin"
+    original = salt.read_bytes()
+    salt.write_bytes(os.urandom(32))
+    with pytest.raises(IntakeError, match="identity_salt_changed"):
+        inventory_ready(root, scope="scope", commit=True)
+    assert count(root, "latest") == 1
+    assert count(root, "runs") == 1
+    salt.write_bytes(original)
+    assert inventory_ready(root, scope="scope", commit=True) == ()
+
+
+def test_missing_identity_salt_is_not_recreated_after_import(tmp_path):
+    root = tmp_path / "private"
+    source = export(tmp_path / "test.zip", [conversation()])
+    publish_archive(root, source)
+    inventory_ready(root, scope="scope", commit=True)
+    salt = root / "state" / "identity-salt.bin"
+    salt.unlink()
+    with pytest.raises(IntakeError, match="identity_salt_missing"):
+        inventory_ready(root, scope="scope", commit=True)
+    assert not salt.exists()
+    assert count(root, "latest") == 1
+
+
+def test_missing_journal_not_recreated_with_ready_zip(tmp_path):
+    root = tmp_path / "private"
+    source = export(tmp_path / "test.zip", [conversation()])
+    publish_archive(root, source)
+    with db_connect(root) as conn:
+        assert conn.execute("SELECT count(*) FROM archives").fetchone()[0] == 1
+    (root / "state" / "journal.sqlite3").unlink()
+    with pytest.raises(IntakeError, match="journal_missing_with_ready_archives"):
+        inventory_ready(root, scope="scope")
+    assert not (root / "state" / "journal.sqlite3").exists()
+
+
+def test_interrupted_hardlink_publish_recovers_only_known_staging_alias(tmp_path):
+    root = tmp_path / "private"
+    source = export(tmp_path / "test.zip", [conversation()])
+    receipt = publish_archive(root, source)
+    ready = root / "ready" / (receipt.archive_sha256 + ".zip")
+    staged = root / "staging" / "abandoned.partial"
+    os.link(ready, staged)
+    assert ready.stat().st_nlink == 2
+    first, = inventory_ready(root, scope="scope", commit=True)
+    assert first.added == 1
+    assert ready.stat().st_nlink == 1
+    assert not staged.exists()
+    assert count(root, "runs") == 1
+
+
+def test_unexplained_hardlink_fails_closed(tmp_path):
+    root = tmp_path / "private"
+    source = export(tmp_path / "test.zip", [conversation()])
+    receipt = publish_archive(root, source)
+    ready = root / "ready" / (receipt.archive_sha256 + ".zip")
+    unrelated = tmp_path / "unrelated"  # outside isolated staging
+    os.link(ready, unrelated)
+    try:
+        with pytest.raises(IntakeError, match="unexplained_ready_hardlink"):
+            inventory_ready(root, scope="scope", commit=True)
+        assert count(root, "runs") == 0
+    finally:
+        unrelated.unlink()
+
+
+def test_oversize_selected_text_is_review_required_even_when_children_verified(tmp_path):
+    source = export(
+        tmp_path / "test.zip",
+        [conversation(text="X" * (128 * 1024 + 1), parent_only=False)],
+    )
+    root = tmp_path / "private"
+    publish_archive(root, source)
+    first, = inventory_ready(root, scope="scope", commit=True)
+    assert first.status == "inventory_review_required"
+    assert first.unsupported_parts == 1
+    assert first.unverified_child_links == 0
+    assert first.retained_messages == 1
+    assert first.eligible_for_generation is False
+
+
+def test_selector_change_same_archive_requires_new_scope(tmp_path):
+    source = export(tmp_path / "test.zip", [conversation()])
+    root = tmp_path / "private"
+    publish_archive(root, source)
+    inventory_ready(root, scope="scope", commit=True)
+    with pytest.raises(IntakeError, match="scope_contract_changed"):
+        inventory_ready(root, scope="scope", members=["conversations.json"], commit=True)
+    assert count(root, "runs") == 1
+    # Separate explicit scope has no collision with the established policy.
+    one, = inventory_ready(root, scope="new-scope", members=["conversations.json"], commit=True)
+    assert one.added == 1
+    assert count(root, "latest") == 2

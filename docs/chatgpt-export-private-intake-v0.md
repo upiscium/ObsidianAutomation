@@ -143,3 +143,30 @@ non-deletion, CLI sanitization and no hidden LLM/transport calls.
 
 PR #393 and this intake slice remain Draft until independent validation.
 Neither prototype is sufficient evidence for production-ready Importer.
+
+
+## 2026-10-19 scoped review corrections
+
+The following defects were identified in the first prototype and fixed before
+acceptance consideration. They are not evidence of independent Reviewer PASS:
+
+- Identity salt must be **bound to the existing Journal**. On replacement,
+  deletion after prior use, or missing journal-binding metadata, refuse
+  inventory rather than interpreting historical conversations as new IDs.
+- A ready ZIP with an orphaned staging hard-link (interrupted publication
+  before staging cleanup) is recoverable only when its sole other inode link
+  is a verified 0600 regular file inside the private staging directory.
+  Unexplained hard-links remain rejected. Directory fsync follows cleanup.
+- If ready archives survive but the SQLite Journal is missing, refuse
+  recreating an empty Journal: otherwise a prior import could be silently
+  replayed as all-new.
+- A Source scope binds one immutable selection policy and parser version.
+  Changing the member selector under the same scope, even on the same ZIP,
+  is rejected: create a new explicit scope for migration.
+- Omitted empty/oversize/unsupported content is classified as an explicit
+  inventory review gap; it is never a silent complete-coverage claim.
+
+These are operational data-integrity guarantees in the **single-owned,
+non-hostile UID** model, not guarantees against hostile same-UID processes,
+disk corruption, power loss on all filesystems, or independent model-derived
+acceptance. The service identity and production topology remain unconfigured.

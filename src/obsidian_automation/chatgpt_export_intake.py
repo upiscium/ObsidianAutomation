@@ -146,6 +146,11 @@ def _connect(root: Path) -> sqlite3.Connection:
     path = root / "state" / "journal.sqlite3"
     try:
         if not path.exists() and not path.is_symlink():
+            # Re-creating an empty Journal while archived ready ZIPs remain
+            # would silently discard the import history and reintroduce all
+            # conversations as 'added'. Never auto-reset durable state.
+            if any((root / "ready").iterdir()):
+                raise IntakeError("journal_missing_with_ready_archives")
             fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
             os.close(fd)
             _fsync_dir(path.parent)
@@ -187,6 +192,10 @@ def _connect(root: Path) -> sqlite3.Connection:
                         retained_messages INTEGER NOT NULL
                     );
                     CREATE INDEX runs_lookup ON runs(scope,archive_sha,parser_version,selector_sha);
+                    CREATE TABLE journal_binding (
+                        id INTEGER PRIMARY KEY CHECK(id=1),
+                        salt_sha256 TEXT NOT NULL
+                    );
                     CREATE TABLE latest (
                         scope TEXT NOT NULL,
                         identity_hmac TEXT NOT NULL,
@@ -235,10 +244,12 @@ def _connect(root: Path) -> sqlite3.Connection:
         raise IntakeError("journal_unavailable") from None
 
 
-def _salt(root: Path) -> bytes:
+def _salt(root: Path, conn: sqlite3.Connection) -> bytes:
     path = root / "state" / "identity-salt.bin"
     try:
         if not path.exists() and not path.is_symlink():
+            if conn.execute("SELECT 1 FROM journal_binding WHERE id=1").fetchone():
+                raise IntakeError("identity_salt_missing")
             fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0), 0o600)
             try:
                 os.write(fd, secrets.token_bytes(32))
@@ -261,6 +272,31 @@ def _salt(root: Path) -> bytes:
         raise IntakeError("identity_salt_unavailable") from None
 
 
+def _bind_identity_salt(conn: sqlite3.Connection, salt: bytes) -> None:
+    """Changing an identity key must NEVER produce a fake fresh import."""
+    digest = hashlib.sha256(salt).hexdigest()
+    try:
+        stored = conn.execute(
+            "SELECT salt_sha256 FROM journal_binding WHERE id=1"
+        ).fetchone()
+        if stored is None:
+            # Existing inventory with missing binding is a corrupted store,
+            # not grounds to silently select new conversation identities.
+            prior = conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
+            if prior or conn.execute("SELECT COUNT(*) FROM latest").fetchone()[0]:
+                raise IntakeError("identity_binding_missing")
+            with conn:
+                conn.execute(
+                    "INSERT INTO journal_binding(id,salt_sha256) VALUES(1,?)", (digest,)
+                )
+        elif stored[0] != digest:
+            raise IntakeError("identity_salt_changed")
+    except IntakeError:
+        raise
+    except sqlite3.Error:
+        raise IntakeError("identity_binding_invalid") from None
+
+
 def _safe_source(source: Path, limit: int) -> tuple[int, os.stat_result]:
     fd = -1
     try:
@@ -276,6 +312,45 @@ def _safe_source(source: Path, limit: int) -> tuple[int, os.stat_result]:
         if isinstance(exc, IntakeError):
             raise
         raise IntakeError("unreadable_export_source") from None
+
+
+def _recover_orphaned_staging_link(root: Path, ready: Path) -> None:
+    """Repair a hard-link publish interrupted before staged-file cleanup.
+
+    The ready file may temporarily have link count two after os.link(staging,
+    ready). Reject unexplained hard-links. Only remove the one verified inode
+    alias inside our private staging directory.
+    """
+    try:
+        st = ready.lstat()
+        if (not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid()
+                or stat.S_IMODE(st.st_mode) != 0o600):
+            raise IntakeError("ready_archive_permissions")
+        if st.st_nlink == 1:
+            return
+        if st.st_nlink != 2:
+            raise IntakeError("unexpected_ready_hardlink")
+        matches: list[Path] = []
+        for idx, item in enumerate((root / "staging").iterdir()):
+            if idx >= 1024:
+                raise IntakeError("staging_recovery_limit")
+            if not item.name.endswith(".partial"):
+                continue
+            candidate = item.lstat()
+            if (stat.S_ISREG(candidate.st_mode) and candidate.st_uid == st.st_uid
+                    and stat.S_IMODE(candidate.st_mode) == 0o600
+                    and (candidate.st_ino, candidate.st_dev) == (st.st_ino, st.st_dev)):
+                matches.append(item)
+        if len(matches) != 1:
+            raise IntakeError("unexplained_ready_hardlink")
+        matches[0].unlink()
+        _fsync_dir(root / "staging")
+        if ready.stat().st_nlink != 1:
+            raise IntakeError("staging_recovery_incomplete")
+    except IntakeError:
+        raise
+    except OSError:
+        raise IntakeError("staging_recovery_failed") from None
 
 
 def _verify_ready(path: Path, expected_sha: str, expected_size: int) -> None:
@@ -314,7 +389,11 @@ def publish_archive(root: Path, source: Path, *, limits: Limits = Limits()) -> P
         fd, before = _safe_source(source, limits.archive_bytes)
         temp = root / "staging" / (secrets.token_hex(16) + ".partial")
         try:
-            tmp_fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            try:
+                tmp_fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            except OSError:
+                os.close(fd)  # source descriptor not yet in fdopen's context
+                raise
             try:
                 total, hasher = 0, hashlib.sha256()
                 with os.fdopen(fd, "rb") as inp, os.fdopen(tmp_fd, "wb") as out:
@@ -357,6 +436,7 @@ def publish_archive(root: Path, source: Path, *, limits: Limits = Limits()) -> P
                             (sha,total),
                         )
                 if ready.exists() or ready.is_symlink():
+                    _recover_orphaned_staging_link(root, ready)
                     _verify_ready(ready, sha, total)
                 else:
                     # Hard-link publication fails rather than replacing a
@@ -364,6 +444,7 @@ def publish_archive(root: Path, source: Path, *, limits: Limits = Limits()) -> P
                     try:
                         os.link(temp, ready, follow_symlinks=False)
                     except FileExistsError:
+                        _recover_orphaned_staging_link(root, ready)
                         _verify_ready(ready, sha, total)
                     _fsync_dir(ready.parent)
                 with conn:
@@ -397,10 +478,18 @@ def _identity(salt: bytes, scope: str, conversation_id: str) -> str:
 
 def _summary(batch: SelectedBatch) -> tuple[int, int, int]:
     missing_edges = sum(c.unverified_child_links for c in batch.conversations)
+    # A text record omitted because it is too large, empty or unsupported
+    # is a coverage gap too; never mark the inventory as fully understood.
+    # Internal reasoning, placeholders, hidden/nonfinal and nonconversation
+    # roles are excluded by policy, not treated as missing Knowledge content.
     unsupported_parts = sum(
-        dict(c.omitted_reasons).get("nontext_parts", 0) +
-        dict(c.omitted_reasons).get("unsupported_content", 0)
+        count
         for c in batch.conversations
+        for reason, count in c.omitted_reasons
+        if reason not in {
+            "placeholder", "internal_reasoning", "nonconversation_role",
+            "nonfinal_assistant_message", "hidden_message",
+        }
     )
     retained = sum(len(c.messages) for c in batch.conversations)
     return missing_edges, unsupported_parts, retained
@@ -470,7 +559,18 @@ def inventory_ready(
     with _locked(root):
         conn = _connect(root)
         try:
-            salt = _salt(root)
+            salt = _salt(root, conn)
+            _bind_identity_salt(conn, salt)
+            # Scope selection policy is immutable after the first committed
+            # inventory/rejection. Changing selector or parser without a new
+            # scope could mix incompatible source identities in Latest.
+            contracts = conn.execute(
+                "SELECT DISTINCT selector_sha,parser_version FROM runs WHERE scope=? "
+                "UNION SELECT DISTINCT selector_sha,parser_version FROM rejections WHERE scope=?",
+                (scope, scope),
+            ).fetchall()
+            if any(s != selector or v != NORMALIZER_VERSION for s, v in contracts):
+                raise IntakeError("scope_contract_changed")
             archive_rows = conn.execute(
                 "SELECT archive_sha,archive_bytes FROM archives WHERE status='ready' ORDER BY seq ASC"
             ).fetchall()
@@ -505,6 +605,7 @@ def inventory_ready(
                 if checkpoint is not None and seq < checkpoint:
                     raise IntakeError("out_of_order_selection_requires_new_scope")
                 path = root / "ready" / (archive_sha + ".zip")
+                _recover_orphaned_staging_link(root, path)
                 _verify_ready(path, archive_sha, size)
                 try:
                     batch = normalize_export(path, scope=scope, members=members)
