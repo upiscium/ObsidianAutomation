@@ -23,6 +23,14 @@ PROJECTION_RESULTS="$AI_ROOT/17-Human-Projection-Result"
 REVIEWS="$AI_ROOT/20-Review"
 RECEIPTS="$AI_ROOT/30-Receipts"
 
+# Run the POSIX shell's builtin test as the service UID. On Ubuntu 26.04,
+# external GNU /usr/bin/test can deny valid named-user directory ACLs even
+# when the service user can actually access the directory. Never interpolate
+# user-controlled paths into shell code; pass flag and path as arguments.
+probe_role_access() {
+  runuser -u "$1" -- sh -c 'test "$1" "$2"' sh "$2" "$3"
+}
+
 if [ "$(id -u)" -ne 0 ]; then
   echo "must run as root" >&2
   exit 1
@@ -241,31 +249,31 @@ if [ -e "$STATUS_FILE" ]; then
 fi
 
 # Negative authority checks are deliberate: status has metadata-only access.
-if runuser -u "$STATUS_USER" -- test -w "$ORCHESTRATION"; then
+if probe_role_access "$STATUS_USER" -w "$ORCHESTRATION"; then
   echo "status identity unexpectedly has orchestration directory write authority" >&2
   exit 1
 fi
-if ! runuser -u "$STATUS_USER" -- test -w "$STATUS_DIR"; then
+if ! probe_role_access "$STATUS_USER" -w "$STATUS_DIR"; then
   echo "status identity cannot write status projection directory" >&2
   exit 1
 fi
-if runuser -u "$REVIEWER_USER" -- test -w "$STATUS_DIR"; then
+if probe_role_access "$REVIEWER_USER" -w "$STATUS_DIR"; then
   echo "reviewer unexpectedly has status projection write authority" >&2
   exit 1
 fi
-if runuser -u "$GENERATOR_USER" -- test -r "$SEMANTIC_SELECTIONS" 2>/dev/null; then
+if probe_role_access "$GENERATOR_USER" -r "$SEMANTIC_SELECTIONS" 2>/dev/null; then
   echo "generator unexpectedly reads Semantic Selection Store" >&2
   exit 1
 fi
-if runuser -u "$GENERATOR_USER" -- test -w "$SEMANTIC_SELECTIONS" 2>/dev/null; then
+if probe_role_access "$GENERATOR_USER" -w "$SEMANTIC_SELECTIONS" 2>/dev/null; then
   echo "generator unexpectedly writes Semantic Selection Store" >&2
   exit 1
 fi
-if runuser -u "$STATUS_USER" -- test -r "$AI_ROOT/05-Context" 2>/dev/null; then
+if probe_role_access "$STATUS_USER" -r "$AI_ROOT/05-Context" 2>/dev/null; then
   echo "status identity unexpectedly reads Context stage" >&2
   exit 1
 fi
-if runuser -u "$STATUS_USER" -- test -r "$AI_ROOT/00-Untrusted" 2>/dev/null; then
+if probe_role_access "$STATUS_USER" -r "$AI_ROOT/00-Untrusted" 2>/dev/null; then
   echo "status identity unexpectedly reads Untrusted stage" >&2
   exit 1
 fi
