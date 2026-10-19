@@ -30,7 +30,25 @@ SEMANTIC_SELECTIONS="$AI_ROOT/02-Orchestration/semantic-selections"
 # external GNU test can reject valid named-user directory POSIX ACLs.
 # Keep flag and path as positional parameters, not evaluated shell code.
 probe_role_access() {
-  runuser -u "$1" -- sh -c 'test "$1" "$2"' sh "$2" "$3"
+  # Only an executed, well-formed DENY can satisfy a negative access gate.
+  # A failed runuser/POSIX shell/probe must stop the whole script, not pass.
+  obsidian_access_verdict=$(runuser -u "$1" -- sh -c '
+    test "$1" "$2"
+    probe_rc=$?
+    case "$probe_rc" in
+      0) printf "ALLOW\n" ;;
+      1) printf "DENY\n" ;;
+      *) exit 64 ;;
+    esac
+  ' sh "$2" "$3") || {
+    echo "authority access probe execution failed" >&2
+    exit 1
+  }
+  case "$obsidian_access_verdict" in
+    ALLOW) return 0 ;;
+    DENY) return 1 ;;
+    *) echo "invalid authority access probe verdict" >&2; exit 1 ;;
+  esac
 }
 
 fail() {
