@@ -88,6 +88,24 @@ _NON_ACTUAL_STATUS = re.compile(
 )
 
 
+def _html_comment_open_after_line(line: str, *, initially_open: bool) -> bool:
+    """Carry HTML comment state through any close/reopen on the same line.
+
+    The entire containing line is skipped as a source-status candidate.
+    This is deliberately conservative about inline markup and makes no
+    inference about deployed service state from comment contents.
+    """
+    active=initially_open
+    pos=0
+    while True:
+        marker="-->" if active else "<!--"
+        location=line.find(marker,pos)
+        if location < 0:
+            return active
+        active=not active
+        pos=location+len(marker)
+
+
 def _status_source_lines(value: dict, ref: int, field: str):
     """Exact original lines, excluding bounded Markdown/HTML illustration hints.
 
@@ -127,8 +145,8 @@ def _status_source_lines(value: dict, ref: int, field: str):
         # markers; nothing inside can reclassify the site's status.
         if active_html_comment:
             skipped_offsets.add(cursor)
-            if "-->" in line:
-                active_html_comment=False
+            active_html_comment=_html_comment_open_after_line(
+                line, initially_open=True)
             cursor+=len(line)
             continue
         if active_fence is not None:
@@ -142,7 +160,8 @@ def _status_source_lines(value: dict, ref: int, field: str):
             continue
         if "<!--" in line:
             skipped_offsets.add(cursor)
-            active_html_comment=line.count("<!--")>line.count("-->")
+            active_html_comment=_html_comment_open_after_line(
+                line, initially_open=False)
             cursor+=len(line)
             continue
         if marker is not None:
@@ -175,10 +194,14 @@ def _status_source_lines(value: dict, ref: int, field: str):
             active_unfenced_example=True
             illustrative_payload_seen=False
         elif label in operational_heading:
-            # Only an exact actual/current status label supersedes an
-            # illustration. Composite status/example headings stay samples.
-            active_unfenced_example=False
-            illustrative_payload_seen=False
+            # A purported "Actual status" header directly after a sample
+            # heading (with no sample payload yet) may itself be part of the
+            # example. Do not allow this nested header to authenticate a
+            # production transition. After an actual illustrative payload,
+            # preserve the documented exact-status handoff used by #390/#391.
+            if not active_unfenced_example or illustrative_payload_seen:
+                active_unfenced_example=False
+                illustrative_payload_seen=False
         elif active_unfenced_example and heading is None:
             illustrative_payload_seen=True
         # An arbitrary Markdown heading within an unfenced example is NOT

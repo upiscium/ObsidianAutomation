@@ -45,3 +45,29 @@ their owners' explicit disposition; never double-merge conflicting siblings.
 No source-only status heuristic authorizes deletion, summary publication,
 current production-state assertions, Vault/Nextcloud/LXC updates or a
 `main` merge. The parent #391 remains Draft/unmerged until separate approval.
+
+
+## Exact-head source reviewer corrective cases
+
+The first independent read-only source reviewers of the combined Draft
+`c03790b` found two **P2** illustrative-status escape paths:
+
+1. An exact `## Actual status:` appearing immediately after an illustrative
+   heading, *before any example payload*, could incorrectly end the example
+   and promote an enclosed fake site-update sentence. The consolidated
+   scanner now requires an actual example payload before treating that exact
+   status heading as a new real source section. It still admits genuine
+   explicit status headings *after* an illustrative payload, preserving both
+   siblings' positive cases.
+2. An HTML comment containing `--> <!--` on one line could close and reopen
+   in a way the prior boolean scanner did not track; the next hidden
+   `Running GA services have now been updated` statement became a false
+   candidate. A bounded token-order state machine now handles multiple
+   open/close markers on each original line. This does not provide a
+   semantic or security certification for arbitrary malformed Markdown.
+
+New regressions include these negative escape cases and positive legitimate
+updates after the example paragraph or actual closing HTML-comment boundary.
+The original C4 source remains complete. Source-only independent re-review
+and exact-HEAD full-suite CI are required for the corrective commit, not
+inferred from the earlier PASS results.

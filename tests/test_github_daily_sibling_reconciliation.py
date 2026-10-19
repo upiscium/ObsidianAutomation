@@ -75,3 +75,92 @@ def test_emphasized_real_status_after_comment_and_examples_remains_eligible():
                for row in data["excluded_obsolete_status_hints"])
     assert data["publication_authorized"] is False
     assert data["source_deleted"] is False
+
+
+@pytest.mark.parametrize("prefix,inner_heading", [
+    ("## Example output", "## Actual status:"),
+    ("## Example output ##", "## Actual status: ##"),
+    ("## Model reply ###", "### Current status: ###"),
+    ("## Current status: Sample output (mock)", "## Actual verified status"),
+    ("Example output:", "Actual status:"),
+])
+def test_real_site_caveat_survives_nested_status_header_without_sample_payload(
+    prefix, inner_heading,
+):
+    ctx=tsumgi()
+    ctx["sources"].append(event(
+        2, "pull_request_comment",
+        body=(prefix+"\n"+inner_heading+"\n"
+              "Running GA services have now been updated.\n"),
+    ))
+    view=stage.build_feature_first_view(ctx,d1._original_plan([ctx],CAP)).report()
+    assert not view["excluded_obsolete_status_hints"]
+    assert any("change to running GA services" in row["verbatim"]
+               for row in view["latest_operational_caveat_evidence"])
+    audit=quality.inspect_scope_quality(ctx,[sentence("Nix実装を追加しました。")])
+    assert audit["source_claims"]["site_transition_reported"] is False
+    assert "original_no_deploy_condition_omitted" in audit["known_rule_violations"]
+
+
+def test_real_worker_status_after_immediate_nested_sample_header_stays_example():
+    contexts,_=make_original_feature_context()
+    current=contexts[1]
+    current["sources"].append(event(4,"pull_request_comment",body=(
+        "## Example output\n"
+        "## Actual status:\n"
+        "The privileged effect worker is installed and enabled.\n"
+    )))
+    data=stage.build_feature_first_view(current,d1._original_plan(contexts,CAP)).report()
+    assert not any("worker" in row["superseded_scopes"]
+                   for row in data["excluded_obsolete_status_hints"])
+    assert any("not installed" in row["verbatim"].lower()
+               for row in data["latest_operational_caveat_evidence"])
+    assert data["source_deleted"] is False
+
+
+def test_nested_immediate_status_inside_example_then_real_new_paragraph():
+    ctx=tsumgi()
+    ctx["sources"].append(event(2,"pull_request_comment",body=(
+        "## Example output\n"
+        "## Actual status:\n"
+        "Running GA services have now been updated.\n\n"
+        "Running GA services have now been updated.\n"
+    )))
+    data=stage.build_feature_first_view(ctx,d1._original_plan([ctx],CAP)).report()
+    assert not data["latest_operational_caveat_evidence"]
+    assert any("site" in row["superseded_scopes"]
+               for row in data["excluded_obsolete_status_hints"])
+
+
+@pytest.mark.parametrize("hidden_comment", [
+    "<!--\n--> <!--\nRunning GA services have now been updated.\n-->\n",
+    "<!--\n--> <!--\n## Actual status:\nRunning GA services have now been updated.\n-->\n",
+    "<!-- note --> <!--\nRunning GA services have now been updated.\n-->\n",
+    "<!--\n--> <!--\nRunning GA services have now been updated.\n"
+    "--> <!--\nRunning GA services have now been updated.\n-->\n",
+])
+def test_reopened_html_comment_cannot_supersede_real_site_gate(hidden_comment):
+    ctx=tsumgi()
+    ctx["sources"].append(event(2,"pull_request_comment",body=hidden_comment))
+    view=stage.build_feature_first_view(ctx,d1._original_plan([ctx],CAP)).report()
+    assert not view["excluded_obsolete_status_hints"]
+    assert any("change to running GA services" in row["verbatim"]
+               for row in view["latest_operational_caveat_evidence"])
+    audit=quality.inspect_scope_quality(ctx,[sentence("Nix backendを実装しました。")])
+    assert audit["source_claims"]["site_transition_reported"] is False
+    assert "original_no_deploy_condition_omitted" in audit["known_rule_violations"]
+
+
+def test_html_comment_close_then_genuine_source_update_can_be_seen():
+    ctx=tsumgi()
+    ctx["sources"].append(event(2,"pull_request_comment",body=(
+        "<!--\n"
+        "--> <!--\n"
+        "Running GA services have now been updated.\n"
+        "-->\n"
+        "Running GA services have now been updated.\n"
+    )))
+    data=stage.build_feature_first_view(ctx,d1._original_plan([ctx],CAP)).report()
+    assert any("site" in row["superseded_scopes"]
+               for row in data["excluded_obsolete_status_hints"])
+    assert not data["latest_operational_caveat_evidence"]
