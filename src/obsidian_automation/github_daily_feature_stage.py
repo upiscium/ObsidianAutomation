@@ -156,19 +156,26 @@ def _status_source_lines(value: dict, ref: int, field: str):
                     and marker_length>=active_fence[1]
                     and not remaining):
                 active_fence=None
+            elif (active_unfenced_example and marker is None
+                    and stripped.strip()):
+                # A fence's *actual content* can count as illustrative
+                # payload. Opening/closing (or nested) marker-only lines
+                # cannot authenticate a subsequent "Actual status" heading.
+                illustrative_payload_seen=True
+            cursor+=len(line)
+            continue
+        # A valid Markdown code-fence opener has precedence over literal
+        # HTML-comment tokens in its info string ("~~~text <!-- sample -->").
+        # Inside an active HTML comment, the earlier branch still wins.
+        if marker is not None:
+            skipped_offsets.add(cursor)
+            active_fence=(marker_type,marker_length)
             cursor+=len(line)
             continue
         if "<!--" in line:
             skipped_offsets.add(cursor)
             active_html_comment=_html_comment_open_after_line(
                 line, initially_open=False)
-            cursor+=len(line)
-            continue
-        if marker is not None:
-            skipped_offsets.add(cursor)
-            if active_unfenced_example:
-                illustrative_payload_seen=True
-            active_fence=(marker_type,marker_length)
             cursor+=len(line)
             continue
 

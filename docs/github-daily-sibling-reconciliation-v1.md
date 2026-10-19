@@ -71,3 +71,24 @@ updates after the example paragraph or actual closing HTML-comment boundary.
 The original C4 source remains complete. Source-only independent re-review
 and exact-HEAD full-suite CI are required for the corrective commit, not
 inferred from the earlier PASS results.
+
+
+## Additional boundary review (empty fences and fenced info strings)
+
+The second independent exact-source review found another two narrow P2
+confusions in the same optional lexer. A fenced block without any content
+must not count as example payload merely because its opener was seen, and a
+valid Markdown fence opener containing an `<!-- example -->` annotation in
+its *info string* must still open the fence. The consolidated scanner now
+counts only actual nonempty non-marker content within a fence as payload,
+and parses a valid fence opener before considering HTML-comment markers
+in that opener's own info string; an already-open HTML comment continues to
+take priority. Added regression tests cover empty three-/four-marker fences,
+both marker families, code-fence info annotations, no-status supersession
+from their fake contents, and genuine status assertions outside the fence.
+
+No source excerpt can be elevated into proof of live-site changes by these
+deterministic syntax rules alone. They identify likely direct source reports
+for an opt-in model view; unresolved ambiguity remains subject to separate
+source-level and semantic review. A future stronger lexical grammar should
+be separately scoped if human review reveals many new classes of ambiguity.

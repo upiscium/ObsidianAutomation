@@ -164,3 +164,61 @@ def test_html_comment_close_then_genuine_source_update_can_be_seen():
     assert any("site" in row["superseded_scopes"]
                for row in data["excluded_obsolete_status_hints"])
     assert not data["latest_operational_caveat_evidence"]
+
+
+@pytest.mark.parametrize("empty_fence", [
+    chr(96)*3+"text\n"+chr(96)*3,
+    "~~~~text\n~~~~",
+    chr(96)*4+"text\n"+chr(96)*3+"\n"+chr(96)*4,
+])
+def test_empty_fence_is_not_example_payload_for_immediate_status_header(empty_fence):
+    ctx=tsumgi()
+    ctx["sources"].append(event(2,"pull_request_comment",body=(
+        "## Example output\n"
+        +empty_fence+"\n"
+        "## Actual status:\n"
+        "Running GA services have now been updated.\n"
+    )))
+    data=stage.build_feature_first_view(ctx,d1._original_plan([ctx],CAP)).report()
+    assert not data["excluded_obsolete_status_hints"]
+    assert any("change to running GA services" in row["verbatim"]
+               for row in data["latest_operational_caveat_evidence"])
+    audit=quality.inspect_scope_quality(ctx,[sentence("Nix backendの実装を追加しました。")])
+    assert audit["source_claims"]["site_transition_reported"] is False
+    assert "original_no_deploy_condition_omitted" in audit["known_rule_violations"]
+
+
+@pytest.mark.parametrize("opener,closer", [
+    (chr(96)*3+"text <!-- example -->", chr(96)*3),
+    ("~~~~text <!-- example -->", "~~~~"),
+    (chr(96)*4+"text <!-- example -->", chr(96)*4),
+])
+def test_html_marker_in_fence_info_does_not_unfence_fake_site_status(opener,closer):
+    ctx=tsumgi()
+    ctx["sources"].append(event(2,"pull_request_comment",body=(
+        opener+"\n"
+        "Running GA services have now been updated.\n"
+        +closer+"\n"
+    )))
+    data=stage.build_feature_first_view(ctx,d1._original_plan([ctx],CAP)).report()
+    assert not data["excluded_obsolete_status_hints"]
+    assert any("change to running GA services" in row["verbatim"]
+               for row in data["latest_operational_caveat_evidence"])
+    audit=quality.inspect_scope_quality(ctx,[sentence("Nixバックエンドを追加しました。")])
+    assert audit["source_claims"]["site_transition_reported"] is False
+    assert audit["publication_authorized"] is False
+
+
+def test_html_marker_in_fence_info_then_genuine_later_site_report():
+    ctx=tsumgi()
+    fence=chr(96)*4
+    ctx["sources"].append(event(2,"pull_request_comment",body=(
+        fence+"text <!-- sample -->\n"
+        "Running GA services have now been updated.\n"
+        +fence+"\n"
+        "Running GA services have now been updated.\n"
+    )))
+    data=stage.build_feature_first_view(ctx,d1._original_plan([ctx],CAP)).report()
+    assert any("site" in row["superseded_scopes"]
+               for row in data["excluded_obsolete_status_hints"])
+    assert not data["latest_operational_caveat_evidence"]
