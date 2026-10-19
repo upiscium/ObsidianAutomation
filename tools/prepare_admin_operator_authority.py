@@ -21,6 +21,10 @@ import sys
 # not import a mutable application package before reading/validating any
 # installed package files, even while generating an OFF-by-default manifest.
 import hashlib
+import importlib.util
+import marshal
+import re
+import struct
 
 DEFAULT_AUTHORITY_PATH = Path("/etc/obsidian-admin/authority.json")
 VENV = Path("/opt/obsidian-automation/venv")
@@ -88,6 +92,87 @@ def _pinned_root_regular(path: Path, *, max_bytes: int) -> bytes:
 
 
 
+
+def _verify_equivalent_import_cache(package_root: Path, cache_root: Path, read_pinned) -> None:
+    """Permit ONLY root-owned caches byte-for-byte equivalent to trusted source.
+
+    The final -I -S -B interpreter may *read* a pre-existing .pyc: -B
+    prevents new cache writes, not cache reads. Therefore a source SHA alone
+    cannot authorize an arbitrary cache. Compile the pinned root source (never
+    execute it), compare exact marshal bytes, and independently check the
+    Python cache header. Reject noncanonical paths and compiled extensions.
+    """
+    status = cache_root.lstat()
+    if (not stat.S_ISDIR(status.st_mode) or status.st_uid != 0
+            or stat.S_IMODE(status.st_mode) & 0o022):
+        raise RuntimeError("unreviewed_installed_import_artifact")
+    tag = re.escape(sys.implementation.cache_tag)
+    filename = re.compile(
+        r"([A-Za-z_][A-Za-z0-9_]*)\." + tag +
+        r"(?:\.opt-([12]))?\.pyc\Z"
+    )
+    try:
+        found = 0
+        for cache in cache_root.iterdir():
+            found += 1
+            if found > 256:
+                raise RuntimeError("unreviewed_installed_import_artifact")
+            match = filename.fullmatch(cache.name)
+            detail = cache.lstat()
+            if (
+                match is None or not stat.S_ISREG(detail.st_mode)
+                or detail.st_uid != 0 or detail.st_nlink != 1
+                or stat.S_IMODE(detail.st_mode) & 0o022
+                or not 16 < detail.st_size <= 4 * 1024 * 1024
+            ):
+                raise RuntimeError("unreviewed_installed_import_artifact")
+            stem, optimization = match.groups()
+            source = package_root / (stem + ".py")
+            source_bytes = read_pinned(source, 2 * 1024 * 1024)
+            cached_bytes = read_pinned(cache, 4 * 1024 * 1024)
+            if cached_bytes[:4] != importlib.util.MAGIC_NUMBER:
+                raise RuntimeError("unreviewed_installed_import_artifact")
+            flags = struct.unpack("<I", cached_bytes[4:8])[0]
+            if flags == 0:
+                # Default timestamp-based CPython cache (PEP 3147).
+                source_stat = source.stat()
+                expected_header = struct.pack(
+                    "<II", int(source_stat.st_mtime) & 0xffffffff,
+                    len(source_bytes) & 0xffffffff,
+                )
+            elif flags in (1, 3):
+                # Hash-based CPython cache (PEP 552); both modes are safe only
+                # when the compiled code still exactly equals the source.
+                expected_header = importlib.util.source_hash(source_bytes)
+            else:
+                raise RuntimeError("unreviewed_installed_import_artifact")
+            if cached_bytes[8:16] != expected_header:
+                raise RuntimeError("unreviewed_installed_import_artifact")
+            verified_code = compile(
+                source_bytes, str(source), "exec", dont_inherit=True,
+                optimize=int(optimization or 0),
+            )
+            if cached_bytes[16:] != marshal.dumps(verified_code):
+                raise RuntimeError("unreviewed_installed_import_artifact")
+    except (OSError, UnicodeError, SyntaxError, ValueError, OverflowError, struct.error):
+        raise RuntimeError("unreviewed_installed_import_artifact") from None
+
+def _verify_import_inventory(module_dir: Path) -> None:
+    try:
+        for artifact in module_dir.iterdir():
+            if artifact.name == "__pycache__":
+                _verify_equivalent_import_cache(
+                    module_dir, artifact,
+                    lambda path, bound: _pinned_root_regular(
+                        path, max_bytes=bound,
+                    ),
+                )
+            elif artifact.suffix in (".pyc", ".pyo", ".so", ".pyd"):
+                raise RuntimeError("unreviewed_installed_import_artifact")
+    except (OSError, UnicodeError):
+        raise RuntimeError("unverifiable_installed_import_inventory") from None
+
+
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 
 
@@ -115,18 +200,9 @@ def stage(revision: str) -> None:
     if len(candidates) != 1:
         raise RuntimeError("ambiguous_root_package")
     module_dir = candidates[0]
-    # The final root-only -I -S -B Python runtime must not execute unpinned
-    # __pycache__, compiled extensions or sourceless modules shadowing the
-    # approved .py files. Fail already at stage time, not only on activation.
-    try:
-        for artifact in module_dir.iterdir():
-            if (
-                artifact.name == "__pycache__"
-                or artifact.suffix in (".pyc", ".pyo", ".so", ".pyd")
-            ):
-                raise RuntimeError("unreviewed_installed_import_artifact")
-    except (OSError, UnicodeError):
-        raise RuntimeError("unverifiable_installed_import_inventory") from None
+    # Python -B prevents writes, not reads. Accept only legitimate, pinned
+    # source-equivalent CPython cache bytes, never unverified bytecode/native.
+    _verify_import_inventory(module_dir)
     unit_dir = Path("/etc/systemd/system")
 
     units = {}
