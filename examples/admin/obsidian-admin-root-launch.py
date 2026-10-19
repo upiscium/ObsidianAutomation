@@ -255,7 +255,13 @@ def preflight() -> Path:
         info = component.lstat()
         if (
             info.st_uid != 0
-            or stat.S_IMODE(info.st_mode) & 0o022
+            # Linux reports permissions 0777 for ordinary symlinks; those
+            # bits do not grant authority to replace a root-owned link in
+            # /usr/bin. Verify link ownership and separately pin the fully
+            # resolved interpreter to a root-owned, non-writable /usr/bin
+            # binary. Keep strict mode checks for directories/regular files.
+            or (not stat.S_ISLNK(info.st_mode)
+                and stat.S_IMODE(info.st_mode) & 0o022)
             or not (stat.S_ISDIR(info.st_mode)
                     or stat.S_ISREG(info.st_mode)
                     or stat.S_ISLNK(info.st_mode))
