@@ -26,6 +26,13 @@ REVIEW_DIR="$AI_ROOT/20-Review"
 RECEIPT_DIR="$AI_ROOT/30-Receipts"
 SEMANTIC_SELECTIONS="$AI_ROOT/02-Orchestration/semantic-selections"
 
+# Run the POSIX shell's builtin test as the service UID. Ubuntu 26.04's
+# external GNU test can reject valid named-user directory POSIX ACLs.
+# Keep flag and path as positional parameters, not evaluated shell code.
+probe_role_access() {
+  runuser -u "$1" -- sh -c 'test "$1" "$2"' sh "$2" "$3"
+}
+
 fail() {
   echo "ERROR: $*" >&2
   exit 1
@@ -33,19 +40,19 @@ fail() {
 
 assert_readable() {
   local user=$1 path=$2
-  runuser -u "$user" -- test -r "$path" || fail "$user cannot read $path"
+  probe_role_access "$user" -r "$path" || fail "$user cannot read $path"
 }
 
 assert_not_readable() {
   local user=$1 path=$2
-  if runuser -u "$user" -- test -r "$path"; then
+  if probe_role_access "$user" -r "$path"; then
     fail "$user unexpectedly reads $path"
   fi
 }
 
 assert_not_writable() {
   local user=$1 path=$2
-  if runuser -u "$user" -- test -w "$path"; then
+  if probe_role_access "$user" -w "$path"; then
     fail "$user unexpectedly writes $path"
   fi
 }
