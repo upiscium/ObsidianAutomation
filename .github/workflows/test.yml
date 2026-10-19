@@ -120,32 +120,6 @@ jobs:
               assert value["recurring_services_activated"] is False
           print("PASS: consolidated authority provisioning is idempotent")
           PY
-      - name: Diagnose ACL authority gate after failure (read-only)
-        if: failure()
-        run: |
-          # Diagnostics are restricted to synthetic CI fixture directories.
-          echo "runner-image=${ImageOS:-unknown} release=${ImageVersion:-unknown}"
-          grep -E '^PRETTY_NAME=|^VERSION_ID=' /etc/os-release || true
-          id obsidian-ai-generator || true
-          target=/var/lib/obsidian-ai/state/05-Context
-          sudo namei -l "$target" || true
-          for path in /var /var/lib /var/lib/obsidian-ai /var/lib/obsidian-ai/state "$target"; do
-            echo "=== ACL $path ==="
-            sudo stat -c '%n owner=%u:%g mode=%a perms=%A' "$path" || true
-            sudo getfacl -pn "$path" || true
-          done
-          for flag in -r -x; do
-            if sudo runuser -u obsidian-ai-generator -- /usr/bin/test "$flag" "$target"; then
-              echo "generator $flag Context: ALLOWED"
-            else
-              echo "generator $flag Context: DENIED"
-            fi
-          done
-          sudo runuser -u obsidian-ai-generator -- python3 -c \
-            'import os; p="/var/lib/obsidian-ai/state/05-Context"; print("euid=",os.geteuid(),"access_read=",os.access(p,os.R_OK),"access_search=",os.access(p,os.X_OK)); print("dir_entries=",len(os.listdir(p)))' || true
-          sudo runuser -u obsidian-ai-generator -- /bin/bash -c \
-            'test -r /var/lib/obsidian-ai/state/05-Context && echo "builtin test -r ALLOWED" || echo "builtin test -r DENIED"' || true
-          sudo runuser -u obsidian-ai-generator -- /usr/bin/ls -la "$target" || true
       - name: Verify authority fixture users
         run: |
           for user in \

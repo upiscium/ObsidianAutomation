@@ -291,7 +291,7 @@ def test_refresh_only_upgrade_creates_exact_handoffs_and_checks_cross_role_acces
             allowed = flag == "-r" or (
                 user.endswith("reader") and not path.endswith("embedder")
             ) or (user.endswith("embedder") and path.endswith("embedder"))
-            return authority.CommandResult(0 if allowed else 1, "", "")
+            return authority.CommandResult(0, "ALLOW\n" if allowed else "DENY\n", "")
         return authority.CommandResult(0, "", "")
 
     result = authority.provision_semantic_refresh(runner=runner, require_root=False)
@@ -313,8 +313,102 @@ def test_refresh_only_upgrade_requires_existing_reader_index_authority() -> None
     def runner(argv):
         command = tuple(map(str, argv))
         commands.append(command)
-        return authority.CommandResult(1 if command[:1] == ("runuser",) else 0, "", "")
+        if command[:1] == ("runuser",):
+            return authority.CommandResult(0, "DENY\n", "")
+        return authority.CommandResult(0, "", "")
 
     with pytest.raises(authority.AuthorityProvisionError, match="reader writes existing Index"):
         authority.provision_semantic_refresh(runner=runner, require_root=False)
     assert not any(command[0] in {"install", "setfacl"} for command in commands)
+
+
+
+@pytest.mark.parametrize(
+    ("flag", "answer", "allowed"),
+    [
+        ("-r", "ALLOW", True),
+        ("-r", "DENY", False),
+        ("-w", "ALLOW", True),
+        ("-w", "DENY", False),
+        ("-x", "ALLOW", True),
+        ("-x", "DENY", False),
+    ],
+)
+def test_access_probe_uses_target_identity_and_explicit_verdict(
+    flag: str, answer: str, allowed: bool,
+) -> None:
+    seen = []
+
+    def runner(argv):
+        seen.append(tuple(argv))
+        return authority.CommandResult(0, answer + "\n", "")
+
+    assert authority._can(
+        runner, "obsidian-ai-generator", flag, "/var/lib/obsidian-ai/state/05-Context"
+    ) is allowed
+    assert len(seen) == 1
+    args = seen[0]
+    assert args[:4] == ("runuser", "-u", "obsidian-ai-generator", "--")
+    assert args[4] == sys.executable
+    assert args[5:7] == ("-I", "-c")
+    assert "effective_ids=True" in args[7]
+    assert args[-2:] == (flag, "/var/lib/obsidian-ai/state/05-Context")
+
+
+@pytest.mark.parametrize(
+    ("result", "message"),
+    [
+        (authority.CommandResult(1, "", "permission check unexpectedly failed"),
+         "probe service-user filesystem access failed"),
+        (authority.CommandResult(127, "", "python not executable"),
+         "probe service-user filesystem access failed"),
+        (authority.CommandResult(0, "", ""), "invalid service-user access probe result"),
+        (authority.CommandResult(0, "maybe\n", ""),
+         "invalid service-user access probe result"),
+        (authority.CommandResult(0, "ALLOW\nDENY\n", ""),
+         "invalid service-user access probe result"),
+    ],
+)
+def test_access_probe_fails_closed_on_error_or_ambiguous_result(
+    result: authority.CommandResult, message: str,
+) -> None:
+    with pytest.raises(authority.AuthorityProvisionError, match=message):
+        authority._can(
+            lambda _: result, "obsidian-ai-generator", "-r",
+            "/var/lib/obsidian-ai/state/05-Context",
+        )
+
+
+def test_access_probe_rejects_unsupported_permission_flags() -> None:
+    def forbidden(_):
+        raise AssertionError("unsupported flag should not invoke runuser")
+
+    with pytest.raises(authority.AuthorityProvisionError, match="invalid permission probe"):
+        authority._can(forbidden, "obsidian-ai-generator", "--other", "/var/lib/obsidian-ai")
+
+
+def test_access_probe_respects_actual_directory_mode_under_python(tmp_path: Path) -> None:
+    import subprocess
+
+    folder = tmp_path / "identity"
+    folder.mkdir(mode=0o700)
+    assert subprocess.run(
+        [sys.executable, "-I", "-c", authority._ACCESS_PROBE, "-r", str(folder)],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip() == "ALLOW"
+    assert subprocess.run(
+        [sys.executable, "-I", "-c", authority._ACCESS_PROBE, "-x", str(folder)],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip() == "ALLOW"
+    if authority.os.geteuid() != 0:
+        try:
+            folder.chmod(0o000)
+            for flag in ("-r", "-w", "-x"):
+                verdict = subprocess.run(
+                    [sys.executable, "-I", "-c", authority._ACCESS_PROBE,
+                     flag, str(folder)],
+                    check=True, capture_output=True, text=True,
+                )
+                assert verdict.stdout.strip() == "DENY"
+        finally:
+            folder.chmod(0o700)
