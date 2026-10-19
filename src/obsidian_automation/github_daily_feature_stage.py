@@ -15,7 +15,7 @@ import re
 from . import github_daily_d1_priority_shadow as d1
 from . import github_daily_c5_source_view as recent
 
-VERSION = "daily-feature-mention-paired-stage-v6"
+VERSION = "daily-feature-mention-paired-stage-v7"
 QUESTION_VERSION = "d1-binary-feature-mention-v1"
 MAX_VIEW_BYTES = 16 * 1024
 MAX_REQUEST_BYTES = 8192
@@ -43,6 +43,22 @@ _STATUS_MARKERS = (
     "critical blocking", "explicit blocker", "still blocking",
     "not complete", "remain blocked", "no actual",
     "未導入", "未マージ", "本番未", "無効", "未完了",
+    "no merge", "not yet qualified", "no change to running",
+    "change to running ga services", "services remain unchanged",
+    "services are unchanged",
+)
+
+# A current PR may implement an opt-in backend while explicitly leaving the
+# running GA site unchanged. This product-deployment qualifier outranks a
+# later CI/review-only caveat in the *optional* feature-first view. It never
+# proves current production state; historical status is still day-scoped.
+_SITE_NOT_PROMOTED = re.compile(
+    r"\b(?:not (?:yet )?deployed|"
+    r"no (?:merge|new release|change).{0,110}change to running (?:ga )?services|"
+    r"no change to running (?:ga )?services|"
+    r"(?:running (?:ga )?services|production (?:ga )?(?:site|services))\s+"
+    r"(?:remain|remains|are|is|have remained)\s+(?:unchanged|unmodified)|"
+    r"no production (?:deployment|rollout|promotion))\b", re.IGNORECASE,
 )
 
 # Only explicit original source statements, never a model inference, can
@@ -84,9 +100,39 @@ def _status_source_lines(value: dict, ref: int, field: str):
     cursor=0
     active_fence=None
     active_unfenced_example=False
+    active_html_comment=False
     for line in text.splitlines(keepends=True):
         stripped=line.lstrip()
         normalized=stripped.lower().strip()
+        fence=re.match(r"^(" + chr(96) + r"{3,}|~{3,})", stripped)
+        # Parse literal boundaries BEFORE any headings, including an
+        # operational heading that could otherwise cancel example mode.
+        if active_html_comment:
+            skipped_offsets.add(cursor)
+            if "-->" in line:
+                active_html_comment=False
+            cursor+=len(line)
+            continue
+        if active_fence is not None:
+            skipped_offsets.add(cursor)
+            if (fence is not None and fence.group(1)[0]==active_fence[0]
+                    and len(fence.group(1))>=len(active_fence)
+                    and not stripped[len(fence.group(1)):].strip()):
+                active_fence=None
+            cursor+=len(line)
+            continue
+        if "<!--" in line:
+            # A hidden HTML comment may enclose a seemingly authoritative
+            # status line, and may itself enclose a fenced Markdown marker.
+            skipped_offsets.add(cursor)
+            active_html_comment = line.count("<!--") > line.count("-->")
+            cursor+=len(line)
+            continue
+        if fence is not None:
+            skipped_offsets.add(cursor)
+            active_fence=fence.group(1)
+            cursor+=len(line)
+            continue
         # Unfenced examples are common in GitHub comments. Do not promote
         # standalone literal lines after "Example output:" to real system
         # state, even when they look like valid installation announcements.
@@ -94,8 +140,13 @@ def _status_source_lines(value: dict, ref: int, field: str):
         example_starts=(
             "example output:", "example:", "sample output:",
             "sample:", "expected output:", "generated output:",
-            "model output:", "illustrative output:",
+            "model output:", "illustrative output:", "model reply:",
             "test output:", "example response:")
+        example_heading_labels=(
+            "example output", "example", "sample output", "sample",
+            "expected output", "generated output", "model output",
+            "model reply", "illustrative output", "test output",
+            "example response")
         # A colon-terminated preceding label (including a Markdown heading)
         # can turn the *next* fluent standalone sentence into quoted/example
         # data. Only a deliberately explicit operational-status heading is
@@ -113,8 +164,11 @@ def _status_source_lines(value: dict, ref: int, field: str):
         has_operational_heading=label in operational_heading
         if not label:
             active_unfenced_example=False
-        elif (label.startswith(example_starts) or
-              (label.endswith(":") and not has_operational_heading)):
+        elif (label.startswith(example_starts)
+              or (heading is not None and any(
+                  label == title or label.startswith((title + " ", title + ":"))
+                  for title in example_heading_labels))
+              or (label.endswith(":") and not has_operational_heading)):
             active_unfenced_example=True
         elif heading is not None and has_operational_heading:
             active_unfenced_example=False
@@ -122,21 +176,6 @@ def _status_source_lines(value: dict, ref: int, field: str):
         # is NOT evidence that the example ended. Only a blank line or
         # an explicit current/actual status heading can end it.
         if active_unfenced_example:
-            skipped_offsets.add(cursor)
-        fence=re.match(r"^(" + chr(96) + r"{3,}|~{3,})", stripped)
-        if fence is not None:
-            marker=fence.group(1)
-            tail=stripped[len(marker):].strip()
-            skipped_offsets.add(cursor)
-            if active_fence is None:
-                active_fence=marker
-            elif (marker[0]==active_fence[0] and
-                  len(marker)>=len(active_fence) and not tail):
-                # Opening fences can have language info strings.
-                # A closing fence must have the same marker family,
-                # at least the opening length, and NO info string.
-                active_fence=None
-        elif active_fence is not None:
             skipped_offsets.add(cursor)
         cursor+=len(line)
     if cursor!=len(text):
@@ -183,7 +222,9 @@ def _positive_status_scopes(raw: str) -> tuple[str, ...]:
         "production effect worker ", "production worker ",
         "live controls ", "live control ",
         "browser execute ", "execute paths ", "execute path ",
-        "run once ",
+        "run once ", "running ga services ", "running services ",
+        "production site ", "production ga site ",
+        "production services ", "production ga services ",
     )):
         return ()
     scopes = []
@@ -191,6 +232,13 @@ def _positive_status_scopes(raw: str) -> tuple[str, ...]:
         scopes.append("worker")
     if _CONTROLS_POSITIVE.search(line):
         scopes.append("controls")
+    # A later exact site-promotion report can make an older no-live hint
+    # stale. It is still an unverified original-source report, not a probe.
+    if re.fullmatch(
+            r"(?:running (?:ga )?services|production (?:ga )?(?:site|services)) "
+            r"(?:are now|have now been|have been|were|is now|has been) "
+            r"(?:deployed|updated|promoted|replaced)[.!]?", claim):
+        scopes.append("site")
     return tuple(scopes)
 
 
@@ -217,6 +265,8 @@ def _negative_status_scopes(raw: str) -> tuple[str, ...]:
                                         "not installed", "not available",
                                         "can_execute=false","no actual"))):
         scopes.append("controls")
+    if _SITE_NOT_PROMOTED.search(line):
+        scopes.append("site")
     return tuple(scopes)
 
 
@@ -494,10 +544,19 @@ def build_feature_first_view(context: dict, source_plan: d1.PriorityPlan) -> Fea
                           else 1 if any(m in content for m in strong)
                           else 0)
                 status_candidates.append((priority,ref,row["start"],row))
-    # The last relevant source update wins over an older, more keyword-rich
-    # blocker. Specificity only breaks ties *within the same source event*.
-    status_candidates.sort(key=lambda x:(-x[1],-x[0],-x[2]))
-    statuses = [row for _,_,_,row in status_candidates[:MAX_STATUS_LINES]]
+    # A concrete not-promoted/running-site-unchanged statement belongs to
+    # the feature's delivery scope. Prefer it over an unrelated later review
+    # result; ordinary blockers still use latest-original-source precedence.
+    # Scope-specific explicit later positive state changes are *not* inferred
+    # from CI green, merge or test success. The quote is not a live-state proof.
+    site_gates = [item for item in status_candidates
+                  if _SITE_NOT_PROMOTED.search(item[3]["verbatim"])]
+    if site_gates:
+        site_gates.sort(key=lambda x:(-x[1],-x[2]))
+        statuses = [site_gates[0][3]]
+    else:
+        status_candidates.sort(key=lambda x:(-x[1],-x[0],-x[2]))
+        statuses = [row for _,_,_,row in status_candidates[:MAX_STATUS_LINES]]
 
     # Source-exact operational facts are *hints*, not new evidence or facts.
     # Narrow rules for actual documented operator UI; no general translation
