@@ -66,6 +66,9 @@ def test_compactor_authority_bootstrap_script_is_shell_valid() -> None:
 
     script = path.read_text(encoding="utf-8")
     assert 'setfacl -m "u:$COMPACTOR_USER:rwx" "$REQUEST_DIR"' in script
-    assert 'test -w "$REQUEST_DIR"' in script
-    assert 'test -r "$RESULT_DIR"' in script
-    assert 'test -w "$RESULT_DIR"' in script
+    assert 'probe_role_access "$COMPACTOR_USER" -r "$REQUEST_DIR"' in script
+    assert 'probe_role_access "$COMPACTOR_USER" -w "$REQUEST_DIR"' in script
+    assert 'probe_role_access "$COMPACTOR_USER" -r "$RESULT_DIR"' in script
+    assert 'probe_role_access "$COMPACTOR_USER" -w "$RESULT_DIR"' in script
+    # The last permission check must remain a negative (deny-write) gate.
+    assert 'if probe_role_access "$COMPACTOR_USER" -w "$RESULT_DIR"; then' in script
