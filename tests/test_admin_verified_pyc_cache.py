@@ -186,3 +186,93 @@ def test_symlinked_cache_directory_is_rejected(verifier, tmp_path):
     cache.symlink_to(outside, target_is_directory=True)
     with pytest.raises(RuntimeError, match="unreviewed_"):
         verify(package)
+
+
+
+@pytest.mark.parametrize("marshal_version", [0, 1, 2, 3])
+def test_equivalent_noncanonical_marshal_layout_is_accepted(
+    verifier, marshal_version,
+):
+    """A valid .pyc may encode the same CodeType using different ref markers."""
+    import marshal
+
+    package, cache, verify = verifier
+    cached = cache / f"cli_module.{sys.implementation.cache_tag}.pyc"
+    original = cached.read_bytes()
+    expected = marshal.loads(original[16:])
+    alternate = marshal.dumps(expected, marshal_version)
+    assert marshal.loads(alternate) == expected
+    # Versions <=2 do not encode the reference-table layout used by v4.
+    if marshal_version == 2:
+        assert alternate != original[16:]
+    cached.write_bytes(original[:16] + alternate)
+    assert verify(package) is None
+
+
+@pytest.mark.parametrize("metadata_change", [
+    "filename", "first_line", "code", "constants", "line_table", "exception_table",
+])
+def test_tampered_code_object_metadata_is_rejected(
+    verifier, metadata_change,
+):
+    """Even a correctly framed/cache-tagged marshal stream is not authority."""
+    import marshal
+
+    package, cache, verify = verifier
+    cached = cache / f"cli_module.{sys.implementation.cache_tag}.pyc"
+    original = cached.read_bytes()
+    code = marshal.loads(original[16:])
+    if metadata_change == "filename":
+        untrusted = code.replace(co_filename="/tmp/unverified.py")
+    elif metadata_change == "first_line":
+        untrusted = code.replace(co_firstlineno=code.co_firstlineno+1)
+    elif metadata_change == "code":
+        # A malformed but parseable instruction sequence must not be imported.
+        untrusted = code.replace(co_code=b"\x00\x00")
+    elif metadata_change == "constants":
+        untrusted = code.replace(co_consts=(None, 123456789))
+    elif metadata_change == "line_table":
+        untrusted = code.replace(co_linetable=b"")
+    else:
+        untrusted = code.replace(co_exceptiontable=b"\xff")
+    cached.write_bytes(original[:16] + marshal.dumps(untrusted, 2))
+    with pytest.raises(RuntimeError, match="unreviewed_"):
+        verify(package)
+
+
+def test_non_code_marshal_payload_is_rejected(verifier):
+    import marshal
+
+    package, cache, verify = verifier
+    cached = cache / f"cli_module.{sys.implementation.cache_tag}.pyc"
+    original = cached.read_bytes()
+    cached.write_bytes(original[:16] + marshal.dumps({"raw": "not executable code"}, 2))
+    with pytest.raises(RuntimeError, match="unreviewed_"):
+        verify(package)
+
+
+def test_unused_trailing_marshal_bytes_are_rejected(verifier):
+    package, cache, verify = verifier
+    cached = cache / f"cli_module.{sys.implementation.cache_tag}.pyc"
+    cached.write_bytes(cached.read_bytes() + b"\x00TRAILING_UNVERIFIED")
+    with pytest.raises(RuntimeError, match="unreviewed_"):
+        verify(package)
+
+
+def test_nested_compiled_code_and_exception_metadata_are_checked(verifier):
+    import py_compile
+
+    package, cache, verify = verifier
+    f = package / "complex_module.py"
+    f.write_text(
+        "def outer(bound):\n"
+        "    def inner(value):\n"
+        "        try:\n"
+        "            return {v * 2 for v in range(value) if v < bound}\n"
+        "        except ValueError:\n"
+        "            return set()\n"
+        "    return inner(7)\n",
+        encoding="utf-8",
+    )
+    py_compile.compile(str(f), doraise=True)
+    assert verify(package) is None
