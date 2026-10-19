@@ -6,10 +6,9 @@ Never log/serialize these private dataclasses or their text/IDs.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
-import json
 import re
+from dataclasses import dataclass
 
 from .chatgpt_export_normalize import (
     NORMALIZER_VERSION,
@@ -184,7 +183,7 @@ def _unit_id(
 def build_source_context_page(
     conversation: SelectedConversation, *,
     scope: str, source_hmac: str,
-    cursor: SourceCursor = SourceCursor(),
+    cursor: SourceCursor | None = None,
     max_units: int = 4,
     max_unit_bytes: int = 8192,
     max_page_bytes: int = 32768,
@@ -205,6 +204,8 @@ def build_source_context_page(
             type(max_page_bytes) is not int or not 4 <= max_page_bytes <= MAX_PAGE_BYTES or
             type(max_segments) is not int or not 1 <= max_segments <= MAX_UNIT_SEGMENTS):
         raise SourceContractError("invalid_context_bounds")
+    if cursor is None:
+        cursor = SourceCursor()
     if type(cursor) is not SourceCursor:
         raise SourceContractError("invalid_source_cursor")
     _validate_conversation(conversation)

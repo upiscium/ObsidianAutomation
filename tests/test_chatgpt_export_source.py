@@ -1,15 +1,19 @@
 """Synthetic, read-only unit tests for external ChatGPT Source/Context v0."""
 from __future__ import annotations
 
-from dataclasses import replace
 import json
+from dataclasses import replace
 
 import pytest
 
 from obsidian_automation.chatgpt_export_normalize import normalize_export
 from obsidian_automation.chatgpt_export_source import (
-    SOURCE_KIND, SOURCE_CONTRACT_VERSION, SourceContractError,
-    SourceCursor, build_source_context_page, validate_source_context_page,
+    SOURCE_CONTRACT_VERSION,
+    SOURCE_KIND,
+    SourceContractError,
+    SourceCursor,
+    build_source_context_page,
+    validate_source_context_page,
 )
 
 KEY = "f" * 64
