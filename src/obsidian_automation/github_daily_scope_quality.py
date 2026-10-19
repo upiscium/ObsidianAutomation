@@ -18,6 +18,9 @@ _FALSE_PRODUCT_COMPLETION = re.compile(
     r"(?:[A-Z][A-Za-z0-9_-]{2,30})(?:.{0,12})"
     r"(?:実装|開発)(?:が|は)?(?:完了|済み)"
 )
+_AMBIGUOUS_PR_COMPLETION = re.compile(
+    r"(?:この|当該|本)?PR.{0,14}(?:実装|開発).{0,8}(?:完了|完成|済み)"
+)
 _TEST_SCOPE_JA = re.compile(
     r"(?:テスト専用|テストのみ|テストだけ|テスト用|事前検証|検証専用|試験専用|"
     r"製品コード[^。]{0,20}変更(?:は|を)?(?:していない|なし|されていない))"
@@ -25,12 +28,19 @@ _TEST_SCOPE_JA = re.compile(
 _NOT_LIVE_JA = re.compile(
     r"(?:本番未(?:導入|反映|適用|展開)|"
     r"本番.{0,38}(?:未|していない|されていない|保留|変更なし|承認が必要|別途承認)|"
-    r"(?:デプロイ|反映).{0,20}(?:本番|稼働GA|稼働サービス)|"
+    r"(?:この実装|本機能|今回の変更).{0,60}デプロイ.{0,30}"
+    r"(?:されていません|されていない|していない|未実施)|"
     r"稼働(?:中|環境|GA|サービス).{0,38}"
     r"(?:変更なし|未変更|変更されていない|変更していない|承認が必要|別途承認)|"
     r"(?:running (?:GA )?services|production site).{0,48}"
     r"(?:unchanged|not changed|approval required|not deployed))",
     re.IGNORECASE,
+)
+# Model text may directly *invert* the original site condition. This only
+# marks a scope-specific review risk, never overrides full-original Grounding.
+_DEPLOYED_JA = re.compile(
+    r"(?:デプロイ済み.{0,20}本番|本番.{0,24}"
+    r"(?:稼働中|導入済み|反映済み|デプロイ済み))"
 )
 
 
@@ -109,7 +119,8 @@ def inspect_scope_quality(context: dict, sentences: list[dict]) -> dict:
                 normalized = line["verbatim"].lower()
                 # A title alone is insufficient to identify the change's scope.
                 if ("test only" in normalized or "test-only" in normalized
-                        or "tests only" in normalized or "テスト専用" in normalized):
+                        or "tests only" in normalized or "テスト専用" in normalized
+                        or "テストのみ" in normalized or "試験のみ" in normalized):
                     explicit_test_only.append(line)
                 if ("no product code" in normalized or
                         "no product implementation" in normalized or
@@ -138,10 +149,14 @@ def inspect_scope_quality(context: dict, sentences: list[dict]) -> dict:
         risks.append("later_source_site_transition_requires_human_review")
     if test_only and _FALSE_PRODUCT_COMPLETION.search(summary):
         risks.append("test_only_pr_claimed_product_feature_complete")
+    if test_only and _AMBIGUOUS_PR_COMPLETION.search(summary):
+        risks.append("test_only_pr_completion_scope_ambiguous")
     if test_only and summary and not _TEST_SCOPE_JA.search(summary):
         risks.append("test_only_scope_not_explicit")
     if deployment_condition and summary and not _NOT_LIVE_JA.search(summary):
         risks.append("original_no_deploy_condition_omitted")
+    if deployment_condition and _DEPLOYED_JA.search(summary):
+        risks.append("original_no_deploy_condition_contradicted")
     if (test_only or deployment_condition) and not summary:
         risks.append("empty_summary_requires_review")
     refs = {

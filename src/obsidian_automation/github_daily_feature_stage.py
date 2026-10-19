@@ -44,7 +44,8 @@ _STATUS_MARKERS = (
     "not complete", "remain blocked", "no actual",
     "未導入", "未マージ", "本番未", "無効", "未完了",
     "no merge", "not yet qualified", "no change to running",
-    "change to running ga services",
+    "change to running ga services", "services remain unchanged",
+    "services are unchanged",
 )
 
 # A current PR may implement an opt-in backend while explicitly leaving the
@@ -55,6 +56,8 @@ _SITE_NOT_PROMOTED = re.compile(
     r"\b(?:not (?:yet )?deployed|"
     r"no (?:merge|new release|change).{0,110}change to running (?:ga )?services|"
     r"no change to running (?:ga )?services|"
+    r"(?:running (?:ga )?services|production (?:ga )?(?:site|services))\s+"
+    r"(?:remain|remains|are|is|have remained)\s+(?:unchanged|unmodified)|"
     r"no production (?:deployment|rollout|promotion))\b", re.IGNORECASE,
 )
 
@@ -162,8 +165,9 @@ def _status_source_lines(value: dict, ref: int, field: str):
         if not label:
             active_unfenced_example=False
         elif (label.startswith(example_starts)
-              or (heading is not None and
-                  label.rstrip(":").strip() in example_heading_labels)
+              or (heading is not None and any(
+                  label == title or label.startswith((title + " ", title + ":"))
+                  for title in example_heading_labels))
               or (label.endswith(":") and not has_operational_heading)):
             active_unfenced_example=True
         elif heading is not None and has_operational_heading:

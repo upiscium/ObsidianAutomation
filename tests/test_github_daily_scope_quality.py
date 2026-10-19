@@ -353,3 +353,67 @@ def test_explicit_real_status_after_colonless_example_can_still_report_change():
     ])
     assert scope["source_claims"]["site_transition_reported"] is True
     assert "later_source_site_transition_requires_human_review" in scope["known_rule_violations"]
+
+
+def test_test_only_japanese_source_scope_and_ambiguous_pr_completion():
+    ctx = suzka()
+    ctx["sources"][0]["original_event"]["body"]["text"] = (
+        "テストのみ。製品コードの変更なし。\n"
+        "Product v10 StateWAL integration is a separate gate.\n")
+    result = quality.inspect_scope_quality(ctx, [
+        sentence("このPRの実装が完了しました。テスト専用の検証です。")
+    ])
+    assert result["source_claims"]["test_only"] is True
+    assert "test_only_pr_completion_scope_ambiguous" in result["known_rule_violations"]
+    assert result["status"] == "needs_human_review"
+
+
+def test_ga_site_remains_unchanged_pending_separate_approval_is_not_lost():
+    ctx = tsumgi()
+    body = ctx["sources"][0]["original_event"]["body"]
+    body["text"] = body["text"].replace(
+        "No merge, new release, or change to running GA services without explicit approval.",
+        "The opt-in backend is implemented; running GA services remain unchanged "
+        "pending separate approval.",
+    )
+    view = feature.build_feature_first_view(ctx, d1._original_plan([ctx], CAP))
+    assert "running GA services remain unchanged" in (
+        view.report()["latest_operational_caveat_evidence"][0]["verbatim"])
+    report = quality.inspect_scope_quality(ctx, [
+        sentence("Bonsai Nixバックエンドを実装しました。")
+    ])
+    assert report["source_claims"]["no_site_promotion"] is True
+    assert "original_no_deploy_condition_omitted" in report["known_rule_violations"]
+
+
+@pytest.mark.parametrize("label", ["Example output (mock)", "Model reply (synthetic)",
+                                    "Sample output (fictional)"])
+def test_suffixed_example_heading_cannot_fake_later_site_promotion(label):
+    ctx = tsumgi()
+    ctx["sources"].append(event(2, "pull_request_comment",
+                                 body=f"## {label}\n"
+                                      "Running GA services have now been updated.\n"))
+    view = feature.build_feature_first_view(ctx, d1._original_plan([ctx], CAP))
+    assert "change to running GA services" in (
+        view.report()["latest_operational_caveat_evidence"][0]["verbatim"])
+    report = quality.inspect_scope_quality(ctx, [
+        sentence("新しいNixバックエンドを実装しました。")
+    ])
+    assert report["source_claims"]["site_transition_reported"] is False
+    assert "original_no_deploy_condition_omitted" in report["known_rule_violations"]
+
+
+def test_explicitly_deployed_japanese_sentence_not_accepted_as_no_deploy():
+    report = quality.inspect_scope_quality(tsumgi(), [
+        sentence("Bonsai 2 PQ2_0はデプロイ済みで本番稼働中です。")
+    ])
+    assert "original_no_deploy_condition_omitted" in report["known_rule_violations"]
+    assert "original_no_deploy_condition_contradicted" in report["known_rule_violations"]
+
+
+def test_baseline_undeployed_feature_wording_does_not_get_false_omission():
+    report = quality.inspect_scope_quality(tsumgi(), [
+        sentence("この実装はまだマージ、デプロイ、公開されていません。")
+    ])
+    assert "original_no_deploy_condition_omitted" not in report["known_rule_violations"]
+    assert "original_no_deploy_condition_contradicted" not in report["known_rule_violations"]

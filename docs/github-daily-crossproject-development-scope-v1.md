@@ -65,3 +65,24 @@ into its running product.
 - Keep all parent Draft PRs unmerged, d1-3B Primary unchanged; never
   touch TSUMGI installed profile, Clef, Writer, Timer, Vault, Nextcloud,
   production LXC or publication without separately approved gates.
+
+
+## Narrow corrections from independent source review (2026-10-19)
+
+The private source audit handles explicit Japanese `テストのみ` (with original
+`製品コードの変更なし`) and flags vague `このPRの実装が完了` on a test-only
+PR as **scope ambiguous** requiring human review, without asserting that the
+product was actually implemented. The site-scope lexer now admits explicit
+`running GA services remain unchanged` while preserving the existing
+original-source role and quote/fence checks. Markdown illustration headings
+like `## Example output (mock)` are treated as illustrations, not direct
+deployed-site evidence. An affirmative `デプロイ済みで本番稼働中` cannot
+satisfy a no-deploy omission check and is separately flagged as a
+source-conflicting status if the original no-promotion caveat is active.
+Conversely, `この実装はまだマージ、デプロイ、公開されていません`
+retains its nondeployment meaning in the private comparison.
+
+These are intentionally bounded heuristics for observed failure classes.
+They are **not** a generic contradiction solver, verifier of running system
+state, universal Japanese paraphrase recognizer, or production acceptance
+gate. Ambiguity always remains eligible for full-original human review.
