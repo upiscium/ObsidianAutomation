@@ -317,7 +317,9 @@ def validate_source_context_page(
             any(unit.source_hmac != source_hmac or unit.scope != scope
                 for unit in page.units)):
         raise SourceContractError("context_source_mismatch")
-    if page.generation_authorized or any(unit.generation_authorized for unit in page.units):
+    if (type(page.generation_authorized) is not bool or page.generation_authorized or
+            any(type(unit.generation_authorized) is not bool or unit.generation_authorized
+                for unit in page.units)):
         raise SourceContractError("context_authority_forbidden")
     if (page.omitted_reasons != conversation.omitted_reasons or
             page.unverified_child_links != conversation.unverified_child_links or
@@ -384,6 +386,8 @@ def validate_source_context_page(
         consumed += subtotal
     if consumed != page.text_bytes:
         raise SourceContractError("context_page_bytes_mismatch")
+    if not page.units and idx < len(messages):
+        raise SourceContractError("context_no_progress")
     if (page.next_cursor.message_index, page.next_cursor.text_offset) != (idx, pos):
         raise SourceContractError("context_next_cursor_mismatch")
     if page.complete != (idx == len(messages)):

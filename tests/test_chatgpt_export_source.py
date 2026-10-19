@@ -228,3 +228,23 @@ def test_role_and_unverified_content_cannot_be_promoted(tmp_path):
     result = page(conv)
     with pytest.raises(SourceContractError, match="context_coverage_mismatch"):
         assert_valid(replace(result, unverified_child_links=0), conv)
+
+
+def test_forged_none_authority_flags_rejected(tmp_path):
+    conv = chosen(tmp_path)
+    fragment = page(conv)
+    with pytest.raises(SourceContractError, match="context_authority_forbidden"):
+        assert_valid(replace(fragment, generation_authorized=None), conv)
+    with pytest.raises(SourceContractError, match="context_authority_forbidden"):
+        units = (replace(fragment.units[0], generation_authorized=None),) + fragment.units[1:]
+        assert_valid(replace(fragment, units=units), conv)
+
+
+def test_forged_incomplete_empty_page_not_accepted(tmp_path):
+    conv = chosen(tmp_path)
+    fragment = page(conv)
+    with pytest.raises(SourceContractError, match="context_no_progress"):
+        assert_valid(replace(
+            fragment, units=(), start_cursor=SourceCursor(0, 0),
+            next_cursor=SourceCursor(0, 0), complete=False, text_bytes=0,
+        ), conv)
