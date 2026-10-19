@@ -89,24 +89,42 @@ _NON_ACTUAL_STATUS = re.compile(
 
 
 def _status_source_lines(value: dict, ref: int, field: str):
-    """Exact original full lines outside Markdown fenced code blocks.
+    """Exact original lines, excluding bounded Markdown/HTML illustration hints.
 
-    Unlike a line-only keyword check this scans the *whole original field*,
-    including long lines that the bounded model excerpt may omit, so the
-    enclosing code-fence state cannot be bypassed by splitting chunks.
+    Status candidates are only optional source-presentation hints. The full
+    original source remains in C4/CAS for Grounding and human review.
     """
     text=value["text"]
     skipped_offsets=set()
     cursor=0
     active_fence=None
     active_unfenced_example=False
+    illustrative_payload_seen=False
     active_html_comment=False
+    # Fence closers require matching marker family, equal-or-longer run,
+    # and no trailing language/info string (a nested opener is not a closer).
+    fence_marker_pattern=re.compile(r"^(" + chr(96) + r"{3,}|~{3,})")
+    illustrative_heading_names=frozenset((
+        "example output", "example", "sample output", "sample",
+        "expected output", "generated output", "model output",
+        "model reply", "model response", "llm response", "state excerpt",
+        "illustrative output", "test output", "example response",
+    ))
+    operational_heading=frozenset((
+        "current status:", "actual status:", "production status:",
+        "current production status:", "operator status:",
+        "actual deployment status:", "actual verified status",
+        "actual verified status:",
+    ))
     for line in text.splitlines(keepends=True):
         stripped=line.lstrip()
-        normalized=stripped.lower().strip()
-        fence=re.match(r"^(" + chr(96) + r"{3,}|~{3,})", stripped)
-        # Parse literal boundaries BEFORE any headings, including an
-        # operational heading that could otherwise cancel example mode.
+        marker=fence_marker_pattern.match(stripped)
+        if marker is not None:
+            token=marker.group(1)
+            marker_type,marker_length=token[0],len(token)
+            remaining=stripped[len(token):].strip()
+        # Hidden HTML comments have priority over headings and fenced
+        # markers; nothing inside can reclassify the site's status.
         if active_html_comment:
             skipped_offsets.add(cursor)
             if "-->" in line:
@@ -115,66 +133,56 @@ def _status_source_lines(value: dict, ref: int, field: str):
             continue
         if active_fence is not None:
             skipped_offsets.add(cursor)
-            if (fence is not None and fence.group(1)[0]==active_fence[0]
-                    and len(fence.group(1))>=len(active_fence)
-                    and not stripped[len(fence.group(1)):].strip()):
+            if (marker is not None
+                    and marker_type==active_fence[0]
+                    and marker_length>=active_fence[1]
+                    and not remaining):
                 active_fence=None
             cursor+=len(line)
             continue
         if "<!--" in line:
-            # A hidden HTML comment may enclose a seemingly authoritative
-            # status line, and may itself enclose a fenced Markdown marker.
             skipped_offsets.add(cursor)
-            active_html_comment = line.count("<!--") > line.count("-->")
+            active_html_comment=line.count("<!--")>line.count("-->")
             cursor+=len(line)
             continue
-        if fence is not None:
+        if marker is not None:
             skipped_offsets.add(cursor)
-            active_fence=fence.group(1)
+            if active_unfenced_example:
+                illustrative_payload_seen=True
+            active_fence=(marker_type,marker_length)
             cursor+=len(line)
             continue
-        # Unfenced examples are common in GitHub comments. Do not promote
-        # standalone literal lines after "Example output:" to real system
-        # state, even when they look like valid installation announcements.
-        # A blank line or a Markdown heading ends the illustrative block.
-        example_starts=(
-            "example output:", "example:", "sample output:",
-            "sample:", "expected output:", "generated output:",
-            "model output:", "illustrative output:", "model reply:",
-            "test output:", "example response:")
-        example_heading_labels=(
-            "example output", "example", "sample output", "sample",
-            "expected output", "generated output", "model output",
-            "model reply", "illustrative output", "test output",
-            "example response")
-        # A colon-terminated preceding label (including a Markdown heading)
-        # can turn the *next* fluent standalone sentence into quoted/example
-        # data. Only a deliberately explicit operational-status heading is
-        # admitted as a candidate context; ambiguous headings fail closed.
-        operational_heading=(
-            "current status:", "actual status:", "production status:",
-            "current production status:", "operator status:",
-            "actual deployment status:", "actual verified status",
-            "actual verified status:")
+
+        normalized=stripped.lower().strip()
         heading=re.match(r"^#{1,6}\s+",normalized)
         label=normalized[heading.end():] if heading else normalized
-        # Markdown emphasis on the *label* is presentation, not authority.
-        # "**Model output:**" remains an illustrative block label.
+        if heading is not None:
+            # Markdown ATX headings may end in optional closing hashes.
+            label=re.sub(r"\s+#+\s*$","",label).strip()
+        # Formatting on a literal label adds no operational authority.
         label=label.strip().strip("*_").strip()
-        has_operational_heading=label in operational_heading
+        illustrative=any(
+            re.search(r"(?<![a-z])"+re.escape(name)+r"(?![a-z])",label)
+            for name in illustrative_heading_names
+        )
         if not label:
-            active_unfenced_example=False
-        elif (label.startswith(example_starts)
-              or (heading is not None and any(
-                  label == title or label.startswith((title + " ", title + ":"))
-                  for title in example_heading_labels))
-              or (label.endswith(":") and not has_operational_heading)):
+            # A blank *before* any example payload is not a terminator;
+            # a blank *after* payload may start a real source paragraph.
+            if illustrative_payload_seen:
+                active_unfenced_example=False
+                illustrative_payload_seen=False
+        elif illustrative or (label.endswith(":") and label not in operational_heading):
             active_unfenced_example=True
-        elif heading is not None and has_operational_heading:
+            illustrative_payload_seen=False
+        elif label in operational_heading:
+            # Only an exact actual/current status label supersedes an
+            # illustration. Composite status/example headings stay samples.
             active_unfenced_example=False
-        # An arbitrary heading ("## Notes") inside an unfenced example
-        # is NOT evidence that the example ended. Only a blank line or
-        # an explicit current/actual status heading can end it.
+            illustrative_payload_seen=False
+        elif active_unfenced_example and heading is None:
+            illustrative_payload_seen=True
+        # An arbitrary Markdown heading within an unfenced example is NOT
+        # a boundary. Only a post-payload blank or exact status label ends it.
         if active_unfenced_example:
             skipped_offsets.add(cursor)
         cursor+=len(line)
@@ -194,7 +202,6 @@ def _status_source_lines(value: dict, ref: int, field: str):
         )
         if item["start"] not in skipped_offsets and not quoted:
             yield item
-
 
 def _positive_status_scopes(raw: str) -> tuple[str, ...]:
     """Scopes of literal positive reports, not evidence of real deployment."""
