@@ -137,8 +137,13 @@ def _status_source_lines(value: dict, ref: int, field: str):
         example_starts=(
             "example output:", "example:", "sample output:",
             "sample:", "expected output:", "generated output:",
-            "model output:", "illustrative output:",
+            "model output:", "illustrative output:", "model reply:",
             "test output:", "example response:")
+        example_heading_labels=(
+            "example output", "example", "sample output", "sample",
+            "expected output", "generated output", "model output",
+            "model reply", "illustrative output", "test output",
+            "example response")
         # A colon-terminated preceding label (including a Markdown heading)
         # can turn the *next* fluent standalone sentence into quoted/example
         # data. Only a deliberately explicit operational-status heading is
@@ -156,8 +161,10 @@ def _status_source_lines(value: dict, ref: int, field: str):
         has_operational_heading=label in operational_heading
         if not label:
             active_unfenced_example=False
-        elif (label.startswith(example_starts) or
-              (label.endswith(":") and not has_operational_heading)):
+        elif (label.startswith(example_starts)
+              or (heading is not None and
+                  label.rstrip(":").strip() in example_heading_labels)
+              or (label.endswith(":") and not has_operational_heading)):
             active_unfenced_example=True
         elif heading is not None and has_operational_heading:
             active_unfenced_example=False

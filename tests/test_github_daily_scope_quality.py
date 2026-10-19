@@ -257,3 +257,99 @@ def test_truncated_original_source_requires_review():
     ])
     assert report["source_claims"]["source_scan_incomplete"] is True
     assert report["status"] == "needs_human_review"
+
+
+def test_c4_title_is_advisory_when_created_event_outside_target_day():
+    # Daily C4 can preserve a selected PR title while suppressing the
+    # historical create-event's original title for day-scope reasons.
+    ctx = suzka()
+    ctx["sources"][0]["original_event"]["kind"] = "pull_request_comment"
+    ctx["sources"][0]["original_event"]["title"] = None
+    report = quality.inspect_scope_quality(ctx, [
+        sentence("テスト専用の事前検証でAgentState v10の実装が完了しました。")
+    ])
+    assert report["source_claims"]["test_only"] is True
+    assert "test_only_pr_claimed_product_feature_complete" in report["known_rule_violations"]
+    assert report["model_or_grounding_is_semantic_authority"] is False
+
+
+def test_c4_selected_title_not_a_source_of_implementation_truth():
+    ctx = suzka()
+    ctx["sources"][0]["original_event"]["kind"] = "pull_request_comment"
+    ctx["sources"][0]["original_event"]["title"] = None
+    # Test title by itself cannot assert test-only source evidence.
+    ctx["sources"][0]["original_event"]["body"]["text"] = "Planning next feature."
+    report = quality.inspect_scope_quality(ctx, [
+        sentence("次の作業を計画しました。")
+    ])
+    assert report["source_claims"]["test_only"] is False
+    assert report["semantic_completeness_certified"] is False
+
+
+def test_long_single_original_source_line_never_silently_passes_scope_audit():
+    ctx = tsumgi()
+    original = ctx["sources"][0]["original_event"]["body"]["text"]
+    ctx["sources"][0]["original_event"]["body"]["text"] = original.replace(
+        "No merge, new release, or change to running GA services without explicit approval.",
+        "No merge, new release, or change to running GA services without explicit approval."
+        + " " * 530,
+    )
+    assert len(ctx["sources"][0]["original_event"]["body"]["text"].splitlines()[-1]) > (
+        feature.MAX_SOURCE_LINE_CHARS)
+    report = quality.inspect_scope_quality(ctx, [
+        sentence("Bonsai 2 PQ2_0バックエンドを実装しました。")
+    ])
+    assert report["source_claims"]["source_scan_incomplete"] is True
+    assert report["status"] == "needs_human_review"
+    assert "original_source_scan_incomplete" in report["known_rule_violations"]
+    assert report["publication_authorized"] is False
+    view = feature.build_feature_first_view(ctx, d1._original_plan([ctx], CAP))
+    # A bounded view must not counterfeit a truncated "proof" from a long
+    # line. The audit marks the original not fully visible instead.
+    assert not view.report()["latest_operational_caveat_evidence"]
+    assert view.report()["source_deleted"] is False
+
+
+def test_malformed_selected_title_fails_scope_audit():
+    ctx = suzka()
+    ctx["title"] = 42
+    with pytest.raises(quality.ScopeQualityError, match="title"):
+        quality.inspect_scope_quality(ctx, [sentence("事前検証を行いました。")])
+
+
+@pytest.mark.parametrize("heading", [
+    "Example output", "Sample output", "Model reply",
+    "Expected output", "Generated output", "Test output",
+])
+def test_colonless_example_heading_does_not_supersede_site_gate(heading):
+    ctx = tsumgi()
+    ctx["sources"].append(event(
+        2, "pull_request_comment",
+        body=f"## {heading}\nRunning GA services have now been updated.\n",
+    ))
+    view = feature.build_feature_first_view(ctx, d1._original_plan([ctx], CAP))
+    assert "change to running GA services" in (
+        view.report()["latest_operational_caveat_evidence"][0]["verbatim"])
+    scope = quality.inspect_scope_quality(ctx, [
+        sentence("Bonsaiのオプトイン実装を追加しました。")
+    ])
+    assert "original_no_deploy_condition_omitted" in scope["known_rule_violations"]
+    assert scope["source_claims"]["site_transition_reported"] is False
+
+
+def test_explicit_real_status_after_colonless_example_can_still_report_change():
+    ctx = tsumgi()
+    ctx["sources"].append(event(
+        2, "pull_request_comment",
+        body=("## Example output\n"
+              "Running GA services have now been updated.\n\n"
+              "## Actual status:\n"
+              "Running GA services have now been updated.\n"),
+    ))
+    view = feature.build_feature_first_view(ctx, d1._original_plan([ctx], CAP))
+    assert not view.report()["latest_operational_caveat_evidence"]
+    scope = quality.inspect_scope_quality(ctx, [
+        sentence("本番更新の状況は元コメントで報告されています。")
+    ])
+    assert scope["source_claims"]["site_transition_reported"] is True
+    assert "later_source_site_transition_requires_human_review" in scope["known_rule_violations"]

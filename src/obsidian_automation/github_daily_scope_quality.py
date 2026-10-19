@@ -59,7 +59,17 @@ def inspect_scope_quality(context: dict, sentences: list[dict]) -> dict:
             raise ScopeQualityError("invalid cited model sentence")
         content.append(sentence["text"])
     summary = " ".join(content)
-    test_title = False
+    # C4 owns this selected-entity display title as immutable context data.
+    # The original PR-created event may be outside the target-day source set,
+    # so its title is not necessarily present in original_events. Treat the
+    # selected title as a *risk-detection hint only*, never evidence that the
+    # feature itself was completed or deployed.
+    selected_title = context.get("title")
+    if selected_title is not None and (type(selected_title) is not str
+                                       or len(selected_title) > 512):
+        raise ScopeQualityError("invalid selected-entity title")
+    test_title = bool(type(selected_title) is str
+                      and _TEST_TITLE.match(selected_title.strip()))
     explicit_test_only = []
     product_unchanged = []
     site_not_promoted = []
@@ -87,6 +97,14 @@ def inspect_scope_quality(context: dict, sentences: list[dict]) -> dict:
                 # The full original C4 remains available independently.
                 source_scan_incomplete = True
                 continue
+            if any(len(line) > feature.MAX_SOURCE_LINE_CHARS
+                   for line in value["text"].splitlines(keepends=True)
+                   if line.strip()):
+                # The bounded status lexer omits such lines. Without this
+                # guard a no-GA-cutover condition buried on one long line
+                # can disappear while the risk audit reports no concerns.
+                # Do not invent a cropped/unsafe quote; require review.
+                source_scan_incomplete = True
             for line in feature._status_source_lines(value, idx, field):
                 normalized = line["verbatim"].lower()
                 # A title alone is insufficient to identify the change's scope.

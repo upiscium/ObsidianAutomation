@@ -52,9 +52,16 @@ into its running product.
   exploratory **model quality observations** until audited against exact C4
   source and original Grounding, with separate-day/other-repository
   independently labeled holdout.
-- Where original material is truncated, ambiguous, or includes a later
-  contradictory operational assertion, prefer explicit uncertainty/human
-  review over silently certifying current operational status.
+- Where original material is truncated, ambiguous, contains a single
+  source line beyond the 600-character status-excerpt limit, or includes a
+  later contradictory operational assertion, mark the private audit as
+  requiring human review rather than treating a missing model-visible quote
+  as proof that no production caveat exists. The complete original C4 is
+  unchanged.
+- C4's selected PR title may still exist when the PR-created event belongs
+  to an earlier day. Use this title solely as a test-only *risk-detection
+  hint* alongside actual original test-only/no-product-change statements;
+  never treat the title as evidence that the product was implemented.
 - Keep all parent Draft PRs unmerged, d1-3B Primary unchanged; never
   touch TSUMGI installed profile, Clef, Writer, Timer, Vault, Nextcloud,
   production LXC or publication without separately approved gates.
