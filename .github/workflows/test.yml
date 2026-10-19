@@ -142,7 +142,10 @@ jobs:
             fi
           done
           sudo runuser -u obsidian-ai-generator -- python3 -c \
-            'import os; p="/var/lib/obsidian-ai/state/05-Context"; print("euid=",os.geteuid(),"access_read=",os.access(p,os.R_OK),"access_search=",os.access(p,os.X_OK))' || true
+            'import os; p="/var/lib/obsidian-ai/state/05-Context"; print("euid=",os.geteuid(),"access_read=",os.access(p,os.R_OK),"access_search=",os.access(p,os.X_OK)); print("dir_entries=",len(os.listdir(p)))' || true
+          sudo runuser -u obsidian-ai-generator -- /bin/bash -c \
+            'test -r /var/lib/obsidian-ai/state/05-Context && echo "builtin test -r ALLOWED" || echo "builtin test -r DENIED"' || true
+          sudo runuser -u obsidian-ai-generator -- /usr/bin/ls -la "$target" || true
       - name: Verify authority fixture users
         run: |
           for user in \
