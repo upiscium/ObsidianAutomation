@@ -71,9 +71,24 @@ admin_status.py) in the root-owned installed /opt/obsidian-automation/venv.
 It verifies exact SHA256, stable inodes/owners/modes and no symlink path
 components before execve() of the **fixed root-owned OS interpreter** /usr/bin/python3 with -I -S -B. The virtualenv/bin/python path is NOT executed. BOTH
 interpreter stages run without site initialization and do not generate bytecode, so package .pth hooks
-or sitecustomize cannot execute before exact-source admission. Every unreviewed __pycache__ directory or source-shadowing .pyc/.so/.pyd within the operator package is rejected before execve. The second
+or sitecustomize cannot execute before exact-source admission. Unverified or malformed caches and any source-shadowing direct .pyc/.so/.pyd in the root operator package are rejected before execve. The second
 stage manually adds ONLY the hash-verified, root-owned site-packages
 directory to its interpreter import path before loading the root runtime.
+**#402 cache-handling clarification (source-only, pending release):**
+ordinary managed Python CLIs may regenerate CPython \`__pycache__/*.pyc\` in
+the same root-owned package directory. Python's \`-B\` disables bytecode
+**writes**, not loading an existing valid cache. The updated stdlib-only
+bootstrap and disabled-only staging tool accept a cache directory only when
+it and each cache file are root-owned, not writable by group/others, and
+every cache has a canonical filename, validated Python magic/invalidation
+header and bytecode **exactly equal** to compiling its root-owned source
+using that interpreter/optimization level. The SHA-pinned privileged source
+closure is still checked before import, native extensions and direct
+bytecode shadows are still refused, and a mismatch blocks startup without
+automatically deleting source or cache. This removes the need to keep a
+globally cache-empty Python package indefinitely; it is not permission to
+run unreviewed modules or enable the Worker in production.
+
 The bootstrap passes a **sealed Linux memfd**, bound to SHA256 of the validated private
 authority bytes, through an inherited file descriptor. The Worker validates
 the sealed descriptor and rehashes the authority before construction of any
