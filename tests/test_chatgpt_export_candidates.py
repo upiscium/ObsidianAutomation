@@ -309,3 +309,25 @@ def test_forged_evidence_anchor_is_rejected(tmp_path):
     changed = replace(batch.candidates[0], evidence_anchor_sha256="a" * 64)
     with pytest.raises(CandidateContractError, match="candidate_evidence_mismatch"):
         check(replace(batch, candidates=(changed,)), page, conv)
+
+
+def test_false_semantic_interpretation_never_becomes_accepted_fact(tmp_path):
+    conv, page = source(tmp_path)
+    # A structurally exact quote cannot prove this invented interpretation.
+    candidate = create(conv, page, proposal(
+        summary="User has approved an immediate production deployment.",
+        kind="decision_candidate",
+    ))
+    check(candidate, page, conv)
+    assert candidate.candidates[0].review_state == CANDIDATE_REVIEW_STATE
+    assert candidate.candidates[0].attribution == "user-report-unverified"
+    assert candidate.candidates[0].authority == "none"
+    assert not candidate.human_review_completed
+
+
+def test_existing_vault_context_v1_cannot_impersonate_external_source():
+    from obsidian_automation.artifact_lifecycle import ArtifactLifecycleError
+    from obsidian_automation.context_bundle import _safe_source_parts
+
+    with pytest.raises(ArtifactLifecycleError):
+        _safe_source_parts("chatgpt-export/external-source.md")
