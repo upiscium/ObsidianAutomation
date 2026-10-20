@@ -17,6 +17,7 @@ from obsidian_automation.chatgpt_export_intake import (
 from obsidian_automation.chatgpt_export_reader import (
     READER_VERSION,
     PrivateSourceReaderError,
+    list_private_current_sources,
     read_admitted_source_page,
 )
 from obsidian_automation.chatgpt_export_source import (
@@ -452,3 +453,89 @@ def test_only_explicit_selected_archive_scope_can_be_read(tmp_path):
     )
     assert exact.page.complete
     assert exact.generation_authorized is False
+
+
+def test_private_source_listing_handles_are_opaque_and_readable(tmp_path):
+    root, _ = _initialize(tmp_path, conversation())
+    listed = list_private_current_sources(root, scope=SCOPE)
+    assert len(listed.sources) == 1
+    assert listed.next_after_hmac is None
+    assert listed.generation_authorized is False
+    source = listed.sources[0]
+    assert not source.generation_authorized
+    assert source.source_hmac == _latest(root)[0]
+    assert CONV_ID not in repr(listed)
+    assert SECRET not in repr(source)
+    admitted_page = read_admitted_source_page(
+        root,
+        scope=source.scope,
+        source_hmac=source.source_hmac,
+        expected_content_sha256=source.content_sha256,
+        expected_revision_sha256=source.revision_sha256,
+    )
+    assert admitted_page.page.complete
+    assert not admitted_page.generation_authorized
+
+
+def test_private_source_listing_pagination_and_no_delete(tmp_path):
+    root, _ = _initialize(
+        tmp_path,
+        conversation(identity="a"),
+        conversation(identity="b"),
+    )
+    one = list_private_current_sources(root, scope=SCOPE, max_items=1)
+    assert len(one.sources) == 1
+    assert one.next_after_hmac == one.sources[0].source_hmac
+    two = list_private_current_sources(
+        root,
+        scope=SCOPE,
+        max_items=1,
+        after_hmac=one.next_after_hmac,
+    )
+    assert len(two.sources) == 1
+    assert two.next_after_hmac is None
+    assert two.sources[0].source_hmac != one.sources[0].source_hmac
+
+    # A later Export without one of the originals keeps historical Latest
+    # for no-delete but current listing includes only the actual new scope run.
+    latest = archive(tmp_path / "one-only.zip", [conversation(identity="a")])
+    publish_archive(root, latest)
+    inventory_ready(root, scope=SCOPE, commit=True)
+    filtered = list_private_current_sources(root, scope=SCOPE)
+    assert len(filtered.sources) == 1
+
+
+def test_listing_blocks_uncommitted_future_export_and_wrong_selector(tmp_path):
+    root, _ = _initialize(tmp_path, conversation())
+    changed = archive(
+        tmp_path / "changed.zip",
+        [
+            conversation(text="Future revision"),
+        ],
+    )
+    publish_archive(root, changed)
+    with pytest.raises(
+        PrivateSourceReaderError,
+        match="newer_unprocessed_or_rejected_archive",
+    ):
+        list_private_current_sources(root, scope=SCOPE)
+    inventory_ready(root, scope=SCOPE, commit=True)
+    with pytest.raises(
+        PrivateSourceReaderError,
+        match="source_listing_contract_mismatch",
+    ):
+        list_private_current_sources(root, scope=SCOPE, members=["conversations.json"])
+
+
+@pytest.mark.parametrize("max_items", [0, 129, True, -1])
+def test_listing_bound_is_strict_and_does_not_initialize_root(tmp_path, max_items):
+    missing = tmp_path / "nonexistent-private-root"
+    with pytest.raises(PrivateSourceReaderError, match="invalid_source_listing_limit"):
+        list_private_current_sources(missing, scope=SCOPE, max_items=max_items)
+    assert not missing.exists()
+
+
+def test_list_empty_scope_fails_without_returning_stale_rows(tmp_path):
+    root, _ = _initialize(tmp_path, conversation())
+    with pytest.raises(PrivateSourceReaderError, match="no_committed_scope_run"):
+        list_private_current_sources(root, scope="different-scope")

@@ -9,7 +9,8 @@ awaiting_human_review pipeline; this PR **does not implement that Job**.
 
 Two new modules (pure input metadata / no side-effectful shared AI actions):
 
-1. chatgpt_export_reader.read_admitted_source_page
+1. chatgpt_export_reader.list_private_current_sources and
+   read_admitted_source_page
 2. chatgpt_export_review_preview.prepare_private_review_preview,
    build_private_review_preview and revalidate_private_review_preview
 
@@ -20,7 +21,14 @@ A reader operates under a shared advisory flock compatible with existing
 Intake's exclusive writer lock. The SQLite database is opened with
 mode=ro and query_only; no updates, shadow journals or HMAC regeneration.
 
-The private selector must explicitly provide:
+A future private UI can call list_private_current_sources with a limited
+page size and optional opaque HMAC cursor. It returns only the **currently
+present** conversation's HMAC identity and exact content/revision hashes,
+not titles, raw IDs, quotes or plaintext. Historical Latest entries for
+conversations absent in the newest Export remain durable but are excluded
+from the current listing. An uncommitted newer archive blocks listing.
+
+The private Reader's selector must explicitly provide:
 
 - exact scope (matching committed Journal selection policy);
 - HMAC conversation identity from the private Journal;
@@ -104,7 +112,8 @@ Strictly synthetic and Fake-Provider-only: no real ChatGPT ZIP is read,
 persisted, submitted or sent to the network by these tests.
 
 - a complete synthetic ZIP → immutable-ready Intake → committed Journal
-  → private Reader → strict Fake-Provider JSON → validated preview;
+  → private opaque source listing → private Reader → strict Fake-Provider JSON
+  → validated preview;
 - Unicode pagination across page boundaries without text loss;
 - missing/corrupt Journal, missing/changed salt, invalid permissions,
   unsafe symlink, tampered ready ZIP, unsupported scope/member selector;

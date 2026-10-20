@@ -404,3 +404,112 @@ def read_admitted_source_page(
             page=page,
             conversation=conversation,
         )
+
+
+@dataclass(frozen=True, repr=False)
+class PrivateSourceDescriptor:
+    """Opaque private identity and digests; no original title/ID/message."""
+
+    scope: str
+    source_hmac: str
+    content_sha256: str
+    revision_sha256: str
+    generation_authorized: bool = False
+
+
+@dataclass(frozen=True, repr=False)
+class PrivateSourceInventoryPage:
+    scope: str
+    sources: tuple[PrivateSourceDescriptor, ...]
+    next_after_hmac: str | None
+    generation_authorized: bool = False
+
+
+def list_private_current_sources(
+    root: Path,
+    *,
+    scope: str,
+    members: Sequence[str] = (),
+    after_hmac: str | None = None,
+    max_items: int = 16,
+) -> PrivateSourceInventoryPage:
+    """List bounded opaque *current* source handles from the private Journal.
+
+    Only in-memory records; never plaintext titles or conversation IDs.
+    A missing/updated/rejected Export blocks the listing. This enables a
+    future explicit scope selector without giving raw ZIPs to the WebUI.
+    """
+    try:
+        _valid_scope(scope)
+        selector_sha = _selector_sha(members)
+    except IntakeError:
+        raise PrivateSourceReaderError("invalid_source_selection") from None
+    if type(max_items) is not int or not 1 <= max_items <= 128:
+        raise PrivateSourceReaderError("invalid_source_listing_limit")
+    if after_hmac is not None:
+        _hex(after_hmac, "invalid_source_listing_cursor")
+    root = _existing_private_root(root)
+    with _read_locked(root), _open_readonly_journal(root) as conn:
+        _read_bound_salt(root, conn)
+        try:
+            latest_seq = conn.execute(
+                "SELECT MAX(a.seq) FROM runs r JOIN archives a ON "
+                "r.archive_sha=a.archive_sha WHERE r.scope=?",
+                (scope,),
+            ).fetchone()[0]
+            if type(latest_seq) is not int or latest_seq < 1:
+                raise PrivateSourceReaderError("no_committed_scope_run")
+            if (
+                conn.execute(
+                    "SELECT 1 FROM archives WHERE status='ready' AND seq>? LIMIT 1",
+                    (latest_seq,),
+                ).fetchone()
+                is not None
+            ):
+                raise PrivateSourceReaderError("newer_unprocessed_or_rejected_archive")
+            data = conn.execute(
+                "SELECT l.identity_hmac,l.content_sha,l.revision_sha,"
+                " r.parser_version,r.selector_sha,r.status "
+                "FROM latest l JOIN runs r ON l.last_run_id=r.run_id "
+                "JOIN archives a ON r.archive_sha=a.archive_sha "
+                "WHERE l.scope=? AND r.scope=? AND a.seq=? AND "
+                "l.identity_hmac>? ORDER BY l.identity_hmac LIMIT ?",
+                (scope, scope, latest_seq, after_hmac or "", max_items + 1),
+            ).fetchall()
+        except PrivateSourceReaderError:
+            raise
+        except sqlite3.Error:
+            raise PrivateSourceReaderError("source_listing_failed") from None
+        result = []
+        for hmac, content, revision, parser, selector, status in data[:max_items]:
+            _hex(hmac, "invalid_source_listing_hmac")
+            _hex(content, "invalid_source_listing_content")
+            _hex(revision, "invalid_source_listing_revision")
+            if (
+                parser != NORMALIZER_VERSION
+                or selector != selector_sha
+                or status not in ("inventory_only", "inventory_review_required")
+            ):
+                raise PrivateSourceReaderError("source_listing_contract_mismatch")
+            verified_content, verified_revision, _, _, _, _ = _lookup_latest(
+                conn,
+                scope=scope,
+                source_hmac=hmac,
+                selector_sha=selector_sha,
+            )
+            if verified_content != content or verified_revision != revision:
+                raise PrivateSourceReaderError("source_listing_inconsistent")
+            result.append(
+                PrivateSourceDescriptor(
+                    scope=scope,
+                    source_hmac=hmac,
+                    content_sha256=content,
+                    revision_sha256=revision,
+                )
+            )
+        cursor = result[-1].source_hmac if len(data) > max_items else None
+        return PrivateSourceInventoryPage(
+            scope=scope,
+            sources=tuple(result),
+            next_after_hmac=cursor,
+        )
