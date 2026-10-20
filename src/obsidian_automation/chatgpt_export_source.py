@@ -321,7 +321,9 @@ def validate_source_context_page(
             any(type(unit.generation_authorized) is not bool or unit.generation_authorized
                 for unit in page.units)):
         raise SourceContractError("context_authority_forbidden")
-    if (page.omitted_reasons != conversation.omitted_reasons or
+    if (type(page.unverified_child_links) is not int or
+            type(page.off_branch_nodes) is not int or
+            page.omitted_reasons != conversation.omitted_reasons or
             page.unverified_child_links != conversation.unverified_child_links or
             page.off_branch_nodes != conversation.off_branch_nodes):
         raise SourceContractError("context_coverage_mismatch")
@@ -390,5 +392,5 @@ def validate_source_context_page(
         raise SourceContractError("context_no_progress")
     if (page.next_cursor.message_index, page.next_cursor.text_offset) != (idx, pos):
         raise SourceContractError("context_next_cursor_mismatch")
-    if page.complete != (idx == len(messages)):
+    if type(page.complete) is not bool or page.complete != (idx == len(messages)):
         raise SourceContractError("context_completion_mismatch")

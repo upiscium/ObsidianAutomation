@@ -248,3 +248,17 @@ def test_forged_incomplete_empty_page_not_accepted(tmp_path):
             fragment, units=(), start_cursor=SourceCursor(0, 0),
             next_cursor=SourceCursor(0, 0), complete=False, text_bytes=0,
         ), conv)
+
+
+def test_forged_boolean_or_number_metadata_type_fails_closed(tmp_path):
+    conv = chosen(tmp_path, alternate=True)
+    original = page(conv)
+    assert original.complete is True
+    assert original.off_branch_nodes == 1
+
+    # bool subclasses int in Python, but page metadata must retain the
+    # exact source contract field type. A truthy success marker is not enough.
+    with pytest.raises(SourceContractError, match="context_completion_mismatch"):
+        assert_valid(replace(original, complete=1), conv)
+    with pytest.raises(SourceContractError, match="context_coverage_mismatch"):
+        assert_valid(replace(original, off_branch_nodes=True), conv)
