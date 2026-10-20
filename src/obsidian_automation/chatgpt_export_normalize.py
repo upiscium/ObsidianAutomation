@@ -184,7 +184,11 @@ def _select_message(node_id: str, node: dict) -> tuple[SelectedMessage | None, s
     # Real Export contains assistant-only thoughts/reasoning_recap records.
     # They are NOT final user-visible answers or independent knowledge evidence.
     if isinstance(content_type, str) and content_type in {"thoughts", "reasoning_recap"}:
-        return None, "internal_reasoning"
+        # Real-Export evidence confirms these are assistant-only internal
+        # content types. If a future/schema-changed Export assigns one to a
+        # USER message, do not silently treat the user's text as ignorable.
+        # Downstream Inventory must flag this as incomplete source coverage.
+        return None, "internal_reasoning" if role == "assistant" else "unsupported_content"
     if not isinstance(content_type, str) or content_type not in _VISIBLE_CONTENT:
         return None, "unsupported_content"
     parts = content.get("parts")

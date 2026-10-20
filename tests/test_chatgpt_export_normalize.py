@@ -364,3 +364,16 @@ def test_inconsistent_internal_selection_fails_closed_without_assert(tmp_path, m
     monkeypatch.setattr(module, "_select_message", broken)
     with pytest.raises(NormalizeError, match="selected_message_invariant"):
         run(archive(tmp_path, [payload]))
+
+
+@pytest.mark.parametrize("reasoning_type", ["thoughts", "reasoning_recap"])
+def test_user_assigned_internal_reasoning_type_is_not_silently_omitted(tmp_path, reasoning_type):
+    data = conversation()
+    data["mapping"]["first"]["message"]["content"] = {
+        "content_type": reasoning_type, "content": SECRET,
+    }
+    normalized = run(archive(tmp_path, [data])).conversations[0]
+    assert [m.text for m in normalized.messages] == ["answer", SECRET]
+    assert ("unsupported_content", 1) in normalized.omitted_reasons
+    assert ("internal_reasoning", 1) not in normalized.omitted_reasons
+    assert SECRET not in repr(normalized)
