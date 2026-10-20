@@ -102,8 +102,19 @@ def _validate_conversation(conv: SelectedConversation) -> None:
             not _SHA256.fullmatch(conv.content_sha256) or
             not _SHA256.fullmatch(conv.source_revision_sha256)):
         raise SourceContractError("invalid_source_identity")
+    if type(conv.messages) is not tuple:
+        raise SourceContractError("invalid_source_messages")
     if len(conv.messages) > 500_000:
         raise SourceContractError("source_message_limit")
+    if (type(conv.omitted_reasons) is not tuple or
+            type(conv.selected_path_nodes) is not int or
+            type(conv.off_branch_nodes) is not int or
+            type(conv.unverified_child_links) is not int or
+            any(v < 0 for v in (
+                conv.selected_path_nodes, conv.off_branch_nodes,
+                conv.unverified_child_links,
+            ))):
+        raise SourceContractError("invalid_source_coverage")
     semantic = []
     total = 0
     seen_ids: set[str] = set()
@@ -305,6 +316,10 @@ def validate_source_context_page(
     """Re-read exact source coordinates; reject stale/misbound text context."""
     if type(page) is not SourceContextPage:
         raise SourceContractError("invalid_context_page")
+    if type(page.units) is not tuple or any(
+        type(unit) is not ExtractionUnit for unit in page.units
+    ):
+        raise SourceContractError("invalid_context_units")
     _validate_conversation(conversation)
     if (page.contract_version != SOURCE_CONTRACT_VERSION or
             page.source_kind != SOURCE_KIND or
@@ -346,13 +361,13 @@ def validate_source_context_page(
                 unit.conversation_content_sha256 != conversation.content_sha256 or
                 unit.source_revision_sha256 != conversation.source_revision_sha256):
             raise SourceContractError("context_contract_mismatch")
-        if not unit.evidence or len(unit.evidence) > MAX_UNIT_SEGMENTS:
+        if (type(unit.evidence) is not tuple or
+                not unit.evidence or len(unit.evidence) > MAX_UNIT_SEGMENTS or
+                any(type(sl) is not EvidenceSlice for sl in unit.evidence)):
             raise SourceContractError("context_segments_invalid")
-        if unit.unit_id != _unit_id(
-            scope=scope, source_hmac=source_hmac,
-            semantic_sha=conversation.content_sha256, evidence=unit.evidence,
-        ):
-            raise SourceContractError("context_unit_digest_mismatch")
+        # Verify every span and its primitive type before hashing unit IDs.
+        # JSON hashing untrusted malformed members too early would otherwise
+        # raise raw TypeError instead of the fixed SourceContractError.
         previous = messages[idx - 1].text_sha256 if idx else None
         if unit.previous_source_message_sha256 != previous:
             raise SourceContractError("context_adjacent_source_mismatch")
@@ -363,8 +378,11 @@ def validate_source_context_page(
                 raise SourceContractError("context_span_invalid")
             msg = messages[sl.message_index]
             if (sl.node_id != msg.node_id or sl.message_id != msg.message_id or
-                    sl.role != msg.role or sl.attribution != _attribution(msg.role) or
+                    type(sl.role) is not str or sl.role != msg.role or
+                    sl.attribution != _attribution(msg.role) or
+                    type(sl.source_text_sha256) is not str or
                     sl.source_text_sha256 != msg.text_sha256 or
+                    type(sl.text_sha256) is not str or
                     type(sl.start_codepoint) is not int or type(sl.end_codepoint) is not int or
                     not 0 <= sl.start_codepoint < sl.end_codepoint <= len(msg.text)):
                 raise SourceContractError("context_provenance_mismatch")
@@ -380,6 +398,11 @@ def validate_source_context_page(
                 pos = 0
             else:
                 pos = sl.end_codepoint
+        if unit.unit_id != _unit_id(
+            scope=scope, source_hmac=source_hmac,
+            semantic_sha=conversation.content_sha256, evidence=unit.evidence,
+        ):
+            raise SourceContractError("context_unit_digest_mismatch")
         next_digest = messages[idx].text_sha256 if idx < len(messages) else None
         if unit.following_source_message_sha256 != next_digest:
             raise SourceContractError("context_adjacent_source_mismatch")

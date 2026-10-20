@@ -172,7 +172,7 @@ def test_tampering_text_hash_span_and_gap_fail_closed(tmp_path):
     with pytest.raises(SourceContractError):
         assert_valid(replace(original, units=(replace(unit0, evidence=(forged,)),)+original.units[1:]), conv)
     new_sl = replace(sl, start_codepoint=1, text=sl.text[1:])
-    with pytest.raises(SourceContractError, match="context_unit_digest_mismatch"):
+    with pytest.raises(SourceContractError, match="context_gap_or_overlap"):
         assert_valid(replace(original, units=(replace(unit0, evidence=(new_sl,)),)+original.units[1:]), conv)
     with pytest.raises(SourceContractError, match="context_next_cursor_mismatch"):
         assert_valid(replace(original, next_cursor=SourceCursor(0, 0)), conv)
@@ -262,3 +262,56 @@ def test_forged_boolean_or_number_metadata_type_fails_closed(tmp_path):
         assert_valid(replace(original, complete=1), conv)
     with pytest.raises(SourceContractError, match="context_coverage_mismatch"):
         assert_valid(replace(original, off_branch_nodes=True), conv)
+
+
+@pytest.mark.parametrize("invalid", [None, False, 0, "opaque", {}, [], [None], (None,)])
+def test_untrusted_page_units_fail_with_fixed_source_error(tmp_path, invalid):
+    conv = chosen(tmp_path)
+    fragment = page(conv)
+    with pytest.raises(SourceContractError, match="invalid_context_units") as exc:
+        assert_valid(replace(fragment, units=invalid), conv)
+    assert PRIVATE not in str(exc.value)
+
+
+@pytest.mark.parametrize("invalid", [None, False, 1, "opaque", {}, [], [None], (None,)])
+def test_untrusted_unit_evidence_fail_with_fixed_source_error(tmp_path, invalid):
+    conv = chosen(tmp_path)
+    fragment = page(conv)
+    forged = replace(fragment.units[0], evidence=invalid)
+    with pytest.raises(SourceContractError, match="context_segments_invalid") as exc:
+        assert_valid(replace(fragment, units=(forged,)), conv)
+    assert PRIVATE not in str(exc.value)
+
+
+@pytest.mark.parametrize("invalid", [None, False, 2, "opaque", {}, []])
+def test_untrusted_selected_messages_fail_with_fixed_source_error(tmp_path, invalid):
+    conv = chosen(tmp_path)
+    with pytest.raises(SourceContractError, match="invalid_source_messages") as exc:
+        page(replace(conv, messages=invalid))
+    assert PRIVATE not in str(exc.value)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("selected_path_nodes", True),
+    ("off_branch_nodes", -1),
+    ("unverified_child_links", None),
+    ("omitted_reasons", []),
+])
+def test_untrusted_selected_coverage_fails_closed(tmp_path, field, value):
+    conv = chosen(tmp_path)
+    with pytest.raises(SourceContractError, match="invalid_source_coverage"):
+        page(replace(conv, **{field: value}))
+
+
+@pytest.mark.parametrize("field", [
+    "message_index", "role", "start_codepoint", "end_codepoint", "text_sha256",
+])
+def test_non_json_span_fields_rejected_before_unit_digest_hash(tmp_path, field):
+    conv = chosen(tmp_path)
+    fragment = page(conv)
+    first = fragment.units[0]
+    forged_slice = replace(first.evidence[0], **{field: object()})
+    forged_unit = replace(first, evidence=(forged_slice,) + first.evidence[1:])
+    with pytest.raises(SourceContractError) as exc:
+        assert_valid(replace(fragment, units=(forged_unit,) + fragment.units[1:]), conv)
+    assert PRIVATE not in str(exc.value)
