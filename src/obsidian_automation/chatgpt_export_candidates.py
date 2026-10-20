@@ -270,7 +270,15 @@ def validate_candidate_batch(
             batch.human_review_completed or
             type(batch.generation_authorized) is not bool or batch.generation_authorized):
         raise CandidateContractError("candidate_authority_forbidden")
+    if type(batch.candidates) is not tuple:
+        raise CandidateContractError("invalid_candidate_batch")
     if len(batch.candidates) > MAX_CANDIDATES_PER_PAGE:
+        raise CandidateContractError("candidate_batch_limit")
+    if (type(batch.total_excerpt_bytes) is not int or
+            type(batch.total_proposal_bytes) is not int or
+            batch.total_excerpt_bytes < 0 or batch.total_proposal_bytes < 0 or
+            batch.total_excerpt_bytes > MAX_TOTAL_PROPOSAL_BYTES or
+            batch.total_proposal_bytes > MAX_TOTAL_PROPOSAL_BYTES):
         raise CandidateContractError("candidate_batch_limit")
     # Never trust a supplied batch just because its hashes look plausible:
     # re-read the exact current private source and compare every field.

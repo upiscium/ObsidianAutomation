@@ -331,3 +331,17 @@ def test_existing_vault_context_v1_cannot_impersonate_external_source():
 
     with pytest.raises(ArtifactLifecycleError):
         _safe_source_parts("chatgpt-export/external-source.md")
+
+
+def test_candidate_batch_rejects_forged_count_type_and_mutable_collection(tmp_path):
+    conv, page = source(tmp_path)
+    original = create(conv, page, proposal(end=1, quote="I"))
+    assert original.total_excerpt_bytes == 1
+    check(original, page, conv)
+    for forged in (
+        replace(original, total_excerpt_bytes=True),
+        replace(original, total_proposal_bytes=False),
+        replace(original, candidates=list(original.candidates)),
+    ):
+        with pytest.raises(CandidateContractError):
+            check(forged, page, conv)
