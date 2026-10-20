@@ -81,7 +81,7 @@ the same root-owned package directory. Python's \`-B\` disables bytecode
 bootstrap and disabled-only staging tool accept a cache directory only when
 it and each cache file are root-owned, not writable by group/others, and
 every cache has a canonical filename, validated Python magic/invalidation
-header and bytecode **exactly equal** to compiling its root-owned source
+header and decoded code whose normalized marshal-v2 representation is **exactly equal** to compiling its root-owned source
 using that interpreter/optimization level. The SHA-pinned privileged source
 closure is still checked before import, native extensions and direct
 bytecode shadows are still refused, and a mismatch blocks startup without

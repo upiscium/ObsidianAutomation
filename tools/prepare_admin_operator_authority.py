@@ -22,6 +22,8 @@ import sys
 # installed package files, even while generating an OFF-by-default manifest.
 import hashlib
 import importlib.util
+import io
+import types
 import marshal
 import re
 import struct
@@ -94,12 +96,12 @@ def _pinned_root_regular(path: Path, *, max_bytes: int) -> bytes:
 
 
 def _verify_equivalent_import_cache(package_root: Path, cache_root: Path, read_pinned) -> None:
-    """Permit ONLY root-owned caches byte-for-byte equivalent to trusted source.
+    """Permit ONLY root-owned caches with executable code equivalent to pinned root source.
 
     The final -I -S -B interpreter may *read* a pre-existing .pyc: -B
     prevents new cache writes, not cache reads. Therefore a source SHA alone
     cannot authorize an arbitrary cache. Compile the pinned root source (never
-    execute it), compare exact marshal bytes, and independently check the
+    execute it), compare normalized marshal-v2 code content and independently check the
     Python cache header. Reject noncanonical paths and compiled extensions.
     """
     status = cache_root.lstat()
@@ -152,9 +154,22 @@ def _verify_equivalent_import_cache(package_root: Path, cache_root: Path, read_p
                 source_bytes, str(source), "exec", dont_inherit=True,
                 optimize=int(optimization or 0),
             )
-            if cached_bytes[16:] != marshal.dumps(verified_code):
+            # Python marshal >= 3 can encode identical CodeType values with
+            # different reference-table layouts. Compare a deterministic v2
+            # serialization of the *decoded code*, not the raw pyc body.
+            # v2 omits reference-table encoding and includes the current
+            # interpreter's executable code, constants and metadata fields.
+            # Parsing must consume the entire bounded payload.
+            stream = io.BytesIO(cached_bytes[16:])
+            cached_code = marshal.load(stream)  # never executes bytecode
+            if (
+                type(cached_code) is not types.CodeType
+                or stream.tell() != len(cached_bytes) - 16
+                or marshal.dumps(cached_code, 2)
+                != marshal.dumps(verified_code, 2)
+            ):
                 raise RuntimeError("unreviewed_installed_import_artifact")
-    except (OSError, UnicodeError, SyntaxError, ValueError, OverflowError, struct.error):
+    except (OSError, UnicodeError, SyntaxError, ValueError, OverflowError, struct.error, EOFError, RecursionError, SystemError):
         raise RuntimeError("unreviewed_installed_import_artifact") from None
 
 def _verify_import_inventory(module_dir: Path) -> None:
