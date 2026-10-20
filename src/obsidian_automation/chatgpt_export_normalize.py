@@ -236,7 +236,8 @@ def _normalize_one(conversation: object, limits: Limits) -> SelectedConversation
             # retained only in the raw archive/source revision, never in
             # semantic content or LLM generation input.
         else:
-            assert item is not None
+            if item is None:
+                raise NormalizeError("selected_message_invariant")
             retained.append(item)
             semantic.append({"role": item.role, "content_type": item.content_type,
                              "content_hash": item.text_sha256})
@@ -268,6 +269,9 @@ def normalize_export(
         raise NormalizeError("invalid_source_scope")
     if input_format not in ("zip", "json") or (input_format == "json" and members):
         raise NormalizeError("invalid_input_options")
+    if (not isinstance(members, (tuple, list)) or
+            any(type(member) is not str for member in members)):
+        raise NormalizeError("invalid_member_selection")
     if any(type(v) is not int or v <= 0 for v in vars(limits).values()):
         raise NormalizeError("invalid_limits")
     seen_conversations: set[str] = set()

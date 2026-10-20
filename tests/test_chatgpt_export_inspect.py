@@ -239,3 +239,14 @@ def test_real_export_internal_reasoning_buckets_and_empty_slot(tmp_path):
     assert report["status"] == "inspected"
     assert report["content_types"] == {"reasoning_recap": 1}
     assert SECRET not in json.dumps(report)
+
+
+def test_invalid_json_exceptions_hide_private_decoder_cause(tmp_path):
+    path = archive(tmp_path, root=[conversation()])
+    with zipfile.ZipFile(path, "w") as target:
+        target.writestr("conversations.json", b'{"private":"\xff"}')
+    with pytest.raises(InspectionError, match="invalid_or_overdeep_json") as error:
+        inspect_export(path)
+    assert error.value.__cause__ is None
+    assert error.value.__suppress_context__ is True
+    assert SECRET not in str(error.value)

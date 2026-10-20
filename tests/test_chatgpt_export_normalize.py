@@ -340,3 +340,27 @@ def test_missing_children_not_a_license_for_missing_parent(tmp_path):
     data["mapping"]["first"].pop("parent")
     with pytest.raises(NormalizeError, match="missing_branch_parent"):
         run(archive(tmp_path, [data]))
+
+
+def test_invalid_member_selection_returns_fixed_code_before_archive_access(tmp_path):
+    path = archive(tmp_path, [conversation()])
+    for selected in ([123], (None,), {"conversations.json": 1}, "conversations.json"):
+        with pytest.raises(NormalizeError, match="invalid_member_selection") as err:
+            run(path, members=selected)
+        assert SECRET not in str(err.value)
+
+
+def test_inconsistent_internal_selection_fails_closed_without_assert(tmp_path, monkeypatch):
+    from obsidian_automation import chatgpt_export_normalize as module
+
+    payload = conversation()
+    original = module._select_message
+
+    def broken(node_id, node):
+        if node_id == "first":
+            return None, ""  # Impossible state; simulate future parser regression
+        return original(node_id, node)
+
+    monkeypatch.setattr(module, "_select_message", broken)
+    with pytest.raises(NormalizeError, match="selected_message_invariant"):
+        run(archive(tmp_path, [payload]))
