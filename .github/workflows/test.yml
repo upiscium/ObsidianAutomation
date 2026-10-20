@@ -84,11 +84,15 @@ jobs:
           PY
 
   authority-fixture:
-    # The production authority model is currently validated on Ubuntu 24.04.
-    # Hosted ubuntu-latest moved to 26.04 on 2026-10-20; the legacy
-    # generator→Context ACL probe fails there. Keep the production-reference
-    # gate pinned until 26.04 compatibility is investigated separately.
-    runs-on: ubuntu-24.04
+    # #410: Independent production-reference + new-host-OS ACL qualification.
+    # Preserve all allow/deny and fail-closed gates on both distributions.
+    # This matrix is a test-only candidate: matrix job names may affect
+    # branch-protection required-check configuration on future integration.
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-26.04]
     permissions:
       contents: read
 
