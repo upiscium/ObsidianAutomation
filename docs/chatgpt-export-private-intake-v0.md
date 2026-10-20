@@ -170,3 +170,19 @@ These are operational data-integrity guarantees in the **single-owned,
 non-hostile UID** model, not guarantees against hostile same-UID processes,
 disk corruption, power loss on all filesystems, or independent model-derived
 acceptance. The service identity and production topology remain unconfigured.
+
+
+## 2026-10-20 review hardening (pre-merge)
+
+- A lost Journal may still have a **regular 0600 file of zero bytes**.
+  If any ready archive exists and SQLite user_version is zero, the
+  importer rejects it as journal_uninitialized_with_ready_archives rather
+  than initializing a new inventory and replaying old conversations.
+  A completely new intake without ready archives can still initialize.
+- A structurally valid selected conversation that retains zero visible
+  messages is always inventory_review_required, even when no other
+  omission flag and no missing child-edge verification is present.
+  Empty evidence is not a success marker for a future Knowledge job.
+
+The review additions are synthetic-only and have no production effect.
+These changes preserve source-only / no auto-LLM / no Vault authority.

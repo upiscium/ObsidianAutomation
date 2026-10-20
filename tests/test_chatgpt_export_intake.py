@@ -483,3 +483,35 @@ def test_selector_change_same_archive_requires_new_scope(tmp_path):
     one, = inventory_ready(root, scope="new-scope", members=["conversations.json"], commit=True)
     assert one.added == 1
     assert count(root, "latest") == 2
+
+
+def test_truncated_existing_journal_with_ready_archive_rejected(tmp_path):
+    source = export(tmp_path / "synthetic.zip", [conversation()])
+    root = tmp_path / "private"
+    publish_archive(root, source)
+    journal = root / "state" / "journal.sqlite3"
+    assert count(root, "archives") == 1
+    journal.write_bytes(b"")
+    with pytest.raises(IntakeError, match="journal_uninitialized_with_ready_archives"):
+        inventory_ready(root, scope="scope", commit=True)
+    with pytest.raises(IntakeError, match="journal_uninitialized_with_ready_archives"):
+        publish_archive(root, source)
+    # No state reset or re-created import run is accepted.
+
+
+def test_nonempty_selected_graph_with_no_visible_text_requires_review(tmp_path):
+    data = conversation(parent_only=False)
+    for node in data["mapping"].values():
+        msg = node.get("message")
+        if isinstance(msg, dict) and msg["content"]["content_type"] == "text":
+            msg["metadata"] = {"is_visually_hidden_from_conversation": True}
+    source = export(tmp_path / "private.zip", [data])
+    root = tmp_path / "private"
+    publish_archive(root, source)
+    receipt, = inventory_ready(root, scope="scope", commit=True)
+    assert receipt.retained_messages == 0
+    assert receipt.unverified_child_links == 0
+    assert receipt.unsupported_parts == 0
+    assert receipt.quarantined_slots == 0
+    assert receipt.status == "inventory_review_required"
+    assert receipt.eligible_for_generation is False

@@ -166,6 +166,11 @@ def _connect(root: Path) -> sqlite3.Connection:
             if version not in (0, _SCHEMA_VERSION):
                 raise IntakeError("unsupported_journal_schema")
             if version == 0:
+                # Existing-but-empty/truncated SQLite is still a lost
+                # Journal. Reinitializing it while ready archives exist
+                # would incorrectly replay all history as newly added.
+                if any((root / "ready").iterdir()):
+                    raise IntakeError("journal_uninitialized_with_ready_archives")
                 conn.executescript("""
                     BEGIN IMMEDIATE;
                     CREATE TABLE archives (
@@ -522,7 +527,8 @@ def _inventory(conn: sqlite3.Connection, batch: SelectedBatch, salt: bytes) -> t
         statuses[key] = status
         counter[status] += 1
     missing_edges, unsupported, retained = _summary(batch)
-    needs_review = (not batch.conversations or batch.quarantined_conversation_slots > 0 or
+    needs_review = (not batch.conversations or retained == 0 or
+                    batch.quarantined_conversation_slots > 0 or
                     missing_edges > 0 or unsupported > 0)
     receipt = InventoryReceipt(
         status="inventory_review_required" if needs_review else "inventory_only",
