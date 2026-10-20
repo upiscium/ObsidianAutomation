@@ -46,7 +46,8 @@ FIELDS = {
     "content": ("content_type", "parts"),
 }
 ROLES = ("user", "assistant", "system", "developer", "tool")
-CONTENT_TYPES = ("text", "multimodal_text", "image", "audio", "audio_transcription", "tether_browsing_display_text")
+CONTENT_TYPES = ("text", "multimodal_text", "image", "audio", "audio_transcription", "tether_browsing_display_text",
+                 "thoughts", "reasoning_recap")
 
 
 def _type(value: object) -> str:
@@ -78,8 +79,10 @@ def _json(data: bytes) -> object:
         return json.loads(data.decode("utf-8-sig"), object_pairs_hook=_pairs, parse_constant=_constant, parse_float=_float)
     except InspectionError:
         raise
-    except (ValueError, UnicodeError, RecursionError) as exc:
-        raise InspectionError("invalid_or_overdeep_json") from exc
+    except (ValueError, UnicodeError, RecursionError):
+        # Private JSON bytes and decoder excerpts must not enter traceback
+        # cause chains, including when this library is called outside the CLI.
+        raise InspectionError("invalid_or_overdeep_json") from None
 
 
 def _safe_name(name: str) -> bool:
@@ -206,6 +209,13 @@ class _Profile:
                 self.counts["nonobject_conversations"] += 1
                 self.review = True
                 continue
+            if not conv:
+                # Actual Export may contain an empty {} conversation slot.
+                # Preserve this as an explicit review-required quarantine,
+                # rather than disguising it as a valid conversation.
+                self.counts["empty_conversation_slots"] += 1
+                self.review = True
+                continue
             self.fields("conversation", conv)
             mapping = conv.get("mapping")
             if not isinstance(mapping, dict):
@@ -308,8 +318,8 @@ def inspect_export(path: Path, *, members: Sequence[str] = (), input_format: str
                 raise InspectionError("input_changed_during_read")
     except InspectionError:
         raise
-    except (OSError, ValueError, zipfile.BadZipFile, NotImplementedError, RuntimeError, EOFError, zlib.error) as exc:
-        raise InspectionError("input_unreadable_or_corrupt") from exc
+    except (OSError, ValueError, zipfile.BadZipFile, NotImplementedError, RuntimeError, EOFError, zlib.error):
+        raise InspectionError("input_unreadable_or_corrupt") from None
     report = profile.result()
     report["selection"] = selection
     return report
