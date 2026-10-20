@@ -515,3 +515,20 @@ def test_nonempty_selected_graph_with_no_visible_text_requires_review(tmp_path):
     assert receipt.quarantined_slots == 0
     assert receipt.status == "inventory_review_required"
     assert receipt.eligible_for_generation is False
+
+
+@pytest.mark.parametrize("reasoning_type", ["thoughts", "reasoning_recap"])
+def test_user_reasoning_type_is_review_required_not_ignored(tmp_path, reasoning_type):
+    data = conversation(parent_only=False)
+    data["mapping"]["one"]["message"]["content"] = {
+        "content_type": reasoning_type, "content": SECRET,
+    }
+    source = export(tmp_path / "synthetic.zip", [data])
+    root = tmp_path / "private"
+    publish_archive(root, source)
+    receipt, = inventory_ready(root, scope="scope", commit=True)
+    assert receipt.retained_messages == 1  # assistant only
+    assert receipt.unverified_child_links == 0
+    assert receipt.unsupported_parts == 1
+    assert receipt.status == "inventory_review_required"
+    assert receipt.eligible_for_generation is False
