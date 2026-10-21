@@ -29,7 +29,7 @@ from .chatgpt_external_generation_contract import (
 from .chatgpt_external_job import (
     EXTERNAL_ADMITTED_STATE,
     ExternalJobError,
-    inspect_external_admission,
+    inspect_external_job_state,
 )
 from .generation_artifact import (
     build_generation_record,
@@ -76,6 +76,7 @@ def run_fake_external_knowledge_draft(
     job_id: str,
     transport: Callable[[ExternalGenerationPrompt], bytes],
     implementation_revision: str = "0" * 40,
+    expected_job_state: str = EXTERNAL_ADMITTED_STATE,
 ) -> ExternalFakeDraftReceipt:
     """Synthetic Source-bound Fake generation, NOT real worker invocation.
 
@@ -91,11 +92,12 @@ def run_fake_external_knowledge_draft(
     ):
         raise ExternalDraftError("invalid_fake_implementation_revision")
     try:
-        status = inspect_external_admission(
+        status = inspect_external_job_state(
             ai_root,
             private_root=private_root,
             preview=preview,
             job_id=job_id,
+            expected_state=expected_job_state,
         )
         ctx_sha = status["context_sha256"]
         context = load_external_context_for_review(ai_root, ctx_sha)
@@ -124,11 +126,12 @@ def run_fake_external_knowledge_draft(
     # immediately before any proposal artifact is persisted. This is not
     # atomic with future Job activation; no activation exists in this module.
     try:
-        inspect_external_admission(
+        inspect_external_job_state(
             ai_root,
             private_root=private_root,
             preview=preview,
             job_id=job_id,
+            expected_state=expected_job_state,
         )
     except ExternalJobError:
         raise ExternalDraftError("external_source_changed_during_inference") from None
@@ -160,11 +163,12 @@ def run_fake_external_knowledge_draft(
         loaded = load_generation_record(ai_root, generation_sha)
         if loaded != gen or loaded.external_source is None:
             raise ExternalDraftError("external_generation_record_mismatch")
-        inspect_external_admission(
+        inspect_external_job_state(
             ai_root,
             private_root=private_root,
             preview=preview,
             job_id=job_id,
+            expected_state=expected_job_state,
         )
     except ExternalDraftError:
         raise

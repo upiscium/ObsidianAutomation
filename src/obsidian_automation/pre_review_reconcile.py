@@ -59,6 +59,14 @@ def reconcile_post_review(
                 WHERE newer.job_id = g.job_id
                   AND newer.generation_index > g.generation_index
               )
+              AND NOT (
+                g.state = 'awaiting_human_review'
+                AND EXISTS (
+                  SELECT 1 FROM stage_outputs external
+                  WHERE external.generation_id = g.generation_id
+                    AND external.stage = 'external_evaluation'
+                )
+              )
             ORDER BY g.created_at, g.generation_id
             LIMIT ?
             """,
@@ -73,6 +81,14 @@ def reconcile_post_review(
                 "evaluation",
             )
             if output is None:
+                external_output = _load_stage_output_conn(
+                    conn, generation_id, "external_evaluation",
+                )
+                if external_output is not None and row["state"] == "awaiting_human_review":
+                    # External Source review is a separate, not-yet-deployed
+                    # Human decision flow. Never promote or approve it using
+                    # the legacy Knowledge Reconcile projection.
+                    continue
                 raise PreReviewReconcileError(
                     "Human Review state has no selected Evaluation output"
                 )

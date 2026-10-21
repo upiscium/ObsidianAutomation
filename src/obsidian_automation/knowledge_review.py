@@ -88,6 +88,15 @@ def create_evaluation_bound_review(
         label="evaluation_sha256",
     )
     evaluation = load_evaluation_record(ai_root, evaluation_digest)
+    # This PR only supports an explicitly synthetic External Source
+    # evaluator. Its "unknown/manual_review" claim is NOT a legacy
+    # Knowledge Review authorization; dedicated Human review is not built.
+    # Use the evaluation's signed immutable record rather than reading
+    # the Generator-owned 00-Untrusted stage from the Reviewer identity.
+    if evaluation.model.provider == "synthetic-fake-only":
+        raise ArtifactLifecycleError(
+            "external Source requires separate Human Review"
+        )
 
     _verify_review_binding(
         ai_root,
