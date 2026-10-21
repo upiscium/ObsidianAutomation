@@ -1064,3 +1064,78 @@ def test_blank_after_fenced_example_then_real_status_is_admitted():
     view=stage.build_feature_first_view(allcontexts[1],plan)
     assert any("worker" in x["superseded_scopes"]
                for x in view.report()["excluded_obsolete_status_hints"])
+
+
+def test_later_c4_merge_supersedes_obsolete_mixed_pr_unmerged_site_hint():
+    from test_github_daily_scope_quality import tsumgi
+    from test_github_daily_c5_source_view import event
+    import copy
+    ctx=tsumgi()
+    ctx["sources"].append(event(2,"pull_request_merged",
+                                source_status="event_transition_only"))
+    original=copy.deepcopy(ctx["sources"])
+    plan=d1._original_plan([ctx],CAP)
+    view=stage.build_feature_first_view(ctx,plan)
+    assert view.structural_feature_anchor
+    result=view.report()
+    terminal=result["latest_lifecycle_transition"]
+    assert terminal is not None
+    assert terminal["kind"]=="pull_request_merged"
+    assert terminal["source_ref"]==2
+    assert terminal["original_evidence_id"]==ctx["sources"][2]["original_event"]["evidence_id"]
+    assert 2 in result["shown_source_refs"]
+    assert not any("No merge" in x["verbatim"]
+                   for x in result["latest_operational_caveat_evidence"])
+    assert any("pr_lifecycle" in x["superseded_scopes"]
+               and x["source_ref"]==0
+               for x in result["excluded_obsolete_status_hints"])
+    assert result["source_deleted"] is False
+    assert result["publication_authorized"] is False
+    assert ctx["sources"]==original
+
+
+def test_no_lifecycle_transition_preserves_original_no_ga_quote():
+    from test_github_daily_scope_quality import tsumgi
+    ctx=tsumgi()
+    view=stage.build_feature_first_view(ctx,d1._original_plan([ctx],CAP))
+    result=view.report()
+    assert result["latest_lifecycle_transition"] is None
+    assert result["latest_operational_caveat_evidence"]
+    assert "change to running GA services" in result[
+        "latest_operational_caveat_evidence"][0]["verbatim"]
+    assert "no merge" in result[
+        "latest_operational_caveat_evidence"][0]["verbatim"].lower()
+    assert result["source_deleted"] is False
+
+
+def test_merge_source_ref_is_available_to_optional_editor_but_not_publication():
+    from test_github_daily_scope_quality import tsumgi
+    from test_github_daily_c5_source_view import event
+    ctx=tsumgi()
+    ctx["sources"].append(event(2,"pull_request_merged",
+                                source_status="event_transition_only"))
+    plan=d1._original_plan([ctx],CAP)
+    view=stage.build_feature_first_view(ctx,plan)
+    assert view.shown_source_refs==(0,2)
+    request=rt._json({"sentences":[
+        {"text":"Bonsai 2のNixバックエンドを実装しました。","source_refs":[0]},
+        {"text":"このPRはマージされましたが、本番反映は未確認です。","source_refs":[2]},
+    ]})
+    verified=rt._admit_editorial(
+        ctx,request,rt.FEATURE_FIRST_SOURCE_CONTRACT,
+        verified_feature_refs=view.shown_source_refs)
+    admitted=json.loads(verified)
+    assert admitted["pending_source_refs"]==[1]
+    assert all(ref in view.shown_source_refs
+               for s in admitted["sentences"] for ref in s["source_refs"])
+    assert "マージ" in admitted["sentences"][1]["text"]
+    assert ctx["publication_authorized"] is False
+
+
+def test_feature_first_2026_lifecycle_and_no_fabricated_profiling_prompt():
+    assert "latest_lifecycle_transition" in rt.FEATURE_FIRST_PROMPT
+    assert "このPRはマージされました" in rt.FEATURE_FIRST_PROMPT
+    assert "source_ref" in rt.FEATURE_FIRST_PROMPT
+    assert "プロファイリング" in rt.FEATURE_FIRST_PROMPT
+    assert "profile" in rt.FEATURE_FIRST_PROMPT
+    assert rt.FEATURE_FIRST_PROMPT_VERSION.endswith("-v5")

@@ -417,3 +417,72 @@ def test_baseline_undeployed_feature_wording_does_not_get_false_omission():
     ])
     assert "original_no_deploy_condition_omitted" not in report["known_rule_violations"]
     assert "original_no_deploy_condition_contradicted" not in report["known_rule_violations"]
+
+
+def test_later_actual_merge_detects_stale_unmerged_summary_even_if_grounded():
+    ctx=tsumgi()
+    ctx["sources"].append(event(2,"pull_request_merged",
+                                source_status="event_transition_only"))
+    old=quality.inspect_scope_quality(ctx, [
+        sentence("ランタイムに公式Bonsai 2のオプトインNixバックエンドを追加しました。"),
+        sentence("この実装はDraft PR #155であり、まだマージ、デプロイ、公開されていません。"),
+    ])
+    assert old["source_claims"]["merged_in_period"] is True
+    assert old["original_source_refs"]["merged"]==[2]
+    assert "merged_pr_claimed_unmerged" in old["known_rule_violations"]
+    assert "merged_pr_transition_omitted" in old["known_rule_violations"]
+    assert old["publication_authorized"] is False
+    assert old["semantic_completeness_certified"] is False
+
+
+def test_merged_source_and_not_confirmed_live_qualifier_is_advisory_only():
+    ctx=tsumgi()
+    ctx["sources"].append(event(2,"pull_request_merged",
+                                source_status="event_transition_only"))
+    summary=[
+        sentence("Bonsai 2のオプトイン実装を追加しました。",refs=(0,)),
+        sentence("このPRはマージされましたが、本番反映の有無は未確認です。",refs=(2,)),
+    ]
+    result=quality.inspect_scope_quality(ctx,summary)
+    assert "merged_pr_claimed_unmerged" not in result["known_rule_violations"]
+    assert "merged_pr_transition_omitted" not in result["known_rule_violations"]
+    assert result["publication_authorized"] is False
+    assert result["semantic_completeness_certified"] is False
+
+
+def test_unmerged_source_never_requires_fictitious_merge_event():
+    ctx=tsumgi()
+    result=quality.inspect_scope_quality(ctx, [
+        sentence("Bonsai 2のオプトイン実装を追加しました。"),
+        sentence("このDraft PRは未マージで、本番反映も未実施です。"),
+    ])
+    assert result["source_claims"]["merged_in_period"] is False
+    assert "merged_pr_claimed_unmerged" not in result["known_rule_violations"]
+    assert "merged_pr_transition_omitted" not in result["known_rule_violations"]
+
+
+def test_real_test_commit_only_source_empty_summary_is_review_candidate():
+    # SOURCE-only test commit on the target day. This does not prove test
+    # success, a product feature, deployment, or today's push instant.
+    ctx=example(
+        "upiscium/PROJECT-SUZKA", 330,
+        title="test(r15): preflight v10 narrative continuation and full-reserve capacity",
+        body="TEST ONLY. No product change.",
+    )
+    ctx["sources"]=[
+        event(0,"pull_request_commit",
+              message="test(r15): preflight v10 narrative continuation and full-reserve capacity",
+              source_status="content_addressed_commit_not_push_time"),
+        event(1,"pull_request_created",source_status="event_transition_only"),
+    ]
+    risk=quality.inspect_scope_quality(ctx, [])
+    assert risk["source_claims"]["test_only_commit_progress_candidate"] is True
+    assert risk["original_source_refs"]["test_only_commit"]==[0]
+    assert "test_only_commit_progress_unreported" in risk["known_rule_violations"]
+    assert risk["publication_authorized"] is False
+    assert risk["semantic_completeness_certified"] is False
+    good=quality.inspect_scope_quality(ctx, [
+        sentence("AgentState v10の継続性/容量に関する事前検証用テスト変更が記録されました。")
+    ])
+    assert "test_only_commit_progress_unreported" not in good["known_rule_violations"]
+    assert good["publication_authorized"] is False

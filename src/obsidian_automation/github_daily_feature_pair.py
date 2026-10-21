@@ -109,7 +109,18 @@ def run_private_feature_pair(
                 for sentence in entity.get("sentences",())
                 if sentence.get("verdict")=="supported"
             ]
-            protected_quality=feature.inspect_operational_translation(view,grounded)
+            if not grounded:
+                # "No known inversion" on zero admitted text is not useful
+                # quality evidence. Do not elevate a completely unsupported
+                # optional response above the unchanged baseline.
+                protected_quality={
+                    "status":"needs_human_review",
+                    "known_rule_violations":["feature_first_no_supported_sentences"],
+                    "model_or_grounding_is_semantic_authority":False,
+                    "publication_authorized":False,
+                }
+            else:
+                protected_quality=feature.inspect_operational_translation(view,grounded)
         except (feature.FeatureStageError,KeyError,TypeError,ValueError,AttributeError):
             # Even a quality-check failure does not invalidate either draft.
             # It does prevent describing the feature draft as quality-eligible.

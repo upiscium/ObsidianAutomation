@@ -360,3 +360,48 @@ def test_pair_flags_missing_ga_site_gate_in_alternate_not_baseline(monkeypatch):
     assert "original_no_deploy_condition_omitted" in report[
         "feature_first_development_scope_check"]["known_rule_violations"]
     assert report["publication_authorized"] is False
+
+
+def test_optional_no_supported_grounding_does_not_claim_quality_green(monkeypatch):
+    contexts,plan=context_plan()
+    target=contexts[1]
+    class Contexts:
+        def report(self):
+            return {"contexts":[
+                {"context":contexts[0],"context_sha256":"b"*64},
+                {"context":target,"context_sha256":"a"*64},
+            ]}
+    class Preview:
+        sha256="b"*64
+        def __init__(self, supported):
+            self.supported=supported
+        def report(self):
+            return {"entities":[{"sentences":[{
+                "text":"根拠のないプロファイリングを実施しました。",
+                "source_refs":[1], "verdict":"supported" if self.supported else "unsupported"
+            }]}]}
+    class Run:
+        def __init__(self,supported):
+            self.preview=Preview(supported)
+        def report(self):
+            return {"inference_responses_complete":True}
+    called=[]
+    def fake(**kw):
+        called.append(kw)
+        return Run(supported=(len(called)==1))
+    monkeypatch.setattr(pair.c4,"build_witnessed_narrative_contexts",
+                        lambda *a,**kw:Contexts())
+    monkeypatch.setattr(pair.rt,"run_witnessed_narrative_inference",fake)
+    result=pair.run_private_feature_pair(
+        CAP,(),(),target_entity=("upiscium/Test","pull_request",374),
+        source_plan=plan,baseline_infer=lambda *_:None,
+        feature_infer=lambda *_:None)
+    assert len(called)==2
+    doc=result.report()
+    assert doc["baseline_complete"] is True
+    assert doc["feature_first_complete"] is True
+    assert doc["feature_first_has_no_known_operational_inversion"] is False
+    assert doc["protected_operational_translation_check"]["status"]=="needs_human_review"
+    assert "feature_first_no_supported_sentences" in doc[
+        "protected_operational_translation_check"]["known_rule_violations"]
+    assert doc["publication_authorized"] is False
