@@ -878,3 +878,49 @@ def test_v3_recent_source_policy_is_opt_in_and_does_not_change_legacy_wire(case)
     assert "「一度実行すると」や「Run onceを実行しても」" in rt.RECENT_SOURCE_PROMPT
     assert "その操作自体が現在利用不可" in rt.RECENT_SOURCE_PROMPT
     assert "2文目は存在すれば実際の未マージ・未導入・未稼働の制約" in rt.RECENT_SOURCE_PROMPT
+
+
+def test_bounded_other_day_multi_repository_source_work_fits_before_inference():
+    # Synthetic workload dimensions from a frozen nonproduction acceptance
+    # trial, *not* private source events or human semantic-quality labels.
+    # C5 revalidates the FULL C4 capture for each individually requested
+    # entity, so a single-target request still incurs the complete C2b/C3
+    # aggregate reconstruction. The old 256MiB work quota caused a false
+    # preflight failure before ANY model call.
+    capture_triplet_bytes = 440_436
+    c1b_replies, c2a_replies = 15, 19
+    planned = 1 + 5*c1b_replies + 3*c2a_replies
+    reads = 3*(2*planned+3)+1
+    expected_work = capture_triplet_bytes * reads
+    assert planned == 133
+    assert 3*planned <= rt.MAX_SOURCE_RECONSTRUCTIONS
+    assert reads == 808
+    assert expected_work == 355_872_288
+    assert expected_work > 256*1024*1024
+    assert expected_work <= rt.MAX_SOURCE_WORK_BYTES == 384*1024*1024
+    # The guard is still a strict bound, not an opt-in way to disable source
+    # identity validation or allow an unbounded full-day batch.
+    assert capture_triplet_bytes*(reads+120) > rt.MAX_SOURCE_WORK_BYTES
+
+
+def test_revised_source_work_limit_remains_pre_inference_fail_closed(case,monkeypatch):
+    t=Transport()
+    # The exact workload is permitted, but *one byte below its work cost*
+    # must still fail in the trusted source-check path before model calls.
+    storage=cas.read_verified_capture(case[1].index_sha256)
+    source_bytes=sum(map(len,(
+        storage.evidence_bytes,storage.receipt_bytes,
+        storage.capture_index.canonical_bytes)))
+    partials=kwargs(case)["partial_replies"]
+    grounds=kwargs(case)["grounding_replies"]
+    n=1+5*len(partials)+3*len(grounds)
+    estimated_reads=3*(2*n+3)+1
+    required_work=source_bytes*estimated_reads
+    monkeypatch.setattr(rt,"MAX_SOURCE_WORK_BYTES",required_work-1)
+    with pytest.raises(rt.NarrativeRuntimeError,match="aggregate source-read budget"):
+        run(case,t)
+    assert t.calls==[]
+    monkeypatch.setattr(rt,"MAX_SOURCE_WORK_BYTES",required_work)
+    result=run(case,t)
+    assert result.report()["planned_cas_triplet_reads"]==estimated_reads
+    assert result.report()["inference_responses_complete"] is True

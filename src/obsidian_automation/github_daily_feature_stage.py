@@ -15,7 +15,7 @@ import re
 from . import github_daily_d1_priority_shadow as d1
 from . import github_daily_c5_source_view as recent
 
-VERSION = "daily-feature-mention-paired-stage-v7"
+VERSION = "daily-feature-mention-paired-stage-v8"
 QUESTION_VERSION = "d1-binary-feature-mention-v1"
 MAX_VIEW_BYTES = 16 * 1024
 MAX_REQUEST_BYTES = 8192
@@ -37,6 +37,16 @@ CHOICES = (
 _FEATURE_TITLE = re.compile(r"^(feat(?:\([^\r\n)]*\))?:|feature:)", re.IGNORECASE)
 _BODY_HEADING = re.compile(r"^#{2,4}\s*(?:What is implemented|Implemented|実装済み|実装内容|Phase\s+[A-Z].*implemented)", re.IGNORECASE)
 _EXCLUDE_HEADINGS = re.compile(r"^#{2,5}\s*(?:Evidence|Verification|Required|Still blocking|Tests|Review|Next|確認|検証|残課題)", re.IGNORECASE)
+# Never present a *historically earlier* PR-not-merged condition as its
+# end-of-day status after an authenticated merge transition in the same C4
+# entity. A mixed no-merge/no-GA line is withheld wholesale; it cannot be
+# safely split or rewritten into a new claim about production rollout.
+_PR_NOT_MERGED = re.compile(
+    r"\b(?:no merge|not (?:yet )?merged|unmerged|still a draft)\b|"
+    r"(?:未マージ|マージ(?:されていない|していない|未実施|保留))",
+    re.IGNORECASE,
+)
+
 _STATUS_MARKERS = (
     "not installed", "not merged", "not deploy", "no production",
     "no live", "unwired", "disabled", "unavailable",
@@ -513,6 +523,17 @@ def build_feature_first_view(context: dict, source_plan: d1.PriorityPlan) -> Fea
                 break
 
     features = chosen[:MAX_FEATURE_LINES]
+    merged_events = [
+        {"source_ref": src["source_ref"],
+         "original_evidence_id": src["original_event"]["evidence_id"],
+         "kind": "pull_request_merged",
+         "occurred_at": src["original_event"]["occurred_at"],
+         "status_ja": "このPRは対象日にマージされました。本番反映はこの事実から推定できません。"}
+        for src in sources
+        if src["original_event"]["kind"] == "pull_request_merged"
+        and context["entity"]["entity_type"] == "pull_request"
+    ]
+    terminal = merged_events[-1] if merged_events else None
     # Latest substantive state comes from original event source, never from
     # the model's inferred feature status. A negative quote is not a feature.
     # Prioritize actual no-live / not-installed conditions, not tests or
@@ -551,6 +572,22 @@ def build_feature_first_view(context: dict, source_plan: d1.PriorityPlan) -> Fea
                     continue
                 content = row["verbatim"].lower()
                 if not any(marker in content for marker in _STATUS_MARKERS):
+                    continue
+                if (terminal is not None
+                        and ref < terminal["source_ref"]
+                        and _PR_NOT_MERGED.search(row["verbatim"])):
+                    # Do not silently expose an obsolete mixed old status to
+                    # the feature editor. Entire original event remains in
+                    # C4/CAS/Grounding; record a reviewable, exact source ref.
+                    superseded_negatives.append({
+                        "source_ref": row["source_ref"], "field": row["field"],
+                        "start": row["start"],
+                        "exact_fragment_sha256": row["exact_fragment_sha256"],
+                        "scopes": ["pr_lifecycle"],
+                        "superseded_scopes": ["pr_lifecycle"],
+                        "mixed_scope_requires_review": bool(
+                            _SITE_NOT_PROMOTED.search(row["verbatim"])),
+                    })
                     continue
                 scopes = _negative_status_scopes(row["verbatim"])
                 # A single source line may contain *two* independently
@@ -619,7 +656,10 @@ def build_feature_first_view(context: dict, source_plan: d1.PriorityPlan) -> Fea
                 "availability":"unwired_disabled",
                 "canonical_japanese":"この機能は未接続で、デフォルトでは無効です。",
             })
-    allowed = tuple(sorted({r["source_ref"] for r in features + statuses}))
+    # Merge event carries its own C4-verified source_ref and evidence ID,
+    # rather than a fabricated body quote or an inferred deployment state.
+    allowed = tuple(sorted({r["source_ref"] for r in features + statuses}
+                           | ({terminal["source_ref"]} if terminal else set())))
     if not features or not allowed:
         # No fabricated feature assertion; caller uses baseline only.
         return FeatureFirstView(b"", (), (), (), len(sources), False)
@@ -630,6 +670,7 @@ def build_feature_first_view(context: dict, source_plan: d1.PriorityPlan) -> Fea
         "date": context["date"],
         "feature_implementation_evidence": features,
         "latest_operational_caveat_evidence": statuses,
+        "latest_lifecycle_transition": terminal,
         "excluded_obsolete_status_hints": superseded_negatives,
         "protected_operational_terms": protected,
         "shown_source_refs": list(allowed),

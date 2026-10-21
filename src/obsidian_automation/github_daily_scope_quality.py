@@ -42,6 +42,18 @@ _DEPLOYED_JA = re.compile(
     r"(?:デプロイ済み.{0,20}本番|本番.{0,24}"
     r"(?:稼働中|導入済み|反映済み|デプロイ済み))"
 )
+# C4-verified PR lifecycle transitions, not model claims or statements from
+# an earlier Draft body, determine whether "unmerged" is a stale day summary.
+_STILL_UNMERGED_JA = re.compile(
+    r"(?:未マージ|まだ.{0,15}マージ.{0,18}(?:されていない|されていません|していない)|"
+    r"マージ.{0,10}(?:未実施|保留)|Draft PR.{0,22}マージ.{0,15}されていない)",
+    re.IGNORECASE,
+)
+_MERGED_DONE_JA = re.compile(
+    r"(?:マージ(?:されました|された|済み|完了)|"
+    r"統合(?:されました|された|済み|完了)|\bmerged\b)",
+    re.IGNORECASE,
+)
 
 
 class ScopeQualityError(ValueError):
@@ -84,6 +96,8 @@ def inspect_scope_quality(context: dict, sentences: list[dict]) -> dict:
     product_unchanged = []
     site_not_promoted = []
     site_promotion_reports = []
+    merge_refs = []
+    test_commit_refs = []
     source_scan_incomplete = False
     for idx, src in enumerate(context["sources"]):
         if type(src) is not dict or src.get("source_ref") != idx:
@@ -91,6 +105,19 @@ def inspect_scope_quality(context: dict, sentences: list[dict]) -> dict:
         event = src.get("original_event")
         if type(event) is not dict:
             raise ScopeQualityError("invalid original source")
+        if (event.get("kind") == "pull_request_merged"
+                and context["entity"].get("entity_type") == "pull_request"):
+            # Lifecycle event kind is a typed, C4-verified source observation.
+            # Do not infer release, site promotion, or live service changes.
+            merge_refs.append(idx)
+        if event.get("kind") == "pull_request_commit":
+            msg = feature._field(event, "message")
+            if (msg is not None and not msg["truncated"]
+                    and _TEST_TITLE.match(msg["text"].strip())):
+                # A dated test-scope commit is a source-supported progress
+                # candidate, NOT proof that tests passed, code deployed, or
+                # the commit was pushed at the observed source instant.
+                test_commit_refs.append(idx)
         if event.get("kind") == "pull_request_created":
             title = feature._field(event, "title")
             if (title is not None and not title["truncated"]
@@ -157,6 +184,12 @@ def inspect_scope_quality(context: dict, sentences: list[dict]) -> dict:
         risks.append("original_no_deploy_condition_omitted")
     if deployment_condition and _DEPLOYED_JA.search(summary):
         risks.append("original_no_deploy_condition_contradicted")
+    if test_title and test_commit_refs and not summary:
+        risks.append("test_only_commit_progress_unreported")
+    if merge_refs and _STILL_UNMERGED_JA.search(summary):
+        risks.append("merged_pr_claimed_unmerged")
+    if merge_refs and summary and not _MERGED_DONE_JA.search(summary):
+        risks.append("merged_pr_transition_omitted")
     if (test_only or deployment_condition) and not summary:
         risks.append("empty_summary_requires_review")
     refs = {
@@ -165,12 +198,16 @@ def inspect_scope_quality(context: dict, sentences: list[dict]) -> dict:
         "no_site_promotion": sorted({r["source_ref"] for r in active_site_negatives}),
         "superseded_site_reports": sorted({r["source_ref"] for r in site_not_promoted
             if r not in active_site_negatives}),
+        "merged": sorted(set(merge_refs)),
+        "test_only_commit": sorted(set(test_commit_refs)),
     }
     return {
         "version": VERSION,
         "status": "needs_human_review" if risks else "no_known_scope_violation_detected",
         "known_rule_violations": sorted(set(risks)),
         "source_claims": {"test_only": test_only,
+                          "test_only_commit_progress_candidate": bool(test_title and test_commit_refs),
+                          "merged_in_period": bool(merge_refs),
                           "no_site_promotion": deployment_condition,
                           "source_scan_incomplete": source_scan_incomplete,
                           "site_transition_reported": bool(site_promotion_reports)},
