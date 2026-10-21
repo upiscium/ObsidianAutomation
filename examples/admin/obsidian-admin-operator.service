@@ -12,7 +12,7 @@ Type=simple
 User=root
 Group=obsidian-admin-web
 UMask=0077
-ExecStart=/usr/bin/python3 -I -S -B /usr/local/libexec/obsidian-admin-root-launch.py
+ExecStart=/usr/bin/python3 -I -S -B -X pycache_prefix=/dev/null/obsidian-admin-source-only /usr/local/libexec/obsidian-admin-root-launch.py
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=180s

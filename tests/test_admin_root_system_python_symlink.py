@@ -69,6 +69,7 @@ def synthetic_approved_root_bootstrap(tmp_path, monkeypatch):
         m.setattr(launcher, "sys", SimpleNamespace(
             flags=SimpleNamespace(isolated=1,no_site=1,dont_write_bytecode=1),
             version_info=sys.version_info,
+            pycache_prefix="/dev/null/obsidian-admin-source-only",
         ))
         yield launcher, package
 

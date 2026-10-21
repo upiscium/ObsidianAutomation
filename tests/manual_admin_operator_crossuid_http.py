@@ -188,9 +188,19 @@ def main():
         raise RuntimeError("random_fixture_already_exists")
     src=Path(__file__).resolve().parents[1]/"src"
     py=sys.executable
+    # This fixture imports FakeUnits from pytest-backed test helpers as root.
+    # Nix Python places pytest/pluggy/packaging in separate immutable store
+    # paths, which sudo's explicit environment does not otherwise preserve.
+    # This is TEST-ONLY, never the production -I -S -B root Worker path.
+    test_import_roots = [
+        path for path in sys.path
+        if path.startswith("/nix/store/") and path.endswith("/site-packages")
+    ]
     env={
         "PATH":"/run/wrappers/bin:/run/current-system/sw/bin:/usr/bin:/bin",
-        "PYTHONPATH":str(src)+":"+str(Path(__file__).resolve().parent),
+        "PYTHONPATH":":".join((
+            str(src),str(Path(__file__).resolve().parent),*test_import_roots,
+        )),
         "LANG":"C",
     }
     child=subprocess.Popen(

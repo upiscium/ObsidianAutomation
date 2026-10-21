@@ -27,6 +27,7 @@ import re
 import struct
 
 DEFAULT_AUTHORITY_PATH = Path("/etc/obsidian-admin/authority.json")
+SOURCE_ONLY_PYCACHE_PREFIX = "/dev/null/obsidian-admin-source-only"
 VENV = Path("/opt/obsidian-automation/venv")
 _UNITS = frozenset((
     "obsidian-ai-vault-pull.timer", "obsidian-ai-vault-pull.service",
@@ -161,12 +162,16 @@ def _verify_import_inventory(module_dir: Path) -> None:
     try:
         for artifact in module_dir.iterdir():
             if artifact.name == "__pycache__":
-                _verify_equivalent_import_cache(
-                    module_dir, artifact,
-                    lambda path, bound: _pinned_root_regular(
-                        path, max_bytes=bound,
-                    ),
-                )
+                if (
+                    getattr(sys, "pycache_prefix", None) != SOURCE_ONLY_PYCACHE_PREFIX
+                    or sys.flags.dont_write_bytecode != 1
+                ):
+                    _verify_equivalent_import_cache(
+                        module_dir, artifact,
+                        lambda path, bound: _pinned_root_regular(
+                            path, max_bytes=bound,
+                        ),
+                    )
             elif artifact.suffix in (".pyc", ".pyo", ".so", ".pyd"):
                 raise RuntimeError("unreviewed_installed_import_artifact")
     except (OSError, UnicodeError):
@@ -179,6 +184,13 @@ _SHA = re.compile(r"[0-9a-f]{40}\Z")
 def stage(revision: str) -> None:
     if os.geteuid() != 0:
         raise RuntimeError("stage_requires_root")
+    if (
+        sys.flags.isolated != 1 or sys.flags.no_site != 1
+        or sys.flags.dont_write_bytecode != 1
+        or getattr(sys, "pycache_prefix", None) != SOURCE_ONLY_PYCACHE_PREFIX
+        or not stat.S_ISCHR(Path("/dev/null").lstat().st_mode)
+    ):
+        raise RuntimeError("isolated_python_required")
     if type(revision) is not str or _SHA.fullmatch(revision) is None:
         raise RuntimeError("invalid_revision")
     # Existing parent must be root-owned 0700; never mkdir or follow symlinks
