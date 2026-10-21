@@ -57,6 +57,8 @@ def test_production_stage_has_fixed_root_owned_recovery_and_lock_contract():
     assert '"coordinated_updaters_verified"' in source
     assert '"uncoordinated_launchers_retired"' in source
     assert 'helper.stage(TARGET)' in source
+    assert 'durable_new(stage_dir/"candidate-authority.sha256"' in source
+    assert '"recovery_authority_unrelated_change"' in source
     assert '"enabled","coordinated_updaters_verified"' in source
 
 

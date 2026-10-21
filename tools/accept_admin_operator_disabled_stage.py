@@ -476,12 +476,19 @@ def stage(blobs:dict[str,bytes], old:dict) -> dict:
         helper.DEFAULT_AUTHORITY_PATH=candidate
         try:
             helper.stage(TARGET)
-            manifest=json.loads(root_file(candidate,max_bytes=6500))
+            candidate_bytes=root_file(candidate,max_bytes=6500)
+            manifest=json.loads(candidate_bytes)
             require(manifest["revision"]==TARGET and
                     all(manifest[k] is False for k in
                         ("enabled","coordinated_updaters_verified",
                          "uncoordinated_launchers_retired")),
                     "reviewed_stager_not_disabled")
+            # Publish the ONE expected candidate authority SHA before
+            # replacing the live file. Recovery may accept only this exact
+            # generated manifest or the backed-up previous authority bytes.
+            # A third-party disabled manifest is never silently overwritten.
+            durable_new(stage_dir/"candidate-authority.sha256",
+                        (sha(candidate_bytes)+"\n").encode("ascii"))
             touched.append("authority")
             os.replace(candidate,AUTHORITY)
             sync_directory(AUTHORITY.parent)
@@ -597,6 +604,14 @@ def recover_pending(directory: Path, blobs: dict[str,bytes]) -> dict:
             "recovery_original_authority_unsafe")
     # The current files must be either our exact target or their backed-up
     # previous bytes; reject unrelated changes instead of clobbering them.
+    candidate_digest=directory/"candidate-authority.sha256"
+    allowed_authorities={sha(backups["authority"])}
+    if os.path.lexists(candidate_digest):
+        expected=root_file(candidate_digest,max_bytes=128).decode("ascii")
+        require(len(expected.strip())==64 and
+                all(c in "0123456789abcdef" for c in expected.strip()),
+                "invalid_candidate_authority_digest")
+        allowed_authorities.add(expected.strip())
     for name,path in paths.items():
         current=root_file(path,max_bytes=6500 if name=="authority" else 2*1024*1024)
         if name=="authority":
@@ -606,6 +621,8 @@ def recover_pending(directory: Path, blobs: dict[str,bytes]) -> dict:
                             ("enabled","coordinated_updaters_verified",
                              "uncoordinated_launchers_retired")),
                     "recovery_authority_current_unsafe")
+            require(sha(current) in allowed_authorities,
+                    "recovery_authority_unrelated_change")
         else:
             require(sha(current) in {sha(backups[name]),sha(blobs[name])},
                     "recovery_file_unexpected:"+name)
