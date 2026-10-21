@@ -172,3 +172,26 @@ Generalization acceptance remains **SOURCE ONLY**. The rule must not be
 misrepresented as automatic quality acceptance; downstream human relevance
 review and independently accepted live-role/Writer/Timer behavior remain
 outside this development candidate.
+
+
+### Independent cross-PR review: three advisory attribution corrections
+
+An independent read-only Correctness review of the first generalization
+candidate identified three new P2 blind spots. A foreign PR's merge with a
+**co-cited target merge source**, a foreign PR's "unmerged" statement, or a
+foreign PR's "not deployed" statement could be attributed to the target PR.
+The revised **advisory-only** per-sentence audit now rejects explicitly
+foreign-PR attribution (Japanese and English patterns), checks exact
+`PR #number` mentions (including Japanese directly after the digits),
+requires own typed C4 merge event source refs for merge completion, and
+requires target-owned original no-live status refs for no-deploy caveats.
+Unclear mixed-referent statements remain subject to human review; the
+system does not parse arbitrary natural-language coreference or rewrite
+model output. Synthetic holdouts cover each reviewer counterexample,
+including a co-cited merge source_ref and positive target-owned controls.
+
+This is a *risk detector*, not a proven solution to semantic attribution.
+No source Evidence is omitted from original CAS; neither C5 path gains
+automatic winner/publication authority. The real other-day corpus still
+contains known incomplete or unsupported model text and no independent
+human-confirmed relevance labels.

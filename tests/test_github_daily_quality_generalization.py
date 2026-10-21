@@ -181,3 +181,65 @@ def test_issue_only_progress_is_not_turned_into_pr_merge_or_feature_gate():
     assert report["publication_authorized"] is False
     view=feature.build_feature_first_view(ctx,d1._original_plan([ctx],CAP))
     assert view.report()["source_deleted"] is False if view.structural_feature_anchor else not view.structural_feature_anchor
+
+
+@pytest.mark.parametrize("repo,number", [
+    ("sample/LUMEN",411),("alternate/POLARIS",8202),
+])
+def test_foreign_pr_co_citing_target_merge_does_not_hide_omission(repo,number):
+    ctx=build(repo,number,merged=True,name="distributed index")
+    merged_ref=len(ctx["sources"])-1
+    result=scope.inspect_scope_quality(ctx,[{
+        "text":"別PRがマージされました。",
+        "source_refs":[1,merged_ref],
+    }])
+    assert result["source_claims"]["merged_in_period"] is True
+    assert "merged_pr_transition_omitted" in result["known_rule_violations"]
+
+
+@pytest.mark.parametrize("repo,number", [
+    ("sample/MERIDIAN",99),("alternate/KITE",531),
+])
+def test_foreign_pr_unmerged_does_not_impute_unmerged_to_target(repo,number):
+    ctx=build(repo,number,merged=True,name="event receiver")
+    result=scope.inspect_scope_quality(ctx,[{
+        "text":"関連する別PRは未マージです。",
+        "source_refs":[1],
+    }])
+    assert "merged_pr_claimed_unmerged" not in result["known_rule_violations"]
+    assert "merged_pr_transition_omitted" in result["known_rule_violations"]
+    own=scope.inspect_scope_quality(ctx,[{
+        "text":"このPRはまだ未マージです。",
+        "source_refs":[1],
+    }])
+    assert "merged_pr_claimed_unmerged" in own["known_rule_violations"]
+
+
+@pytest.mark.parametrize("repo,number", [
+    ("sample/LUMEN",29),("sample/MERIDIAN",9999),
+    ("alternate/POLARIS",588),
+])
+def test_foreign_no_live_caveat_cannot_satisfy_current_pr_original_site_gate(repo,number):
+    ctx=build(repo,number,merged=True,name="preview renderer")
+    unrelated=scope.inspect_scope_quality(ctx,[{
+        "text":"別PRは本番未反映です。",
+        "source_refs":[0,1,len(ctx["sources"])-1],
+    }])
+    assert unrelated["source_claims"]["no_site_promotion"] is True
+    assert "original_no_deploy_condition_omitted" in unrelated["known_rule_violations"]
+    own=scope.inspect_scope_quality(ctx,[{
+        "text":"このPRはマージされましたが本番未反映です。",
+        "source_refs":[0,len(ctx["sources"])-1],
+    }])
+    assert "original_no_deploy_condition_omitted" not in own["known_rule_violations"]
+    assert "merged_pr_transition_omitted" not in own["known_rule_violations"]
+
+
+def test_explicit_other_number_with_target_merge_citation_is_not_own_merge():
+    ctx=build("sample/LUMEN",218,merged=True,name="recovery trigger")
+    merge_ref=len(ctx["sources"])-1
+    report=scope.inspect_scope_quality(ctx,[{
+        "text":"PR #505がマージされました。",
+        "source_refs":[merge_ref],
+    }])
+    assert "merged_pr_transition_omitted" in report["known_rule_violations"]

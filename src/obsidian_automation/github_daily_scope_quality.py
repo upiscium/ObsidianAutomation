@@ -54,6 +54,32 @@ _MERGED_DONE_JA = re.compile(
     r"統合(?:されました|された|済み|完了)|\bmerged\b)",
     re.IGNORECASE,
 )
+# A C5 sentence often mentions a related/sibling PR. Such a sentence does
+# not discharge the *current* PR's merge / no-GA caveat obligation, even
+# when the model cites the current merge alongside an unrelated source.
+# This is a deliberately conservative warning heuristic, not NLP grounding.
+_FOREIGN_PR_SUBJECT = re.compile(
+    r"(?:別(?:の)?|他(?:の)?|関連(?:する)?(?:別(?:の)?)?|前(?:の)?|以前の)"
+    r"\s*(?:PR|プルリク)|"
+    r"\b(?:another|other|sibling|parent|child|previous|unrelated)"
+    r"\s+(?:PR|pull request)\b", re.IGNORECASE)
+# A trailing Unicode word boundary is not valid after a digit followed
+# by Japanese text (e.g. "PR #505が"); only disallow more ASCII digits.
+_NAMED_PR = re.compile(
+    r"\b(?:PR|pull request)\s*#\s*([0-9]+)(?![0-9])",
+    re.IGNORECASE,
+)
+_SELF_PR = re.compile(r"(?:この|本|当該|対象)\s*(?:PR|プルリク)",re.IGNORECASE)
+
+
+def _about_current_pr(text: str, number: object) -> bool:
+    """Conservative attribution only; ambiguity still requires human review."""
+    if _FOREIGN_PR_SUBJECT.search(text):
+        return False
+    mentions = {int(n) for n in _NAMED_PR.findall(text)}
+    if mentions and number not in mentions and not _SELF_PR.search(text):
+        return False
+    return True
 
 
 class ScopeQualityError(ValueError):
@@ -180,21 +206,39 @@ def inspect_scope_quality(context: dict, sentences: list[dict]) -> dict:
         risks.append("test_only_pr_completion_scope_ambiguous")
     if test_only and summary and not _TEST_SCOPE_JA.search(summary):
         risks.append("test_only_scope_not_explicit")
-    if deployment_condition and summary and not _NOT_LIVE_JA.search(summary):
+    own_number = context["entity"].get("number")
+    # Check each source-cited sentence rather than matching a concatenation
+    # across unrelated claims. A related/previous PR's production caveat is
+    # not an acceptable substitute for the target PR's own original gate.
+    target_site_refs = {r["source_ref"] for r in active_site_negatives}
+    cited_own_site_gate = any(
+        _NOT_LIVE_JA.search(item["text"])
+        and _about_current_pr(item["text"],own_number)
+        and bool(target_site_refs.intersection(item["source_refs"]))
+        for item in sentences
+    )
+    if deployment_condition and summary and not cited_own_site_gate:
         risks.append("original_no_deploy_condition_omitted")
-    if deployment_condition and _DEPLOYED_JA.search(summary):
+    if deployment_condition and any(
+        _DEPLOYED_JA.search(item["text"])
+        and _about_current_pr(item["text"],own_number)
+        for item in sentences
+    ):
         risks.append("original_no_deploy_condition_contradicted")
     if test_title and test_commit_refs and not summary:
         risks.append("test_only_commit_progress_unreported")
-    if merge_refs and _STILL_UNMERGED_JA.search(summary):
+    if merge_refs and any(
+        _STILL_UNMERGED_JA.search(item["text"])
+        and _about_current_pr(item["text"],own_number)
+        for item in sentences
+    ):
         risks.append("merged_pr_claimed_unmerged")
-    # Mentioning a *different* PR's merge is not sufficient evidence that
-    # the current target PR's own lifecycle transition was reported. Require
-    # a sentence to cite the exact C4-verified merge source_ref alongside
-    # merge-completion language. This is an advisory source-binding check,
-    # not proof of Japanese semantic correctness or real deployment.
+    # A sentence can cite several sources including a real target merge;
+    # an explicit foreign-PR claim in that sentence still cannot discharge
+    # the target's lifecycle obligation.
     cited_own_merge = any(
         _MERGED_DONE_JA.search(item["text"])
+        and _about_current_pr(item["text"],own_number)
         and any(ref in merge_refs for ref in item["source_refs"])
         for item in sentences
     )
