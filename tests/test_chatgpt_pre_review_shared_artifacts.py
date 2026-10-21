@@ -98,3 +98,25 @@ def test_fake_evaluation_request_is_not_a_source_authority_token(tmp_path):
         )
     assert not list((ai / "20-Review").glob("*.approval.json"))
     assert not list((ai / "30-Receipts").glob("*.json"))
+
+
+
+def test_shared_review_backpressure_count_matches_both_worker_types(tmp_path):
+    from obsidian_automation.pre_review_job import (
+        _awaiting_review_count_conn,
+        _connect_ro,
+        awaiting_human_review_count,
+        claim_next_attempt,
+    )
+
+    ai, private, preview, staged, vault = setup(tmp_path)
+    outcome = run(ai, private, preview, staged, vault, max_awaiting_review=1)
+    assert outcome.awaiting_human_review
+    with _connect_ro(ai) as conn:
+        assert _awaiting_review_count_conn(conn) == 1
+    assert awaiting_human_review_count(ai) == 1
+    # The existing legacy Worker and External admission now use this very
+    # same SQL count, so a full Review queue blocks both claim paths.
+    assert claim_next_attempt(
+        ai, "generation", max_awaiting_review=1,
+    ) is None

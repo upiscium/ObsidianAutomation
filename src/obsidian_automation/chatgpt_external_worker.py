@@ -59,6 +59,7 @@ from .pre_review_job import (
     _STAGE_START,
     PreReviewJobError,
     _attempt_id,
+    _awaiting_review_count_conn,
     _complete_source_bound_external_attempt,
     _connect_rw,
     _load_stage_output_conn,
@@ -231,16 +232,11 @@ def _claim_external_stage(
                     or current["recipe_sha256"] != item["recipe_sha256"]
                 ):
                     raise ExternalWorkerError("external_stage_binding_changed")
-                if stage == EXTERNAL_STAGES[0]:
-                    count = conn.execute(
-                        "SELECT COUNT(*) AS n FROM generations g "
-                        "WHERE g.state='awaiting_human_review' AND "
-                        "NOT EXISTS (SELECT 1 FROM generations newer "
-                        "WHERE newer.job_id=g.job_id AND "
-                        "newer.generation_index>g.generation_index)"
-                    ).fetchone()["n"]
-                    if count >= max_awaiting_review:
-                        raise ExternalWorkerError("external_review_backpressure")
+                if (
+                    stage == EXTERNAL_STAGES[0]
+                    and _awaiting_review_count_conn(conn) >= max_awaiting_review
+                ):
+                    raise ExternalWorkerError("external_review_backpressure")
                 previous = _STAGE_PREVIOUS[stage]
                 if (
                     previous is not None

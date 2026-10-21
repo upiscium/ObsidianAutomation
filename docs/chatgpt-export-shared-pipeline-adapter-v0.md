@@ -38,6 +38,10 @@ operations extracted from the currently functioning legacy Reader/Validator:
 2. `build_bound_fresh_retrieval`: one locked Knowledge Index build and
    EvaluationContext CAS, checked against exact proposal, mutation **and**
    request SHA values, with the existing recipe's `top_k`.
+3. `pre_review_job._awaiting_review_count_conn`: one authoritative
+   latest-Generation-only SQLite count for **both** legacy Generator queue
+   admission and External Source synthetic stage admission. This keeps
+   backpressure semantics identical rather than maintaining two SQL queries.
 
 `pre_review_worker.py` and the current synthetic External Worker both use
 the shared operations. All preexisting exposed helper imports used by
