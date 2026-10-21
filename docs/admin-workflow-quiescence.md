@@ -70,3 +70,31 @@ Key types are also checked before set comparisons, so even a built-in dict
 holding a crafted str subclass cannot execute custom hash/equality logic.
 More generally, only fixed enumerated workflow rejection codes are emitted;
 unexpected injected exceptions are mapped to a single generic code.
+
+
+## #437: Run once sibling timer admission in the live worker
+
+The original phase-E require_run_once_quiescent remains strict: it requires
+all same-domain timers disabled and inactive. The later privileged
+require_run_once_nonoverlap uses a narrower live-conflict predicate under
+the existing root-owned updater gate: the selected timer must be
+explicitly paused (disabled/inactive/dead). A sibling may be
+enabled/active/waiting, disabled/inactive/dead, or
+enabled/inactive/dead (enabled-runtime is also accepted) only if
+its fixed Unit, loaded canonical FragmentPath and empty Job are verified.
+The final state is a configured-on-boot timer that is not currently running,
+not an active recurrence. It is not evidence of future cross-domain exclusion.
+
+This distinction matters on the deployed single-LXC configuration:
+obsidian-github-daily-progress.timer is enabled/inactive/dead, while
+the user deliberately paused obsidian-github-sync.timer for a one-shot.
+The former was unnecessarily refused by the previous live-conflict
+predicate, making the Worker fail closed with an indeterminate receipt.
+No relaxing of selected-timer proof, job checks, source integrity,
+all nine relevant GitHub service idle/identity checks, or the updater gate
+is justified by this change.
+
+The prior indeterminate production request must not be retried or
+its Queue evidence removed automatically. Separate, explicitly reviewed
+manual forensic reconciliation is required before another production
+Run once acceptance attempt, even after this source fix is merged.
