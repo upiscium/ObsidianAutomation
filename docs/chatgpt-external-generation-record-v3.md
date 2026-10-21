@@ -78,3 +78,38 @@ implemented under separate UIDs before production. No real Export
 LLM call, scheduled import, Vault operation or deployment is authorized.
 
 Do not Merge without explicit maintainer approval. Keep #411 open.
+
+## Synthetic real-stage-machine feasibility test (disposable DB ONLY)
+
+A test-only harness now verifies that the existing real pre-review
+`start_attempt`/`complete_attempt` APIs can carry an External Source
+proposal and v3 Generation Record through actual Validator and fresh
+Knowledge retrieval to a conservative Fake Evaluation Record.
+
+**Important qualification:** the test manually changes only its
+disposable SQLite `external_admitted` generation to `queued` using
+direct SQL. There is NO such production activation operation and
+no external Worker registered. This is a diagnostic feasibility test,
+not evidence of operational readiness or correct authorization.
+
+Using strictly synthetic ZIPs and deterministic Fake Provider:
+
+- Real Generation/Validation/Reader/Evaluation stage metadata and CAS
+  outputs are created and checked with SHA-256 binding at each step.
+- The Knowledge Validator accepts only a valid untrusted draft mutation
+  into the private Validation store, not into the canonical Vault.
+- The Reader rebuilds the current Knowledge index from a disposable
+  synthetic Vault; original Vault files are unchanged.
+- The Fake Evaluator reports groundedness, Knowledge quality, epistemic
+  status and consistency as unknown, recommending manual_review.
+- The real Job reaches `awaiting_human_review` in that isolated
+  **test-only** state machine with zero Human approval records or
+  canonical Note writes. Backpressure counts the awaiting generation.
+- A second test proves stale/updated private Source is rejected before
+  the test-only activation step.
+
+Production readiness still requires a separately versioned, guarded
+External Worker/activation route with Source freshness checks and
+cross-UID transfer, then integration with a v3-aware real Evaluator
+whose grounding input includes the exact private evidence rather
+than only proposed summaries. The test never sends real user data.
