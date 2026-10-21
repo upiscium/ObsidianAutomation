@@ -13,8 +13,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import fcntl
+import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import stat
 from typing import Callable, Mapping
@@ -34,6 +36,32 @@ _CURRENT_VERSION = 1
 MAX_AUDIT_ENTRIES = 2048  # a full journal must be archived by a reviewed tool
 _LOCK_FILE = "admission.lock"
 _ACTIVE_FILE = "active.json"
+# Manual no-replay reconciliation is a separate root-only operational action.
+# It NEVER rewrites an immutable indeterminate result as a success.
+_MANUAL_PREFIX = "manual-reconcile"
+_MANUAL_EVIDENCE_PREFIX = "manual-evidence"
+_MANUAL_DECISION = "acknowledge_unknown_no_replay"
+_MANUAL_APPROVAL = "acknowledge_indeterminate_without_replay:"
+_MANUAL_FIELDS = frozenset((
+    "record_version", "request_id", "service_id", "action", "state",
+    "decision", "approval_reference", "approved_at", "boot_id",
+    "evidence_sha256", "request_sha256", "processing_sha256",
+    "result_sha256", "active_sha256",
+))
+_MANUAL_EVIDENCE_FIELDS = frozenset((
+    "record_version", "request_id", "service_id", "action", "state",
+    "decision", "approval_reference", "observed_at", "boot_id",
+    "operator_inactive", "authority_disabled", "socket_absent",
+    "role_services_idle", "timer_intents_restored",
+    "business_outcome", "request_sha256", "processing_sha256",
+    "result_sha256", "active_sha256",
+))
+_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+_BOOT_ID = re.compile(r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\Z")
+_APPROVAL_REFERENCE = re.compile(
+    r"https://github\.com/upiscium/ObsidianAutomation/issues/"
+    r"[1-9][0-9]*#issuecomment-[1-9][0-9]*\Z"
+)
 _REQUEST_FIELDS = frozenset((
     "record_version", "request_id", "service_id", "action", "state", "queued_at",
 ))
@@ -174,6 +202,36 @@ def _unlink(fd: int, name: str) -> None:
         raise BrokerRejected("queue_state_invalid") from None
 
 
+def _record_sha256(dirfd: int, name: str) -> str:
+    """Hash bounded exact journal bytes, never following symlinks or FIFO."""
+    handle = None
+    try:
+        handle = os.open(
+            name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+            dir_fd=dirfd,
+        )
+        info = os.fstat(handle)
+        from .admin_operation_broker import MAX_RECORD_BYTES
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or not 1 <= info.st_size <= MAX_RECORD_BYTES
+        ):
+            raise BrokerRejected("queue_recovery_required")
+        data = os.read(handle, MAX_RECORD_BYTES + 1)
+        if len(data) != info.st_size:
+            raise BrokerRejected("queue_recovery_required")
+        return hashlib.sha256(data).hexdigest()
+    except OSError:
+        raise BrokerRejected("queue_recovery_required") from None
+    finally:
+        if handle is not None:
+            os.close(handle)
+
+
+
 class DurableOperationQueue:
     """Bounded global singleton queue and audit receipt store.
 
@@ -272,6 +330,110 @@ class DurableOperationQueue:
             return request.as_public(state, admission=admission)
         return request.as_public(state)
 
+    @staticmethod
+    def _manual_evidence(
+        dirfd: int, request: QueuedOperation,
+    ) -> dict[str, object]:
+        rid = request.request_id
+        name = f"{_MANUAL_EVIDENCE_PREFIX}-{rid}.json"
+        if not _exists(dirfd,name):
+            raise BrokerRejected("queue_recovery_required")
+        record = _read_private(dirfd,name)
+        if (
+            set(record) != _MANUAL_EVIDENCE_FIELDS
+            or type(record.get("record_version")) is not int
+            or record["record_version"] != 1
+            or record.get("request_id") != rid
+            or record.get("service_id") != request.service_id
+            or record.get("action") != request.action
+            or request.action != "run_once"
+            or record.get("state") != "root_verified_manual_evidence"
+            or record.get("decision") != _MANUAL_DECISION
+            or type(record.get("approval_reference")) is not str
+            or _APPROVAL_REFERENCE.fullmatch(record["approval_reference"]) is None
+            or type(record.get("observed_at")) is not str
+            or len(record["observed_at"]) > 35
+            or not record["observed_at"].endswith("+00:00")
+            or type(record.get("boot_id")) is not str
+            or _BOOT_ID.fullmatch(record["boot_id"]) is None
+            or any(record.get(k) is not True for k in (
+                "operator_inactive","authority_disabled","socket_absent",
+                "role_services_idle","timer_intents_restored"))
+            or record.get("business_outcome") != "unknown_no_success_claim"
+            or any(type(record.get(k)) is not str or _SHA256.fullmatch(record[k]) is None
+                   for k in ("request_sha256","processing_sha256",
+                             "result_sha256","active_sha256"))
+            or record["active_sha256"] != record["request_sha256"]
+        ):
+            raise BrokerRejected("queue_recovery_required")
+        expected = {
+            "request_sha256":_record_sha256(dirfd,f"request-{rid}.json"),
+            "processing_sha256":_record_sha256(dirfd,f"processing-{rid}.json"),
+            "result_sha256":_record_sha256(dirfd,f"result-{rid}.json"),
+        }
+        if any(record[k] != value for k,value in expected.items()):
+            raise BrokerRejected("queue_recovery_required")
+        result = _read_private(dirfd,f"result-{rid}.json")
+        if result.get("state") != "indeterminate":
+            raise BrokerRejected("queue_recovery_required")
+        return record
+
+    @staticmethod
+    def _manual_proof(dirfd: int, request: QueuedOperation) -> dict[str, object] | None:
+        """Validate immutable human decision linked to EVERY original byte."""
+        rid = request.request_id
+        path = f"{_MANUAL_PREFIX}-{rid}.json"
+        if not _exists(dirfd, path):
+            return None
+        record = _read_private(dirfd, path)
+        if (
+            set(record) != _MANUAL_FIELDS
+            or type(record.get("record_version")) is not int
+            or record["record_version"] != 1
+            or record.get("request_id") != rid
+            or record.get("service_id") != request.service_id
+            or record.get("action") != "run_once"
+            or request.action != "run_once"
+            or record.get("state") != "manually_reconciled_unknown"
+            or record.get("decision") != _MANUAL_DECISION
+            or type(record.get("approval_reference")) is not str
+            or _APPROVAL_REFERENCE.fullmatch(record["approval_reference"]) is None
+            or type(record.get("approved_at")) is not str
+            or len(record["approved_at"]) > 35
+            or not record["approved_at"].endswith("+00:00")
+            or type(record.get("boot_id")) is not str
+            or _BOOT_ID.fullmatch(record["boot_id"]) is None
+            or any(type(record.get(k)) is not str or _SHA256.fullmatch(record[k]) is None
+                   for k in ("evidence_sha256","request_sha256",
+                             "processing_sha256","result_sha256","active_sha256"))
+            or record["active_sha256"] != record["request_sha256"]
+        ):
+            raise BrokerRejected("queue_recovery_required")
+        expected = {
+            "request_sha256": _record_sha256(dirfd, f"request-{rid}.json"),
+            "processing_sha256": _record_sha256(dirfd, f"processing-{rid}.json"),
+            "result_sha256": _record_sha256(dirfd, f"result-{rid}.json"),
+        }
+        if any(record[key] != value for key,value in expected.items()):
+            raise BrokerRejected("queue_recovery_required")
+        result = _read_private(dirfd, f"result-{rid}.json")
+        if result.get("state") != "indeterminate":
+            raise BrokerRejected("queue_recovery_required")
+        evidence = DurableOperationQueue._manual_evidence(dirfd,request)
+        if (
+            record["evidence_sha256"] != _record_sha256(
+                dirfd, f"{_MANUAL_EVIDENCE_PREFIX}-{rid}.json"
+            )
+            or record["approval_reference"] != evidence["approval_reference"]
+            or record["boot_id"] != evidence["boot_id"]
+            or any(record[key] != evidence[key] for key in (
+                "request_sha256","processing_sha256",
+                "result_sha256","active_sha256"
+            ))
+        ):
+            raise BrokerRejected("queue_recovery_required")
+        return record
+
     def _state(self, dirfd: int, request: QueuedOperation) -> str:
         rid = request.request_id
         record = _read_private(dirfd, self._id_path(rid, "request"))
@@ -295,7 +457,11 @@ class DurableOperationQueue:
                 raise BrokerRejected("queue_state_invalid")
             if result["state"] == "indeterminate":
                 if active != record:
-                    raise BrokerRejected("queue_state_invalid")
+                    # A later, distinct request may now be active. The old
+                    # UUID must still project its original indeterminate
+                    # receipt, never trigger any duplicate effect.
+                    if self._manual_proof(dirfd,request) is None:
+                        raise BrokerRejected("queue_state_invalid")
                 return "indeterminate"
             if active == record:
                 return (
@@ -325,6 +491,8 @@ class DurableOperationQueue:
         requests: set[str] = set()
         processing: set[str] = set()
         results: set[str] = set()
+        reconciled: set[str] = set()
+        evidence: set[str] = set()
         for name in names:
             if type(name) is not str:
                 raise BrokerRejected("queue_state_invalid")
@@ -332,6 +500,8 @@ class DurableOperationQueue:
                 ("request-", requests),
                 ("processing-", processing),
                 ("result-", results),
+                (f"{_MANUAL_PREFIX}-", reconciled),
+                (f"{_MANUAL_EVIDENCE_PREFIX}-", evidence),
             ):
                 if name.startswith(prefix):
                     if not name.endswith(".json"):
@@ -341,7 +511,9 @@ class DurableOperationQueue:
                         raise BrokerRejected("queue_state_invalid")
                     dest.add(rid)
                     break
-        if (processing | results) - requests:
+        if (processing | results | reconciled | evidence) - requests:
+            raise BrokerRejected("queue_recovery_required")
+        if evidence != reconciled:
             raise BrokerRejected("queue_recovery_required")
         for rid in requests:
             # A complete outcome must have its own immutable receipt. The
@@ -357,7 +529,14 @@ class DurableOperationQueue:
                 self_admission = DurableOperationQueue._validate_result(final, action)
             except BrokerRejected:
                 raise BrokerRejected("queue_recovery_required") from None
-            if final["state"] not in ("completed", "systemd_job_accepted"):
+            if final["state"] == "indeterminate":
+                if rid not in reconciled:
+                    raise BrokerRejected("queue_recovery_required")
+                DurableOperationQueue._manual_proof(dirfd,action)
+            elif (
+                final["state"] not in ("completed","systemd_job_accepted")
+                or rid in reconciled
+            ):
                 raise BrokerRejected("queue_recovery_required")
             if (final["state"] == "systemd_job_accepted") != (self_admission is not None):
                 raise BrokerRejected("queue_recovery_required")
@@ -371,6 +550,116 @@ class DurableOperationQueue:
                 "state": "processing",
             }:
                 raise BrokerRejected("queue_recovery_required")
+
+    def manually_reconcile_unknown(
+        self, raw_id: object, *, human_accept: object,
+        approval_reference: object, evidence_sha256: object,
+        boot_id: object,
+    ) -> dict[str, object]:
+        """Root-only no-replay acknowledgement; no systemd effect whatsoever.
+
+        The CALLER must first separately attest that Worker is stopped,
+        authority is disabled, both updater locks are held, systemd domain
+        is idle and external forensic evidence is root-owned and immutable.
+        This primitive does not assert any past business success, and is
+        intentionally never exposed through the HTTP/AF_UNIX protocol.
+        """
+        rid = _receipt_id(raw_id)
+        if (
+            human_accept != _MANUAL_APPROVAL + rid
+            or type(approval_reference) is not str
+            or _APPROVAL_REFERENCE.fullmatch(approval_reference) is None
+            or type(evidence_sha256) is not str
+            or _SHA256.fullmatch(evidence_sha256) is None
+            or type(boot_id) is not str
+            or _BOOT_ID.fullmatch(boot_id) is None
+        ):
+            raise BrokerRejected("queue_recovery_required")
+        dirfd, lockfd = self._open()
+        try:
+            name = self._id_path(rid,"request")
+            if not _exists(dirfd,name):
+                raise BrokerRejected("queue_recovery_required")
+            original = _read_private(dirfd,name)
+            action = _safe_identity(original)
+            if action.request_id != rid or action.action != "run_once":
+                raise BrokerRejected("queue_recovery_required")
+            if (
+                not _exists(dirfd,self._id_path(rid,"processing"))
+                or not _exists(dirfd,self._id_path(rid,"result"))
+            ):
+                raise BrokerRejected("queue_recovery_required")
+            processing = _read_private(dirfd,self._id_path(rid,"processing"))
+            if processing != {
+                "record_version":1,"request_id":rid,
+                "service_id":action.service_id,"action":"run_once",
+                "state":"processing",
+            }:
+                raise BrokerRejected("queue_recovery_required")
+            result = _read_private(dirfd,self._id_path(rid,"result"))
+            self._validate_result(result,action)
+            if result["state"] != "indeterminate":
+                raise BrokerRejected("queue_recovery_required")
+            pending = self._pending(dirfd)
+            if pending is not None and pending != original:
+                raise BrokerRejected("queue_recovery_required")
+            observed = self._manual_evidence(dirfd,action)
+            evidence_digest = _record_sha256(
+                dirfd, f"{_MANUAL_EVIDENCE_PREFIX}-{rid}.json"
+            )
+            if (
+                observed["approval_reference"] != approval_reference
+                or observed["boot_id"] != boot_id
+                or evidence_digest != evidence_sha256
+            ):
+                raise BrokerRejected("queue_recovery_required")
+            proof = self._manual_proof(dirfd,action)
+            if proof is None:
+                # The complete original accepted marker is required at
+                # first reconciliation, so a forged/missing marker cannot
+                # silently turn an uncertain result into a settled history.
+                if pending != original:
+                    raise BrokerRejected("queue_recovery_required")
+                current = _utc_clock(self.clock).isoformat(timespec="seconds")
+                proof = {
+                    "record_version":1,"request_id":rid,
+                    "service_id":action.service_id,"action":action.action,
+                    "state":"manually_reconciled_unknown",
+                    "decision":_MANUAL_DECISION,
+                    "approval_reference":approval_reference,
+                    "approved_at":current,"boot_id":boot_id,
+                    "evidence_sha256":evidence_sha256,
+                    "request_sha256":_record_sha256(dirfd,name),
+                    "processing_sha256":_record_sha256(dirfd,self._id_path(rid,"processing")),
+                    "result_sha256":_record_sha256(dirfd,self._id_path(rid,"result")),
+                    "active_sha256":_record_sha256(dirfd,_ACTIVE_FILE),
+                }
+                if proof["active_sha256"] != proof["request_sha256"]:
+                    raise BrokerRejected("queue_recovery_required")
+                _store_new(dirfd,f"{_MANUAL_PREFIX}-{rid}.json",proof)
+            elif (
+                proof["approval_reference"] != approval_reference
+                or proof["evidence_sha256"] != evidence_sha256
+                or proof["boot_id"] != boot_id
+            ):
+                raise BrokerRejected("queue_recovery_required")
+            # A power loss after the durable proof but before active marker
+            # removal leaves the queue busy. Rechecking *all* history under
+            # this lock permits explicit human-approved finalization only.
+            self._prior_work_fully_settled(dirfd)
+            if pending == original:
+                _unlink(dirfd,_ACTIVE_FILE)
+            if self._pending(dirfd) is not None:
+                raise BrokerRejected("queue_recovery_required")
+            self._prior_work_fully_settled(dirfd)
+            return {
+                "version":1,"request_id":rid,"service_id":action.service_id,
+                "action":action.action,"state":"manually_reconciled_unknown",
+                "original_result":"indeterminate","can_execute":False,
+                "business_success_asserted":False,
+            }
+        finally:
+            self._close(dirfd,lockfd)
 
     def submit(self, raw: object) -> dict[str, object]:
         """Durably accept an exact, fixed action or return a replay receipt.
