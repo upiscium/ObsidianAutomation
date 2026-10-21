@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 
 from . import github_daily_feature_stage as feature
+from . import github_daily_related_status_audit as related_status
 
 VERSION = "daily-c5-scope-quality-review-v1"
 _TEST_TITLE = re.compile(r"^test(?:\([^\r\n)]*\))?:", re.IGNORECASE)
@@ -71,6 +72,60 @@ _NAMED_PR = re.compile(
 )
 _SELF_PR = re.compile(r"(?:この|本|当該|対象)\s*(?:PR|プルリク)",re.IGNORECASE)
 
+# Lexically similar technical terms are not interchangeable:
+# an installed/runtime Nix "profile" is not an attested performance profiling
+# run. These warnings are deliberately NOT a semantic truth oracle.
+_PROFILING_JA_CLAIM = re.compile(
+    r"プロファイリング(?:を|が|のため|するため|した|実施)|"
+    r"\b(?:performed|ran|conducted)\s+(?:performance\s+)?profiling\b",
+    re.IGNORECASE,
+)
+_PROFILING_NEGATED = re.compile(
+    r"(?:プロファイリング.{0,28}(?:未実施|行っていない|していない|していません|未確認|ではない)|"
+    r"profiling.{0,30}(?:not performed|not run|unverified))",
+    re.IGNORECASE,
+)
+_NIX_CONFIG_PROFILE = re.compile(
+    r"(?:\b(?:nix|runtime|managed|installer|package)\b.{0,105}\bprofiles?\b|"
+    r"\bprofiles?\b.{0,105}\b(?:nix|runtime|managed|installer|package)\b)",
+    re.IGNORECASE,
+)
+_PROFILE_PERFORMANCE_SOURCE = re.compile(
+    r"\b(?:profiling|profiled|profiler|flamegraph|performance profiling)\b|"
+    r"(?:性能.{0,16}(?:計測|分析)|プロファイリング(?:を|した|実施))",
+    re.IGNORECASE,
+)
+_APPROVAL_LIMIT_SOURCE = re.compile(
+    r"(?:\b(?:approved|authorized|authorised|permission|allow)\b|承認|許可)"
+    r".{0,195}?(?:\b(?:not|without|never)\b|承認(?:なし|しない)|許可(?:なし|しない|されない)|対象外)"
+    r".{0,120}(?:\b(?:production|rollout|deployment|stacked)\b|本番|展開)",
+    re.IGNORECASE | re.DOTALL,
+)
+_APPROVAL_BASIS_INSTEAD_OF_SCOPE = re.compile(
+    r"(?:本番|(?:全|stacked|stack).{0,22}(?:チェーン|merge|マージ)|"
+    r"rollout|deployment).{0,105}(?:に基づく|基づくものではない|"
+    r"根拠(?:ではない|にならない))",
+    re.IGNORECASE,
+)
+
+
+def _bounded_cited_original(context: dict, refs: list[int]) -> str:
+    """Read ONLY cited original fields, with a strict token/byte bound."""
+    chunks = []
+    total = 0
+    for ref in sorted(set(refs)):
+        original = context["sources"][ref]["original_event"]
+        for field in ("title", "message", "body"):
+            val = feature._field(original,field)
+            if val is None or val["truncated"]:
+                continue
+            data = val["text"].encode("utf-8")
+            if len(data)>65536 or total+len(data)>131072:
+                continue  # unknown is not proof of an absent signal
+            total += len(data)
+            chunks.append(val["text"])
+    return "\n".join(chunks)
+
 
 def _about_current_pr(text: str, number: object) -> bool:
     """Conservative attribution only; ambiguity still requires human review."""
@@ -99,8 +154,13 @@ class ScopeQualityError(ValueError):
     """Caller did not provide a bounded original-C4/source-grounded view."""
 
 
-def inspect_scope_quality(context: dict, sentences: list[dict]) -> dict:
-    """Return advisory *risks*; an empty risk list is not a quality PASS."""
+def inspect_scope_quality(context: dict, sentences: list[dict], *,
+                          related_contexts=()) -> dict:
+    """Return advisory *risks*; an empty risk list is not a quality PASS.
+
+    Related, source-linked Issue/PR observations are strictly opt-in and
+    can only create a human-recheck candidate, not an inferred deployment.
+    """
     if (type(context) is not dict
             or context.get("stage") != "github_daily_narrative_context_v4"
             or context.get("publication_authorized") is not False
@@ -257,8 +317,33 @@ def inspect_scope_quality(context: dict, sentences: list[dict]) -> dict:
     )
     if merge_refs and summary and not cited_own_merge:
         risks.append("merged_pr_transition_omitted")
+    # High-impact semantic ambiguities from source-cited text: never silently
+    # treat "Nix runtime profile" as an actual profiling experiment, or a
+    # limitation on the *scope* of approval as the *basis* for approving.
+    # This is advisory only; a missing lexical match never certifies truth.
+    profile_refs = []
+    approval_refs = []
+    for item in sentences:
+        original_text = _bounded_cited_original(context,item["source_refs"])
+        claim = item["text"]
+        if (_PROFILING_JA_CLAIM.search(claim)
+                and not _PROFILING_NEGATED.search(claim)
+                and _NIX_CONFIG_PROFILE.search(original_text)
+                and not _PROFILE_PERFORMANCE_SOURCE.search(original_text)):
+            risks.append("runtime_profile_misread_as_performance_profiling")
+            profile_refs.extend(item["source_refs"])
+        if (_APPROVAL_BASIS_INSTEAD_OF_SCOPE.search(claim)
+                and _APPROVAL_LIMIT_SOURCE.search(original_text)):
+            risks.append("approval_scope_misread_as_approval_basis")
+            approval_refs.extend(item["source_refs"])
     if (test_only or deployment_condition) and not summary:
         risks.append("empty_summary_requires_review")
+    linked = None
+    if related_contexts:
+        linked = related_status.inspect_related_later_progress(
+            context,sentences,related_contexts)
+        if linked["later_related_progress_candidates"]:
+            risks.append("later_linked_entity_progress_requires_recheck")
     refs = {
         "test_only": sorted({r["source_ref"] for r in explicit_test_only+product_unchanged})
                      if test_only else [],
@@ -267,8 +352,10 @@ def inspect_scope_quality(context: dict, sentences: list[dict]) -> dict:
             if r not in active_site_negatives}),
         "merged": sorted(set(merge_refs)),
         "test_only_commit": sorted(set(test_commit_refs)),
+        "runtime_profile_semantic_risk": sorted(set(profile_refs)),
+        "approval_scope_semantic_risk": sorted(set(approval_refs)),
     }
-    return {
+    report = {
         "version": VERSION,
         "status": "needs_human_review" if risks else "no_known_scope_violation_detected",
         "known_rule_violations": sorted(set(risks)),
@@ -283,3 +370,6 @@ def inspect_scope_quality(context: dict, sentences: list[dict]) -> dict:
         "semantic_completeness_certified": False,
         "publication_authorized": False,
     }
+    if linked is not None:
+        report["related_source_recheck"] = linked
+    return report
