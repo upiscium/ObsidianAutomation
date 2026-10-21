@@ -429,3 +429,78 @@ def test_no_candidate_preview_validates_against_same_source(tmp_path):
     revalidate_private_review_preview(root, result)
     assert result.status == "no_candidate"
     assert result.job_status == "not_submitted"
+
+
+# #411 next slice: isolated External Source Context artifact admission.
+def test_dedicated_external_context_admission_and_legacy_vault_rejection(tmp_path):
+    from obsidian_automation.artifact_lifecycle import ArtifactLifecycleError
+    from obsidian_automation.chatgpt_export_job_context import (
+        SOURCE_CONTEXT_KIND,
+        load_external_context,
+        store_external_context,
+    )
+    from obsidian_automation.context_bundle import load_context_bundle
+
+    root, row = set_up(tmp_path)
+    source = admitted(root, row)
+    preview = build_private_review_preview(
+        source, proposal_wire_bytes=fake_proposer(source.page, sl=1),
+    )
+    ai_root = tmp_path / "ai-state"
+    (ai_root / "05-Context").mkdir(parents=True)
+    sha, path = store_external_context(
+        ai_root, private_root=root, preview=preview, candidate_index=0,
+    )
+    context = load_external_context(ai_root, sha)
+    assert context.source_hmac == row[0]
+    assert context.context_kind if hasattr(context, "context_kind") else SOURCE_CONTEXT_KIND == "chatgpt-export"
+    assert context.role == "assistant"
+    assert context.attribution == "assistant-claim-unverified"
+    assert context.excerpt == preview.candidate_batch.candidates[0].excerpt
+    assert context.risks == preview.risks[0].signals
+    assert context.generation_authorized is False
+    assert preview.candidate_batch.candidates[0].candidate_id == context.candidate_id
+    assert "PRIVATE_FAKE_PROVIDER_MUST_NOT_LOG" not in repr(context)
+    assert path.read_bytes() == context.to_json_bytes()
+    with pytest.raises(ArtifactLifecycleError):
+        load_context_bundle(ai_root, sha)
+
+
+def test_external_context_rejects_forged_authority_or_stale_source(tmp_path):
+    from obsidian_automation.chatgpt_export_job_context import (
+        ExternalContextError,
+        parse_external_context,
+        store_external_context,
+    )
+
+    root, row = set_up(tmp_path)
+    source = admitted(root, row)
+    preview = build_private_review_preview(
+        source, proposal_wire_bytes=fake_proposer(source.page, sl=1),
+    )
+    ai_root = tmp_path / "ai-state"
+    (ai_root / "05-Context").mkdir(parents=True)
+    _, path = store_external_context(
+        ai_root, private_root=root, preview=preview, candidate_index=0,
+    )
+    for change, code in [
+        ({"generation_authorized": True}, "external_context_contract_invalid"),
+        ({"role": "system"}, "external_context_role_invalid"),
+        ({"attribution": "user-report-unverified"}, "external_context_attribution_invalid"),
+        ({"excerpt": "forged evidence"}, "external_context_quote_digest_invalid"),
+        ({"scope": "../../escape"}, "external_context_scope_invalid"),
+    ]:
+        original = json.loads(path.read_bytes())
+        original.update(change)
+        with pytest.raises(ExternalContextError, match=code):
+            parse_external_context(json.dumps(original).encode())
+    newer = tmp_path / "later.zip"
+    with zipfile.ZipFile(newer, "w") as file:
+        file.writestr("conversations.json", json.dumps(
+            input_export(assistant_text="Later corrected statement."),
+        ))
+    os.chmod(newer, 0o600)
+    publish_archive(root, newer)
+    with pytest.raises(ExternalContextError, match="external_source_is_stale_or_invalid"):
+        store_external_context(ai_root, private_root=root, preview=preview, candidate_index=0)
+    assert path.exists()  # past immutable context survives, but cannot be newly admitted

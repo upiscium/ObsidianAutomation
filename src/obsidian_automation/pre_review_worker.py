@@ -9,6 +9,11 @@ from typing import Mapping, Sequence
 from urllib.parse import urlsplit
 
 from .artifact_lifecycle import ArtifactLifecycleError
+from .chatgpt_export_generator import (
+    PROMPT_TEMPLATE_VERSION as EXTERNAL_SOURCE_PROMPT_VERSION,
+    generate_external_knowledge_with_openai_compatible,
+    prompt_template_sha256 as external_source_prompt_sha256,
+)
 from .evaluation_artifact import (
     build_evaluation_context,
     create_evaluation_request,
@@ -243,6 +248,7 @@ def run_generator_worker(
     max_awaiting_review: int = DEFAULT_MAX_AWAITING_REVIEW,
     api_key: str | None = None,
     transport=None,
+    external_source_opt_in: bool = False,
 ) -> dict[str, object]:
     work = claim_next_attempt(
         ai_root,
@@ -263,15 +269,18 @@ def run_generator_worker(
         component.prompt_template_version
         == SEMANTIC_OBJECTIVE_PROMPT_VERSION[DEEP_KNOWLEDGE]
     )
+    external_source = component.prompt_template_version == EXTERNAL_SOURCE_PROMPT_VERSION
     expected_prompt_version = (
+        EXTERNAL_SOURCE_PROMPT_VERSION
+        if external_source else
         SEMANTIC_OBJECTIVE_PROMPT_VERSION[DEEP_KNOWLEDGE]
-        if semantic_deep
-        else PROMPT_TEMPLATE_VERSION
+        if semantic_deep else PROMPT_TEMPLATE_VERSION
     )
     expected_prompt_sha = (
+        external_source_prompt_sha256()
+        if external_source else
         semantic_objective_prompt_sha256(DEEP_KNOWLEDGE)
-        if semantic_deep
-        else generator_prompt_sha256()
+        if semantic_deep else generator_prompt_sha256()
     )
     try:
         _component_preflight(
@@ -286,7 +295,29 @@ def run_generator_worker(
 
     objective_generation_sha: str | None = None
     try:
-        if semantic_deep:
+        if external_source:
+            if type(external_source_opt_in) is not bool or not external_source_opt_in:
+                return _block(
+                    ai_root, work, reason_code="external_source_runtime_disabled",
+                )
+            if component.provider != "openai-compatible":
+                return _block(
+                    ai_root, work, reason_code="external_generator_provider_unsupported",
+                )
+            generated = generate_external_knowledge_with_openai_compatible(
+                ai_root,
+                context_sha256=work.context_sha256,
+                base_url=base_url,
+                model=component.model_identifier,
+                implementation_revision=deployed_revision,
+                options=_options(component),
+                timeout=timeout,
+                api_key=api_key,
+                transport=transport,
+            )
+            generated_proposal_sha = generated.proposal_sha256
+            generated_generation_sha = generated.generation_sha256
+        elif semantic_deep:
             if component.provider == "ollama":
                 objective = generate_semantic_objective_with_ollama(
                     ai_root,
@@ -435,10 +466,20 @@ def run_generator_worker(
                 )
             )
             or (
-                not semantic_deep
+                external_source
+                and (
+                    record.record_version != 3
+                    or record.context_kind != "chatgpt-export"
+                    or record.external_source is None
+                    or record.semantic_objective is not None
+                )
+            )
+            or (
+                not semantic_deep and not external_source
                 and (
                     record.context_kind != "context-bundle"
                     or record.semantic_objective is not None
+                    or record.external_source is not None
                 )
             )
         ):
@@ -645,6 +686,7 @@ def run_evaluator_worker(
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     api_key: str | None = None,
     transport=None,
+    external_source_opt_in: bool = False,
 ) -> dict[str, object]:
     work = claim_next_attempt(
         ai_root,
@@ -663,6 +705,25 @@ def run_evaluator_worker(
     component = recipe.evaluator
     if selected is None:
         return _block(ai_root, work, reason_code="missing_evaluation_context_output")
+    # Legacy & Semantic Objective Evaluators keep their original execution
+    # path; only the explicitly versioned external Recipe adds a privacy gate.
+    if recipe.generator.prompt_template_version == EXTERNAL_SOURCE_PROMPT_VERSION:
+        if type(external_source_opt_in) is not bool or not external_source_opt_in:
+            return _block(
+                ai_root, work, reason_code="external_evaluator_runtime_disabled",
+            )
+        try:
+            generation_record = load_generation_record(
+                ai_root, str(selected["generation_sha256"]),
+            )
+        except (ArtifactLifecycleError, OSError, ValueError):
+            return _block(
+                ai_root, work, reason_code="evaluator_generation_provenance_invalid",
+            )
+        if generation_record.context_kind != "chatgpt-export":
+            return _block(
+                ai_root, work, reason_code="evaluator_external_binding_invalid",
+            )
 
     try:
         _component_preflight(
