@@ -32,6 +32,20 @@ _ROUTINE_COMMIT = re.compile(
     r"(?:空白|書式|整形|誤字))", re.I)
 _ROUTINE_MESSAGE = re.compile(r"^(?:next|continue|ack|acknowledged|ok|lgtm|thanks|"
                               r"thank you|了解|確認しました|承知しました|ありがとう|👍)$", re.I)
+# A mention of a planned/pending result is not an achieved PASS. Ambiguous
+# mixed passages intentionally degrade to a plain source-comment mention.
+_RESULT_UNCERTAIN = re.compile(
+    r"(?:\b(?:plan(?:ned)?|pending|not yet|not performed|not completed|"
+    r"no (?:pass|result)|without (?:a )?pass|will|would|todo|to be tested)\b|"
+    r"(?:予定|計画|未実施|未完了|結果待ち|これから|まだ.{0,16}完了していない))",
+    re.I,
+)
+_RESULT_POSITIVE = re.compile(
+    r"(?:\b(?:passed|pass(?:ed)?|success(?:ful(?:ly)?)?|completed|"
+    r"finished|succeeded|failed|failure)\b|"
+    r"(?:成功|失敗|合格|不合格|完了|検証済み|実施済み|PASS))",
+    re.I,
+)
 _MARKDOWN_SPECIAL = re.compile(r"([\\`*_{}\[\]()#!|~])")
 _KIND_LABEL = {"feat":"実装", "fix":"修正", "test":"テスト", "refactor":"整理",
                "perf":"性能関連", "docs":"文書", "chore":"保守", "style":"書式"}
@@ -125,11 +139,12 @@ def _human_event_signals(text: str) -> tuple[str, ...]:
     # one GitHub comment. Distinguish their TOPICS, but never claim that the
     # current host was directly inspected or an approved cutover occurred.
     signals=[]
-    if ("gpu" in low or "cuda" in low or "実gpu" in low) and any(
+    actual_result=bool(_RESULT_POSITIVE.search(text)) and not bool(
+        _RESULT_UNCERTAIN.search(text))
+    if actual_result and ("gpu" in low or "cuda" in low or "実gpu" in low) and any(
             token in low for token in ("検証","acceptance","test","pass","smoke")):
         signals.append("GPU検証に関する結果が報告されました。")
-    elif ("test" in low or "テスト" in low or "検証" in low) and any(
-            token in low for token in ("pass","実施","結果","完了","検証")):
+    elif actual_result and ("test" in low or "テスト" in low or "検証" in low):
         signals.append("テスト・検証に関する結果が報告されました。")
     if any(x in low for x in ("approved","authorized","approval","migration","rollback",
                               "方針","承認","許可","移行")):
@@ -261,7 +276,8 @@ def build_digest_from_bundle(bundle: EvidenceBundle, *,
         commits=[]
         ignored_commits=[]
         for row in events:
-            if row["kind"]!="pull_request_commit":continue
+            if row["kind"]!="pull_request_commit" or entity._is_bot(row):
+                continue
             category=_commit_type(row)
             if category is not None:commits.append((category,row))
             else:ignored_commits.append(row)
@@ -278,7 +294,9 @@ def build_digest_from_bundle(bundle: EvidenceBundle, *,
                  and not entity._is_bot(row)
                  and row.get("state") in ("APPROVED","CHANGES_REQUESTED")]
         merges=[row for row in events if row["kind"]=="pull_request_merged"]
-        transitions=[row for row in events if row["kind"] in _TRANSITIONS]
+        transitions=[row for row in events if row["kind"] in _TRANSITIONS
+                     and not (entity._is_bot(row) and row["kind"] in (
+                         "pull_request_created","issue_created"))]
         if not (commits or substantive or reviews or merges or transitions):
             excluded+=1
             continue

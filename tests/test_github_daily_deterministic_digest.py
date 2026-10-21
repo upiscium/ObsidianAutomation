@@ -329,3 +329,57 @@ def test_generic_chat_does_not_become_third_sentence_after_specific_updates():
         "GPU検証に関する結果が報告されました。",
         "方針・承認に関する更新が記録されました。",
     ]
+
+
+
+@pytest.mark.parametrize("comment_text",[
+    "GPU acceptance test planned; no PASS yet.",
+    "Qwen GPU acceptance pending, not completed.",
+    "GPU検証は未実施。後日テストする予定です。",
+])
+def test_planned_gpu_validation_does_not_become_a_positive_result(comment_text):
+    out=run(event("issue_comment",933,body=comment_text,offset=8))
+    assert len(out.items)==1
+    lines=out.items[0]["sentences"]
+    assert "GPU検証に関する結果が報告されました。" not in lines
+    assert "テスト・検証に関する結果が報告されました。" not in lines
+    assert out.report()["model_used"] is False
+    assert out.report()["publication_authorized"] is False
+
+
+def test_specific_completed_gpu_validation_remains_a_report_not_site_truth():
+    out=run(event("issue_comment",292,body="GPU acceptance PASS: 7/7 tests completed on deneb.",offset=9))
+    assert "GPU検証に関する結果が報告されました。" in out.items[0]["sentences"]
+    assert not any("本番切替完了" in s for s in out.items[0]["sentences"])
+
+
+def test_bot_only_code_or_issue_creation_is_not_substantive_daily_progress():
+    bot_commit=commit("feat(runtime): generate application fixtures",num=601)
+    bot_commit=replace(bot_commit,actor="dependabot[bot]")
+    bot_commit_raw=bot_commit.to_json()
+    bot_commit_raw.pop("evidence_id")
+    bot_commit=replace(bot_commit,evidence_id=hashlib.sha256(
+        _canonical_json_bytes(bot_commit_raw)).hexdigest())
+    bot_issue=event("issue_created",602,title="Generated dependency update",actor="renovate[bot]",offset=8)
+    out=run(bot_commit,bot_issue)
+    assert out.items==()
+    assert out.original_event_count==2
+    assert out.excluded_entity_count==2
+
+
+def test_bot_merge_is_typed_structural_event_even_if_automation_performed_it():
+    merged=event("pull_request_merged",600,actor="merge-queue[bot]",offset=10)
+    out=run(merged)
+    assert len(out.items)==1
+    assert out.items[0]["status"]=="merged"
+    assert "当日にPRがマージされました。" in out.items[0]["sentences"]
+
+
+def test_snapshot_only_is_not_fabricated_as_change_without_day_scoped_edit_proof():
+    # The collector's mutable snapshot is NOT a timestamped edit event.
+    # Source remains in the evidence census; no false claim it changed today.
+    snapshot=event("issue_snapshot",712,title="Revised design plan",offset=12)
+    out=run(snapshot)
+    assert len(out.items)==0
+    assert out.original_event_count==1
+    assert out.excluded_entity_count==1

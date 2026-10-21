@@ -105,3 +105,33 @@ DigestとC1a/C0のsource censusは再照合していますが、**稼働中LXC�
 元イベントはどの場合も削除せず、検査可能な私有記録へ残します。
 修正後のテストは元のIssue/PR・source CAS・section-only Writer
 previewを含めた複数の別Project/番号の回帰で再検証します。
+
+
+## Additional independent negative controls — source review follow-up
+
+An independent Correctness review of the initial source-only Draft #446
+identified three risks:
+
+1. `GPU acceptance test planned; no PASS yet` must **not** be presented
+   as an achieved GPU test result. The extractor now requires an actual
+   positive or negative **observed outcome** (`PASS`, `failed`, `完了`,
+   etc.) and refuses result language if the same short report includes
+   `planned`, `pending`, `not yet`, `未実施` or similar terms.
+   Ambiguous text remains an ordinary progress comment, not a false
+   successful test. A genuine *failure* is also a valid reported result.
+2. Routine bot-origin `pull_request_commit` and bot-only created Issue/PR
+   no longer qualify as evidence of material human project progress.
+   A **typed PR merge** remains valid even when enacted by automation:
+   the merged state is a GitHub structural fact, not model-inferred prose.
+   Original events remain in the immutable Evidence and census.
+3. **Snapshot-only issue/PR body** is an observation of mutable state,
+   not a verified timestamped change. If the Collector did not record a
+   dated content revision or a substantive comment/transition, it would
+   be incorrect to assert that a body changed on that JST day. Such
+   snapshot-only observations remain preserved but do not independently
+   qualify for the user-visible daily digest. Future date-scoped revision
+   Evidence can make these safely eligible; no fabricated today update.
+
+All three are tested using unrelated synthetic repository/Issue/PR
+identifiers. The read-only Generator remains the Primary MVI and continues
+without any LLM, human quality confirmation, production Writer or Timer.
