@@ -98,22 +98,39 @@ _NON_ACTUAL_STATUS = re.compile(
 )
 
 
-def _html_comment_open_after_line(line: str, *, initially_open: bool) -> bool:
-    """Carry HTML comment state through any close/reopen on the same line.
+_HTML_HIDDEN_TOKENS = re.compile(
+    r"<!--|-->|</?(?:pre|code)\b[^>]*>", re.IGNORECASE,
+)
 
-    The entire containing line is skipped as a source-status candidate.
-    This is deliberately conservative about inline markup and makes no
-    inference about deployed service state from comment contents.
+
+def _html_hidden_after_line(
+        line: str, *, comment_open: bool, code_depth: int) -> tuple[bool,int,bool]:
+    """Lex HTML comments/code in exact source order; do not trust inner tags.
+
+    Tags within a comment are *not* open/close instructions. A same-line
+    closing code block followed by a new comment must retain that new
+    comment's state for subsequent lines. Conservatively withhold every
+    line touching these HTML containers from optional operational hints.
     """
-    active=initially_open
-    pos=0
-    while True:
-        marker="-->" if active else "<!--"
-        location=line.find(marker,pos)
-        if location < 0:
-            return active
-        active=not active
-        pos=location+len(marker)
+    hidden=comment_open or bool(code_depth)
+    for match in _HTML_HIDDEN_TOKENS.finditer(line):
+        token=match.group(0)
+        if comment_open:
+            if token=="-->":
+                comment_open=False
+            continue
+        if token=="<!--":
+            comment_open=True
+            hidden=True
+            continue
+        if token=="-->":
+            continue
+        hidden=True
+        if token.startswith("</"):
+            code_depth=max(0,code_depth-1)
+        else:
+            code_depth+=1
+    return comment_open,code_depth,hidden
 
 
 def _status_source_lines(value: dict, ref: int, field: str):
@@ -131,7 +148,6 @@ def _status_source_lines(value: dict, ref: int, field: str):
     active_html_comment=False
     active_html_code_depth=0
     site_after_example_blank=False
-    html_code_tag=re.compile(r"</?(?:pre|code)\b[^>]*>",re.IGNORECASE)
     # Fence closers require matching marker family, equal-or-longer run,
     # and no trailing language/info string (a nested opener is not a closer).
     fence_marker_pattern=re.compile(r"^(" + chr(96) + r"{3,}|~{3,})")
@@ -154,12 +170,19 @@ def _status_source_lines(value: dict, ref: int, field: str):
             token=marker.group(1)
             marker_type,marker_length=token[0],len(token)
             remaining=stripped[len(token):].strip()
-        # Hidden HTML comments have priority over headings and fenced
-        # markers; nothing inside can reclassify the site's status.
-        if active_html_comment:
+        # Already-open HTML containers take priority over Markdown markers.
+        # Process comment and pre/code tags in original lexical order, so
+        # inert closing tags *inside* a comment cannot escape a code block.
+        if active_html_comment or active_html_code_depth:
+            previous_depth=active_html_code_depth
+            active_html_comment,active_html_code_depth,_=_html_hidden_after_line(
+                line,comment_open=active_html_comment,
+                code_depth=active_html_code_depth)
             skipped_offsets.add(cursor)
-            active_html_comment=_html_comment_open_after_line(
-                line, initially_open=True)
+            if (active_unfenced_example and previous_depth
+                    and not _HTML_HIDDEN_TOKENS.search(line)
+                    and stripped.strip()):
+                illustrative_payload_seen=True
             cursor+=len(line)
             continue
         if active_fence is not None:
@@ -185,34 +208,10 @@ def _status_source_lines(value: dict, ref: int, field: str):
             active_fence=(marker_type,marker_length)
             cursor+=len(line)
             continue
-        html_code_tags=list(html_code_tag.finditer(line))
-        # A standalone HTML comment starting before a literal <pre>/<code>
-        # tag is not an HTML code block. Conversely, comments inside an
-        # already-open <pre> block are inert example text.
-        if ("<!--" in line and active_html_code_depth==0
-                and (not html_code_tags or
-                     line.index("<!--") < html_code_tags[0].start())):
+        active_html_comment,active_html_code_depth,html_hidden=_html_hidden_after_line(
+            line,comment_open=False,code_depth=0)
+        if html_hidden:
             skipped_offsets.add(cursor)
-            active_html_comment=_html_comment_open_after_line(
-                line, initially_open=False)
-            cursor+=len(line)
-            continue
-        if active_html_code_depth or html_code_tags:
-            skipped_offsets.add(cursor)
-            if (active_unfenced_example and active_html_code_depth
-                    and not html_code_tags and stripped.strip()):
-                illustrative_payload_seen=True
-            for tag in html_code_tags:
-                if tag.group(0).startswith("</"):
-                    active_html_code_depth=max(0,active_html_code_depth-1)
-                else:
-                    active_html_code_depth+=1
-            cursor+=len(line)
-            continue
-        if "<!--" in line:
-            skipped_offsets.add(cursor)
-            active_html_comment=_html_comment_open_after_line(
-                line, initially_open=False)
             cursor+=len(line)
             continue
 

@@ -279,3 +279,44 @@ def test_qualified_actual_site_report_after_sample_heading_is_still_visible():
     assert audit["source_claims"]["site_transition_reported"] is True
     assert "later_source_site_transition_requires_human_review" in audit["known_rule_violations"]
     assert view["source_deleted"] is False
+
+
+@pytest.mark.parametrize("nested_markup", [
+    "<pre><code>\n<!-- </code></pre> -->\n"
+    "Running GA services have now been updated.\n</code></pre>\n",
+    "<pre></pre><!--\n"
+    "Running GA services have now been updated.\n-->\n",
+    "<!-- previous example --> <pre>\n"
+    "Running GA services have now been updated.\n</pre>\n",
+    "<pre><!--\n</code></pre>\n"
+    "Running GA services have now been updated.\n-->\n</pre>\n",
+])
+def test_ordered_html_comment_and_code_tags_cannot_escape_source_example(nested_markup):
+    ctx=tsumgi()
+    ctx["sources"].append(event(2,"pull_request_comment",body=nested_markup))
+    view=stage.build_feature_first_view(ctx,d1._original_plan([ctx],CAP)).report()
+    assert not any("site" in row["superseded_scopes"]
+                   for row in view["excluded_obsolete_status_hints"])
+    assert any("change to running GA services" in row["verbatim"]
+               for row in view["latest_operational_caveat_evidence"])
+    audit=quality.inspect_scope_quality(ctx,[sentence("Bonsai 2を実装しました。")])
+    assert audit["source_claims"]["site_transition_reported"] is False
+    assert audit["publication_authorized"] is False
+    assert view["source_deleted"] is False
+
+
+def test_genuine_ga_transition_after_html_code_and_comment_closure_is_visible():
+    ctx=tsumgi()
+    ctx["sources"].append(event(2,"pull_request_comment",body=(
+        "<pre></pre><!--\n"
+        "Running GA services have now been updated.\n-->\n"
+        "## Actual status:\n"
+        "Running GA services have now been updated.\n"
+    )))
+    view=stage.build_feature_first_view(ctx,d1._original_plan([ctx],CAP)).report()
+    assert any("site" in row["superseded_scopes"]
+               for row in view["excluded_obsolete_status_hints"])
+    audit=quality.inspect_scope_quality(ctx,[sentence("Bonsai 2を実装しました。")])
+    assert audit["source_claims"]["site_transition_reported"] is True
+    assert "later_source_site_transition_requires_human_review" in audit["known_rule_violations"]
+    assert view["source_deleted"] is False

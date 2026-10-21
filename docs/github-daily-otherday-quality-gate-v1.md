@@ -121,3 +121,19 @@ eligible. No source text, Writer authority, or site state is rewritten.
 A read-only source review, current exact-head CI, and independent Linux
 regressions must be repeated on this corrective commit before any
 technical merge decision. Semantic quality remains **not accepted**.
+
+
+### Lexical HTML state correction after second independent review
+
+A second read-only independent review found two new P2 counterexamples
+against separate comment/tag passes: `<!-- </code></pre> -->` *inside*
+an open HTML `<pre><code>` block incorrectly closed the code depth, and
+`<pre></pre><!--` on one line failed to carry the open comment state.
+The lexer now uses one bounded, ordered token scan for open/close
+HTML comments and `pre`/`code` tags. Code tags inside comments are
+ignored; comments following a same-line code close remain active, as do
+tags following a same-line comment close. Every affected line stays out
+of the optional source-status hints while full C4/CAS is untouched.
+Negative and positive regression fixtures cover the two exact P2 cases,
+their close/reopen variants, and explicit true status after closure.
+Final CI/full-suite/independent review must be repeated for the new head.
