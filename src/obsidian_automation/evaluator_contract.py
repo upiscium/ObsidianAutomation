@@ -12,6 +12,7 @@ from .artifact_lifecycle import (
     _decode_json_object,
     sha256_bytes,
 )
+from .chatgpt_export_job_context import ExternalSourceContext
 from .context_bundle import ContextBundle
 from .evaluation_artifact import EvaluationAssessment, EvaluationCandidate, EvaluationContext
 from .evaluator_conflict import (
@@ -1657,7 +1658,7 @@ def render_evaluator_prompts(
     *,
     target_path: str,
     proposal_content: str,
-    generation_context: ContextBundle,
+    generation_context: ContextBundle | ExternalSourceContext,
     evaluation_context: EvaluationContext,
 ) -> tuple[EvaluatorPrompt, ...]:
     proposal = _proposal_payload(target_path, proposal_content)
@@ -1665,10 +1666,31 @@ def render_evaluator_prompts(
     template_sha = prompt_template_sha256()
     prompts: list[EvaluatorPrompt] = []
 
-    generation_input = {
-        "query": generation_context.query,
-        "sources": _generation_sources(generation_context),
-    }
+    if isinstance(generation_context, ExternalSourceContext):
+        # Never disguise ChatGPT Export as an active Vault Markdown file.
+        # Source quotes are evidence only; they may be inaccurate, omitted
+        # context may overturn them, and assistant claims are not approvals.
+        generation_input = {
+            "source_kind": "chatgpt-export",
+            "trust_level": "untrusted-evidence",
+            "query": "Evaluate a tentative, unverified external Source hypothesis",
+            "sources": [{
+                # HMAC identity, revision and candidate ID remain bound
+                # locally in Generation Record v3, not disclosed to the model.
+                "evidence_anchor_sha256": generation_context.anchor_sha256,
+                "excerpt_sha256": generation_context.excerpt_sha256,
+                "attribution": generation_context.attribution,
+                "proposed_kind": generation_context.proposed_kind,
+                "proposed_summary_unverified": generation_context.proposed_summary,
+                "exact_quote_untrusted": generation_context.excerpt,
+                "risks": list(generation_context.risks),
+            }],
+        }
+    else:
+        generation_input = {
+            "query": generation_context.query,
+            "sources": _generation_sources(generation_context),
+        }
     for dimension in _GENERATION_INPUT_DIMENSIONS:
         payload = {
             "payload_version": 8,

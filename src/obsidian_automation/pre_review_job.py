@@ -121,6 +121,10 @@ def _supported_generator_prompt_hashes() -> dict[str, str]:
 
     hashes = dict(supported_prompt_template_hashes())
     hashes.update(supported_deep_knowledge_prompt_hashes())
+    from .chatgpt_export_generator import (
+        supported_prompt_template_hashes as external_prompt_hashes,
+    )
+    hashes.update(external_prompt_hashes())
     return hashes
 
 
@@ -317,6 +321,9 @@ def _parse_component(
             )
 
     provider = _metadata(value["provider"], label=f"{label}.provider")
+    if (not evaluator and stored_prompt_version == "chatgpt-external-knowledge-note-v0"
+            and provider != OPENAI_PROVIDER_NAME):
+        raise PreReviewJobError("external Source Generator v0 requires openai-compatible provider")
     if provider not in {OPENAI_PROVIDER_NAME, OLLAMA_PROVIDER_NAME}:
         raise PreReviewJobError(
             f"{label}.provider must be {OPENAI_PROVIDER_NAME} or {OLLAMA_PROVIDER_NAME}"
@@ -750,9 +757,21 @@ def submit_job(
     *,
     context_sha256: str,
     recipe: PreReviewRecipe,
+    external_source_opt_in: bool = False,
 ) -> dict[str, object]:
     context_digest = _require_sha256(context_sha256, label="context_sha256")
-    if (
+    if recipe.generator.prompt_template_version == "chatgpt-external-knowledge-note-v0":
+        if type(external_source_opt_in) is not bool or not external_source_opt_in:
+            raise PreReviewJobError(
+                "external Source job admission is disabled by default"
+            )
+        from .chatgpt_export_job_context import (
+            load_external_context,
+            validate_external_job_admission,
+        )
+
+        validate_external_job_admission(load_external_context(ai_root, context_digest))
+    elif (
         recipe.generator.prompt_template_version
         == SEMANTIC_OBJECTIVE_PROMPT_VERSION[DEEP_KNOWLEDGE]
     ):

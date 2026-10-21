@@ -23,34 +23,42 @@ from obsidian_automation.evaluator_contract import (
     EVALUATOR_PROMPT_TEMPLATE_V3_SHA256,
     EVALUATOR_PROMPT_TEMPLATE_V3_VERSION,
     EVALUATOR_PROMPT_TEMPLATE_VERSION,
+)
+from obsidian_automation.evaluator_contract import (
     prompt_template_sha256 as evaluator_prompt_sha256,
 )
 from obsidian_automation.generation_artifact import (
     build_generation_record,
     store_generation_record,
 )
-from obsidian_automation.human_projection import parse_request
 from obsidian_automation.generator_contract import (
     PROMPT_TEMPLATE_V0_SHA256,
     PROMPT_TEMPLATE_V0_VERSION,
     PROMPT_TEMPLATE_VERSION,
+)
+from obsidian_automation.generator_contract import (
     prompt_template_sha256 as generator_prompt_sha256,
 )
-from obsidian_automation.openai_compatible import OpenAICompatibleProviderError
-from obsidian_automation.openai_evaluator import (
-    ADAPTER_VERSION as EVALUATOR_ADAPTER_VERSION,
-    EVALUATION_STRATEGY,
-    LEGACY_ADAPTER_VERSION as LEGACY_EVALUATOR_ADAPTER_VERSION,
-    LEGACY_EVALUATION_STRATEGY,
-)
-from obsidian_automation.openai_generator import (
-    ADAPTER_VERSION as GENERATOR_ADAPTER_VERSION,
-)
+from obsidian_automation.human_projection import parse_request
 from obsidian_automation.ollama_evaluator import (
     ADAPTER_VERSION as OLLAMA_EVALUATOR_ADAPTER_VERSION,
 )
 from obsidian_automation.ollama_generator import (
     ADAPTER_VERSION as OLLAMA_GENERATOR_ADAPTER_VERSION,
+)
+from obsidian_automation.openai_compatible import OpenAICompatibleProviderError
+from obsidian_automation.openai_evaluator import (
+    ADAPTER_VERSION as EVALUATOR_ADAPTER_VERSION,
+)
+from obsidian_automation.openai_evaluator import (
+    EVALUATION_STRATEGY,
+    LEGACY_EVALUATION_STRATEGY,
+)
+from obsidian_automation.openai_evaluator import (
+    LEGACY_ADAPTER_VERSION as LEGACY_EVALUATOR_ADAPTER_VERSION,
+)
+from obsidian_automation.openai_generator import (
+    ADAPTER_VERSION as GENERATOR_ADAPTER_VERSION,
 )
 from obsidian_automation.pre_review_job import (
     attempt_history,
@@ -59,7 +67,6 @@ from obsidian_automation.pre_review_job import (
     stage_output,
     submit_job,
 )
-
 
 REVISION = "a" * 40
 GEN_MODEL = "gemma3:12b"
@@ -901,3 +908,432 @@ def test_systemd_chain_uses_distinct_fixed_identities_and_stays_disabled_by_defa
 
     # Repository examples never enable/start the timer themselves.
     assert "systemctl enable" not in "\n".join(units.values())
+
+
+# #411: fully synthetic Export Source -> isolated Context -> actual worker stages.
+def _external_source_worker_fixture(tmp_path: Path):
+    import sqlite3
+    import zipfile
+
+    from obsidian_automation.chatgpt_export_generator import (
+        PROMPT_TEMPLATE_VERSION as EXTERNAL_PROMPT,
+    )
+    from obsidian_automation.chatgpt_export_generator import (
+        prompt_template_sha256 as external_prompt_sha,
+    )
+    from obsidian_automation.chatgpt_export_intake import (
+        inventory_ready,
+        publish_archive,
+    )
+    from obsidian_automation.chatgpt_export_job_context import (
+        store_external_context,
+    )
+    from obsidian_automation.chatgpt_export_reader import read_admitted_source_page
+    from obsidian_automation.chatgpt_export_review_preview import (
+        build_private_review_preview,
+    )
+
+    private_source = tmp_path / "private-synthetic-source.zip"
+    msg = "This may be useful, but nothing is approved."
+    conv = [{
+        "id": "PRIVATE_SYNTHETIC_CONVERSATION",
+        "title": "PRIVATE_SYNTHETIC_TITLE_DO_NOT_LOG",
+        "current_node": "assistant",
+        "mapping": {
+            "root": {"id": "root", "parent": None, "children": ["user"], "message": None},
+            "user": {"id": "user", "parent": "root", "children": ["assistant"],
+                     "message": {"id": "user-msg", "author": {"role": "user"},
+                                 "content": {"content_type": "text", "parts": [
+                                     "We might consider adding an export reader."
+                                 ]}}},
+            "assistant": {"id": "assistant", "parent": "user", "children": [],
+                          "message": {"id": "assistant-msg",
+                                      "author": {"role": "assistant"},
+                                      "content": {"content_type": "text", "parts": [msg]}}},
+        },
+    }]
+    with zipfile.ZipFile(private_source, "w") as zipfile_out:
+        zipfile_out.writestr("conversations.json", json.dumps(conv))
+    private_source.chmod(0o600)
+    root = tmp_path / "private-source-root"
+    publish_archive(root, private_source)
+    inventory_ready(root, scope="external-synthetic", commit=True)
+    with sqlite3.connect(root / "state" / "journal.sqlite3") as db:
+        source_hmac, content_sha, revision_sha = db.execute(
+            "SELECT identity_hmac,content_sha,revision_sha FROM latest"
+        ).fetchone()
+    admitted_source = read_admitted_source_page(
+        root, scope="external-synthetic", source_hmac=source_hmac,
+        expected_content_sha256=content_sha,
+        expected_revision_sha256=revision_sha,
+    )
+    assistant_slice = admitted_source.page.units[0].evidence[1]
+    quote = assistant_slice.text
+    proposal_json = json.dumps({
+        "contract_version": "chatgpt-evidence-candidate-v0",
+        "proposals": [{
+            "unit_index": 0, "slice_index": 1, "quote_start": 0,
+            "quote_end": len(quote), "quote": quote,
+            "proposed_summary": "Assistant suggested a potential future feature.",
+            "proposed_kind": "hypothesis_candidate",
+        }],
+    }).encode()
+    preview = build_private_review_preview(
+        admitted_source, proposal_wire_bytes=proposal_json,
+    )
+    vault = tmp_path / "vault"
+    (vault / "11-Knowledge").mkdir(parents=True)
+    (vault / "11-Knowledge" / "Existing.md").write_text(
+        _knowledge_note("# Existing\n\nExisting unrelated synthetic note."),
+        encoding="utf-8",
+    )
+    ai = tmp_path / "ai-state"
+    ai.mkdir()
+    for stage in (
+        "00-Untrusted", "04-Index", "05-Context", "10-Validation",
+        EVALUATION_REQUEST_STAGE, EVALUATION_CONTEXT_STAGE,
+        EVALUATION_STAGE, "20-Review", "30-Receipts",
+    ):
+        (ai / stage).mkdir()
+    (ai / "24-Locks" / "read-view").mkdir(parents=True)
+    external_sha, _ = store_external_context(
+        ai, private_root=root, preview=preview, candidate_index=0,
+    )
+    recipe_raw = json.loads(_recipe_bytes())
+    recipe_raw["generator"]["prompt_template_version"] = EXTERNAL_PROMPT
+    recipe_raw["generator"]["prompt_template_sha256"] = external_prompt_sha()
+    recipe = parse_recipe(json.dumps(recipe_raw).encode())
+    job = submit_job(
+        ai, context_sha256=external_sha, recipe=recipe,
+        external_source_opt_in=True,
+    )
+    return ai, vault, root, str(job["job_id"]), external_sha, preview
+
+
+def test_external_source_worker_e2e_to_real_awaiting_human_review(
+    monkeypatch, tmp_path: Path,
+):
+    import obsidian_automation.chatgpt_export_generator as external_gen
+    from obsidian_automation.chatgpt_export_generator import (
+        PROMPT_TEMPLATE_VERSION as EXTERNAL_PROMPT,
+    )
+    from obsidian_automation.chatgpt_export_generator import (
+        prompt_template_sha256 as external_prompt_sha,
+    )
+    from obsidian_automation.chatgpt_export_job_context import load_external_context
+    from obsidian_automation.generation_artifact import load_generation_record
+
+    state, vault, private_root, job_id, context_sha, preview = (
+        _external_source_worker_fixture(tmp_path)
+    )
+    context = load_external_context(state, context_sha)
+    calls = []
+
+    def fake_external_model(_base_url, **kwargs):
+        calls.append(kwargs)
+        assert "UNTRUSTED" in kwargs["system_prompt"]
+        assert context.excerpt in kwargs["user_prompt"]
+        assert "untrusted-evidence" in kwargs["user_prompt"]
+        assert context.source_hmac not in kwargs["user_prompt"]
+        assert context.revision_sha256 not in kwargs["user_prompt"]
+        assert context.candidate_id not in kwargs["user_prompt"]
+        result = {
+            "title": "対話履歴にある未検証の機能候補",
+            "category": "summary",
+            "source_type": "other",
+            "body": ("## 未検証の候補\n\n"
+                     "元の対話で提示された仮説であり、採用や実装完了は不明。\n\n"
+                     f"原文の引用: {context.excerpt}\n\n"
+                     "利用前に本人確認と追加根拠の検証が必要。"),
+            "evidence_anchor_sha256": context.anchor_sha256,
+            "excerpt_sha256": context.excerpt_sha256,
+        }
+        return SimpleNamespace(identifier=GEN_MODEL), json.dumps(result, ensure_ascii=False).encode()
+
+    monkeypatch.setattr(external_gen, "chat_content", fake_external_model)
+    monkeypatch.setattr(
+        worker, "evaluate_knowledge_note_with_openai_compatible",
+        _fake_evaluator("manual_review"),
+    )
+
+    generated = worker.run_generator_worker(
+        state, base_url="https://openai.example.invalid/v1",
+        deployed_revision=REVISION, external_source_opt_in=True,
+    )
+    assert generated["state"] == "validating"
+    assert len(calls) == 1
+    generation = load_generation_record(state, generated["output"]["generation_sha256"])
+    assert generation.record_version == 3
+    assert generation.context_kind == "chatgpt-export"
+    assert generation.generator.prompt_template_version == EXTERNAL_PROMPT
+    assert generation.generator.prompt_template_sha256 == external_prompt_sha()
+    assert generation.external_source is not None
+    assert generation.external_source.revision_sha256 == preview.revision_sha256
+    assert generation.external_source.candidate_id == context.candidate_id
+    from dataclasses import replace
+    with pytest.raises(ArtifactLifecycleError, match="external Generation Record binding mismatch"):
+        store_generation_record(
+            state, replace(
+                generation,
+                external_source=replace(
+                    generation.external_source, revision_sha256="b" * 64,
+                ),
+            ),
+        )
+
+    validation = worker.run_validator_worker(state, vault)
+    assert validation["state"] == "building_evaluation_context"
+    reading = worker.run_reader_worker(state, vault)
+    assert reading["state"] == "evaluating"
+    from obsidian_automation.generation_artifact import generation_input_context
+    from obsidian_automation.evaluator_contract import render_evaluator_prompts
+    from obsidian_automation.evaluation_artifact import load_evaluation_context
+    assert generation_input_context(state, generation) == context
+    evaluation_context = load_evaluation_context(
+        state, reading["output"]["evaluation_context_sha256"],
+    )
+    prompts = render_evaluator_prompts(
+        target_path="11-Knowledge/合成評価.md",
+        proposal_content=_knowledge_note(
+            f"# 未検証の合成候補\n\n{context.excerpt}\n"),
+        generation_context=context, evaluation_context=evaluation_context,
+    )
+    assert prompts
+    assert any('"source_kind":"chatgpt-export"' in prompt.user for prompt in prompts)
+    assert any(context.excerpt in prompt.user for prompt in prompts)
+    assert all(context.source_hmac not in prompt.user for prompt in prompts)
+    assert all(context.revision_sha256 not in prompt.user for prompt in prompts)
+    assert all(context.candidate_id not in prompt.user for prompt in prompts)
+    assert all("11-Knowledge/" not in context.scope for _ in prompts)
+    evaluated = worker.run_evaluator_worker(
+        state, base_url="https://openai.example.invalid/v1",
+        deployed_revision=REVISION, external_source_opt_in=True,
+    )
+    assert evaluated["state"] == "awaiting_human_review"
+    assert evaluated["output"]["recommendation"] == "manual_review"
+    assert job_status(state, job_id)["current_generation"]["state"] == "awaiting_human_review"
+    assert not list((state / "20-Review").iterdir())
+    assert not (vault / "11-Knowledge" / "対話履歴にある未検証の機能候補.md").exists()
+    assert list((private_root / "ready").iterdir())
+    assert preview.awaiting_human_review is False  # preview itself never changes
+    assert preview.job_status == "not_submitted"
+
+
+def test_external_recipe_and_vault_context_are_not_interchangeable(tmp_path):
+    from obsidian_automation.chatgpt_export_generator import (
+        PROMPT_TEMPLATE_VERSION as EXTERNAL_PROMPT,
+    )
+    from obsidian_automation.chatgpt_export_generator import (
+        prompt_template_sha256 as external_prompt_sha,
+    )
+    ai, _, _, _, ext_sha, _ = _external_source_worker_fixture(tmp_path)
+    bundle = ContextBundle(
+        query="Synthetic vault query", created_at="2026-09-19T00:00:00Z", sources=(),
+    )
+    legacy_sha, _ = store_context_bundle(ai, bundle)
+    external_raw = json.loads(_recipe_bytes())
+    external_raw["generator"]["prompt_template_version"] = EXTERNAL_PROMPT
+    external_raw["generator"]["prompt_template_sha256"] = external_prompt_sha()
+    external_recipe = parse_recipe(json.dumps(external_raw).encode())
+    with pytest.raises(ArtifactLifecycleError):
+        submit_job(ai, context_sha256=legacy_sha, recipe=external_recipe)
+    legacy_recipe = parse_recipe(_recipe_bytes())
+    with pytest.raises(ArtifactLifecycleError):
+        submit_job(ai, context_sha256=ext_sha, recipe=legacy_recipe)
+    external_raw["generator"]["provider"] = "ollama"
+    with pytest.raises(Exception, match="external Source Generator v0 requires"):
+        parse_recipe(json.dumps(external_raw).encode())
+
+
+@pytest.mark.parametrize("violation", [
+    "wrong_anchor", "missing_quote", "unverified_warning_missing",
+    "source_type_self", "invented_key",
+])
+def test_external_fake_provider_evidence_contract_fail_closed(
+    monkeypatch, tmp_path: Path, violation: str,
+):
+    import obsidian_automation.chatgpt_export_generator as external_gen
+    from obsidian_automation.chatgpt_export_job_context import load_external_context
+
+    state, vault, _root, job_id, context_sha, _preview = (
+        _external_source_worker_fixture(tmp_path)
+    )
+    context = load_external_context(state, context_sha)
+    def fake_invalid_provider(_url, **_kwargs):
+        output = {
+            "title": "未検証の情報源",
+            "category": "summary",
+            "source_type": "other",
+            "body": f"## 未検証\n\n引用: {context.excerpt}",
+            "evidence_anchor_sha256": context.anchor_sha256,
+            "excerpt_sha256": context.excerpt_sha256,
+        }
+        if violation == "wrong_anchor":
+            output["evidence_anchor_sha256"] = "a" * 64
+        elif violation == "missing_quote":
+            output["body"] = "## 未検証\n\n原文が欠落"
+        elif violation == "unverified_warning_missing":
+            output["body"] = f"## 採用済み\n\n{context.excerpt}"
+        elif violation == "source_type_self":
+            output["source_type"] = "self"
+        else:
+            output["authority"] = "approved"
+        return SimpleNamespace(identifier=GEN_MODEL), json.dumps(
+            output, ensure_ascii=False,
+        ).encode("utf-8")
+
+    monkeypatch.setattr(external_gen, "chat_content", fake_invalid_provider)
+    completed = worker.run_generator_worker(
+        state, base_url="https://openai.example.invalid/v1",
+        deployed_revision=REVISION, max_attempts=1,
+        external_source_opt_in=True,
+    )
+    assert completed["status"] == "retryable_failure"
+    assert completed["state"] == "retryable_failure"
+    assert worker.run_validator_worker(state, vault)["status"] == "idle"
+    assert job_status(state, job_id)["current_generation"]["state"] != "awaiting_human_review"
+    assert not list((state / "20-Review").iterdir())
+
+
+@pytest.mark.parametrize("violation", ["decision_candidate", "result_candidate", "correction_candidate", "coverage_gap"])
+def test_external_high_risk_claim_cannot_enter_job_before_semantic_adjudication(
+    tmp_path: Path, violation: str,
+):
+    from dataclasses import replace
+
+    from obsidian_automation.artifact_lifecycle import _store_immutable, sha256_bytes
+    from obsidian_automation.chatgpt_export_generator import (
+        PROMPT_TEMPLATE_VERSION as EXTERNAL_PROMPT,
+    )
+    from obsidian_automation.chatgpt_export_generator import (
+        prompt_template_sha256 as external_prompt_sha,
+    )
+    from obsidian_automation.chatgpt_export_job_context import (
+        SOURCE_CONTEXT_SUFFIX,
+        ExternalContextError,
+        load_external_context,
+    )
+
+    state, _vault, _private, _job_id, context_sha, _preview = (
+        _external_source_worker_fixture(tmp_path)
+    )
+    context = load_external_context(state, context_sha)
+    if violation == "coverage_gap":
+        forged = replace(
+            context, risks=context.risks + ("source_coverage_incomplete",),
+        )
+        match = "external_source_coverage_incomplete"
+    else:
+        forged = replace(context, proposed_kind=violation)
+        match = "external_source_semantic_review_required"
+    wire = forged.to_json_bytes()
+    sha = sha256_bytes(wire)
+    path = state / "05-Context" / f"{sha}.{SOURCE_CONTEXT_SUFFIX}.json"
+    _store_immutable(path, wire)
+    recipe_raw = json.loads(_recipe_bytes())
+    recipe_raw["generator"]["prompt_template_version"] = EXTERNAL_PROMPT
+    recipe_raw["generator"]["prompt_template_sha256"] = external_prompt_sha()
+    recipe = parse_recipe(json.dumps(recipe_raw).encode())
+    with pytest.raises(ExternalContextError, match=match):
+        submit_job(
+            state, context_sha256=sha, recipe=recipe,
+            external_source_opt_in=True,
+        )
+    with pytest.raises(ArtifactLifecycleError):
+        # Vault recipes cannot use the external Context kind.
+        submit_job(state, context_sha256=sha, recipe=parse_recipe(_recipe_bytes()))
+
+
+def test_external_submission_is_explicitly_disabled_without_opt_in(tmp_path):
+    from obsidian_automation.chatgpt_export_generator import (
+        PROMPT_TEMPLATE_VERSION as EXTERNAL_PROMPT,
+    )
+    from obsidian_automation.chatgpt_export_generator import (
+        prompt_template_sha256 as external_prompt_sha,
+    )
+    from obsidian_automation.pre_review_job import PreReviewJobError
+
+    state, _vault, _private, _job_id, context_sha, _preview = (
+        _external_source_worker_fixture(tmp_path)
+    )
+    raw = json.loads(_recipe_bytes())
+    raw["generator"]["prompt_template_version"] = EXTERNAL_PROMPT
+    raw["generator"]["prompt_template_sha256"] = external_prompt_sha()
+    recipe = parse_recipe(json.dumps(raw).encode())
+    with pytest.raises(PreReviewJobError, match="disabled by default"):
+        submit_job(state, context_sha256=context_sha, recipe=recipe)
+
+
+def test_external_queued_job_cannot_call_provider_without_runtime_opt_in(
+    monkeypatch, tmp_path,
+):
+    import obsidian_automation.chatgpt_export_generator as external_gen
+
+    state, _vault, _private, job_id, _sha, _preview = (
+        _external_source_worker_fixture(tmp_path)
+    )
+    contacted = False
+
+    def forbidden_provider(*_args, **_kwargs):
+        nonlocal contacted
+        contacted = True
+        raise AssertionError("default production worker must not invoke external Source model")
+
+    monkeypatch.setattr(external_gen, "chat_content", forbidden_provider)
+    result = worker.run_generator_worker(
+        state, base_url="https://openai.example.invalid/v1",
+        deployed_revision=REVISION,
+    )
+    assert result["status"] == "blocked"
+    assert result["reason_code"] == "external_source_runtime_disabled"
+    assert not contacted
+    assert job_status(state, job_id)["current_generation"]["state"] == "blocked"
+    assert not list((state / "20-Review").iterdir())
+
+
+def test_external_evaluator_cannot_dispatch_without_separate_opt_in(
+    monkeypatch, tmp_path,
+):
+    import obsidian_automation.chatgpt_export_generator as external_gen
+    from obsidian_automation.chatgpt_export_job_context import load_external_context
+
+    state, vault, _private, job_id, context_sha, _preview = (
+        _external_source_worker_fixture(tmp_path)
+    )
+    context = load_external_context(state, context_sha)
+    def fake_model(_url, **_kwargs):
+        return SimpleNamespace(identifier=GEN_MODEL), json.dumps({
+            "title": "仮説に基づく未検証の候補",
+            "category": "summary",
+            "source_type": "other",
+            "body": f"## 未検証\n\n引用: {context.excerpt}",
+            "evidence_anchor_sha256": context.anchor_sha256,
+            "excerpt_sha256": context.excerpt_sha256,
+        }, ensure_ascii=False).encode()
+
+    calls = []
+    def fail_if_evaluator_contacted(*_args, **_kwargs):
+        calls.append("called")
+        raise AssertionError("production evaluator unexpectedly sent private Source")
+
+    monkeypatch.setattr(external_gen, "chat_content", fake_model)
+    monkeypatch.setattr(
+        worker, "evaluate_knowledge_note_with_openai_compatible",
+        fail_if_evaluator_contacted,
+    )
+    assert worker.run_generator_worker(
+        state, base_url="https://openai.example.invalid/v1",
+        deployed_revision=REVISION, external_source_opt_in=True,
+    )["state"] == "validating"
+    assert worker.run_validator_worker(state, vault)["state"] == "building_evaluation_context"
+    assert worker.run_reader_worker(state, vault)["state"] == "evaluating"
+
+    result = worker.run_evaluator_worker(
+        state, base_url="https://openai.example.invalid/v1",
+        deployed_revision=REVISION,
+    )
+    assert result["state"] == "blocked"
+    assert result["reason_code"] == "external_evaluator_runtime_disabled"
+    assert not calls
+    assert job_status(state, job_id)["current_generation"]["state"] == "blocked"
+    assert not list((state / "20-Review").iterdir())
