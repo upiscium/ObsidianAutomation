@@ -8,12 +8,13 @@ This module never submits Jobs, invokes providers or grants Human approval.
 
 from __future__ import annotations
 
+import errno
+import os
 import stat
 from pathlib import Path
 
 from .artifact_lifecycle import (
     ArtifactLifecycleError,
-    _read_exact_file,
     _require_sha256,
     _store_immutable,
     sha256_bytes,
@@ -102,15 +103,54 @@ def load_external_context_for_review(
     """Read only the distinct external CAS, never the Vault ContextBundle."""
     path = _context_path(ai_root, external_context_sha256)
     try:
-        status = path.lstat()
-        if (
-            not stat.S_ISREG(status.st_mode)
-            or status.st_nlink != 1
-            or status.st_size < 1
-            or status.st_size > MAX_CONTEXT_BYTES
-        ):
-            raise ExternalContextStoreError("external_context_file_invalid")
-        data = _read_exact_file(path)
+        # Check the opened inode rather than only path.lstat(). Read no more
+        # than MAX+1 bytes even if an actor replaces/grows the file while
+        # this process is reading it. This is a CAS validation boundary.
+        flags = (
+            os.O_RDONLY
+            | os.O_NONBLOCK
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        try:
+            fd = os.open(path, flags)
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise ExternalContextStoreError(
+                    "external_context_file_invalid"
+                ) from None
+            raise
+        try:
+            before = os.fstat(fd)
+            disk = path.lstat()
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or before.st_nlink != 1
+                or (before.st_dev, before.st_ino) != (disk.st_dev, disk.st_ino)
+                or before.st_size < 1
+                or before.st_size > MAX_CONTEXT_BYTES
+            ):
+                raise ExternalContextStoreError("external_context_file_invalid")
+            chunks = []
+            count = 0
+            while True:
+                part = os.read(fd, min(65536, MAX_CONTEXT_BYTES + 1 - count))
+                if not part:
+                    break
+                chunks.append(part)
+                count += len(part)
+                if count > MAX_CONTEXT_BYTES:
+                    raise ExternalContextStoreError("external_context_file_invalid")
+            after = os.fstat(fd)
+            if count != before.st_size or (
+                before.st_size,
+                before.st_mtime_ns,
+                before.st_ctime_ns,
+            ) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                raise ExternalContextStoreError("external_context_changed_during_read")
+            data = b"".join(chunks)
+        finally:
+            os.close(fd)
         if sha256_bytes(data) != external_context_sha256:
             raise ExternalContextStoreError("external_context_digest_mismatch")
         parsed = parse_external_context(data)

@@ -207,3 +207,24 @@ def test_store_never_initializes_missing_private_root_or_ai_context(tmp_path):
     ):
         publish(ai_root, missing_private, preview, context)
     assert not missing_private.exists()
+
+
+def test_oversized_external_context_file_is_rejected_before_read(tmp_path):
+    ai_root, root, preview, context = fixture(tmp_path)
+    sha, path = publish(ai_root, root, preview, context)
+    path.write_bytes(b"x" * (64 * 1024 + 2))
+    with pytest.raises(
+        ExternalContextStoreError, match="external_context_file_invalid"
+    ):
+        load_external_context_for_review(ai_root, sha)
+
+
+def test_fifo_replacement_refused_without_blocking(tmp_path):
+    ai_root, root, preview, context = fixture(tmp_path)
+    sha, path = publish(ai_root, root, preview, context)
+    path.unlink()
+    os.mkfifo(path, 0o600)
+    with pytest.raises(
+        ExternalContextStoreError, match="external_context_file_invalid"
+    ):
+        load_external_context_for_review(ai_root, sha)
