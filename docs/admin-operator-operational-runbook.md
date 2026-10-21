@@ -61,7 +61,7 @@ records bind exact request IDs, actions and units but not per-user accounts.
 The effect-capable root Worker MUST NOT be started via a Python console script
 or direct package import. The only installed ExecStart is:
 
-    /usr/bin/python3 -I -S -B /usr/local/libexec/obsidian-admin-root-launch.py
+    /usr/bin/python3 -I -S -B -X pycache_prefix=/dev/null/obsidian-admin-source-only /usr/local/libexec/obsidian-admin-root-launch.py
 
 That root-owned, non-group-writable bootstrap is **stdlib only**, validates
 /etc/obsidian-admin/authority.json and fixed installed units, then checks the
@@ -69,25 +69,24 @@ entire STATIC privileged module import closure (currently 14 Python files,
 including __init__.py, admin_broker_socket.py, admin_operation_preview.py and
 admin_status.py) in the root-owned installed /opt/obsidian-automation/venv.
 It verifies exact SHA256, stable inodes/owners/modes and no symlink path
-components before execve() of the **fixed root-owned OS interpreter** /usr/bin/python3 with -I -S -B. The virtualenv/bin/python path is NOT executed. BOTH
-interpreter stages run without site initialization and do not generate bytecode, so package .pth hooks
-or sitecustomize cannot execute before exact-source admission. Unverified or malformed caches and any source-shadowing direct .pyc/.so/.pyd in the root operator package are rejected before execve. The second
-stage manually adds ONLY the hash-verified, root-owned site-packages
-directory to its interpreter import path before loading the root runtime.
-**#402 cache-handling clarification (source-only, pending release):**
-ordinary managed Python CLIs may regenerate CPython \`__pycache__/*.pyc\` in
-the same root-owned package directory. Python's \`-B\` disables bytecode
-**writes**, not loading an existing valid cache. The updated stdlib-only
-bootstrap and disabled-only staging tool accept a cache directory only when
-it and each cache file are root-owned, not writable by group/others, and
-every cache has a canonical filename, validated Python magic/invalidation
-header and bytecode **exactly equal** to compiling its root-owned source
-using that interpreter/optimization level. The SHA-pinned privileged source
-closure is still checked before import, native extensions and direct
-bytecode shadows are still refused, and a mismatch blocks startup without
-automatically deleting source or cache. This removes the need to keep a
-globally cache-empty Python package indefinitely; it is not permission to
-run unreviewed modules or enable the Worker in production.
+components before execve() of the **fixed root-owned OS interpreter**
+\`/usr/bin/python3\`. Both the stdlib-only first stage and the second-stage
+operator runtime run with \`-I -S -B -X
+pycache_prefix=/dev/null/obsidian-admin-source-only\`; the private root
+launcher specifies all arguments, not the browser or an environment variable.
+\`/dev/null\` must remain an OS character device: imports cannot read package
+\`__pycache__\` through a path beneath it, and \`-B\` prevents cache writes.
+The second stage manually adds ONLY the hash-verified, root-owned site-packages
+directory to its interpreter search path, after source and Unit admission.
+The root runtime also verifies the exact cache prefix before examining
+sealed bootstrap evidence. Unexpected direct source-shadowing
+\`.pyc/.pyo/.so/.pyd\` artifacts remain rejected.
+
+**MVI boundary:** accepting ordinary package-local \`__pycache__\` entries is
+safe only because neither privileged Python stage can use those files as
+import input. Enhanced bytecode-format normalization remains postponed to
+Post-RC/Post-GA (#402/#412). This does not bypass pinned source digests,
+systemd Unit hashes, SO_PEERCRED, updater exclusion or the human Cutover gate.
 
 The bootstrap passes a **sealed Linux memfd**, bound to SHA256 of the validated private
 authority bytes, through an inherited file descriptor. The Worker validates

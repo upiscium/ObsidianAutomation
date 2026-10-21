@@ -61,7 +61,9 @@ def test_all_transitive_root_imports_are_hashed_before_exec():
     assert len(closure) >= 14
     source_code=source.read_text()
     assert "os.execve" in source_code
-    assert '"-I", "-S", "-B", "-c", _RUNTIME_CODE' in source_code
+    assert '"-I", "-S", "-B", "-X",' in source_code
+    assert '"pycache_prefix=/dev/null/obsidian-admin-source-only",' in source_code
+    assert '"-c", _RUNTIME_CODE' in source_code
     assert "sys.path.insert(0,sys.argv[1])" in source_code
     assert "sys.flags.no_site" in source_code
     assert 'PROVENANCE_ENV: str(fd)' in source_code
@@ -245,7 +247,9 @@ def test_installed_root_unit_paths_match_socket_and_updater_lock_requirements():
     assert str(REFRESH_DIR) in rw
     assert str(HOST_RECEIPT_DIR) not in ro
     assert str(REFRESH_DIR) not in ro
-    assert "ExecStart=/usr/bin/python3 -I -S -B /usr/local/libexec/obsidian-admin-root-launch.py" in unit
+    assert ("ExecStart=/usr/bin/python3 -I -S -B -X "
+            "pycache_prefix=/dev/null/obsidian-admin-source-only "
+            "/usr/local/libexec/obsidian-admin-root-launch.py") in unit
 
 
 def test_root_module_cannot_start_with_plain_forged_marker(monkeypatch):
@@ -254,6 +258,7 @@ def test_root_module_cannot_start_with_plain_forged_marker(monkeypatch):
     monkeypatch.setattr(
         runtime_module,"sys",SimpleNamespace(
             flags=SimpleNamespace(isolated=1,no_site=1,dont_write_bytecode=1),
+            pycache_prefix="/dev/null/obsidian-admin-source-only",
         ),
     )
     monkeypatch.setenv("OBSIDIAN_ADMIN_VERIFIED_BOOTSTRAP","1")
@@ -287,6 +292,7 @@ def test_sealed_bootstrap_descriptor_is_bound_to_actual_authority(monkeypatch):
         monkeypatch.setattr(
             runtime_module,"sys",SimpleNamespace(
                 flags=SimpleNamespace(isolated=1,no_site=1,dont_write_bytecode=1),
+                pycache_prefix="/dev/null/obsidian-admin-source-only",
             ),
         )
         monkeypatch.setattr(os,"fstat",stat_root)
@@ -323,6 +329,7 @@ def test_unsealed_or_mismatched_fd_is_rejected(monkeypatch):
         monkeypatch.setattr(
             runtime_module,"sys",SimpleNamespace(
                 flags=SimpleNamespace(isolated=1,no_site=1,dont_write_bytecode=1),
+                pycache_prefix="/dev/null/obsidian-admin-source-only",
             ),
         )
         monkeypatch.setattr(runtime_module,"_pinned_root_regular",
@@ -386,8 +393,8 @@ def test_bootstrap_source_and_runtime_deny_site_initialization():
     unit=(ROOT/"examples/admin/obsidian-admin-operator.service").read_text()
     assert 'sys.flags.no_site != 1' in launcher
     assert 'sys.flags.no_site!=1' in runner
-    assert '"-I", "-S", "-B", "-c"' in launcher
-    assert "/usr/bin/python3 -I -S -B /usr/local/libexec/" in unit
+    assert '"-I", "-S", "-B", "-X",' in launcher
+    assert "/usr/bin/python3 -I -S -B -X pycache_prefix=/dev/null/obsidian-admin-source-only /usr/local/libexec/" in unit
     # No fallback to an unverified module entrypoint.
     assert ' "-m", "obsidian_automation.admin_operator_runtime"' not in launcher
 

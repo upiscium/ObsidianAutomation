@@ -209,6 +209,7 @@ def _require_verified_bootstrap() -> None:
         os.geteuid()!=0 or sys.flags.isolated!=1
         or sys.flags.no_site!=1
         or sys.flags.dont_write_bytecode!=1
+        or getattr(sys,"pycache_prefix",None)!="/dev/null/obsidian-admin-source-only"
     ):
         # A Python -I process still executes site-packages .pth hooks.
         # Only -I -S with an explicit, pre-hashed import root is accepted.

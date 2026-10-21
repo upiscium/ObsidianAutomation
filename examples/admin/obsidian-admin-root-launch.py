@@ -34,6 +34,10 @@ PROVENANCE_SEALS = (
 AUTHORITY = Path("/etc/obsidian-admin/authority.json")
 VENV = Path("/opt/obsidian-automation/venv")
 SYSTEMD = Path("/etc/systemd/system")
+# The fixed cache prefix has an OS character device as its parent; CPython
+# cannot read a .pyc beneath it. -B prevents cache writes. Do not accept
+# any caller-provided path or fallback to package-local __pycache__.
+SOURCE_ONLY_PYCACHE_PREFIX = "/dev/null/obsidian-admin-source-only"
 MODULES = (
     "admin_operator_runtime.py", "admin_operation_broker.py",
     "admin_operation_queue.py", "admin_control_queue_socket.py",
@@ -160,14 +164,20 @@ def _verify_equivalent_import_cache(package_root: Path, cache_root: Path, read_p
         raise RuntimeError("unreviewed_executable_import_artifact") from None
 
 def reject_unverified_import_artifacts(package_root: Path) -> None:
-    """Reject source-shadowing native/direct bytecode and unverified caches."""
+    """Refuse executable shadows; ignore package caches only when unreachable."""
     try:
         for artifact in package_root.iterdir():
             if artifact.name == "__pycache__":
-                _verify_equivalent_import_cache(
-                    package_root, artifact,
-                    lambda path, bound: rooted_file(path, bound),
-                )
+                if (
+                    getattr(sys, "pycache_prefix", None) != SOURCE_ONLY_PYCACHE_PREFIX
+                    or sys.flags.dont_write_bytecode != 1
+                ):
+                    # Legacy nonisolated imports may read these bytes; retain
+                    # the fail-closed verifier for nonqualified invocations.
+                    _verify_equivalent_import_cache(
+                        package_root, artifact,
+                        lambda path, bound: rooted_file(path, bound),
+                    )
             elif artifact.suffix in (".pyc", ".pyo", ".so", ".pyd"):
                 raise RuntimeError("unreviewed_executable_import_artifact")
     except (OSError, UnicodeError):
@@ -179,6 +189,8 @@ def preflight() -> Path:
         os.geteuid() != 0 or sys.flags.isolated != 1
         or sys.flags.no_site != 1
         or sys.flags.dont_write_bytecode != 1
+        or getattr(sys, "pycache_prefix", None) != SOURCE_ONLY_PYCACHE_PREFIX
+        or not stat.S_ISCHR(Path("/dev/null").lstat().st_mode)
     ):
         raise RuntimeError("bootstrap_privilege_unavailable")
     def unique(pairs):
@@ -242,15 +254,27 @@ def preflight() -> Path:
     if code.parent.parent.name != expected_lib:
         raise RuntimeError("python_abi_mismatch")
     system_python = Path("/usr/bin/python3")
+    resolved_python = system_python.resolve(strict=True)
+    # The supported OS installation is a root-owned symlink to a *direct*
+    # /usr/bin binary (Debian /usr/bin/python3 -> python3.13). A nested
+    # resolved path could contain an unchecked writable intermediate parent.
+    # Reject that case rather than widening the root bootstrap trust surface.
     if (
-        not system_python.resolve(strict=True).is_relative_to(Path("/usr/bin"))
+        resolved_python.parent != system_python.parent
         or not system_python.parent.is_dir()
     ):
         raise RuntimeError("system_python_not_qualified")
+    # A nested symlink hop might traverse a replaceable directory/link and
+    # still resolve to the same root-owned final binary at verification time.
+    # Support only a single direct symlink to that very /usr/bin executable.
+    if stat.S_ISLNK(system_python.lstat().st_mode):
+        target_text = str(system_python.readlink())
+        if target_text not in {resolved_python.name, str(resolved_python)}:
+            raise RuntimeError("system_python_not_qualified")
     for component in (
         system_python.parent,
         system_python,
-        system_python.resolve(strict=True),
+        resolved_python,
     ):
         info = component.lstat()
         if (
@@ -281,6 +305,7 @@ def preflight() -> Path:
 # NOT browser headers, supplies its verified absolute site-packages path.
 _RUNTIME_CODE = (
     "import sys;"
+    "assert sys.pycache_prefix == '/dev/null/obsidian-admin-source-only';"
     "sys.path.insert(0,sys.argv[1]);"
     "from obsidian_automation import admin_operator_runtime as runtime;"
     "raise SystemExit(runtime.main())"
@@ -310,7 +335,9 @@ def main() -> int:
             os.execve(
                 executable,
                 [
-                    executable, "-I", "-S", "-B", "-c", _RUNTIME_CODE,
+                    executable, "-I", "-S", "-B", "-X",
+                    "pycache_prefix=/dev/null/obsidian-admin-source-only",
+                    "-c", _RUNTIME_CODE,
                     str(verified_site_root),
                 ],
                 {
