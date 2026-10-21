@@ -137,3 +137,38 @@ of the optional source-status hints while full C4/CAS is untouched.
 Negative and positive regression fixtures cover the two exact P2 cases,
 their close/reopen variants, and explicit true status after closure.
 Final CI/full-suite/independent review must be repeated for the new head.
+
+
+## PR #417 additional cross-entity generalization gate (2026-10-21)
+
+The acceptance review does not equate passing the three original failed
+PRs (#155/#330/#158) with general performance. It adds a *new* synthetic
+source-only holdout covering four unrelated repository names, multiple unseen
+PR numbers/features, actual typed merge vs no merge, source-ref provenance,
+test-only commits and an Issue case; none of the new identifiers is special
+cased in application code. The new cases preserve complete original C4 refs
+and require an advisory result to remain nonpublishing.
+
+This uncovered a **real additional correctness risk**: a sentence about a
+*different PR* having merged previously satisfied the current PR's
+`merged_pr_transition_omitted` check solely because the text contained
+`マージされました`. The revised advisory audit requires that the merge
+sentence **also cite the current PR's exact typed C4 merge-event source_ref**.
+An unrelated PR's merge cannot discharge the current PR's own unreported
+state transition. This check is source binding only; even a correctly cited
+Japanese sentence is not automatically certified truthful or complete.
+
+For a separate 2026-10-18 real-source evaluation, all 15 original C4/CAS
+contexts from two repositories were reconstructed from immutable private
+GitHub Evidence/C1b/C2a. Both previously saved baseline and optional C5
+results were audited under the new source-ref rule without text rewriting:
+exactly one target had a typed merged-PR event (TSUMGI #155), and the other
+14 entities were not fabricated as merged. Original raw source and model
+responses stay in private Adam ResearchEvidence, not this repository.
+This is a verified replay of saved text/grounding, not fresh generator
+inference or independent human-labeled semantic-coverage proof.
+
+Generalization acceptance remains **SOURCE ONLY**. The rule must not be
+misrepresented as automatic quality acceptance; downstream human relevance
+review and independently accepted live-role/Writer/Timer behavior remain
+outside this development candidate.

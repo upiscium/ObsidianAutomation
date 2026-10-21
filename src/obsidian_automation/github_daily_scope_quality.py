@@ -188,7 +188,17 @@ def inspect_scope_quality(context: dict, sentences: list[dict]) -> dict:
         risks.append("test_only_commit_progress_unreported")
     if merge_refs and _STILL_UNMERGED_JA.search(summary):
         risks.append("merged_pr_claimed_unmerged")
-    if merge_refs and summary and not _MERGED_DONE_JA.search(summary):
+    # Mentioning a *different* PR's merge is not sufficient evidence that
+    # the current target PR's own lifecycle transition was reported. Require
+    # a sentence to cite the exact C4-verified merge source_ref alongside
+    # merge-completion language. This is an advisory source-binding check,
+    # not proof of Japanese semantic correctness or real deployment.
+    cited_own_merge = any(
+        _MERGED_DONE_JA.search(item["text"])
+        and any(ref in merge_refs for ref in item["source_refs"])
+        for item in sentences
+    )
+    if merge_refs and summary and not cited_own_merge:
         risks.append("merged_pr_transition_omitted")
     if (test_only or deployment_condition) and not summary:
         risks.append("empty_summary_requires_review")
