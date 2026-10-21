@@ -95,6 +95,17 @@ _PROFILE_PERFORMANCE_SOURCE = re.compile(
     r"(?:性能.{0,16}(?:計測|分析)|プロファイリング(?:を|した|実施))",
     re.IGNORECASE,
 )
+# A model's positive "profiling happened" statement is suspicious if the
+# only cited source reports that profiling was NOT performed. A raw mention of
+# the noun profiling must not count as proof that it actually happened.
+_SOURCE_PROFILING_EXPLICITLY_NEGATED = re.compile(
+    r"(?:\b(?:no|without|never)\s+(?:performance\s+)?profiling\b|"
+    r"\bprofiling\b.{0,34}\b(?:not\s+(?:performed|run|done|completed)|"
+    r"never\s+(?:performed|run|done))\b|"
+    r"(?:プロファイリング|性能.{0,12}計測).{0,24}"
+    r"(?:未実施|していない|されていない|行っていない))",
+    re.IGNORECASE,
+)
 _APPROVAL_LIMIT_SOURCE = re.compile(
     r"(?:\b(?:approved|authorized|authorised|permission|allow)\b|承認|許可)"
     r".{0,195}?(?:\b(?:not|without|never)\b|承認(?:なし|しない)|許可(?:なし|しない|されない)|対象外)"
@@ -329,7 +340,8 @@ def inspect_scope_quality(context: dict, sentences: list[dict], *,
         if (_PROFILING_JA_CLAIM.search(claim)
                 and not _PROFILING_NEGATED.search(claim)
                 and _NIX_CONFIG_PROFILE.search(original_text)
-                and not _PROFILE_PERFORMANCE_SOURCE.search(original_text)):
+                and (not _PROFILE_PERFORMANCE_SOURCE.search(original_text)
+                     or _SOURCE_PROFILING_EXPLICITLY_NEGATED.search(original_text))):
             risks.append("runtime_profile_misread_as_performance_profiling")
             profile_refs.extend(item["source_refs"])
         if (_APPROVAL_BASIS_INSTEAD_OF_SCOPE.search(claim)

@@ -110,3 +110,25 @@ def test_issue_has_no_fictitious_merge_when_technical_claim_is_risky():
     assert report["source_claims"]["merged_in_period"] is False
     assert "merged_pr_transition_omitted" not in report["known_rule_violations"]
     assert "runtime_profile_misread_as_performance_profiling" in report["known_rule_violations"]
+
+
+
+@pytest.mark.parametrize("repo,num,original,claim",[
+    ("sample/VEGA",742,
+     "Nix runtime profile added; performance profiling not performed.",
+     "Nixプロファイルを追加し、プロファイリングを行いました。"),
+    ("other/ALNILAM",4561,
+     "Managed Installer profile pinned; GPU profiling was not run.",
+     "GPU性能のプロファイリングを行いました。"),
+    ("sample/MINTAKA",8992,
+     "Runtime Nix profile pinned; プロファイリングは未実施です。",
+     "ランタイムのプロファイリングを実施しました。"),
+])
+def test_explicit_original_profiling_negation_never_counts_as_performance_proof(
+        repo,num,original,claim):
+    report=quality.inspect_scope_quality(
+        ctx(repo,num,"pull_request",original),[sentence(claim)])
+    assert "runtime_profile_misread_as_performance_profiling" in report["known_rule_violations"]
+    assert report["original_source_refs"]["runtime_profile_semantic_risk"]==[0]
+    assert report["semantic_completeness_certified"] is False
+    assert report["publication_authorized"] is False

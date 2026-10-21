@@ -106,3 +106,21 @@ days/projects and true Collector/Writer/Timer admission remain pending.
 PR #426 (baseline prompt) and #432 (offline metric evaluator) are separate
 Draft candidates and must not be silently merged here. This source-only
 change also remains Draft until separate human merge approval.
+
+
+## Independent source review correction: explicitly negative profiling
+
+A source-only independent Correctness review of the first Draft candidate
+identified a real P2 gap: simply finding the *word* `profiling` in the cited
+source incorrectly suppressed the warning, even when the original explicitly
+said `performance profiling not performed`. This conflated mention with
+positive completion proof. The corrected warning handles a **source
+negation** separately: a positive model claim of `プロファイリングを行った`
+against an original `Nix runtime profile` plus `profiling was not run`
+is **still warned**. Real original performance profiling without a source
+negation remains a distinct negative control. Three independent synthetic
+cases cover English/Japanese negation and unrelated Issue/PR identifiers.
+
+The warning is advisory only and cannot certify whether real profiling
+occurred. Mixed positive and negative reports about different time periods
+remain human-review questions, not deterministic contradictions.
