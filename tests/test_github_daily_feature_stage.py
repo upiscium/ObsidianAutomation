@@ -710,3 +710,432 @@ def test_explicit_actual_operational_status_header_still_admits_update(intro):
     view=stage.build_feature_first_view(allcontexts[1],plan)
     assert any("worker" in row["superseded_scopes"] for row in
                view.report()["excluded_obsolete_status_hints"])
+
+
+@pytest.mark.parametrize("later_body", [
+    # An info-string fence *inside* a fenced example cannot close it.
+    "~~~text\n~~~python\nThe privileged effect worker has now been installed and enabled.\n~~~",
+    "~~~text\n~~~~python\nThe privileged effect worker has now been installed and enabled.\n~~~",
+    "~~~text\n```\nThe privileged effect worker has now been installed and enabled.\n~~~",
+    "```text\n```python\nThe privileged effect worker has now been installed and enabled.\n```",
+    "```text\n```     python\nThe privileged effect worker has now been installed and enabled.\n```",
+])
+def test_inner_markdown_fence_language_marker_not_a_valid_closing_fence(later_body):
+    allcontexts, _ = make_original_feature_context()
+    from test_github_daily_c5_source_view import event
+    allcontexts[1]["sources"].append(event(
+        4, "pull_request_comment", body=later_body))
+    plan = d1._original_plan(allcontexts, CAP)
+    view = stage.build_feature_first_view(allcontexts[1], plan)
+    result = view.report()
+    assert view.structural_feature_anchor
+    assert not any("worker" in row["superseded_scopes"]
+                   for row in result["excluded_obsolete_status_hints"])
+    assert any("not installed" in row["verbatim"].lower()
+               for row in result["latest_operational_caveat_evidence"])
+    assert result["source_deleted"] is False
+
+
+@pytest.mark.parametrize("later_body", [
+    "Example output:\n## Notes\nThe privileged effect worker is installed and enabled.",
+    "Example output:\n### Some release note\nThe privileged effect worker is installed and enabled.",
+    "## Example output:\n#### Notes\nThe privileged effect worker is installed and enabled.",
+    "Model reply:\n# Continuation\nThe privileged effect worker has now been installed and enabled.",
+])
+def test_arbitrary_heading_inside_unfenced_example_does_not_grant_state_authority(later_body):
+    allcontexts, _ = make_original_feature_context()
+    from test_github_daily_c5_source_view import event
+    allcontexts[1]["sources"].append(event(
+        4, "pull_request_comment", body=later_body))
+    plan = d1._original_plan(allcontexts, CAP)
+    view = stage.build_feature_first_view(allcontexts[1], plan)
+    x = view.report()
+    assert not any("worker" in row["superseded_scopes"]
+                   for row in x["excluded_obsolete_status_hints"])
+    assert any("not installed" in row["verbatim"].lower()
+               for row in x["latest_operational_caveat_evidence"])
+
+
+def test_explicit_actual_status_heading_after_arbitrary_example_heading_is_admitted():
+    allcontexts, _ = make_original_feature_context()
+    from test_github_daily_c5_source_view import event
+    body = ("Example output:\n"
+            "## Notes\n"
+            "The privileged effect worker is installed and enabled.\n"
+            "## Actual verified status\n"
+            "The privileged effect worker has now been installed and enabled.")
+    allcontexts[1]["sources"].append(event(4, "pull_request_comment", body=body))
+    plan = d1._original_plan(allcontexts, CAP)
+    x = stage.build_feature_first_view(allcontexts[1], plan).report()
+    assert any("worker" in row["superseded_scopes"]
+               for row in x["excluded_obsolete_status_hints"])
+    assert not any("worker is not installed" in row["verbatim"].lower()
+                   for row in x["latest_operational_caveat_evidence"])
+
+
+@pytest.mark.parametrize("quoted_blocker", [
+    "> No live controls are available.",
+    ">> No live controls are available.",
+    "- > No live controls are available.",
+    "1. > No live controls are available.",
+    "    No live controls are available.",
+    '"No live controls are available."',
+    "“No live controls are available.”",
+    "`No live controls are available.`",
+])
+def test_quoted_negative_does_not_displace_actual_worker_blocker(quoted_blocker):
+    allcontexts, _ = make_original_feature_context()
+    from test_github_daily_c5_source_view import event
+    allcontexts[1]["sources"].append(event(
+        4, "pull_request_comment", body=quoted_blocker))
+    plan = d1._original_plan(allcontexts, CAP)
+    view = stage.build_feature_first_view(allcontexts[1], plan)
+    x = view.report()
+    assert x["source_deleted"] is False
+    assert not any(row["source_ref"] == 4
+                   for row in x["latest_operational_caveat_evidence"])
+    assert any("worker" in row["verbatim"].lower()
+               and "not installed" in row["verbatim"].lower()
+               for row in x["latest_operational_caveat_evidence"])
+    assert all(row["source_ref"] in (2, 3)
+               for row in x["latest_operational_caveat_evidence"])
+
+
+@pytest.mark.parametrize("intro", [
+    "**Model output:**",
+    "**Example output:**",
+    "__Generated output:__",
+    "## **Model output:**",
+    "### __Sample output:__",
+])
+def test_emphasized_unfenced_example_label_never_grants_worker_state(intro):
+    allcontexts, _ = make_original_feature_context()
+    from test_github_daily_c5_source_view import event
+    allcontexts[1]["sources"].append(event(
+        4, "pull_request_comment", body=(
+            intro + "\nThe privileged effect worker is installed and enabled.")))
+    plan = d1._original_plan(allcontexts, CAP)
+    view = stage.build_feature_first_view(allcontexts[1], plan)
+    assert not view.report()["excluded_obsolete_status_hints"]
+    assert any("worker" in row["verbatim"].lower()
+               and "not installed" in row["verbatim"].lower()
+               for row in view.report()["latest_operational_caveat_evidence"])
+
+
+@pytest.mark.parametrize("quoted", [
+    '- "No live controls are available."',
+    "* 'No live controls are available.'",
+    "1. “No live controls are available.”",
+    "- `No live controls are available.`",
+    '+ > No live controls are available.',
+])
+def test_markdown_listed_quote_not_a_new_actual_status_hint(quoted):
+    allcontexts, _ = make_original_feature_context()
+    from test_github_daily_c5_source_view import event
+    allcontexts[1]["sources"].append(
+        event(4, "pull_request_comment", body=quoted))
+    plan = d1._original_plan(allcontexts, CAP)
+    view = stage.build_feature_first_view(allcontexts[1], plan)
+    x = view.report()
+    assert all(item["source_ref"] != 4
+               for item in x["latest_operational_caveat_evidence"])
+    assert any("worker" in item["verbatim"].lower()
+               and "not installed" in item["verbatim"].lower()
+               for item in x["latest_operational_caveat_evidence"])
+    assert x["publication_authorized"] is False
+
+
+def test_explicit_bold_actual_status_label_preserves_real_update():
+    allcontexts, _ = make_original_feature_context()
+    from test_github_daily_c5_source_view import event
+    body = ("**Actual status:**\n"
+            "The privileged effect worker is installed and enabled.")
+    allcontexts[1]["sources"].append(event(4, "pull_request_comment", body=body))
+    plan = d1._original_plan(allcontexts, CAP)
+    x = stage.build_feature_first_view(allcontexts[1], plan).report()
+    assert any("worker" in item["superseded_scopes"]
+               for item in x["excluded_obsolete_status_hints"])
+    assert x["source_deleted"] is False
+
+
+@pytest.mark.parametrize("heading", [
+    "## Example output",
+    "## Model reply",
+    "### State excerpt",
+    "#### Generated output",
+    "Example output",
+    "Model reply",
+    "Current status: Sample output:",
+    "## Current status: Sample output:",
+    "Actual status: Model reply:",
+])
+def test_heading_without_colon_or_composite_status_cannot_forge_worker_state(heading):
+    allcontexts,_=make_original_feature_context()
+    from test_github_daily_c5_source_view import event
+    allcontexts[1]["sources"].append(event(
+        4,"pull_request_comment",
+        body=heading+"\nThe privileged effect worker is installed and enabled."))
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    assert view.structural_feature_anchor
+    assert not any("worker" in row["superseded_scopes"]
+                   for row in view.report()["excluded_obsolete_status_hints"])
+    assert any("worker" in row["verbatim"].lower()
+               and "not installed" in row["verbatim"].lower()
+               for row in view.report()["latest_operational_caveat_evidence"])
+
+
+@pytest.mark.parametrize("fence_char", [chr(96), "~"])
+def test_short_nested_fence_must_not_close_four_marker_code_example(fence_char):
+    allcontexts,_=make_original_feature_context()
+    from test_github_daily_c5_source_view import event
+    opening=fence_char*4
+    inner=fence_char*3
+    text=(opening+"text\n"
+          +inner+"\n"
+          +"The privileged effect worker is installed and enabled.\n"
+          +inner+"\n"
+          +opening)
+    allcontexts[1]["sources"].append(event(4,"pull_request_comment",body=text))
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    assert not any("worker" in row["superseded_scopes"]
+                   for row in view.report()["excluded_obsolete_status_hints"])
+    assert any("not installed" in row["verbatim"].lower()
+               for row in view.report()["latest_operational_caveat_evidence"])
+
+
+def test_after_proper_four_marker_close_genuine_update_still_supersedes():
+    allcontexts,_=make_original_feature_context()
+    from test_github_daily_c5_source_view import event
+    delimiter=chr(96)*4
+    body=(delimiter+"text\n"
+          +chr(96)*3+"\n"
+          +"The privileged effect worker is installed and enabled.\n"
+          +delimiter+"\n"
+          +"The privileged effect worker has now been installed and enabled.")
+    allcontexts[1]["sources"].append(event(4,"pull_request_comment",body=body))
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    assert any("worker" in row["superseded_scopes"]
+               for row in view.report()["excluded_obsolete_status_hints"])
+
+
+@pytest.mark.parametrize("heading", [
+    "Current status:",
+    "## Production status:",
+    "### Actual status:",
+    "## Actual verified status",
+])
+def test_real_later_status_outside_example_remains_eligible(heading):
+    allcontexts,_=make_original_feature_context()
+    from test_github_daily_c5_source_view import event
+    body=("## Example output\n"
+          +"The privileged effect worker is installed and enabled.\n"
+          +heading+"\n"
+          +"The privileged effect worker has now been installed and enabled.")
+    allcontexts[1]["sources"].append(event(4,"pull_request_comment",body=body))
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    assert any("worker" in row["superseded_scopes"]
+               for row in view.report()["excluded_obsolete_status_hints"])
+
+
+def test_status_excerpt_with_blank_line_starts_new_actual_report():
+    allcontexts,_=make_original_feature_context()
+    from test_github_daily_c5_source_view import event
+    allcontexts[1]["sources"].append(event(4,"pull_request_comment",body=(
+        "## Example output\n"
+        "The privileged effect worker is installed and enabled.\n"
+        "\n"
+        "The privileged effect worker has now been installed and enabled."
+    )))
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    assert any("worker" in row["superseded_scopes"]
+               for row in view.report()["excluded_obsolete_status_hints"])
+    assert view.report()["source_deleted"] is False
+    assert view.report()["publication_authorized"] is False
+
+
+@pytest.mark.parametrize("heading", [
+    "## Example output ##",
+    "### Model reply ###",
+    "#### State excerpt ####",
+    "## Current status: Sample output",
+    "## Current status: Sample output ##",
+    "### Actual status: Model reply",
+    "### Actual status: Model reply ###",
+    "### Production status: Example output",
+    "Current status: Sample output",
+    "Actual status: Model reply",
+])
+def test_nested_or_closed_atx_illustrative_heading_never_forges_status(heading):
+    allcontexts,_=make_original_feature_context()
+    from test_github_daily_c5_source_view import event
+    allcontexts[1]["sources"].append(event(
+        4,"pull_request_comment",body=(
+            heading+"\nThe privileged effect worker is installed and enabled.")))
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    assert not any("worker" in x["superseded_scopes"] for x in
+                   view.report()["excluded_obsolete_status_hints"])
+    assert any("not installed" in row["verbatim"].lower() for row in
+               view.report()["latest_operational_caveat_evidence"])
+    assert view.report()["publication_authorized"] is False
+    assert view.report()["source_deleted"] is False
+
+
+@pytest.mark.parametrize("heading", [
+    "## Actual status: ##",
+    "### Current status: ###",
+    "## Production status: ##",
+])
+def test_atx_closed_exact_actual_status_can_follow_illustration(heading):
+    allcontexts,_=make_original_feature_context()
+    from test_github_daily_c5_source_view import event
+    allcontexts[1]["sources"].append(event(4,"pull_request_comment",body=(
+        "## Example output ##\n"
+        "The privileged effect worker is installed and enabled.\n"
+        +heading+"\n"
+        "The privileged effect worker has now been installed and enabled."
+    )))
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    assert any("worker" in x["superseded_scopes"] for x in
+               view.report()["excluded_obsolete_status_hints"])
+
+
+@pytest.mark.parametrize("heading", [
+    "## Model reply ###",
+    "## Example output ##",
+    "Current status: Sample output:",
+    "### State excerpt",
+])
+def test_blank_after_illustrative_heading_cannot_open_fake_worker_update(heading):
+    allcontexts,_=make_original_feature_context()
+    from test_github_daily_c5_source_view import event
+    allcontexts[1]["sources"].append(event(
+        4,"pull_request_comment",body=(
+            heading+"\n"
+            "\n"
+            "The privileged effect worker is installed and enabled."
+        )))
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    assert not any("worker" in x["superseded_scopes"]
+                   for x in view.report()["excluded_obsolete_status_hints"])
+    assert any("worker" in x["verbatim"].lower()
+               and "not installed" in x["verbatim"].lower()
+               for x in view.report()["latest_operational_caveat_evidence"])
+    assert view.report()["publication_authorized"] is False
+    assert view.report()["source_deleted"] is False
+
+
+def test_blank_after_actual_example_payload_then_real_status_is_admitted():
+    allcontexts,_=make_original_feature_context()
+    from test_github_daily_c5_source_view import event
+    allcontexts[1]["sources"].append(event(4,"pull_request_comment",body=(
+        "## Example output ##\n"
+        "\n"
+        "The privileged effect worker is installed and enabled.\n"
+        "\n"
+        "The privileged effect worker has now been installed and enabled."
+    )))
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    assert any("worker" in x["superseded_scopes"]
+               for x in view.report()["excluded_obsolete_status_hints"])
+
+
+def test_blank_after_fenced_example_then_real_status_is_admitted():
+    allcontexts,_=make_original_feature_context()
+    from test_github_daily_c5_source_view import event
+    fence=chr(96)*4
+    allcontexts[1]["sources"].append(event(4,"pull_request_comment",body=(
+        "## Example output ##\n"
+        +fence+"text\n"
+        "The privileged effect worker is installed and enabled.\n"
+        +fence+"\n"
+        "\n"
+        "The privileged effect worker has now been installed and enabled."
+    )))
+    plan=d1._original_plan(allcontexts,CAP)
+    view=stage.build_feature_first_view(allcontexts[1],plan)
+    assert any("worker" in x["superseded_scopes"]
+               for x in view.report()["excluded_obsolete_status_hints"])
+
+
+def test_later_c4_merge_supersedes_obsolete_mixed_pr_unmerged_site_hint():
+    from test_github_daily_scope_quality import tsumgi
+    from test_github_daily_c5_source_view import event
+    import copy
+    ctx=tsumgi()
+    ctx["sources"].append(event(2,"pull_request_merged",
+                                source_status="event_transition_only"))
+    original=copy.deepcopy(ctx["sources"])
+    plan=d1._original_plan([ctx],CAP)
+    view=stage.build_feature_first_view(ctx,plan)
+    assert view.structural_feature_anchor
+    result=view.report()
+    terminal=result["latest_lifecycle_transition"]
+    assert terminal is not None
+    assert terminal["kind"]=="pull_request_merged"
+    assert terminal["source_ref"]==2
+    assert terminal["original_evidence_id"]==ctx["sources"][2]["original_event"]["evidence_id"]
+    assert 2 in result["shown_source_refs"]
+    assert not any("No merge" in x["verbatim"]
+                   for x in result["latest_operational_caveat_evidence"])
+    assert any("pr_lifecycle" in x["superseded_scopes"]
+               and x["source_ref"]==0
+               for x in result["excluded_obsolete_status_hints"])
+    assert result["source_deleted"] is False
+    assert result["publication_authorized"] is False
+    assert ctx["sources"]==original
+
+
+def test_no_lifecycle_transition_preserves_original_no_ga_quote():
+    from test_github_daily_scope_quality import tsumgi
+    ctx=tsumgi()
+    view=stage.build_feature_first_view(ctx,d1._original_plan([ctx],CAP))
+    result=view.report()
+    assert result["latest_lifecycle_transition"] is None
+    assert result["latest_operational_caveat_evidence"]
+    assert "change to running GA services" in result[
+        "latest_operational_caveat_evidence"][0]["verbatim"]
+    assert "no merge" in result[
+        "latest_operational_caveat_evidence"][0]["verbatim"].lower()
+    assert result["source_deleted"] is False
+
+
+def test_merge_source_ref_is_available_to_optional_editor_but_not_publication():
+    from test_github_daily_scope_quality import tsumgi
+    from test_github_daily_c5_source_view import event
+    ctx=tsumgi()
+    ctx["sources"].append(event(2,"pull_request_merged",
+                                source_status="event_transition_only"))
+    plan=d1._original_plan([ctx],CAP)
+    view=stage.build_feature_first_view(ctx,plan)
+    assert view.shown_source_refs==(0,2)
+    request=rt._json({"sentences":[
+        {"text":"Bonsai 2のNixバックエンドを実装しました。","source_refs":[0]},
+        {"text":"このPRはマージされましたが、本番反映は未確認です。","source_refs":[2]},
+    ]})
+    verified=rt._admit_editorial(
+        ctx,request,rt.FEATURE_FIRST_SOURCE_CONTRACT,
+        verified_feature_refs=view.shown_source_refs)
+    admitted=json.loads(verified)
+    assert admitted["pending_source_refs"]==[1]
+    assert all(ref in view.shown_source_refs
+               for s in admitted["sentences"] for ref in s["source_refs"])
+    assert "マージ" in admitted["sentences"][1]["text"]
+    assert ctx["publication_authorized"] is False
+
+
+def test_feature_first_2026_lifecycle_and_no_fabricated_profiling_prompt():
+    assert "latest_lifecycle_transition" in rt.FEATURE_FIRST_PROMPT
+    assert "このPRはマージされました" in rt.FEATURE_FIRST_PROMPT
+    assert "source_ref" in rt.FEATURE_FIRST_PROMPT
+    assert "プロファイリング" in rt.FEATURE_FIRST_PROMPT
+    assert "profile" in rt.FEATURE_FIRST_PROMPT
+    assert rt.FEATURE_FIRST_PROMPT_VERSION.endswith("-v5")

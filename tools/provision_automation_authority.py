@@ -492,8 +492,35 @@ def _reset_acl_dir(
             )
 
 
+_ACCESS_PROBE = (
+    "import os,sys\n"
+    "flags={'-r':os.R_OK,'-w':os.W_OK,'-x':os.X_OK}\n"
+    "print('ALLOW' if os.access(sys.argv[2],flags[sys.argv[1]],"
+    "effective_ids=True) else 'DENY')\n"
+)
+
+
 def _can(runner: Runner, user: str, flag: str, path: str) -> bool:
-    return runner(("runuser", "-u", user, "--", "test", flag, path)).returncode == 0
+    """Check target-UID access without relying on external coreutils test.
+
+    Ubuntu 26.04's /usr/bin/test -r/-x may reject a named-user POSIX ACL
+    even when os.access() and actual directory reads succeed. The probe
+    runs as the exact service identity and returns an explicit allow/deny
+    token. A failed subprocess or malformed reply must not be interpreted
+    as a *successful* negative-authority check.
+    """
+    if flag not in ("-r", "-w", "-x"):
+        raise AuthorityProvisionError("invalid permission probe flag")
+    result = _run(
+        runner,
+        ("runuser", "-u", user, "--", sys.executable, "-I", "-c",
+         _ACCESS_PROBE, flag, path),
+        label="probe service-user filesystem access",
+    )
+    answer = result.stdout.strip()
+    if answer not in ("ALLOW", "DENY"):
+        raise AuthorityProvisionError("invalid service-user access probe result")
+    return answer == "ALLOW"
 
 
 def _require_access(

@@ -291,3 +291,117 @@ def test_optional_feature_only_grounding_disambiguates_unavailable_ui_labels():
     normal_receipt=json.loads(normal.receipt_bytes)
     assert normal_receipt["effective_prompt_version"]==rt.SEMANTIC_GROUND_PROMPT_VERSION
     assert seen[-1]==rt.SEMANTIC_GROUND_PROMPT
+
+
+def test_pair_audits_test_only_false_completion_even_without_feature_yes(monkeypatch):
+    from test_github_daily_scope_quality import suzka
+    ctx = suzka()
+    plan = d1._original_plan([ctx], CAP)
+    class Contexts:
+        def report(self):
+            return {"contexts": [{"context": ctx, "context_sha256": "a"*64}]}
+    class Preview:
+        sha256 = "b"*64
+        def report(self):
+            return {"entities": [{"sentences": [{
+                "text": "テスト専用事前検証の機能実装は完了しました。",
+                "source_refs": [0], "verdict": "supported"}]}]}
+    class Run:
+        preview = Preview()
+        def report(self):
+            return {"inference_responses_complete": True}
+    monkeypatch.setattr(pair.c4, "build_witnessed_narrative_contexts",
+                        lambda *a, **kw: Contexts())
+    monkeypatch.setattr(pair.rt, "run_witnessed_narrative_inference",
+                        lambda **kw: Run())
+    result = pair.run_private_feature_pair(
+        CAP, (), (), target_entity=("upiscium/PROJECT-SUZKA", "pull_request", 330),
+        source_plan=plan, baseline_infer=lambda *_: None, feature_infer=None)
+    audit = result.report()["baseline_development_scope_check"]
+    assert audit["source_claims"]["test_only"] is True
+    assert "test_only_pr_claimed_product_feature_complete" in audit["known_rule_violations"]
+    assert result.report()["feature_first_development_scope_check"] is None
+    assert result.report()["publication_authorized"] is False
+
+
+def test_pair_flags_missing_ga_site_gate_in_alternate_not_baseline(monkeypatch):
+    from test_github_daily_scope_quality import tsumgi
+    ctx = tsumgi()
+    plan = d1._original_plan([ctx], CAP)
+    class Contexts:
+        def report(self):
+            return {"contexts": [{"context": ctx, "context_sha256": "a"*64}]}
+    class Preview:
+        sha256 = "b"*64
+        def __init__(self, text):
+            self.text = text
+        def report(self):
+            return {"entities": [{"sentences": [{
+                "text": self.text, "source_refs": [0], "verdict": "supported"}]}]}
+    class Run:
+        def __init__(self, text):
+            self.preview = Preview(text)
+        def report(self):
+            return {"inference_responses_complete": True}
+    called = []
+    def run_model(**kw):
+        called.append(kw)
+        return Run("本番への反映は未実施です。" if len(called)==1
+                   else "Bonsai 2 PQ2_0バックエンドを実装しました。")
+    monkeypatch.setattr(pair.c4, "build_witnessed_narrative_contexts",
+                        lambda *a, **kw: Contexts())
+    monkeypatch.setattr(pair.rt, "run_witnessed_narrative_inference", run_model)
+    result = pair.run_private_feature_pair(
+        CAP, (), (), target_entity=("upiscium/TSUMGI", "pull_request", 155),
+        source_plan=plan, baseline_infer=lambda *_: None, feature_infer=lambda *_: None)
+    report = result.report()
+    assert len(called) == 2
+    assert report["baseline_development_scope_check"]["known_rule_violations"] == []
+    assert "original_no_deploy_condition_omitted" in report[
+        "feature_first_development_scope_check"]["known_rule_violations"]
+    assert report["publication_authorized"] is False
+
+
+def test_optional_no_supported_grounding_does_not_claim_quality_green(monkeypatch):
+    contexts,plan=context_plan()
+    target=contexts[1]
+    class Contexts:
+        def report(self):
+            return {"contexts":[
+                {"context":contexts[0],"context_sha256":"b"*64},
+                {"context":target,"context_sha256":"a"*64},
+            ]}
+    class Preview:
+        sha256="b"*64
+        def __init__(self, supported):
+            self.supported=supported
+        def report(self):
+            return {"entities":[{"sentences":[{
+                "text":"根拠のないプロファイリングを実施しました。",
+                "source_refs":[1], "verdict":"supported" if self.supported else "unsupported"
+            }]}]}
+    class Run:
+        def __init__(self,supported):
+            self.preview=Preview(supported)
+        def report(self):
+            return {"inference_responses_complete":True}
+    called=[]
+    def fake(**kw):
+        called.append(kw)
+        return Run(supported=(len(called)==1))
+    monkeypatch.setattr(pair.c4,"build_witnessed_narrative_contexts",
+                        lambda *a,**kw:Contexts())
+    monkeypatch.setattr(pair.rt,"run_witnessed_narrative_inference",fake)
+    result=pair.run_private_feature_pair(
+        CAP,(),(),target_entity=("upiscium/Test","pull_request",374),
+        source_plan=plan,baseline_infer=lambda *_:None,
+        feature_infer=lambda *_:None)
+    assert len(called)==2
+    doc=result.report()
+    assert doc["baseline_complete"] is True
+    assert doc["feature_first_complete"] is True
+    assert doc["feature_first_has_no_known_operational_inversion"] is False
+    assert doc["protected_operational_translation_check"]["status"]=="needs_human_review"
+    assert "feature_first_no_supported_sentences" in doc[
+        "protected_operational_translation_check"]["known_rule_violations"]
+    assert doc["publication_authorized"] is False

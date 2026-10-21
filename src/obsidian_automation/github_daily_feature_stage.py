@@ -15,7 +15,7 @@ import re
 from . import github_daily_d1_priority_shadow as d1
 from . import github_daily_c5_source_view as recent
 
-VERSION = "daily-feature-mention-paired-stage-v6"
+VERSION = "daily-feature-mention-paired-stage-v8"
 QUESTION_VERSION = "d1-binary-feature-mention-v1"
 MAX_VIEW_BYTES = 16 * 1024
 MAX_REQUEST_BYTES = 8192
@@ -37,12 +37,38 @@ CHOICES = (
 _FEATURE_TITLE = re.compile(r"^(feat(?:\([^\r\n)]*\))?:|feature:)", re.IGNORECASE)
 _BODY_HEADING = re.compile(r"^#{2,4}\s*(?:What is implemented|Implemented|実装済み|実装内容|Phase\s+[A-Z].*implemented)", re.IGNORECASE)
 _EXCLUDE_HEADINGS = re.compile(r"^#{2,5}\s*(?:Evidence|Verification|Required|Still blocking|Tests|Review|Next|確認|検証|残課題)", re.IGNORECASE)
+# Never present a *historically earlier* PR-not-merged condition as its
+# end-of-day status after an authenticated merge transition in the same C4
+# entity. A mixed no-merge/no-GA line is withheld wholesale; it cannot be
+# safely split or rewritten into a new claim about production rollout.
+_PR_NOT_MERGED = re.compile(
+    r"\b(?:no merge|not (?:yet )?merged|unmerged|still a draft)\b|"
+    r"(?:未マージ|マージ(?:されていない|していない|未実施|保留))",
+    re.IGNORECASE,
+)
+
 _STATUS_MARKERS = (
     "not installed", "not merged", "not deploy", "no production",
     "no live", "unwired", "disabled", "unavailable",
     "critical blocking", "explicit blocker", "still blocking",
     "not complete", "remain blocked", "no actual",
     "未導入", "未マージ", "本番未", "無効", "未完了",
+    "no merge", "not yet qualified", "no change to running",
+    "change to running ga services", "services remain unchanged",
+    "services are unchanged",
+)
+
+# A current PR may implement an opt-in backend while explicitly leaving the
+# running GA site unchanged. This product-deployment qualifier outranks a
+# later CI/review-only caveat in the *optional* feature-first view. It never
+# proves current production state; historical status is still day-scoped.
+_SITE_NOT_PROMOTED = re.compile(
+    r"\b(?:not (?:yet )?deployed|"
+    r"no (?:merge|new release|change).{0,110}change to running (?:ga )?services|"
+    r"no change to running (?:ga )?services|"
+    r"(?:running (?:ga )?services|production (?:ga )?(?:site|services))\s+"
+    r"(?:remain|remains|are|is|have remained)\s+(?:unchanged|unmodified)|"
+    r"no production (?:deployment|rollout|promotion))\b", re.IGNORECASE,
 )
 
 # Only explicit original source statements, never a model inference, can
@@ -72,72 +98,192 @@ _NON_ACTUAL_STATUS = re.compile(
 )
 
 
-def _status_source_lines(value: dict, ref: int, field: str):
-    """Exact original full lines outside Markdown fenced code blocks.
+_HTML_HIDDEN_TOKENS = re.compile(
+    # Markdown quote lines and HTML quotations are both examples, never a
+    # direct production state report. Keep the same ordered comment/tag
+    # scanner to avoid recognizing tags inside an HTML comment.
+    r"<!--|-->|</?(?:pre|code|blockquote)\b[^>]*>", re.IGNORECASE,
+)
 
-    Unlike a line-only keyword check this scans the *whole original field*,
-    including long lines that the bounded model excerpt may omit, so the
-    enclosing code-fence state cannot be bypassed by splitting chunks.
+
+def _html_hidden_after_line(
+        line: str, *, comment_open: bool, code_depth: int) -> tuple[bool,int,bool]:
+    """Lex HTML comments/code in exact source order; do not trust inner tags.
+
+    Tags within a comment are *not* open/close instructions. A same-line
+    closing code block followed by a new comment must retain that new
+    comment's state for subsequent lines. Conservatively withhold every
+    line touching these HTML containers from optional operational hints.
+    """
+    hidden=comment_open or bool(code_depth)
+    for match in _HTML_HIDDEN_TOKENS.finditer(line):
+        token=match.group(0)
+        if comment_open:
+            if token=="-->":
+                comment_open=False
+            continue
+        if token=="<!--":
+            comment_open=True
+            hidden=True
+            continue
+        if token=="-->":
+            continue
+        hidden=True
+        if token.startswith("</"):
+            code_depth=max(0,code_depth-1)
+        else:
+            code_depth+=1
+    return comment_open,code_depth,hidden
+
+
+def _status_source_lines(value: dict, ref: int, field: str):
+    """Exact original lines, excluding bounded Markdown/HTML illustration hints.
+
+    Status candidates are only optional source-presentation hints. The full
+    original source remains in C4/CAS for Grounding and human review.
     """
     text=value["text"]
     skipped_offsets=set()
     cursor=0
     active_fence=None
     active_unfenced_example=False
+    illustrative_payload_seen=False
+    active_html_comment=False
+    active_html_code_depth=0
+    site_after_example_blank=False
+    # Fence closers require matching marker family, equal-or-longer run,
+    # and no trailing language/info string (a nested opener is not a closer).
+    fence_marker_pattern=re.compile(r"^(" + chr(96) + r"{3,}|~{3,})")
+    illustrative_heading_names=frozenset((
+        "example output", "example", "sample output", "sample",
+        "expected output", "generated output", "model output",
+        "model reply", "model response", "llm response", "state excerpt",
+        "illustrative output", "test output", "example response",
+    ))
+    operational_heading=frozenset((
+        "current status:", "actual status:", "production status:",
+        "current production status:", "operator status:",
+        "actual deployment status:", "actual verified status",
+        "actual verified status:",
+    ))
     for line in text.splitlines(keepends=True):
         stripped=line.lstrip()
+        marker=fence_marker_pattern.match(stripped)
+        if marker is not None:
+            token=marker.group(1)
+            marker_type,marker_length=token[0],len(token)
+            remaining=stripped[len(token):].strip()
+        # Already-open HTML containers take priority over Markdown markers.
+        # Process comment and pre/code tags in original lexical order, so
+        # inert closing tags *inside* a comment cannot escape a code block.
+        if active_html_comment or active_html_code_depth:
+            previous_depth=active_html_code_depth
+            active_html_comment,active_html_code_depth,_=_html_hidden_after_line(
+                line,comment_open=active_html_comment,
+                code_depth=active_html_code_depth)
+            skipped_offsets.add(cursor)
+            if (active_unfenced_example and previous_depth
+                    and not _HTML_HIDDEN_TOKENS.search(line)
+                    and stripped.strip()):
+                illustrative_payload_seen=True
+            cursor+=len(line)
+            continue
+        if active_fence is not None:
+            skipped_offsets.add(cursor)
+            if (marker is not None
+                    and marker_type==active_fence[0]
+                    and marker_length>=active_fence[1]
+                    and not remaining):
+                active_fence=None
+            elif (active_unfenced_example and marker is None
+                    and stripped.strip()):
+                # A fence's *actual content* can count as illustrative
+                # payload. Opening/closing (or nested) marker-only lines
+                # cannot authenticate a subsequent "Actual status" heading.
+                illustrative_payload_seen=True
+            cursor+=len(line)
+            continue
+        # A valid Markdown code-fence opener has precedence over literal
+        # HTML-comment tokens in its info string ("~~~text <!-- sample -->").
+        # Inside an active HTML comment, the earlier branch still wins.
+        if marker is not None:
+            skipped_offsets.add(cursor)
+            active_fence=(marker_type,marker_length)
+            cursor+=len(line)
+            continue
+        active_html_comment,active_html_code_depth,html_hidden=_html_hidden_after_line(
+            line,comment_open=False,code_depth=0)
+        if html_hidden:
+            skipped_offsets.add(cursor)
+            cursor+=len(line)
+            continue
+
         normalized=stripped.lower().strip()
-        # Unfenced examples are common in GitHub comments. Do not promote
-        # standalone literal lines after "Example output:" to real system
-        # state, even when they look like valid installation announcements.
-        # A blank line or a Markdown heading ends the illustrative block.
-        example_starts=(
-            "example output:", "example:", "sample output:",
-            "sample:", "expected output:", "generated output:",
-            "model output:", "illustrative output:",
-            "test output:", "example response:")
-        # A colon-terminated preceding label (including a Markdown heading)
-        # can turn the *next* fluent standalone sentence into quoted/example
-        # data. Only a deliberately explicit operational-status heading is
-        # admitted as a candidate context; ambiguous headings fail closed.
-        operational_heading=(
-            "current status:", "actual status:", "production status:",
-            "current production status:", "operator status:",
-            "actual deployment status:")
         heading=re.match(r"^#{1,6}\s+",normalized)
         label=normalized[heading.end():] if heading else normalized
         if heading is not None:
-            active_unfenced_example=False
-        if not label:
-            active_unfenced_example=False
-        elif (label.startswith(example_starts) or
-              (label.endswith(":") and
-               not label.startswith(operational_heading))):
-            active_unfenced_example=True
-        elif heading is not None:
-            active_unfenced_example=False
-        if active_unfenced_example:
-            skipped_offsets.add(cursor)
-        candidate=(
-            chr(96)*3 if stripped.startswith(chr(96)*3)
-            else chr(126)*3 if stripped.startswith(chr(126)*3)
-            else None
+            # Markdown ATX headings may end in optional closing hashes.
+            label=re.sub(r"\s+#+\s*$","",label).strip()
+        # Formatting on a literal label adds no operational authority.
+        label=label.strip().strip("*_").strip()
+        illustrative=any(
+            re.search(r"(?<![a-z])"+re.escape(name)+r"(?![a-z])",label)
+            for name in illustrative_heading_names
         )
-        if candidate is not None:
-            skipped_offsets.add(cursor)
-            if active_fence is None:
-                active_fence=candidate
-            elif candidate==active_fence:
-                active_fence=None
-        elif active_fence is not None:
+        if not label:
+            # A blank *before* any example payload is not a terminator;
+            # a blank *after* payload may start a real source paragraph.
+            if illustrative_payload_seen:
+                active_unfenced_example=False
+                illustrative_payload_seen=False
+                # A blank alone does not authenticate a positive GA/site
+                # transition under the same illustrative heading.
+                site_after_example_blank=True
+        elif illustrative or (label.endswith(":") and label not in operational_heading):
+            active_unfenced_example=True
+            illustrative_payload_seen=False
+            site_after_example_blank=False
+        elif label in operational_heading:
+            # A purported "Actual status" header directly after a sample
+            # heading (with no sample payload yet) may itself be part of the
+            # example. Do not allow this nested header to authenticate a
+            # production transition. After an actual illustrative payload,
+            # preserve the documented exact-status handoff used by #390/#391.
+            if not active_unfenced_example or illustrative_payload_seen:
+                active_unfenced_example=False
+                illustrative_payload_seen=False
+                site_after_example_blank=False
+        elif active_unfenced_example and heading is None:
+            illustrative_payload_seen=True
+        elif heading is not None and not active_unfenced_example:
+            # A distinct explicit Markdown section is a real source boundary.
+            site_after_example_blank=False
+        # An arbitrary Markdown heading within an unfenced example is NOT
+        # a boundary. A blank ends generic example text, but a subsequent
+        # GA/site transition needs an explicit heading to be authoritative.
+        if active_unfenced_example or (
+                site_after_example_blank and (
+                    "site" in _positive_status_scopes(line)
+                    or _SITE_NOT_PROMOTED.search(line)
+                    or "本番" in line)):
             skipped_offsets.add(cursor)
         cursor+=len(line)
     if cursor!=len(text):
         raise FeatureStageError("unreconciled source fence boundaries")
     for item in _lines(value,ref,field):
-        if item["start"] not in skipped_offsets:
+        original_line=item["verbatim"]
+        stripped=original_line.lstrip()
+        list_item=re.match(r"^(?:[-*+]|\d+[.)])\s+(.+)", stripped)
+        list_quoted=(list_item is not None and
+                     list_item.group(1).startswith(
+                         (">", chr(96), chr(34), chr(39), "“", "‘")))
+        quoted=(
+            original_line.startswith(("    ", chr(9)))
+            or stripped.startswith((">", chr(96), chr(34), chr(39), "“", "‘"))
+            or list_quoted
+        )
+        if item["start"] not in skipped_offsets and not quoted:
             yield item
-
 
 def _positive_status_scopes(raw: str) -> tuple[str, ...]:
     """Scopes of literal positive reports, not evidence of real deployment."""
@@ -165,7 +311,9 @@ def _positive_status_scopes(raw: str) -> tuple[str, ...]:
         "production effect worker ", "production worker ",
         "live controls ", "live control ",
         "browser execute ", "execute paths ", "execute path ",
-        "run once ",
+        "run once ", "running ga services ", "running services ",
+        "production site ", "production ga site ",
+        "production services ", "production ga services ",
     )):
         return ()
     scopes = []
@@ -173,11 +321,25 @@ def _positive_status_scopes(raw: str) -> tuple[str, ...]:
         scopes.append("worker")
     if _CONTROLS_POSITIVE.search(line):
         scopes.append("controls")
+    # A later exact site-promotion report can make an older no-live hint
+    # stale. It is still an unverified original-source report, not a probe.
+    if re.fullmatch(
+            r"(?:running (?:ga )?services|production (?:ga )?(?:site|services)) "
+            r"(?:are now|have now been|have been|were|is now|has been) "
+            r"(?:deployed|updated|promoted|replaced)[.!]?", claim):
+        scopes.append("site")
     return tuple(scopes)
 
 
 def _negative_status_scopes(raw: str) -> tuple[str, ...]:
-    """Operational scope affected by an exact original negative quote."""
+    """Operational scope affected by an original negative statement.
+
+    Quoted/indented examples may mention blockers, but must not replace
+    an actual source status merely because their source_ref is later.
+    This limits *optional* hints; original C4 evidence stays untouched.
+    """
+    if type(raw) is not str:
+        raise FeatureStageError("invalid original negative status text")
     line = raw.lower().replace("*", "")
     scopes = []
     if "worker" in line and any(x in line for x in
@@ -192,6 +354,8 @@ def _negative_status_scopes(raw: str) -> tuple[str, ...]:
                                         "not installed", "not available",
                                         "can_execute=false","no actual"))):
         scopes.append("controls")
+    if _SITE_NOT_PROMOTED.search(line):
+        scopes.append("site")
     return tuple(scopes)
 
 
@@ -401,6 +565,17 @@ def build_feature_first_view(context: dict, source_plan: d1.PriorityPlan) -> Fea
                 break
 
     features = chosen[:MAX_FEATURE_LINES]
+    merged_events = [
+        {"source_ref": src["source_ref"],
+         "original_evidence_id": src["original_event"]["evidence_id"],
+         "kind": "pull_request_merged",
+         "occurred_at": src["original_event"]["occurred_at"],
+         "status_ja": "このPRは対象日にマージされました。本番反映はこの事実から推定できません。"}
+        for src in sources
+        if src["original_event"]["kind"] == "pull_request_merged"
+        and context["entity"]["entity_type"] == "pull_request"
+    ]
+    terminal = merged_events[-1] if merged_events else None
     # Latest substantive state comes from original event source, never from
     # the model's inferred feature status. A negative quote is not a feature.
     # Prioritize actual no-live / not-installed conditions, not tests or
@@ -440,7 +615,23 @@ def build_feature_first_view(context: dict, source_plan: d1.PriorityPlan) -> Fea
                 content = row["verbatim"].lower()
                 if not any(marker in content for marker in _STATUS_MARKERS):
                     continue
-                scopes = _negative_status_scopes(content)
+                if (terminal is not None
+                        and ref < terminal["source_ref"]
+                        and _PR_NOT_MERGED.search(row["verbatim"])):
+                    # Do not silently expose an obsolete mixed old status to
+                    # the feature editor. Entire original event remains in
+                    # C4/CAS/Grounding; record a reviewable, exact source ref.
+                    superseded_negatives.append({
+                        "source_ref": row["source_ref"], "field": row["field"],
+                        "start": row["start"],
+                        "exact_fragment_sha256": row["exact_fragment_sha256"],
+                        "scopes": ["pr_lifecycle"],
+                        "superseded_scopes": ["pr_lifecycle"],
+                        "mixed_scope_requires_review": bool(
+                            _SITE_NOT_PROMOTED.search(row["verbatim"])),
+                    })
+                    continue
+                scopes = _negative_status_scopes(row["verbatim"])
                 # A single source line may contain *two* independently
                 # scoped blockers. If a later event lifts only one, quoting
                 # the original line verbatim would reassert an obsolete
@@ -469,10 +660,19 @@ def build_feature_first_view(context: dict, source_plan: d1.PriorityPlan) -> Fea
                           else 1 if any(m in content for m in strong)
                           else 0)
                 status_candidates.append((priority,ref,row["start"],row))
-    # The last relevant source update wins over an older, more keyword-rich
-    # blocker. Specificity only breaks ties *within the same source event*.
-    status_candidates.sort(key=lambda x:(-x[1],-x[0],-x[2]))
-    statuses = [row for _,_,_,row in status_candidates[:MAX_STATUS_LINES]]
+    # A concrete not-promoted/running-site-unchanged statement belongs to
+    # the feature's delivery scope. Prefer it over an unrelated later review
+    # result; ordinary blockers still use latest-original-source precedence.
+    # Scope-specific explicit later positive state changes are *not* inferred
+    # from CI green, merge or test success. The quote is not a live-state proof.
+    site_gates = [item for item in status_candidates
+                  if _SITE_NOT_PROMOTED.search(item[3]["verbatim"])]
+    if site_gates:
+        site_gates.sort(key=lambda x:(-x[1],-x[2]))
+        statuses = [site_gates[0][3]]
+    else:
+        status_candidates.sort(key=lambda x:(-x[1],-x[0],-x[2]))
+        statuses = [row for _,_,_,row in status_candidates[:MAX_STATUS_LINES]]
 
     # Source-exact operational facts are *hints*, not new evidence or facts.
     # Narrow rules for actual documented operator UI; no general translation
@@ -498,7 +698,10 @@ def build_feature_first_view(context: dict, source_plan: d1.PriorityPlan) -> Fea
                 "availability":"unwired_disabled",
                 "canonical_japanese":"この機能は未接続で、デフォルトでは無効です。",
             })
-    allowed = tuple(sorted({r["source_ref"] for r in features + statuses}))
+    # Merge event carries its own C4-verified source_ref and evidence ID,
+    # rather than a fabricated body quote or an inferred deployment state.
+    allowed = tuple(sorted({r["source_ref"] for r in features + statuses}
+                           | ({terminal["source_ref"]} if terminal else set())))
     if not features or not allowed:
         # No fabricated feature assertion; caller uses baseline only.
         return FeatureFirstView(b"", (), (), (), len(sources), False)
@@ -509,6 +712,7 @@ def build_feature_first_view(context: dict, source_plan: d1.PriorityPlan) -> Fea
         "date": context["date"],
         "feature_implementation_evidence": features,
         "latest_operational_caveat_evidence": statuses,
+        "latest_lifecycle_transition": terminal,
         "excluded_obsolete_status_hints": superseded_negatives,
         "protected_operational_terms": protected,
         "shown_source_refs": list(allowed),
