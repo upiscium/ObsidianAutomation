@@ -182,7 +182,7 @@ def conservative_external_assessment(
         knowledge_quality=base.knowledge_quality,
         epistemic_status=epistemic_status,
         recommendation=conservative,
-        findings=tuple(base.findings) + (
+        findings=tuple(base.findings[:19]) + (
             (
                 "epistemic_status: External quote provenance does not establish "
                 "user approval, implementation results or later corrections"

@@ -304,3 +304,24 @@ def test_worker_evaluation_records_external_template_identity(tmp_path):
     assert record.assessment.groundedness == "unknown"
     assert record.assessment.epistemic_status == "unknown"
     assert not record.assessment.conflicts
+
+
+
+def test_large_external_generation_evidence_input_has_strict_prompt_budget(tmp_path):
+    import hashlib
+
+    _, _, _, source, context, _ = _snapshot(tmp_path)
+    entry = source.quotes[0]
+    oversized_quote = "x" * 3950
+    extended = replace(
+        entry,
+        exact_quote=oversized_quote,
+        quote_sha256=hashlib.sha256(oversized_quote.encode()).hexdigest(),
+        proposed_summary="y" * 3950,
+    )
+    many = replace(source, quotes=(extended,) * 16)
+    with pytest.raises(
+        ArtifactLifecycleError,
+        match="external evaluator prompt exceeds private input budget",
+    ):
+        _render(many, context)

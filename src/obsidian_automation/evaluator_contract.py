@@ -1711,6 +1711,14 @@ def _render_evaluator_prompts_from_input(
             "proposal": proposal,
             "generation_input": generation_input,
         }
+        encoded_payload = _canonical_json_bytes(payload)
+        if (
+            template_version == EXTERNAL_EVALUATOR_PROMPT_VERSION
+            and len(encoded_payload) > 64 * 1024
+        ):
+            raise ArtifactLifecycleError(
+                "external evaluator prompt exceeds private input budget"
+            )
         prompts.append(
             EvaluatorPrompt(
                 dimension=dimension,
@@ -1718,7 +1726,7 @@ def _render_evaluator_prompts_from_input(
                 template_version=template_version,
                 template_sha256=template_sha,
                 system=_DIMENSION_SYSTEMS[dimension] + system_extension,
-                user=_canonical_json_bytes(payload).decode("utf-8"),
+                user=encoded_payload.decode("utf-8"),
                 output_schema=output_schema(dimension),
                 pass_kind=dimension,
             )
