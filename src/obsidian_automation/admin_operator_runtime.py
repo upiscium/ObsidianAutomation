@@ -65,7 +65,14 @@ _AUTHORITY_MODULES = (
 
 def _pinned_root_regular(path: Path, *, max_bytes: int) -> bytes:
     """Open every trusted path component without following symlinks."""
-    if type(path) is not Path or not path.is_absolute() or ".." in path.parts:
+    # pathlib.Path(...) creates a concrete PosixPath on Linux, not an
+    # instance whose exact type is the abstract Path factory. Preserve a
+    # strict concrete-type gate while admitting legitimate fixed host paths.
+    if (
+        type(path) is not type(Path("/"))
+        or not path.is_absolute()
+        or ".." in path.parts
+    ):
         raise BrokerRejected("operator_authority_unavailable")
     fd = None
     try:
