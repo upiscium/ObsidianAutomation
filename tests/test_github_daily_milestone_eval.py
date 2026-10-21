@@ -263,3 +263,79 @@ def test_materiality_without_source_support_is_not_positive_ground_truth():
                        match="routine/unsupported milestone"):
         # Feature-first still points to the same now-unfounded milestone.
         evaluation.evaluate_annotations(data)
+
+
+
+def test_incomplete_annotations_redact_every_numeric_quality_metric():
+    data=valid()
+    data["milestones"][0]["review_status"]="pending"
+    data["route_results"][0]["sentences"][1]["review_status"]="pending"
+    out=evaluation.evaluate_annotations(data)
+    assert out["status"]=="NOT_HUMAN_ADJUDICATED_OR_INCOMPLETE"
+    assert out["candidate_material_label_count"] is None
+    assert out["routine_negative_label_count"] is None
+    for item in list(out["scores_per_route"].values()) + list(
+            out["paired_scope_scores"].values()):
+        for key in ("post_grounding_material_precision","source_milestone_recall",
+                    "material_f1","matched_material_milestones",
+                    "reviewed_material_milestones","missed_material_milestone_ids",
+                    "supported_routine_overinclusion_count"):
+            assert item[key] is None, (key,item)
+        assert item["score_eligible_from_complete_human_self_report"] is False
+
+
+def test_model_provisional_annotations_redact_all_quality_values():
+    data=valid()
+    data["review"]["reviewer_type"]="model_provisional"
+    out=evaluation.evaluate_annotations(data)
+    assert out["status"]=="NOT_HUMAN_ADJUDICATED_OR_INCOMPLETE"
+    assert out["scores_per_route"]["baseline"]["source_milestone_recall"] is None
+    assert out["paired_scope_scores"]["baseline"]["post_grounding_material_precision"] is None
+    assert out["semantic_acceptance_automatically_granted"] is False
+
+
+def test_explicit_paired_baseline_prevents_spurious_optional_route_win():
+    data=valid()
+    data["entity_inventory"][1]["applicable_routes"]=["baseline"]
+    data["route_results"]=[
+        row for row in data["route_results"]
+        if not (row["route"]=="feature_first" and row["entity"]==B)
+    ]
+    data["route_results"][1]["sentences"]=[]
+    # Whole baseline misses Issue B; optional feature never ran for Issue B.
+    out=evaluation.evaluate_annotations(data)
+    assert out["scores_per_route"]["baseline"]["source_milestone_recall"]==0.5
+    assert out["scores_per_route"]["feature_first"]["source_milestone_recall"]==1.0
+    assert out["unpaired_route_scores_not_directly_comparable"] is True
+    assert out["paired_scope_entity_count"]==1
+    assert out["paired_scope_scores"]["baseline"]["source_milestone_recall"]==1.0
+    assert out["paired_scope_scores"]["feature_first"]["source_milestone_recall"]==1.0
+
+
+def test_offline_cli_rejects_oversized_file_before_allocating_unbounded_bytes(tmp_path):
+    import subprocess
+    import sys
+    target=tmp_path/"too-big.json"
+    target.write_bytes(b"x"*(4*1024*1024+20))
+    result=subprocess.run(
+        [sys.executable,"-m","obsidian_automation.github_daily_milestone_eval",str(target)],
+        text=True,capture_output=True,check=False)
+    assert result.returncode!=0
+    assert result.stdout==""
+    assert "bounded evaluation bytes" in result.stderr
+
+
+def test_offline_cli_rejects_symlink_to_private_data(tmp_path):
+    import os
+    import subprocess
+    import sys
+    target=tmp_path/"source.json"
+    target.write_text(json.dumps(valid()))
+    link=tmp_path/"alias.json"
+    link.symlink_to(target)
+    result=subprocess.run(
+        [sys.executable,"-m","obsidian_automation.github_daily_milestone_eval",str(link)],
+        text=True,capture_output=True,check=False)
+    if hasattr(os,"O_NOFOLLOW"):
+        assert result.returncode != 0
+        assert result.stdout==""

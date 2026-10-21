@@ -6,8 +6,8 @@ No network access, model calls, Collector/Writer or deployment.
 """
 from __future__ import annotations
 
-from collections import Counter, defaultdict
-import hashlib
+from collections import defaultdict
+from datetime import date as CalendarDate
 import json
 import re
 from typing import Any
@@ -76,6 +76,10 @@ def evaluate_annotations(payload: object) -> dict[str, Any]:
     date = payload["source_date"]
     _require(type(date) is str and re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) is not None,
              "invalid source date")
+    try:
+        CalendarDate.fromisoformat(date)
+    except ValueError as exc:
+        raise MilestoneEvaluationError("invalid calendar date") from exc
     review = payload["review"]
     _require(type(review) is dict and set(review) == {
         "reviewer_type", "reviewer_id", "reviewed_at", "inventory_complete"},
@@ -93,7 +97,7 @@ def evaluate_annotations(payload: object) -> dict[str, Any]:
     entities = payload["entity_inventory"]
     _require(type(entities) is list and 0 < len(entities) <= MAX_ENTITIES,
              "unbounded entity inventory")
-    inventory: dict[tuple[str, str, int], int] = {}
+    inventory: dict[tuple[str, str, int], dict] = {}
     for entry in entities:
         _require(type(entry) is dict and set(entry) == {
             "entity", "source_ref_count", "applicable_routes"},
@@ -234,62 +238,88 @@ def evaluate_annotations(payload: object) -> dict[str, Any]:
         if set(per_route[route]) != expected_entities:
             incomplete.append(f"{route}:incomplete_route_entity_inventory")
 
-    # Always provide useful diagnostic accounting. A score is NOT a
-    # defensible measurement when any labels, reviewed sentences, or
-    # required entity routes are absent.
-    scores = {}
-    for route in all_routes:
-        sentence_rows = [s for rows in per_route[route].values() for s in rows]
-        published = [s for s in sentence_rows if s["grounding"] == "supported"]
-        material_sentences = [s for s in published if s["semantic_verdict"] == "material"]
-        routine_sentences = [s for s in published if s["semantic_verdict"] == "routine"]
-        unknown_sentences = [s for s in published if s["semantic_verdict"] == "uncertain"]
-        covered = {mid for s in material_sentences for mid in s["covered_milestone_ids"]}
-        # A material verdict is never a substitute for explicit milestone
-        # matching; avoid counting uncovered content as recall.
-        eligible_ids = {
-            mid for mid in material_ids
-            if route in inventory[item_index[mid]["entity"]]["routes"]
-        }
-        missing = eligible_ids - covered
-        scores[route] = {
-            "reviewed_source_entities": len(per_route[route]),
-            "raw_editor_sentences": len(sentence_rows),
-            "post_grounding_supported_sentences": len(published),
-            "post_grounding_unsupported_sentences": len(sentence_rows)-len(published),
-            "matched_material_milestones": len(covered),
-            "reviewed_material_milestones": len(eligible_ids),
-            "missed_material_milestone_ids": sorted(missing),
-            "supported_routine_overinclusion_count": len(routine_sentences),
-            "unadjudicated_supported_sentence_count": len(unknown_sentences),
-            "post_grounding_material_precision": (
-                len(material_sentences)/len(published) if published else None),
-            "source_milestone_recall": (
-                len(covered)/len(eligible_ids) if eligible_ids else None),
-            "material_f1": None,
-            "numerators_describe_only_adjudicated_items": not incomplete,
-        }
-        p = scores[route]["post_grounding_material_precision"]
-        r = scores[route]["source_milestone_recall"]
-        if p is not None and r is not None:
-            scores[route]["material_f1"] = 2*p*r/(p+r) if (p+r)>0 else 0.
-
-    human_self_reported = (reviewer_type == "human")
+    # Incomplete/model-only labels must never yield numeric Recall/Precision
+    # or F1. Raw Grounding counts are diagnostics only, not quality metrics.
     complete = bool(review["inventory_complete"]) and not incomplete
-    eligible = human_self_reported and complete
+    eligible = (reviewer_type == "human") and complete
+
+    def _scope_score(route: str, entities: set[tuple[str,str,int]]) -> dict:
+        sentence_rows = [s for entity in entities
+                         for s in per_route[route].get(entity, ())]
+        published = [s for s in sentence_rows if s["grounding"] == "supported"]
+        score = {
+            "scope_entity_count":len(entities),
+            "reviewed_source_entities":len(entities),
+            "observed_route_results":sum(entity in per_route[route] for entity in entities),
+            "numerators_describe_only_adjudicated_items":eligible,
+            "raw_editor_sentences":len(sentence_rows),
+            "post_grounding_supported_sentences":len(published),
+            "post_grounding_unsupported_sentences":len(sentence_rows)-len(published),
+            "matched_material_milestones":None,
+            "reviewed_material_milestones":None,
+            "missed_material_milestone_ids":None,
+            "supported_routine_overinclusion_count":None,
+            "post_grounding_material_precision":None,
+            "source_milestone_recall":None,
+            "material_f1":None,
+            "score_eligible_from_complete_human_self_report":eligible,
+        }
+        if not eligible:
+            return score
+        material_sentences = [s for s in published if s["semantic_verdict"]=="material"]
+        routine_sentences = [s for s in published if s["semantic_verdict"]=="routine"]
+        covered = {mid for s in material_sentences
+                   for mid in s["covered_milestone_ids"]}
+        positive_ids = {mid for mid in material_ids
+                        if item_index[mid]["entity"] in entities}
+        _require(covered.issubset(positive_ids), "out-of-scope milestone coverage")
+        missing = positive_ids-covered
+        prec = len(material_sentences)/len(published) if published else None
+        recall = len(covered)/len(positive_ids) if positive_ids else None
+        f1 = (2*prec*recall/(prec+recall) if prec+recall else 0.
+              ) if prec is not None and recall is not None else None
+        score.update(
+            matched_material_milestones=len(covered),
+            reviewed_material_milestones=len(positive_ids),
+            missed_material_milestone_ids=sorted(missing),
+            supported_routine_overinclusion_count=len(routine_sentences),
+            post_grounding_material_precision=prec,
+            source_milestone_recall=recall,
+            material_f1=f1,
+        )
+        return score
+
+    scores={}
+    for route in all_routes:
+        entities = {entity for entity, attrs in inventory.items()
+                    if route in attrs["routes"]}
+        scores[route]=_scope_score(route,entities)
+    # Across-route deltas are valid ONLY on the paired common population.
+    # The baseline may have more entities than optional feature-first, so
+    # reporting only their full-scope scores can create spurious "wins".
+    paired_entities = {entity for entity, attrs in inventory.items()
+                       if "feature_first" in attrs["routes"]}
+    paired_scores={
+        route:_scope_score(route,paired_entities)
+        for route in all_routes
+    }
     return {
         "record_version":VERSION,"capture_sha256":payload["source_capture_sha256"],
         "source_date":date,
         "status":("ADJUDICATED_INPUT_SCORED_NOT_PRODUCTION_CERTIFIED"
                   if eligible else "NOT_HUMAN_ADJUDICATED_OR_INCOMPLETE"),
         "scores_per_route":scores,
+        "paired_scope_entity_count":len(paired_entities),
+        "paired_scope_scores":paired_scores,
+        "unpaired_route_scores_not_directly_comparable":True,
+        "metrics_released_only_for_complete_human_self_report":eligible,
         "reviewer_type_self_reported":reviewer_type,
         "human_label_completeness_self_reported":bool(review["inventory_complete"]),
         "annotation_complete":complete,
         "missing_or_uncertain_annotations":sorted(set(incomplete)),
         "source_milestone_label_count":len(labels),
-        "candidate_material_label_count":len(material_ids),
-        "routine_negative_label_count":len(routine_ids),
+        "candidate_material_label_count":len(material_ids) if eligible else None,
+        "routine_negative_label_count":len(routine_ids) if eligible else None,
         "human_reviewer_independence_verified_by_tool":False,
         "semantic_acceptance_automatically_granted":False,
         "publication_authorized":False,
@@ -312,7 +342,9 @@ def evaluate_bytes(data: bytes) -> bytes:
 def main() -> None:
     """Offline CLI: emit a non-authoritative, provenance-explicit JSON score."""
     import argparse
+    import os
     from pathlib import Path
+    import stat
     import sys
 
     parser = argparse.ArgumentParser(
@@ -320,10 +352,16 @@ def main() -> None:
     parser.add_argument("annotation_json", help="private review annotation JSON")
     args = parser.parse_args()
     path = Path(args.annotation_json)
-    if path.is_symlink() or not path.is_file():
-        parser.error("annotation file must be a regular non-symlink file")
     try:
-        raw = path.read_bytes()
+        # Bound bytes before JSON parsing, and open without following final
+        # symlinks. The same fd is checked and read (no TOCTOU between a
+        # Path.is_symlink() call and a separate path-based read).
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        fd = os.open(path, flags)
+        with os.fdopen(fd, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise MilestoneEvaluationError("annotations must be a regular file")
+            raw = stream.read(4 * 1024 * 1024 + 1)
         result = evaluate_bytes(raw)
     except (OSError, MilestoneEvaluationError) as exc:
         parser.error(str(exc))
