@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import math
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
 
 from .artifact_lifecycle import (
     ArtifactLifecycleError,
@@ -17,7 +18,6 @@ from .artifact_lifecycle import (
     sha256_bytes,
 )
 from .context_bundle import ContextBundle, ContextSource, load_context_bundle
-
 
 UNTRUSTED_STAGE = "00-Untrusted"
 MAX_GENERATION_RECORD_BYTES = 64 * 1024
@@ -52,6 +52,19 @@ class SemanticGenerationProvenance:
 
 
 @dataclass(frozen=True)
+class ExternalGenerationProvenance:
+    """External Source identity recorded without original private message IDs."""
+
+    source_scope: str
+    source_hmac: str
+    source_archive_sha256: str
+    source_content_sha256: str
+    source_revision_sha256: str
+    source_run_sha256: str
+    source_preview_sha256: str
+
+
+@dataclass(frozen=True)
 class GenerationRecord:
     context_sha256: str
     proposal_sha256: str
@@ -62,6 +75,7 @@ class GenerationRecord:
     context_kind: str = "context-bundle"
     semantic_objective: SemanticGenerationProvenance | None = None
     record_version: int = 1
+    external_source: ExternalGenerationProvenance | None = None
 
     def to_json_bytes(self) -> bytes:
         base: dict[str, object] = {
@@ -81,6 +95,10 @@ class GenerationRecord:
             "model_config": dict(self.model_config),
             "generated_at": self.generated_at,
         }
+        if self.record_version in (1, 2) and self.external_source is not None:
+            raise ArtifactLifecycleError(
+                "legacy/semantic Generation Record cannot carry external provenance"
+            )
         if self.record_version == 2:
             base["context_kind"] = self.context_kind
             if self.semantic_objective is None:
@@ -99,6 +117,26 @@ class GenerationRecord:
                 "semantic_index_sha256": (
                     self.semantic_objective.semantic_index_sha256
                 ),
+            }
+        elif self.record_version == 3:
+            if (
+                type(self.external_source) is not ExternalGenerationProvenance
+                or self.semantic_objective is not None
+                or self.context_kind != "chatgpt-external-source"
+            ):
+                raise ArtifactLifecycleError(
+                    "generation record v3 requires only external Source provenance"
+                )
+            ext = self.external_source
+            base["context_kind"] = self.context_kind
+            base["external_source"] = {
+                "source_scope": ext.source_scope,
+                "source_hmac": ext.source_hmac,
+                "source_archive_sha256": ext.source_archive_sha256,
+                "source_content_sha256": ext.source_content_sha256,
+                "source_revision_sha256": ext.source_revision_sha256,
+                "source_run_sha256": ext.source_run_sha256,
+                "source_preview_sha256": ext.source_preview_sha256,
             }
         return _canonical_json_bytes(base)
 
@@ -142,7 +180,9 @@ def _validate_model_config_value(value: object, *, depth: int) -> None:
         try:
             value.encode("utf-8")
         except UnicodeEncodeError as exc:
-            raise ArtifactLifecycleError("model_config strings must be UTF-8 encodable") from exc
+            raise ArtifactLifecycleError(
+                "model_config strings must be UTF-8 encodable"
+            ) from exc
         return
     if isinstance(value, list):
         if len(value) > MAX_MODEL_CONFIG_ITEMS:
@@ -152,7 +192,9 @@ def _validate_model_config_value(value: object, *, depth: int) -> None:
         return
     if isinstance(value, dict):
         if len(value) > MAX_MODEL_CONFIG_ITEMS:
-            raise ArtifactLifecycleError("model_config object contains too many properties")
+            raise ArtifactLifecycleError(
+                "model_config object contains too many properties"
+            )
         for key, item in value.items():
             if not isinstance(key, str) or not key or len(key) > MAX_METADATA_CHARS:
                 raise ArtifactLifecycleError("model_config property names are invalid")
@@ -200,6 +242,9 @@ def parse_generation_record(data: bytes) -> GenerationRecord:
         "generated_at",
     }
     current_required = legacy_required | {"context_kind", "semantic_objective"}
+    external_required = legacy_required | {"context_kind", "external_source"}
+    if type(version) is not int:
+        raise ArtifactLifecycleError("unsupported generation record_version")
     if version == 1:
         if set(value) != legacy_required:
             raise ArtifactLifecycleError(
@@ -209,6 +254,11 @@ def parse_generation_record(data: bytes) -> GenerationRecord:
         if set(value) != current_required:
             raise ArtifactLifecycleError(
                 "generation record properties do not match v2 contract"
+            )
+    elif version == 3:
+        if set(value) != external_required:
+            raise ArtifactLifecycleError(
+                "generation record properties do not match v3 contract"
             )
     else:
         raise ArtifactLifecycleError("unsupported generation record_version")
@@ -222,7 +272,9 @@ def parse_generation_record(data: bytes) -> GenerationRecord:
         "prompt_template_version",
         "prompt_template_sha256",
     }:
-        raise ArtifactLifecycleError("generation generator properties do not match contract")
+        raise ArtifactLifecycleError(
+            "generation generator properties do not match contract"
+        )
     generator = GeneratorMetadata(
         implementation_revision=_metadata_string(
             raw_generator["implementation_revision"],
@@ -244,7 +296,9 @@ def parse_generation_record(data: bytes) -> GenerationRecord:
         "identifier",
         "revision",
     }:
-        raise ArtifactLifecycleError("generation model properties do not match contract")
+        raise ArtifactLifecycleError(
+            "generation model properties do not match contract"
+        )
     model = ModelMetadata(
         provider=_metadata_string(raw_model["provider"], label="model.provider"),
         identifier=_metadata_string(raw_model["identifier"], label="model.identifier"),
@@ -256,8 +310,59 @@ def parse_generation_record(data: bytes) -> GenerationRecord:
     if not isinstance(generated_at, str) or not generated_at.endswith("Z"):
         raise ArtifactLifecycleError("generated_at must be a UTC timestamp ending in Z")
 
+    external: ExternalGenerationProvenance | None = None
     if version == 1:
         context_kind = "context-bundle"
+        semantic = None
+    elif version == 3:
+        context_kind = value["context_kind"]
+        if context_kind != "chatgpt-external-source":
+            raise ArtifactLifecycleError(
+                "generation record v3 context_kind must be external Source"
+            )
+        raw_external = value["external_source"]
+        fields = {
+            "source_scope",
+            "source_hmac",
+            "source_archive_sha256",
+            "source_content_sha256",
+            "source_revision_sha256",
+            "source_run_sha256",
+            "source_preview_sha256",
+        }
+        if type(raw_external) is not dict or set(raw_external) != fields:
+            raise ArtifactLifecycleError(
+                "generation external_source properties do not match contract"
+            )
+        scope = _metadata_string(raw_external["source_scope"], label="external_scope")
+        if re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", scope) is None:
+            raise ArtifactLifecycleError("external Source scope invalid")
+        external = ExternalGenerationProvenance(
+            source_scope=scope,
+            source_hmac=_require_sha256(
+                raw_external["source_hmac"], label="source_hmac"
+            ),
+            source_archive_sha256=_require_sha256(
+                raw_external["source_archive_sha256"],
+                label="source_archive_sha256",
+            ),
+            source_content_sha256=_require_sha256(
+                raw_external["source_content_sha256"],
+                label="source_content_sha256",
+            ),
+            source_revision_sha256=_require_sha256(
+                raw_external["source_revision_sha256"],
+                label="source_revision_sha256",
+            ),
+            source_run_sha256=_require_sha256(
+                raw_external["source_run_sha256"],
+                label="source_run_sha256",
+            ),
+            source_preview_sha256=_require_sha256(
+                raw_external["source_preview_sha256"],
+                label="source_preview_sha256",
+            ),
+        )
         semantic = None
     else:
         context_kind = value["context_kind"]
@@ -314,7 +419,9 @@ def parse_generation_record(data: bytes) -> GenerationRecord:
         context_kind=context_kind,
         semantic_objective=semantic,
         record_version=version,
+        external_source=external,
     )
+
 
 def _verify_proposal_binding(ai_root: Path, proposal_sha256: str) -> None:
     digest = _require_sha256(proposal_sha256, label="proposal_sha256")
@@ -330,7 +437,32 @@ def _verify_generation_context(
     context_sha256: str,
     context_kind: str,
     semantic_objective_generation_sha256: str | None,
-) -> SemanticGenerationProvenance | None:
+) -> SemanticGenerationProvenance | ExternalGenerationProvenance | None:
+    if context_kind == "chatgpt-external-source":
+        if semantic_objective_generation_sha256 is not None:
+            raise ArtifactLifecycleError(
+                "external Source cannot bind semantic objective provenance"
+            )
+        from .chatgpt_external_context_store import (
+            ExternalContextStoreError,
+            load_external_context_for_review,
+        )
+
+        try:
+            source = load_external_context_for_review(ai_root, context_sha256)
+        except ExternalContextStoreError:
+            raise ArtifactLifecycleError(
+                "external Source Context unavailable"
+            ) from None
+        return ExternalGenerationProvenance(
+            source_scope=source.source_scope,
+            source_hmac=source.source_hmac,
+            source_archive_sha256=source.source_archive_sha256,
+            source_content_sha256=source.source_content_sha256,
+            source_revision_sha256=source.source_revision_sha256,
+            source_run_sha256=source.source_run_sha256,
+            source_preview_sha256=source.source_preview_sha256,
+        )
     if context_kind == "context-bundle":
         if semantic_objective_generation_sha256 is not None:
             raise ArtifactLifecycleError(
@@ -347,8 +479,8 @@ def _verify_generation_context(
 
     from .semantic_objective import (
         DEEP_KNOWLEDGE,
-        load_objective_generation,
         load_objective_context,
+        load_objective_generation,
     )
 
     objective_generation = load_objective_generation(
@@ -361,8 +493,7 @@ def _verify_generation_context(
         or objective_generation.objective_policy != DEEP_KNOWLEDGE
         or context.objective_policy != DEEP_KNOWLEDGE
         or objective_generation.selection_sha256 != context.selection_sha256
-        or objective_generation.semantic_index_sha256
-        != context.semantic_index_sha256
+        or objective_generation.semantic_index_sha256 != context.semantic_index_sha256
     ):
         raise ArtifactLifecycleError(
             "semantic objective generation/context provenance mismatch"
@@ -376,10 +507,52 @@ def _verify_generation_context(
     )
 
 
+def _verify_external_generation_metadata(
+    ai_root: Path,
+    record: GenerationRecord,
+) -> None:
+    if (
+        record.record_version != 3
+        or record.context_kind != "chatgpt-external-source"
+        or record.semantic_objective is not None
+        or record.external_source is None
+    ):
+        raise ArtifactLifecycleError(
+            "external Generation Record v3 must have only external provenance"
+        )
+    from .chatgpt_external_generation_contract import (
+        PROMPT_VERSION,
+        prompt_template_sha256,
+    )
+
+    if (
+        record.generator.prompt_template_version != PROMPT_VERSION
+        or record.generator.prompt_template_sha256 != prompt_template_sha256()
+    ):
+        raise ArtifactLifecycleError("external generator prompt version/hash mismatch")
+    proven = _verify_generation_context(
+        ai_root,
+        context_sha256=record.context_sha256,
+        context_kind=record.context_kind,
+        semantic_objective_generation_sha256=None,
+    )
+    if proven != record.external_source:
+        raise ArtifactLifecycleError(
+            "external Generation Record source/context provenance mismatch"
+        )
+
+
 def _verify_semantic_generation_metadata(
     ai_root: Path,
     record: GenerationRecord,
 ) -> None:
+    if record.record_version == 3:
+        _verify_external_generation_metadata(ai_root, record)
+        return
+    if record.external_source is not None:
+        raise ArtifactLifecycleError(
+            "non-external Generation Record must not carry external provenance"
+        )
     if record.semantic_objective is None:
         if record.context_kind != "context-bundle" or record.record_version != 1:
             raise ArtifactLifecycleError(
@@ -397,10 +570,8 @@ def _verify_semantic_generation_metadata(
         objective.objective_context_sha256 != record.context_sha256
         or objective.candidate_sha256
         != record.semantic_objective.objective_candidate_sha256
-        or objective.objective_policy
-        != record.semantic_objective.objective_policy
-        or objective.selection_sha256
-        != record.semantic_objective.selection_sha256
+        or objective.objective_policy != record.semantic_objective.objective_policy
+        or objective.selection_sha256 != record.semantic_objective.selection_sha256
         or objective.semantic_index_sha256
         != record.semantic_objective.semantic_index_sha256
         or objective.generator.implementation_revision
@@ -437,13 +608,17 @@ def build_generation_record(
 ) -> GenerationRecord:
     context_digest = _require_sha256(context_sha256, label="context_sha256")
     proposal_digest = _require_sha256(proposal_sha256, label="proposal_sha256")
-    semantic = _verify_generation_context(
+    provenance = _verify_generation_context(
         ai_root,
         context_sha256=context_digest,
         context_kind=context_kind,
-        semantic_objective_generation_sha256=(
-            semantic_objective_generation_sha256
-        ),
+        semantic_objective_generation_sha256=(semantic_objective_generation_sha256),
+    )
+    semantic = (
+        provenance if isinstance(provenance, SemanticGenerationProvenance) else None
+    )
+    external = (
+        provenance if isinstance(provenance, ExternalGenerationProvenance) else None
     )
     _verify_proposal_binding(ai_root, proposal_digest)
 
@@ -464,7 +639,8 @@ def build_generation_record(
         generated_at=generated_at or _utc_now(),
         context_kind=context_kind,
         semantic_objective=semantic,
-        record_version=2 if semantic is not None else 1,
+        record_version=3 if external is not None else 2 if semantic is not None else 1,
+        external_source=external,
     )
     _verify_semantic_generation_metadata(ai_root, record)
     return parse_generation_record(record.to_json_bytes())
@@ -507,7 +683,10 @@ def generation_input_context(
         ),
     )
 
-def store_generation_record(ai_root: Path, record: GenerationRecord) -> tuple[str, Path]:
+
+def store_generation_record(
+    ai_root: Path, record: GenerationRecord
+) -> tuple[str, Path]:
     normalized = GenerationRecord(
         context_sha256=record.context_sha256,
         proposal_sha256=record.proposal_sha256,
@@ -518,6 +697,7 @@ def store_generation_record(ai_root: Path, record: GenerationRecord) -> tuple[st
         context_kind=record.context_kind,
         semantic_objective=record.semantic_objective,
         record_version=record.record_version,
+        external_source=record.external_source,
     )
     data = normalized.to_json_bytes()
     parsed = parse_generation_record(data)
@@ -550,6 +730,6 @@ def load_generation_record(ai_root: Path, generation_sha256: str) -> GenerationR
     if sha256_bytes(data) != digest:
         raise ArtifactLifecycleError("generation record artifact hash mismatch")
     record = parse_generation_record(data)
-    if record.record_version == 2:
+    if record.record_version in (2, 3):
         _verify_semantic_generation_metadata(ai_root, record)
     return record
