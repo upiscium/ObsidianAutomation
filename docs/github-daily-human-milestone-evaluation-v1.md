@@ -163,7 +163,9 @@ source revision:
   4 MiB limit; a maliciously huge file could allocate unbounded memory.
   It now uses a **single no-follow file descriptor**, verifies a
   regular file, reads at most **4 MiB + 1 byte** before the bounded
-  validator, and refuses symlinks (no path-check/read race on Linux).
+  validator, and refuses a **symlink in the final path component**
+  without a separate path-check/read race on Linux. This is not a path
+  sandbox: symlinks in ancestor directories are not forbidden.
 
 These changes have specific negative and positive regression tests.
 The private six-entity, 12-proposal, 18-sentence scaffold returns
