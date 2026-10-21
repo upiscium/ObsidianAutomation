@@ -134,3 +134,20 @@ def test_resolved_system_binary_outside_usr_bin_is_rejected(
         m.setattr(Path,"resolve",fake_resolve)
         with pytest.raises(RuntimeError,match="system_python_not_qualified"):
             launcher.preflight()
+
+
+def test_nested_resolved_binary_is_not_a_supported_root_interpreter(
+    synthetic_approved_root_bootstrap, monkeypatch,
+):
+    launcher, _ = synthetic_approved_root_bootstrap
+    original = Path.resolve
+
+    def fake_resolve(path, *args, **kwargs):
+        if path == SYSTEM_PYTHON:
+            return Path("/usr/bin/alternative/python3.13")
+        return original(path, *args, **kwargs)
+
+    with monkeypatch.context() as m:
+        m.setattr(Path, "resolve", fake_resolve)
+        with pytest.raises(RuntimeError, match="system_python_not_qualified"):
+            launcher.preflight()

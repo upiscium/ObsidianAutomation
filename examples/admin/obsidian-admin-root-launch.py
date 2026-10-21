@@ -254,15 +254,20 @@ def preflight() -> Path:
     if code.parent.parent.name != expected_lib:
         raise RuntimeError("python_abi_mismatch")
     system_python = Path("/usr/bin/python3")
+    resolved_python = system_python.resolve(strict=True)
+    # The supported OS installation is a root-owned symlink to a *direct*
+    # /usr/bin binary (Debian /usr/bin/python3 -> python3.13). A nested
+    # resolved path could contain an unchecked writable intermediate parent.
+    # Reject that case rather than widening the root bootstrap trust surface.
     if (
-        not system_python.resolve(strict=True).is_relative_to(Path("/usr/bin"))
+        resolved_python.parent != system_python.parent
         or not system_python.parent.is_dir()
     ):
         raise RuntimeError("system_python_not_qualified")
     for component in (
         system_python.parent,
         system_python,
-        system_python.resolve(strict=True),
+        resolved_python,
     ):
         info = component.lstat()
         if (
