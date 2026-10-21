@@ -306,9 +306,12 @@ def preflight() -> Path:
 _RUNTIME_CODE = (
     "import sys;"
     "assert sys.pycache_prefix == '/dev/null/obsidian-admin-source-only';"
+    "assert len(sys.argv) == 2;"
     "sys.path.insert(0,sys.argv[1]);"
     "from obsidian_automation import admin_operator_runtime as runtime;"
-    "raise SystemExit(runtime.main())"
+    # The one argument after -c is the SHA-verified import root, NOT an
+    # application CLI flag. argparse must never consume it via sys.argv[1:].
+    "raise SystemExit(runtime.main(()))"
 )
 
 
