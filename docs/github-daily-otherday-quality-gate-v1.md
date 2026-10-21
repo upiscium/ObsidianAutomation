@@ -195,3 +195,26 @@ No source Evidence is omitted from original CAS; neither C5 path gains
 automatic winner/publication authority. The real other-day corpus still
 contains known incomplete or unsupported model text and no independent
 human-confirmed relevance labels.
+
+
+### Final security source counterexamples
+
+A read-only security reviewer then proposed three further P2 examples. The
+claimed unqualified `PR #505 deployment status:` line did **not** reproduce:
+the existing unfenced-example label filter already withheld the subsequent
+GA sentence in direct source tests; no speculative change was added for it.
+
+Two independent cases did reproduce and received bounded source-only fixes:
+a multiline HTML `<blockquote>` presenting a fabricated live-site update
+is now withheld by the existing ordered HTML token scanner, and a single
+Japanese C5 text containing *separate full-stop-delimited sentences*
+about a foreign PR and the target PR is checked clause-by-clause for
+source attribution. A Japanese enumeration comma (e.g. `マージ、デプロイ、
+公開されていません`) is intentionally **not** treated as a clause
+boundary because it shares one negated predicate; the prior positive
+no-GA/unfinished-state checks remain intact.
+
+Synthetic positive and negative tests cover mixed target/foreign
+clauses, quotations, nested comments/code inside blockquotes, and a
+true explicit status after closing the HTML quote. These risk hints
+remain conservative, not a general language-understanding guarantee.

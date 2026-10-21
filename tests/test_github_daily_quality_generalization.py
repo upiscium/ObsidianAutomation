@@ -243,3 +243,75 @@ def test_explicit_other_number_with_target_merge_citation_is_not_own_merge():
         "source_refs":[merge_ref],
     }])
     assert "merged_pr_transition_omitted" in report["known_rule_violations"]
+
+
+@pytest.mark.parametrize("repo,number", [
+    ("sample/LUMEN",309),("alternate/KITE",4205),
+])
+def test_foreign_and_target_clauses_do_not_cross_claim_merge_or_live(repo,number):
+    ctx=build(repo,number,merged=True,name="merge-aware controller")
+    merge_ref=len(ctx["sources"])-1
+    foreign_merge=scope.inspect_scope_quality(ctx,[{
+        "text":"PR #505がマージされました。このPRは本番未反映です。",
+        "source_refs":[0,merge_ref],
+    }])
+    assert "merged_pr_transition_omitted" in foreign_merge["known_rule_violations"]
+    assert "original_no_deploy_condition_omitted" not in foreign_merge["known_rule_violations"]
+
+    foreign_unmerged=scope.inspect_scope_quality(ctx,[{
+        "text":"関連する別PRは未マージです。このPRはマージされました。",
+        "source_refs":[merge_ref],
+    }])
+    assert "merged_pr_claimed_unmerged" not in foreign_unmerged["known_rule_violations"]
+    assert "merged_pr_transition_omitted" not in foreign_unmerged["known_rule_violations"]
+
+    foreign_live=scope.inspect_scope_quality(ctx,[{
+        "text":"PR #505が本番未反映です。このPRはマージされました。",
+        "source_refs":[0,merge_ref],
+    }])
+    assert "original_no_deploy_condition_omitted" in foreign_live["known_rule_violations"]
+    assert "merged_pr_transition_omitted" not in foreign_live["known_rule_violations"]
+
+
+@pytest.mark.parametrize("container", [
+    "<blockquote>\nProduction site is now deployed.\n</blockquote>\n",
+    "<blockquote class='example'>\n<!-- </blockquote> -->\n"
+    "Production site is now deployed.\n</blockquote>\n",
+    "<blockquote>\n<code>\nProduction site is now deployed.\n"
+    "</code>\n</blockquote>\n",
+])
+def test_html_quote_cannot_supersede_actual_no_production_status(container):
+    ctx=build("alternate/POLARIS",122,merged=False,name="job scheduler")
+    original=deepcopy(ctx["sources"])
+    ctx["sources"].append(event(2,"pull_request_comment",body=container))
+    plan=d1._original_plan([ctx],CAP)
+    view=feature.build_feature_first_view(ctx,plan)
+    assert view.structural_feature_anchor
+    doc=view.report()
+    assert not doc["excluded_obsolete_status_hints"]
+    # Latest legitimate negative presentation can be the later no-rollout
+    # line, not necessarily the earlier no-GA line; neither is superseded
+    # by quoted positive deployment text.
+    assert doc["latest_operational_caveat_evidence"]
+    assert all("Production site is now deployed." not in row["verbatim"]
+               for row in doc["latest_operational_caveat_evidence"])
+    source=scope.inspect_scope_quality(ctx,[{
+        "text":"このPRは本番未反映です。","source_refs":[0],
+    }])
+    assert source["source_claims"]["site_transition_reported"] is False
+    assert "later_source_site_transition_requires_human_review" not in source["known_rule_violations"]
+    assert ctx["sources"][:2]==original
+    assert doc["source_deleted"] is False
+
+
+def test_html_quote_closed_then_explicit_actual_site_status_remains_visible():
+    ctx=build("sample/LUMEN",616,merged=False,name="cache selector")
+    ctx["sources"].append(event(2,"pull_request_comment",body=(
+        "<blockquote>\nProduction site is now deployed.\n</blockquote>\n"
+        "## Actual status:\nProduction site is now deployed.\n"
+    )))
+    report=scope.inspect_scope_quality(ctx,[{
+        "text":"本番反映状態を確認しています。","source_refs":[2]
+    }])
+    assert report["source_claims"]["site_transition_reported"] is True
+    assert "later_source_site_transition_requires_human_review" in report["known_rule_violations"]

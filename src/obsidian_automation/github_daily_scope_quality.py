@@ -82,6 +82,19 @@ def _about_current_pr(text: str, number: object) -> bool:
     return True
 
 
+def _current_pr_clauses(text: str, number: object) -> tuple[str,...]:
+    """Inspect target-bound clauses, not a mixed foreign/target sentence.
+
+    This is a bounded advisory lexical split, NOT general semantic attribution.
+    Ambiguous co-referents in the same clause are excluded for human review.
+    """
+    # Japanese enumeration commas join a shared predicate and cannot be
+    # used as subject boundaries (e.g. "マージ、デプロイ、公開されていません").
+    parts = re.split(r"[。！？;；\n]|(?<=[A-Za-z])\.(?=\s|$)",text)
+    return tuple(part for part in parts
+                 if part.strip() and _about_current_pr(part,number))
+
+
 class ScopeQualityError(ValueError):
     """Caller did not provide a bounded original-C4/source-grounded view."""
 
@@ -212,24 +225,24 @@ def inspect_scope_quality(context: dict, sentences: list[dict]) -> dict:
     # not an acceptable substitute for the target PR's own original gate.
     target_site_refs = {r["source_ref"] for r in active_site_negatives}
     cited_own_site_gate = any(
-        _NOT_LIVE_JA.search(item["text"])
-        and _about_current_pr(item["text"],own_number)
+        any(_NOT_LIVE_JA.search(clause)
+            for clause in _current_pr_clauses(item["text"],own_number))
         and bool(target_site_refs.intersection(item["source_refs"]))
         for item in sentences
     )
     if deployment_condition and summary and not cited_own_site_gate:
         risks.append("original_no_deploy_condition_omitted")
     if deployment_condition and any(
-        _DEPLOYED_JA.search(item["text"])
-        and _about_current_pr(item["text"],own_number)
+        any(_DEPLOYED_JA.search(clause)
+            for clause in _current_pr_clauses(item["text"],own_number))
         for item in sentences
     ):
         risks.append("original_no_deploy_condition_contradicted")
     if test_title and test_commit_refs and not summary:
         risks.append("test_only_commit_progress_unreported")
     if merge_refs and any(
-        _STILL_UNMERGED_JA.search(item["text"])
-        and _about_current_pr(item["text"],own_number)
+        any(_STILL_UNMERGED_JA.search(clause)
+            for clause in _current_pr_clauses(item["text"],own_number))
         for item in sentences
     ):
         risks.append("merged_pr_claimed_unmerged")
@@ -237,8 +250,8 @@ def inspect_scope_quality(context: dict, sentences: list[dict]) -> dict:
     # an explicit foreign-PR claim in that sentence still cannot discharge
     # the target's lifecycle obligation.
     cited_own_merge = any(
-        _MERGED_DONE_JA.search(item["text"])
-        and _about_current_pr(item["text"],own_number)
+        any(_MERGED_DONE_JA.search(clause)
+            for clause in _current_pr_clauses(item["text"],own_number))
         and any(ref in merge_refs for ref in item["source_refs"])
         for item in sentences
     )

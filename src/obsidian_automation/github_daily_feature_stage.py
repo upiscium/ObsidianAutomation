@@ -99,7 +99,10 @@ _NON_ACTUAL_STATUS = re.compile(
 
 
 _HTML_HIDDEN_TOKENS = re.compile(
-    r"<!--|-->|</?(?:pre|code)\b[^>]*>", re.IGNORECASE,
+    # Markdown quote lines and HTML quotations are both examples, never a
+    # direct production state report. Keep the same ordered comment/tag
+    # scanner to avoid recognizing tags inside an HTML comment.
+    r"<!--|-->|</?(?:pre|code|blockquote)\b[^>]*>", re.IGNORECASE,
 )
 
 
