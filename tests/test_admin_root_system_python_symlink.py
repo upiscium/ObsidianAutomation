@@ -151,3 +151,22 @@ def test_nested_resolved_binary_is_not_a_supported_root_interpreter(
         m.setattr(Path, "resolve", fake_resolve)
         with pytest.raises(RuntimeError, match="system_python_not_qualified"):
             launcher.preflight()
+
+
+def test_intermediate_python_symlink_hop_is_not_qualified(
+    synthetic_approved_root_bootstrap, monkeypatch,
+):
+    launcher, _ = synthetic_approved_root_bootstrap
+    original = Path.readlink
+
+    def fake_readlink(path, *args, **kwargs):
+        if path == SYSTEM_PYTHON:
+            # Even though resolve(strict=True) still reports the real OS
+            # target in /usr/bin, the raw link must be a direct single hop.
+            return Path("replaceable-bridge")
+        return original(path, *args, **kwargs)
+
+    with monkeypatch.context() as m:
+        m.setattr(Path, "readlink", fake_readlink)
+        with pytest.raises(RuntimeError, match="system_python_not_qualified"):
+            launcher.preflight()

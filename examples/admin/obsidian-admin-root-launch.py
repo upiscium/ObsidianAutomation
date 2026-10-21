@@ -264,6 +264,13 @@ def preflight() -> Path:
         or not system_python.parent.is_dir()
     ):
         raise RuntimeError("system_python_not_qualified")
+    # A nested symlink hop might traverse a replaceable directory/link and
+    # still resolve to the same root-owned final binary at verification time.
+    # Support only a single direct symlink to that very /usr/bin executable.
+    if stat.S_ISLNK(system_python.lstat().st_mode):
+        target_text = str(system_python.readlink())
+        if target_text not in {resolved_python.name, str(resolved_python)}:
+            raise RuntimeError("system_python_not_qualified")
     for component in (
         system_python.parent,
         system_python,
