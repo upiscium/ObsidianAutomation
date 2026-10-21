@@ -120,7 +120,7 @@ class GenerationRecord:
             }
         elif self.record_version == 3:
             if (
-                self.external_source is None
+                type(self.external_source) is not ExternalGenerationProvenance
                 or self.semantic_objective is not None
                 or self.context_kind != "chatgpt-external-source"
             ):

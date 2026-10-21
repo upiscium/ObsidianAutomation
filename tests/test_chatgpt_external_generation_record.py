@@ -260,3 +260,16 @@ def test_generation_external_record_rejects_duplicate_props_and_boolean_version(
         parse_generation_record(json.dumps(value).encode())
     with pytest.raises(ArtifactLifecycleError, match="duplicate JSON property"):
         parse_generation_record(b'{"record_version":3,"record_version":3}')
+
+
+@pytest.mark.parametrize("wrong_type", [None, {}, [], "fake", True])
+def test_v3_record_rejects_non_provenance_types_with_fixed_diagnostic(
+    tmp_path, wrong_type
+):
+    ai_root, _, ctx_sha, proposal_sha = seeded(tmp_path)
+    rec = record(ai_root, ctx_sha, proposal_sha)
+    with pytest.raises(
+        ArtifactLifecycleError,
+        match="v3 requires only external Source provenance",
+    ):
+        replace(rec, external_source=wrong_type).to_json_bytes()
