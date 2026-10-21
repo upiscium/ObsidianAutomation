@@ -59,7 +59,15 @@ Required preconditions:
    mode. Manifest is root-owned, disabled, and its SHA mapping matches **all
    14** privileged Python modules and **all 10** managed systemd Units,
    including this PR's updated Queue module. The tool refuses an older
-   installed Queue SHA. The standalone CLI additionally reconstructs the
+   installed Queue SHA. This production Python package also contains normal
+   application modules outside the privileged import closure. The authority
+   intentionally hashes the 14 privileged modules, not the whole package.
+   Those unrelated root-owned, single-link, non-writable .py files are
+   permitted; direct .pyc/.pyo/native extension shadows, symlinks,
+   non-root/writable/hardlinked entries and unexpected directories remain
+   fail-closed. A source-level import closure test verifies the 14 privileged
+   modules do not statically import unpinned local modules. The standalone
+   CLI additionally reconstructs the
    previously accepted full authority document from its new version by
    reversing only the reviewed revision and Queue-module digest, then
    compares its SHA-256 against the separately pinned prior authority.
