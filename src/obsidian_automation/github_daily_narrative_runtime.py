@@ -53,7 +53,7 @@ D1_ADVISORY_SOURCE_CONTRACT = "c4-sentences-d1-advisory-source-v1"
 FEATURE_FIRST_SOURCE_CONTRACT = "c4-sentences-feature-first-source-v1"
 D1_ADVISORY_PROMPT_VERSION = "c5-d1-advisory-milestone-ja-v3"
 FEATURE_FIRST_PROMPT_VERSION = "c5-feature-first-original-source-ja-v5"
-RECENT_SOURCE_PROMPT_VERSION = "c5-recent-source-milestone-ja-v3"
+RECENT_SOURCE_PROMPT_VERSION = "c5-recent-source-milestone-ja-v4"
 LATEST_MILESTONE_PROMPT_VERSION = "c5-individual-latest-milestone-ja-v1"
 # Response shape stays v1; editorial policy has its own reproducible version.
 SENTENCES_ONLY_PROMPT_VERSION = "c5-individual-facts-ja-v4"
@@ -98,7 +98,23 @@ Run once や Execute はUI操作名として原語のまま記してください
 最大2文にまとめ、引用はshown_source_refsに属する元の整数番号のみを指定してください。
 元イベントの一部はモデル向けに省略されています。omitted_source_refsの内容を推測したり、元イベント全件が反映済みと判断したりしないでください。
 day_snapshot_not_event_instantは対象日レベルの観測でありイベント瞬間の本文の証明ではありません。commitは当日pushの証拠ではありません。
-全ての元Evidenceはホスト側で保持しており、省略を実績なしの証拠と解釈してはいけません。"""
+全ての元Evidenceはホスト側で保持しており、省略を実績なしの証拠と解釈してはいけません。
+元イベントの pull_request_commit が test(...)/test: 等でも、
+コミットmessageに具体的な検証対象・新しいテスト変更が明示され、
+実質的な進展の根拠になる場合は要約候補に含めてください。
+単なる test(...) 接頭辞や整形・定型更新だけで重要な進展と
+決めつけてはいけません。既存fixture・snapshotの空白調整や
+書式変更だけで、新しい検証ケース・挙動・重要な判断の証拠がない
+場合、他に実質的な進展がなければ空配列にしてください。
+具体性が不足する場合も空配列が適切です。
+採用する場合でも、製品機能の完成・稼働・検証成功と取り違えず、
+「〜の事前検証用テスト変更が記録された」などの狭い1文にまとめ、
+表示されている正確なsource_refを引用してください。
+コミットの作成時刻だけで対象日のpush、マージ、本番反映を推定しないでください。
+具体的で実質的なテスト変更の元証拠がある場合は、根拠なしとして
+安易に空配列を返すより、その変更を正確に短く伝えてください。
+実装・検証結果・判断・残課題に関する他の重要な元イベントも、
+同じ優先順位で扱ってください。"""
 D1_ADVISORY_PROMPT = """対象の日に更新された、このIssueまたはPRの実質的進展を、簡潔な日本語で最大2文に要約してください。
 1文目は元証拠が裏付ける具体的な新機能・修正・仕様決定を優先します。実装の証拠があるときは、CI成功、テスト件数、ソースレビュー結果だけを最初の文に書いてはいけません。
 2文目は未マージ・Draft・未インストール・本番未反映・機能無効などの重要な留保を優先してください。重要な留保がなければ検証結果などを補足して構いません。
