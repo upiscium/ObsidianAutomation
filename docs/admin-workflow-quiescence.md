@@ -24,8 +24,11 @@ Before a **Run once** intent may be emitted, the broker now requires a
 default. If absent, malformed, or throwing, the broker rejects the operation
 before creating its durable journal or invoking systemctl.
 
-The workflow admission checks ALL fixed units in the relevant domain, not
-merely the requested service:
+The original strict phase-E admission (require_run_once_quiescent) checks
+ALL fixed units in the relevant domain, not merely the requested service.
+These historic rules are NOT the current privileged Run once path: for the
+live require_run_once_nonoverlap predicate see the dedicated #437 section
+below.
 
 1. Every related timer loaded from the expected canonical systemd unit path,
    enabled state **disabled**, runtime **inactive/dead**, no queued Job,
@@ -70,3 +73,31 @@ Key types are also checked before set comparisons, so even a built-in dict
 holding a crafted str subclass cannot execute custom hash/equality logic.
 More generally, only fixed enumerated workflow rejection codes are emitted;
 unexpected injected exceptions are mapped to a single generic code.
+
+
+## #437: Run once sibling timer admission in the live worker
+
+The original phase-E require_run_once_quiescent remains strict: it requires
+all same-domain timers disabled and inactive. The later privileged
+require_run_once_nonoverlap uses a narrower live-conflict predicate under
+the existing root-owned updater gate: the selected timer must be
+explicitly paused (disabled/inactive/dead). A sibling may be
+enabled/active/waiting, disabled/inactive/dead, or
+enabled/inactive/dead (enabled-runtime is also accepted) only if
+its fixed Unit, loaded canonical FragmentPath and empty Job are verified.
+The final state is a configured-on-boot timer that is not currently running,
+not an active recurrence. It is not evidence of future cross-domain exclusion.
+
+This distinction matters on the deployed single-LXC configuration:
+obsidian-github-daily-progress.timer is enabled/inactive/dead, while
+the user deliberately paused obsidian-github-sync.timer for a one-shot.
+The former was unnecessarily refused by the previous live-conflict
+predicate, making the Worker fail closed with an indeterminate receipt.
+No relaxing of selected-timer proof, job checks, source integrity,
+all nine relevant GitHub service idle/identity checks, or the updater gate
+is justified by this change.
+
+The prior indeterminate production request must not be retried or
+its Queue evidence removed automatically. Separate, explicitly reviewed
+manual forensic reconciliation is required before another production
+Run once acceptance attempt, even after this source fix is merged.

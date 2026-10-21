@@ -28,6 +28,67 @@ class Manager:
         return JOB
 
 
+@pytest.mark.parametrize("unitfile", ("enabled", "enabled-runtime"))
+def test_nonrunning_enabled_sibling_timer_does_not_block_manual_job(unitfile):
+    """Production GitHub Daily: installed+enabled, yet not currently running."""
+    selected=SERVICES[2]
+    observed=fixture_for(selected)
+    sibling=SERVICES[3].timer
+    observed.timers[sibling].update({
+        "UnitFileState":unitfile, "ActiveState":"inactive",
+        "SubState":"dead","Job":"",
+    })
+    assert require_run_once_nonoverlap(selected,observed) is None
+
+
+@pytest.mark.parametrize("field,value", [
+    ("ActiveState","activating"), ("ActiveState","deactivating"),
+    ("ActiveState","failed"), ("SubState","running"),
+    ("SubState","waiting"), ("UnitFileState","masked"),
+    ("UnitFileState","static"), ("Job","27192"),
+    ("FragmentPath","/run/systemd/generator/unknown.timer"),
+    ("LoadState","not-found"), ("Unit","sshd.service"),
+])
+def test_nonrunning_sibling_qualifies_only_with_exact_idle_evidence(field,value):
+    selected=SERVICES[2]
+    observed=fixture_for(selected)
+    sibling=SERVICES[3].timer
+    observed.timers[sibling].update({
+        "UnitFileState":"enabled", "ActiveState":"inactive",
+        "SubState":"dead","Job":"",
+    })
+    observed.timers[sibling][field]=value
+    with pytest.raises(WorkflowNotQuiescent,
+                       match="workflow_timer_not_quiescent"):
+        require_run_once_nonoverlap(selected,observed)
+
+
+def test_selected_timer_must_still_be_explicitly_paused_when_inactive_enabled():
+    selected=SERVICES[2]
+    observed=fixture_for(selected)
+    observed.timers[selected.timer].update({
+        "UnitFileState":"enabled", "ActiveState":"inactive",
+        "SubState":"dead","Job":"",
+    })
+    with pytest.raises(WorkflowNotQuiescent,
+                       match="workflow_timer_not_quiescent"):
+        require_run_once_nonoverlap(selected,observed)
+
+
+def test_nonrunning_sibling_with_busy_workflow_service_still_rejected():
+    selected=SERVICES[2]
+    observed=fixture_for(selected)
+    sibling=SERVICES[3].timer
+    observed.timers[sibling].update({
+        "UnitFileState":"enabled", "ActiveState":"inactive",
+        "SubState":"dead","Job":"",
+    })
+    observed.services["obsidian-github-writer.service"]["Job"]="193"
+    with pytest.raises(WorkflowNotQuiescent,
+                       match="workflow_service_not_quiescent"):
+        require_run_once_nonoverlap(selected,observed)
+
+
 def test_sibling_scheduled_timer_does_not_block_idle_manual_job():
     selected=SERVICES[2]
     record=fixture_for(selected)
@@ -117,6 +178,40 @@ def test_live_group_observation_occurs_under_same_updater_gate():
     assert result.job_path==JOB
     assert mgr.calls==[SPEC]
     assert lock["held"] is False
+
+
+def test_live_dispatch_admits_inactive_enabled_sibling_under_same_gate():
+    """The real manager is never called here; Fake Manager tracks admission."""
+    a=FakeUnits(timer_state="paused")
+    mgr=Manager()
+    gate_state={"held":False}
+    @contextmanager
+    def gate():
+        gate_state["held"]=True
+        try:
+            yield
+        finally:
+            gate_state["held"]=False
+    def observed(spec):
+        assert gate_state["held"] is True
+        snapshot=fixture_for(spec)
+        snapshot.timers[SERVICES[3].timer].update({
+            "UnitFileState":"enabled","ActiveState":"inactive",
+            "SubState":"dead","Job":"",
+        })
+        return snapshot
+    dispatcher=RunOnceJobDispatcher(
+        adapter=a, manager=mgr, maintenance_gate=gate,
+        clock=lambda:NOW, require_root=False, enabled=True,
+        workflow_observer=observed,
+    )
+    receipt=dispatcher.dispatch(
+        request_id=RID,service_id=SPEC.identifier,
+        trusted_snapshot=snapshot(a,NOW),
+    )
+    assert receipt.job_path==JOB
+    assert mgr.calls==[SPEC]
+    assert gate_state["held"] is False
 
 
 def test_live_group_dependency_race_fails_before_systemd_job():

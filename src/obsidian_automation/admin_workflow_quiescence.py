@@ -175,7 +175,8 @@ def require_run_once_nonoverlap(
     """Minimal same-domain live conflict guard, not business completion.
 
     Different from require_run_once_quiescent(), sibling timers may still be
-    scheduled, but cannot have pending systemd jobs. Every *existing* role
+    scheduled, or enabled-but-inactive/dead (no timer scheduling occurring).
+    They cannot have pending systemd jobs. Every *existing* role
     dependency must be idle, loaded and pinned. The selected timer itself
     must be fully paused, so only one systemd Manager manual Job is submitted.
     The reviewed maintenance exclusion gate must cover both these reads and
@@ -214,7 +215,20 @@ def require_run_once_nonoverlap(
             and props["ActiveState"] == "active"
             and props["SubState"] == "waiting"
         )
-        if not paused and (timer == spec.timer or not scheduled):
+        # A sibling timer can be *enabled at boot* but stopped right now.
+        # That is distinct from an active scheduling timer and cannot queue a
+        # new timer-triggered Job while ActiveState=inactive/SubState=dead.
+        # The selected timer, in contrast, MUST be explicitly paused via the
+        # Operator (disabled/inactive/dead) before Run once.
+        parked_sibling = (
+            props["UnitFileState"] in ("enabled", "enabled-runtime")
+            and props["ActiveState"] == "inactive"
+            and props["SubState"] == "dead"
+        )
+        if timer == spec.timer:
+            if not paused:
+                raise WorkflowNotQuiescent("workflow_timer_not_quiescent")
+        elif not (paused or scheduled or parked_sibling):
             raise WorkflowNotQuiescent("workflow_timer_not_quiescent")
     for unit in services:
         props = snapshot.services[unit]
