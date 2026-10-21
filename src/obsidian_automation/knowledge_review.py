@@ -75,6 +75,53 @@ def _verify_review_binding(
         raise ArtifactLifecycleError("validated mutation artifact hash mismatch")
 
 
+def _store_validated_evaluation_disposition(
+    ai_root: Path,
+    *,
+    evaluation_sha256: str,
+    decision: str,
+    approver: str,
+    decided_at: str | None = None,
+) -> KnowledgeReviewResult:
+    """Common v3 ReviewRecord writer for confirmed, pre-authorized callers.
+
+    This function does not grant authority by itself. The public default
+    route and External Source adapter must perform independent policy and
+    current Source checks before invoking this shared artifact writer.
+    """
+    evaluation_digest = _require_sha256(
+        evaluation_sha256, label="evaluation_sha256",
+    )
+    evaluation = load_evaluation_record(ai_root, evaluation_digest)
+    _verify_review_binding(
+        ai_root,
+        proposal_sha256=evaluation.proposal_sha256,
+        mutation_sha256=evaluation.mutation_sha256,
+    )
+    review_path = store_evaluation_bound_review_record(
+        ai_root,
+        mutation_sha256=evaluation.mutation_sha256,
+        evaluation_sha256=evaluation_digest,
+        decision=decision,
+        approver=approver,
+        decided_at=decided_at,
+    )
+    review_bytes = _read_exact_file(review_path)
+    review = load_review_record(ai_root, evaluation.mutation_sha256)
+    if review.record_version != 3:
+        raise ArtifactLifecycleError("new Human Review must use record_version 3")
+    if review.evaluation_sha256 != evaluation_digest:
+        raise ArtifactLifecycleError("review record is bound to another evaluation")
+    return KnowledgeReviewResult(
+        proposal_sha256=evaluation.proposal_sha256,
+        mutation_sha256=evaluation.mutation_sha256,
+        evaluation_sha256=evaluation_digest,
+        decision=review.decision,
+        review_path=review_path,
+        review_sha256=sha256_bytes(review_bytes),
+    )
+
+
 def create_evaluation_bound_review(
     ai_root: Path,
     *,
@@ -98,34 +145,12 @@ def create_evaluation_bound_review(
             "external Source requires separate Human Review"
         )
 
-    _verify_review_binding(
+    return _store_validated_evaluation_disposition(
         ai_root,
-        proposal_sha256=evaluation.proposal_sha256,
-        mutation_sha256=evaluation.mutation_sha256,
-    )
-
-    review_path = store_evaluation_bound_review_record(
-        ai_root,
-        mutation_sha256=evaluation.mutation_sha256,
         evaluation_sha256=evaluation_digest,
         decision=decision,
         approver=approver,
         decided_at=decided_at,
-    )
-    review_bytes = _read_exact_file(review_path)
-    review = load_review_record(ai_root, evaluation.mutation_sha256)
-    if review.record_version != 3:
-        raise ArtifactLifecycleError("new Human Review must use record_version 3")
-    if review.evaluation_sha256 != evaluation_digest:
-        raise ArtifactLifecycleError("review record is bound to another evaluation")
-
-    return KnowledgeReviewResult(
-        proposal_sha256=evaluation.proposal_sha256,
-        mutation_sha256=evaluation.mutation_sha256,
-        evaluation_sha256=evaluation_digest,
-        decision=review.decision,
-        review_path=review_path,
-        review_sha256=sha256_bytes(review_bytes),
     )
 
 

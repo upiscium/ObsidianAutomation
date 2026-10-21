@@ -23,6 +23,7 @@ from .pre_review_job import (
 ACTIVE_RECONCILE_STATES = (
     "awaiting_human_review",
     "approved_pending_execution",
+    "external_review_recorded",
 )
 
 
@@ -52,7 +53,10 @@ def reconcile_post_review(
             """
             SELECT g.generation_id, g.state
             FROM generations g
-            WHERE g.state IN ('awaiting_human_review', 'approved_pending_execution')
+            WHERE g.state IN (
+                'awaiting_human_review', 'approved_pending_execution',
+                'external_review_recorded'
+              )
               AND NOT EXISTS (
                 SELECT 1
                 FROM generations newer
@@ -75,10 +79,11 @@ def reconcile_post_review(
 
         for row in rows:
             generation_id = str(row["generation_id"])
+            external_disposition = row["state"] == "external_review_recorded"
             output = _load_stage_output_conn(
                 conn,
                 generation_id,
-                "evaluation",
+                "external_evaluation" if external_disposition else "evaluation",
             )
             if output is None:
                 external_output = _load_stage_output_conn(
@@ -111,6 +116,19 @@ def reconcile_post_review(
             ):
                 raise PreReviewReconcileError(
                     "authoritative Review does not match selected Evaluation"
+                )
+            # The same ReviewRecord/transition logic is used for both
+            # Context origins. External Fake Source is allowed to terminate
+            # only as reject or keep_as_idea; no automatic approval/execution.
+            if (
+                external_disposition
+                and (
+                    review.record_version != 3
+                    or review.decision not in {"reject", "keep_as_idea"}
+                )
+            ):
+                raise PreReviewReconcileError(
+                    "external Source approval not authorized"
                 )
 
             receipt_path = layout.receipts / f"{mutation_sha}.receipt.json"
