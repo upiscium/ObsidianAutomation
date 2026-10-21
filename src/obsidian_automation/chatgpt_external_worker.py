@@ -28,6 +28,11 @@ from .chatgpt_export_reader import (
 )
 from .chatgpt_export_review_preview import ExternalReviewPreview, ReviewRisk
 from .chatgpt_external_context_store import ExternalContextStoreError
+from .chatgpt_external_evaluator_input import (
+    ExternalEvaluationInputError,
+    conservative_external_assessment,
+    read_external_evaluation_source,
+)
 from .chatgpt_external_generation import (
     FAKE_PROVIDER_NAME,
     ExternalDraftError,
@@ -42,15 +47,17 @@ from .chatgpt_external_job import (
     load_external_admission_recipe,
 )
 from .evaluation_artifact import (
+    _load_accepted_mutation,
     build_evaluation_record,
+    load_evaluation_context,
     load_evaluation_record,
     store_evaluation_record,
 )
 from .evaluator_contract import (
-    EVALUATOR_PROMPT_TEMPLATE_VERSION,
-)
-from .evaluator_contract import (
-    prompt_template_sha256 as evaluator_prompt_sha256,
+    EXTERNAL_EVALUATOR_PROMPT_VERSION,
+    EvaluatorOutput,
+    external_evaluator_prompt_sha256,
+    render_evaluator_prompts,
 )
 from .generation_artifact import load_generation_record
 from .knowledge_validator import validate_proposal
@@ -592,8 +599,62 @@ def run_external_synthetic_worker_once(
                 }
             else:
                 assert previous is not None
-                # This is a conservative Fake evaluator, not evidence that
-                # semantic truth, confirmations or corrections were verified.
+                # Reuse the original Validator/Evaluator schemas and pairwise
+                # evaluation stages, but pass typed protected Source quotes,
+                # never a fabricated Vault ContextBundle or fake source path.
+                bound_mutation, target_path, proposal_content = _load_accepted_mutation(
+                    ai_root, str(previous["proposal_sha256"]),
+                )
+                if bound_mutation != previous["mutation_sha256"]:
+                    raise ExternalWorkerError("external_eval_mutation_binding_invalid")
+                external_evidence = read_external_evaluation_source(
+                    private_root, preview,
+                )
+                current_eval_context = load_evaluation_context(
+                    ai_root, str(previous["evaluation_context_sha256"]),
+                )
+                prepared_prompts = render_evaluator_prompts(
+                    target_path=target_path,
+                    proposal_content=proposal_content,
+                    generation_context=external_evidence,
+                    evaluation_context=current_eval_context,
+                )
+                if (
+                    len(prepared_prompts) < 3
+                    or tuple(p.dimension for p in prepared_prompts[:3]) != (
+                        "groundedness", "knowledge_quality", "epistemic_status",
+                    )
+                    or any(
+                        p.template_version != EXTERNAL_EVALUATOR_PROMPT_VERSION
+                        or p.template_sha256 != external_evaluator_prompt_sha256()
+                        for p in prepared_prompts
+                    )
+                ):
+                    raise ExternalWorkerError("external_eval_prompt_contract_invalid")
+                # A synthetic Fake model cannot upgrade conversational
+                # assertions to verified facts. Run the SAME deterministic
+                # Evaluator aggregation/policy with one deliberately
+                # overconfident PASS, then clamp unsupported Source certainty
+                # to UNKNOWN/manual_review. No provider/transport is called.
+                synthetic_assessment = conservative_external_assessment(
+                    EvaluatorOutput(
+                        groundedness="pass",
+                        knowledge_quality="unknown",
+                        epistemic_status="pass",
+                        redundancy="none",
+                        consistency="unknown",
+                        findings=(),
+                    ),
+                    external_evidence,
+                )
+                if (
+                    synthetic_assessment.groundedness != "unknown"
+                    or synthetic_assessment.epistemic_status != "unknown"
+                    or synthetic_assessment.recommendation != "manual_review"
+                ):
+                    raise ExternalWorkerError("external_eval_uncertainty_invalid")
+                # Prepared prompts stay only in private memory; raw Source
+                # quotes are never stored in shared Evaluation Records/logs.
                 rec = build_evaluation_record(
                     ai_root,
                     proposal_sha256=str(previous["proposal_sha256"]),
@@ -603,8 +664,8 @@ def run_external_synthetic_worker_once(
                         previous["evaluation_context_sha256"],
                     ),
                     implementation_revision=implementation_revision,
-                    prompt_template_version=EVALUATOR_PROMPT_TEMPLATE_VERSION,
-                    prompt_template_sha256=evaluator_prompt_sha256(),
+                    prompt_template_version=prepared_prompts[0].template_version,
+                    prompt_template_sha256=prepared_prompts[0].template_sha256,
                     model_provider=EXTERNAL_EVALUATION_FAKE_PROVIDER,
                     model_identifier="deterministic-conservative-evaluator",
                     model_revision="fake-only-no-network",
@@ -613,15 +674,13 @@ def run_external_synthetic_worker_once(
                         "strategy": "unknown-requires-human",
                         "options": {},
                     },
-                    groundedness="unknown",
-                    knowledge_quality="unknown",
-                    epistemic_status="unknown",
-                    redundancy="none",
-                    consistency="unknown",
-                    recommendation="manual_review",
-                    findings=(
-                        "Untrusted Source claims require independent semantic review and user confirmation",
-                    ),
+                    groundedness=synthetic_assessment.groundedness,
+                    knowledge_quality=synthetic_assessment.knowledge_quality,
+                    epistemic_status=synthetic_assessment.epistemic_status,
+                    redundancy=synthetic_assessment.redundancy,
+                    consistency=synthetic_assessment.consistency,
+                    recommendation=synthetic_assessment.recommendation,
+                    findings=synthetic_assessment.findings,
                 )
                 evaluation_sha, _ = store_evaluation_record(ai_root, rec)
                 stored = load_evaluation_record(ai_root, evaluation_sha)
@@ -655,6 +714,7 @@ def run_external_synthetic_worker_once(
             ExternalDraftError,
             ExternalJobError,
             ExternalContextStoreError,
+            ExternalEvaluationInputError,
             ArtifactLifecycleError,
             ProductionIOError,
             PreReviewJobError,
