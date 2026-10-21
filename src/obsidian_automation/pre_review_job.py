@@ -823,9 +823,21 @@ def regenerate_job(ai_root: Path, job_id: str) -> dict[str, object]:
     conn = _connect_rw(ai_root)
     try:
         conn.execute("BEGIN IMMEDIATE")
-        job = conn.execute("SELECT job_id FROM jobs WHERE job_id = ?", (digest,)).fetchone()
+        job = conn.execute(
+            "SELECT job_id, context_sha256, recipe_sha256 FROM jobs WHERE job_id = ?",
+            (digest,),
+        ).fetchone()
         if job is None:
             raise PreReviewJobError("job does not exist")
+        # An External Source job must NEVER be regenerated as a normal
+        # "queued" Vault Job, including after its Human Review stage.
+        from .chatgpt_external_job import _external_job_id
+        if digest == _external_job_id(
+            job["context_sha256"], job["recipe_sha256"],
+        ):
+            raise PreReviewJobError(
+                "external Source regeneration requires dedicated guarded worker"
+            )
         latest = conn.execute(
             "SELECT generation_index, state FROM generations WHERE job_id = ? "
             "ORDER BY generation_index DESC LIMIT 1",
@@ -865,7 +877,16 @@ def regenerate_job(ai_root: Path, job_id: str) -> dict[str, object]:
     }
 
 
+# External stages intentionally use independent states and names. Legacy
+# workers select only "generation"/"validation"/... and cannot claim the
+# external pipeline, even when it shares the same pre-review SQLite DB.
 _STAGE_START = {
+    "external_generation": ("external_admitted", "external_generating"),
+    "external_validation": ("external_validating", "external_validating"),
+    "external_evaluation_context": (
+        "external_building_evaluation_context", "external_building_evaluation_context",
+    ),
+    "external_evaluation": ("external_evaluating", "external_evaluating"),
     "generation": ("queued", "generating"),
     "validation": ("validating", "validating"),
     "evaluation_context": (
@@ -876,6 +897,10 @@ _STAGE_START = {
 }
 
 _STAGE_SUCCESS = {
+    "external_generation": "external_validating",
+    "external_validation": "external_building_evaluation_context",
+    "external_evaluation_context": "external_evaluating",
+    "external_evaluation": "awaiting_human_review",
     "generation": "validating",
     "validation": "building_evaluation_context",
     "evaluation_context": "evaluating",
@@ -883,6 +908,10 @@ _STAGE_SUCCESS = {
 }
 
 _STAGE_PREVIOUS = {
+    "external_generation": None,
+    "external_validation": "external_generation",
+    "external_evaluation_context": "external_validation",
+    "external_evaluation": "external_evaluation_context",
     "generation": None,
     "validation": "generation",
     "evaluation_context": "validation",
@@ -890,6 +919,19 @@ _STAGE_PREVIOUS = {
 }
 
 _STAGE_OUTPUT_FIELDS = {
+    "external_generation": ("proposal_sha256", "generation_sha256"),
+    "external_validation": (
+        "proposal_sha256", "generation_sha256", "mutation_sha256", "request_sha256",
+    ),
+    "external_evaluation_context": (
+        "proposal_sha256", "generation_sha256", "mutation_sha256", "request_sha256",
+        "index_sha256", "evaluation_context_sha256",
+    ),
+    "external_evaluation": (
+        "proposal_sha256", "generation_sha256", "mutation_sha256", "request_sha256",
+        "index_sha256", "evaluation_context_sha256", "evaluation_sha256",
+        "recommendation",
+    ),
     "generation": (
         "proposal_sha256",
         "generation_sha256",
@@ -1217,6 +1259,10 @@ def _validated_stage_output(stage: str, output: Mapping[str, object]) -> dict[st
         if field == "recommendation":
             if item not in {"proceed", "manual_review", "do_not_proceed"}:
                 raise PreReviewJobError("evaluation recommendation is invalid")
+            # The External Source path never treats a model's claims as
+            # independently verified. Only manual Human Review can decide.
+            if stage == "external_evaluation" and item != "manual_review":
+                raise PreReviewJobError("external evaluation must require manual review")
             normalized[field] = item
         else:
             normalized[field] = _require_sha256(item, label=field)
@@ -1280,6 +1326,10 @@ def _validate_output_chain(
 def start_attempt(ai_root: Path, generation_id: str, stage: str) -> dict[str, object]:
     digest = _require_sha256(generation_id, label="generation_id")
     stage_name = _validated_stage(stage)
+    if stage_name.startswith("external_"):
+        raise PreReviewJobError(
+            "external stages require source-bound claim and worker admission"
+        )
     expected_state, active_state = _STAGE_START[stage_name]
     now = _utc_now()
 
@@ -1629,6 +1679,10 @@ def retry_generation(ai_root: Path, generation_id: str) -> dict[str, object]:
         latest = _latest_attempt_conn(conn, digest)
         if latest is None:
             raise PreReviewJobError("generation has no attempt to retry")
+        if latest["stage"].startswith("external_"):
+            raise PreReviewJobError(
+                "external Source retries require a dedicated guarded worker"
+            )
         resume_state = _resume_state_for_stage(latest["stage"])
         if _load_stage_output_conn(conn, digest, latest["stage"]) is not None:
             raise PreReviewJobError("cannot retry a stage with selected successful output")
@@ -1720,6 +1774,10 @@ def claim_next_attempt(
     recover_running: bool = False,
 ) -> StageWorkItem | None:
     stage_name = _validated_stage(stage)
+    if stage_name.startswith("external_"):
+        raise PreReviewJobError(
+            "external stages require source-bound claim and worker admission"
+        )
     if type(max_attempts) is not int or not 1 <= max_attempts <= 10:
         raise PreReviewJobError("max_attempts must be an integer in [1, 10]")
     if type(max_awaiting_review) is not int or not 1 <= max_awaiting_review <= 100:

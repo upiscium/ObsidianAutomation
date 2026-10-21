@@ -54,6 +54,9 @@ from .pre_review_job import (
 
 EXTERNAL_PIPELINE = "chatgpt-external-pre-review-v0"
 EXTERNAL_RECIPE_VERSION = 1
+EXTERNAL_FAKE_WORKER_RECIPE_VERSION = 2
+EXTERNAL_SYNTHETIC_WORKER_MODE = "synthetic-fake-worker-only"
+EXTERNAL_FAKE_EVALUATION_POLICY = "unknown-manual-review-fake-v0"
 EXTERNAL_RECIPE_SUFFIX = "external-pre-review-recipe"
 EXTERNAL_ADMITTED_STATE = "external_admitted"
 EXTERNAL_INPUT_POLICY = "exact-private-source-revision-v0"
@@ -77,25 +80,54 @@ class ExternalPreReviewRecipe:
     proposer_prompt_version: str = EXTERNAL_PROPOSER_PROMPT_VERSION
     proposer_prompt_sha256: str = ""
     review_policy: str = EXTERNAL_REVIEW_POLICY
+    generator_prompt_version: str | None = None
+    generator_prompt_sha256: str | None = None
+    evaluation_policy: str | None = None
 
     def to_json_bytes(self) -> bytes:
-        return _canonical_json_bytes(
-            {
-                "record_version": self.record_version,
-                "pipeline": self.pipeline,
-                "context_kind": self.context_kind,
-                "input_policy": self.input_policy,
-                "admission_mode": self.admission_mode,
-                "proposer_prompt_version": self.proposer_prompt_version,
-                "proposer_prompt_sha256": self.proposer_prompt_sha256,
-                "review_policy": self.review_policy,
-            }
-        )
+        value = {
+            "record_version": self.record_version,
+            "pipeline": self.pipeline,
+            "context_kind": self.context_kind,
+            "input_policy": self.input_policy,
+            "admission_mode": self.admission_mode,
+            "proposer_prompt_version": self.proposer_prompt_version,
+            "proposer_prompt_sha256": self.proposer_prompt_sha256,
+            "review_policy": self.review_policy,
+        }
+        if self.record_version == EXTERNAL_FAKE_WORKER_RECIPE_VERSION:
+            value.update(
+                {
+                    "generator_prompt_version": self.generator_prompt_version,
+                    "generator_prompt_sha256": self.generator_prompt_sha256,
+                    "evaluation_policy": self.evaluation_policy,
+                }
+            )
+        return _canonical_json_bytes(value)
 
 
 def default_external_admission_recipe() -> ExternalPreReviewRecipe:
     return ExternalPreReviewRecipe(
         proposer_prompt_sha256=prompt_template_sha256(),
+    )
+
+
+def default_external_synthetic_recipe() -> ExternalPreReviewRecipe:
+    """Explicit TEST-ONLY Worker policy; never a network/production Recipe."""
+    from .chatgpt_external_generation_contract import (
+        PROMPT_VERSION,
+    )
+    from .chatgpt_external_generation_contract import (
+        prompt_template_sha256 as generation_prompt_sha,
+    )
+
+    return ExternalPreReviewRecipe(
+        record_version=EXTERNAL_FAKE_WORKER_RECIPE_VERSION,
+        proposer_prompt_sha256=prompt_template_sha256(),
+        admission_mode=EXTERNAL_SYNTHETIC_WORKER_MODE,
+        generator_prompt_version=PROMPT_VERSION,
+        generator_prompt_sha256=generation_prompt_sha(),
+        evaluation_policy=EXTERNAL_FAKE_EVALUATION_POLICY,
     )
 
 
@@ -116,9 +148,23 @@ def parse_external_admission_recipe(data: bytes) -> ExternalPreReviewRecipe:
         "proposer_prompt_sha256",
         "review_policy",
     }
+    version = item.get("record_version")
+    if type(version) is not int or version not in (
+        EXTERNAL_RECIPE_VERSION,
+        EXTERNAL_FAKE_WORKER_RECIPE_VERSION,
+    ):
+        raise ExternalJobError("external_recipe_version_or_policy_unsupported")
+    if version == EXTERNAL_FAKE_WORKER_RECIPE_VERSION:
+        expected = expected | {
+            "generator_prompt_version",
+            "generator_prompt_sha256",
+            "evaluation_policy",
+        }
+        recipe = default_external_synthetic_recipe()
+    else:
+        recipe = default_external_admission_recipe()
     if set(item) != expected:
         raise ExternalJobError("invalid_external_recipe_properties")
-    recipe = default_external_admission_recipe()
     actual = {k: getattr(recipe, k) for k in expected}
     if any(
         type(item[k]) is not type(actual[k]) or item[k] != actual[k] for k in expected
@@ -388,3 +434,57 @@ def inspect_external_admission(
         raise
     except (ArtifactLifecycleError, PreReviewJobError, OSError, KeyError, TypeError):
         raise ExternalJobError("external_admission_unreadable") from None
+
+
+def inspect_external_job_state(
+    ai_root: Path,
+    *,
+    private_root: Path,
+    preview: ExternalReviewPreview,
+    job_id: str,
+    expected_state: str,
+) -> dict[str, object]:
+    """Reader-bound Source/Recipe/Job proof for an explicit stage state.
+
+    Unlike inspect_external_admission, this supports the dedicated worker's
+    active states, while preserving immutable Source and no-legacy guarantees.
+    This function itself does not start a stage or confer authority.
+    """
+    valid_states = frozenset(
+        {
+            EXTERNAL_ADMITTED_STATE,
+            "external_generating",
+            "external_validating",
+            "external_building_evaluation_context",
+            "external_evaluating",
+            "awaiting_human_review",
+        }
+    )
+    if type(expected_state) is not str or expected_state not in valid_states:
+        raise ExternalJobError("external_job_expected_state_invalid")
+    try:
+        _require_sha256(job_id, label="job_id")
+        job = job_status(ai_root, job_id)
+        load_external_admission_recipe(ai_root, job["recipe_sha256"])
+        context_sha = job["context_sha256"]
+        if _external_job_id(context_sha, job["recipe_sha256"]) != job_id:
+            raise ExternalJobError("external_job_binding_mismatch")
+        if job["generation_count"] != 1:
+            raise ExternalJobError("external_job_generation_count_invalid")
+        current = job["current_generation"]
+        if current["state"] != expected_state or current["generation_index"] != 1:
+            raise ExternalJobError("external_job_state_invalid")
+        _verified_private_context(ai_root, private_root, preview, context_sha)
+        return {
+            "job_id": job_id,
+            "generation_id": current["generation_id"],
+            "context_sha256": context_sha,
+            "recipe_sha256": job["recipe_sha256"],
+            "state": current["state"],
+            "source_current": True,
+            "generation_authorized": False,
+        }
+    except ExternalJobError:
+        raise
+    except (ArtifactLifecycleError, PreReviewJobError, OSError, KeyError, TypeError):
+        raise ExternalJobError("external_job_binding_unreadable") from None
