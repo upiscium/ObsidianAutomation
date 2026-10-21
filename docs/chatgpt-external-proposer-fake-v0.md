@@ -16,6 +16,12 @@ The module `chatgpt_external_proposer.py` provides:
   that requires an explicitly injected Callable transport with no default
   provider URL/network/credential. Tests inject a deterministic Fake
   Provider. Live transport is NOT authorized by this PR.
+- `prepare_explicit_external_context(ai_root,private_root,...,transport=...)`
+  that continues the same verified flow through #416's typed External
+  Context and #419's immutable Reader-controlled CAS. It rechecks the
+  current Journal/Source before and after immutable publication, returning
+  only a digest and `status=verified_external_context_only`. Empty or
+  invalid Fake Provider output never publishes a Context.
 
 The prompt provides selected unit/slice integer indices, speaker role,
 attribution and bounded exact text. It omits raw conversation IDs/titles,
@@ -45,6 +51,12 @@ decisions, results and corrections. The result keeps
 `review_preview.semantic_evaluation_completed=false`. No Knowledge
 Note/Validation/Evaluation Record, model calling service, cron, UI,
 Vault write or production permission is created by this PR.
+
+The complete synthetic read → Fake Provider → exact anchored candidates
+→ in-memory review preview → immutable External Context CAS path is now
+exercised. There is **no normal Job database, Generation Record, or
+Human Review queue item**. `job_submitted`, `generation_authorized`
+and `awaiting_human_review` remain false.
 
 The transport callback is a deliberate privacy boundary: a malicious
 caller could transmit the private evidence to an untrusted endpoint.

@@ -19,6 +19,7 @@ from obsidian_automation.chatgpt_export_intake import publish_archive
 from obsidian_automation.chatgpt_export_reader import read_admitted_source_page
 from obsidian_automation.chatgpt_external_proposer import (
     ExternalProposerError,
+    prepare_explicit_external_context,
     prompt_template_sha256,
     render_external_proposer_prompt,
     run_explicit_external_proposer,
@@ -249,3 +250,121 @@ def test_tampered_reader_object_is_never_a_prompt(tmp_path):
         render_external_proposer_prompt(replace(source, generation_authorized=True))
     with pytest.raises(ExternalProposerError, match="source_provenance_invalid"):
         render_external_proposer_prompt(replace(source, content_sha256="a" * 64))
+
+
+def _ai_state(tmp_path):
+    state = tmp_path / "ai-state"
+    state.mkdir()
+    (state / "05-Context").mkdir()
+    return state
+
+
+def test_actual_fake_proposer_flow_persists_only_verified_external_context(tmp_path):
+    from obsidian_automation.chatgpt_external_context_store import (
+        load_external_context_for_review,
+    )
+
+    root, row = set_up(tmp_path)
+    ai_state = _ai_state(tmp_path)
+    first = prepare_explicit_external_context(
+        ai_state,
+        root,
+        scope=SCOPE,
+        source_hmac=row[0],
+        expected_content_sha256=row[1],
+        expected_revision_sha256=row[2],
+        transport=fake_transport,
+    )
+    assert first.status == "verified_external_context_only"
+    assert first.candidate_count == 1
+    assert first.context_sha256 is not None
+    assert len(first.context_sha256) == 64
+    assert not first.job_submitted
+    assert not first.awaiting_human_review
+    assert not first.generation_authorized
+    # It is only a new context, not a Note or legacy pre-review Job.
+    assert not (ai_state / "02-Orchestration").exists()
+    assert not (ai_state / "00-Untrusted").exists()
+    context = load_external_context_for_review(ai_state, first.context_sha256)
+    assert context.context_kind == "chatgpt-external-source"
+    assert context.evidence[0].attribution == "assistant-claim-unverified"
+    assert context.generation_authorized is False
+    assert context.human_review_approved is False
+    assert context.vault_mutation_authorized is False
+
+    repeated = prepare_explicit_external_context(
+        ai_state,
+        root,
+        scope=SCOPE,
+        source_hmac=row[0],
+        expected_content_sha256=row[1],
+        expected_revision_sha256=row[2],
+        transport=fake_transport,
+    )
+    assert repeated.context_sha256 == first.context_sha256
+    assert len(list((ai_state / "05-Context").glob("*.json"))) == 1
+
+
+def test_no_candidate_skips_cas_and_job(tmp_path):
+    root, row = set_up(tmp_path)
+    ai_state = _ai_state(tmp_path)
+    raw = json.dumps(
+        {
+            "contract_version": "chatgpt-evidence-candidate-v0",
+            "proposals": [],
+        }
+    ).encode()
+    out = prepare_explicit_external_context(
+        ai_state,
+        root,
+        scope=SCOPE,
+        source_hmac=row[0],
+        expected_content_sha256=row[1],
+        expected_revision_sha256=row[2],
+        transport=lambda _: raw,
+    )
+    assert out.status == "no_candidate"
+    assert out.candidate_count == 0
+    assert out.context_sha256 is None
+    assert not list((ai_state / "05-Context").iterdir())
+    assert not (ai_state / "02-Orchestration").exists()
+
+
+def test_rejected_quote_never_publishes_context(tmp_path):
+    root, row = set_up(tmp_path)
+    ai_state = _ai_state(tmp_path)
+
+    def malicious(prompt):
+        payload = json.loads(fake_transport(prompt))
+        payload["proposals"][0]["quote"] = "Invented private fact"
+        return json.dumps(payload).encode()
+
+    with pytest.raises(ExternalProposerError, match="proposed_candidate_rejected"):
+        prepare_explicit_external_context(
+            ai_state,
+            root,
+            scope=SCOPE,
+            source_hmac=row[0],
+            expected_content_sha256=row[1],
+            expected_revision_sha256=row[2],
+            transport=malicious,
+        )
+    assert not list((ai_state / "05-Context").iterdir())
+
+
+def test_external_context_staging_requires_existing_reader_owned_ai_root(tmp_path):
+    root, row = set_up(tmp_path)
+    missing_ai = tmp_path / "no-ai-context-yet"
+    with pytest.raises(
+        ExternalProposerError, match="external_context_staging_rejected"
+    ):
+        prepare_explicit_external_context(
+            missing_ai,
+            root,
+            scope=SCOPE,
+            source_hmac=row[0],
+            expected_content_sha256=row[1],
+            expected_revision_sha256=row[2],
+            transport=fake_transport,
+        )
+    assert not missing_ai.exists()

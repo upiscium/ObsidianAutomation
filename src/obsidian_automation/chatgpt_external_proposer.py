@@ -34,6 +34,15 @@ from .chatgpt_export_source import (
     SourceCursor,
     validate_source_context_page,
 )
+from .chatgpt_external_context import (
+    ExternalContextError,
+    build_external_context,
+)
+from .chatgpt_external_context_store import (
+    ExternalContextStoreError,
+    revalidate_saved_external_context,
+    store_external_context_for_review,
+)
 
 PROMPT_VERSION = "chatgpt-untrusted-candidate-proposer-v0"
 MAX_PROMPT_BYTES = 64 * 1024
@@ -285,4 +294,80 @@ def run_explicit_external_proposer(
         prompt_input_sha256=prompt.input_sha256,
         review_preview=preview,
         source_revalidated=True,
+    )
+
+
+@dataclass(frozen=True, repr=False)
+class ExternalPreparedContext:
+    """Synthesized Source admission receipt, NOT a queued pre-review Job."""
+
+    prompt_sha256: str
+    prompt_input_sha256: str
+    candidate_count: int
+    status: str
+    context_sha256: str | None
+    job_submitted: bool = False
+    awaiting_human_review: bool = False
+    generation_authorized: bool = False
+
+
+def prepare_explicit_external_context(
+    ai_root: Path,
+    private_root: Path,
+    *,
+    scope: str,
+    source_hmac: str,
+    expected_content_sha256: str,
+    expected_revision_sha256: str,
+    transport: Callable[[ExternalProposerPrompt], bytes],
+    cursor: SourceCursor | None = None,
+    members: Sequence[str] = (),
+) -> ExternalPreparedContext:
+    """Full synthetic-compatible Reader → proposer → verified external CAS.
+
+    Re-check Source freshness before and after proposer inference, then
+    before and after CAS publication. No Knowledge Note/Job is ever created.
+    Never wire real private Export to remote providers without new Human
+    authorization and dedicated service-identity/transport controls.
+    """
+    result = run_explicit_external_proposer(
+        private_root,
+        scope=scope,
+        source_hmac=source_hmac,
+        expected_content_sha256=expected_content_sha256,
+        expected_revision_sha256=expected_revision_sha256,
+        transport=transport,
+        cursor=cursor,
+        members=members,
+    )
+    if not result.review_preview.candidate_batch.candidates:
+        return ExternalPreparedContext(
+            prompt_sha256=result.prompt_sha256,
+            prompt_input_sha256=result.prompt_input_sha256,
+            candidate_count=0,
+            status="no_candidate",
+            context_sha256=None,
+        )
+    try:
+        external = build_external_context(result.review_preview)
+        context_sha, _ = store_external_context_for_review(
+            ai_root,
+            private_root=private_root,
+            preview=result.review_preview,
+            context=external,
+        )
+        revalidate_saved_external_context(
+            ai_root,
+            private_root=private_root,
+            preview=result.review_preview,
+            external_context_sha256=context_sha,
+        )
+    except (ExternalContextError, ExternalContextStoreError, OSError):
+        raise ExternalProposerError("external_context_staging_rejected") from None
+    return ExternalPreparedContext(
+        prompt_sha256=result.prompt_sha256,
+        prompt_input_sha256=result.prompt_input_sha256,
+        candidate_count=len(result.review_preview.candidate_batch.candidates),
+        status="verified_external_context_only",
+        context_sha256=context_sha,
     )
