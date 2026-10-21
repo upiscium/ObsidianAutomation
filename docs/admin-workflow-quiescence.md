@@ -24,8 +24,11 @@ Before a **Run once** intent may be emitted, the broker now requires a
 default. If absent, malformed, or throwing, the broker rejects the operation
 before creating its durable journal or invoking systemctl.
 
-The workflow admission checks ALL fixed units in the relevant domain, not
-merely the requested service:
+The original strict phase-E admission (require_run_once_quiescent) checks
+ALL fixed units in the relevant domain, not merely the requested service.
+These historic rules are NOT the current privileged Run once path: for the
+live require_run_once_nonoverlap predicate see the dedicated #437 section
+below.
 
 1. Every related timer loaded from the expected canonical systemd unit path,
    enabled state **disabled**, runtime **inactive/dead**, no queued Job,
