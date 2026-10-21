@@ -1408,7 +1408,7 @@ def _validated_attempt_diagnostic(
     }
 
 
-def complete_attempt(
+def _complete_attempt_impl(
     ai_root: Path,
     attempt_id: str,
     *,
@@ -1417,6 +1417,7 @@ def complete_attempt(
     output: Mapping[str, object] | None = None,
     diagnostic_exception_class: str | None = None,
     diagnostic_code: str | None = None,
+    _external_source_verified: bool = False,
 ) -> dict[str, object]:
     digest = _require_sha256(attempt_id, label="attempt_id")
     if outcome not in {
@@ -1467,6 +1468,11 @@ def complete_attempt(
         if row["status"] != "running":
             raise PreReviewJobError("attempt is already completed")
         stage = row["stage"]
+        # External stage completion is never a generic Job action. The
+        # dedicated worker must revalidate the private Source and hold the
+        # Intake reader lock before calling the separate private entrypoint.
+        if stage.startswith("external_") and _external_source_verified is not True:
+            raise PreReviewJobError("external stages require source-bound completion")
         active_state = _STAGE_START[stage][1]
         if row["state"] != active_state:
             raise PreReviewJobError("generation state does not match running attempt")
@@ -1481,7 +1487,9 @@ def complete_attempt(
                 output,
             )
             if _load_stage_output_conn(conn, row["generation_id"], stage) is not None:
-                raise PreReviewJobError("stage already has a selected successful output")
+                raise PreReviewJobError(
+                    "stage already has a selected successful output"
+                )
             target_state = _STAGE_SUCCESS[stage]
         elif outcome == "retryable_failure":
             target_state = "retryable_failure"
@@ -1539,6 +1547,52 @@ def complete_attempt(
     if normalized_diagnostic is not None:
         result["diagnostic"] = normalized_diagnostic
     return result
+
+
+def complete_attempt(
+    ai_root: Path,
+    attempt_id: str,
+    *,
+    outcome: str,
+    reason_code: str | None = None,
+    output: Mapping[str, object] | None = None,
+    diagnostic_exception_class: str | None = None,
+    diagnostic_code: str | None = None,
+) -> dict[str, object]:
+    """Legacy pre-review completion; rejects every External Source stage."""
+    return _complete_attempt_impl(
+        ai_root,
+        attempt_id,
+        outcome=outcome,
+        reason_code=reason_code,
+        output=output,
+        diagnostic_exception_class=diagnostic_exception_class,
+        diagnostic_code=diagnostic_code,
+    )
+
+
+def _complete_source_bound_external_attempt(
+    ai_root: Path,
+    attempt_id: str,
+    *,
+    outcome: str,
+    reason_code: str | None = None,
+    output: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    """Internal entrypoint for the dedicated Worker after its Source gate.
+
+    Not a standalone authority token. The external worker MUST hold the
+    private Import Journal SH lock and verify exact Source before success.
+    Separate process identities and permissions remain production blockers.
+    """
+    return _complete_attempt_impl(
+        ai_root,
+        attempt_id,
+        outcome=outcome,
+        reason_code=reason_code,
+        output=output,
+        _external_source_verified=True,
+    )
 
 
 def attempt_history(ai_root: Path, job_id: str) -> dict[str, object]:

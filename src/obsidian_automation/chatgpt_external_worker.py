@@ -64,9 +64,9 @@ from .pre_review_job import (
     _STAGE_START,
     PreReviewJobError,
     _attempt_id,
+    _complete_source_bound_external_attempt,
     _connect_rw,
     _load_stage_output_conn,
-    complete_attempt,
     stage_output,
 )
 from .production_io import ProductionIOError, mirror_read_lock
@@ -327,7 +327,7 @@ def _finish_external_stage(
     with _read_locked(root):
         _source_check(ai_root, private_root, preview, job_id, active)
         try:
-            return complete_attempt(
+            return _complete_source_bound_external_attempt(
                 ai_root,
                 attempt_id,
                 outcome="succeeded",
@@ -345,7 +345,7 @@ def _block_external_stage(
 ) -> None:
     """Fail closed: a running attempt becomes 'blocked', never auto retried."""
     try:
-        complete_attempt(
+        _complete_source_bound_external_attempt(
             ai_root,
             attempt_id,
             outcome="blocked",

@@ -120,3 +120,37 @@ unprocessed or committed Export invalidates an old Review projection.
   untouched. No production LXC/Vault/systemd changes are authorized.
 
 Do NOT close #411 or Merge/deploy without explicit user approval.
+
+## 2026-10-21 review corrections: legacy write/Review boundaries
+
+A separate read-only OpenCode review was attempted, but the review model
+did not produce a completed verdict before timeout. The following defects
+were instead identified by source inspection, reproduced with synthetic
+red tests, and fixed with green regressions:
+
+1. The generic pre-review `complete_attempt` previously accepted an
+   `external_*` running Stage with arbitrary syntactically valid SHA
+   outputs, **without invoking the dedicated private Source recheck**.
+   It now rejects all External Stage outcomes. A distinct internal
+   `_complete_source_bound_external_attempt` is called only from the
+   dedicated Worker after validating the exact Source under the shared
+   Intake reader lock. This is code-path isolation, NOT cryptographic
+   proof against an adversarial process with the same UID.
+2. The legacy `create_evaluation_bound_review` could accept an External
+   **synthetic-fake-only** Evaluation Record and create an authoritative
+   `approve` Review outside the unimplemented External Review UI.
+   The generic Human Review API now refuses that Fake-provider identity.
+   Future live External providers require a new explicit durable source
+   provenance/policy boundary, not just another string allowlist.
+3. The generic post-Review reconciler expected only legacy `evaluation`
+   Stage Output. A valid External Job at `awaiting_human_review` caused
+   the entire Reconcile to error. It now leaves External pending Jobs
+   untouched for a future dedicated Human decision flow, and excludes
+   them before applying its bounded `max_items` limit so legacy
+   approved jobs cannot starve behind many External reviews.
+
+Legacy Vault and Semantic Objective paths remain unchanged semantically.
+Source-only review scope: no real ChatGPT user Export, production ACL or
+runtime, real semantic trust evaluator, approved note, or remote model.
+Independent model attestation remains **NOT OBTAINED**, and this PR
+continues as Draft/UNMERGED pending explicit Human approval.

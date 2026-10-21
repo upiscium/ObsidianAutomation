@@ -600,3 +600,144 @@ def test_review_provenance_verification_refuses_tampered_evaluation_artifact(tmp
         "awaiting_human_review"
     )
     assert not list((ai / "20-Review").glob("*.review.json"))
+
+
+def test_common_complete_attempt_cannot_finish_external_stage_without_reader(tmp_path):
+    """Generic completion must not bypass protected Source freshness gates."""
+    import obsidian_automation.chatgpt_external_worker as worker
+    from obsidian_automation.pre_review_job import complete_attempt
+
+    ai, private, preview, staged, _ = setup(tmp_path)
+    claimed = worker._claim_external_stage(
+        ai,
+        private,
+        preview,
+        staged["job_id"],
+        "external_generation",
+        max_awaiting_review=8,
+    )
+    # No source-bound generation or SHA-backed artifacts were created.
+    fabricated = {
+        "proposal_sha256": "a" * 64,
+        "generation_sha256": "b" * 64,
+    }
+    with pytest.raises(
+        PreReviewJobError,
+        match="external stages require source-bound completion",
+    ):
+        complete_attempt(
+            ai,
+            claimed["attempt_id"],
+            outcome="succeeded",
+            output=fabricated,
+        )
+    # Even generic block/retry paths cannot take ownership of the
+    # dedicated External worker's real running stage.
+    with pytest.raises(
+        PreReviewJobError,
+        match="external stages require source-bound completion",
+    ):
+        complete_attempt(
+            ai,
+            claimed["attempt_id"],
+            outcome="blocked",
+            reason_code="generic_external_bypass",
+        )
+    assert stage_output(ai, staged["generation_id"], "external_generation") is None
+    assert job_status(ai, staged["job_id"])["current_generation"]["state"] == (
+        "external_generating"
+    )
+    worker._block_external_stage(
+        ai,
+        claimed["attempt_id"],
+        reason="external_synthetic_stage_rejected",
+    )
+    assert job_status(ai, staged["job_id"])["current_generation"]["state"] == "blocked"
+
+
+
+def test_legacy_reconcile_does_not_crash_on_external_pending_review(tmp_path):
+    from obsidian_automation.pre_review_reconcile import reconcile_post_review
+
+    ai, private, preview, staged, vault = setup(tmp_path)
+    reached = run(ai, private, preview, staged, vault)
+    assert reached.awaiting_human_review
+    before = job_status(ai, staged["job_id"])["current_generation"]["state"]
+    assert before == "awaiting_human_review"
+    # The old reconciler must neither reject the whole scheduler nor
+    # interpret external_pending as a normal Knowledge approval.
+    result = reconcile_post_review(ai)
+    assert result["status"] == "completed"
+    assert result["changed"] == 0
+    assert job_status(ai, staged["job_id"])["current_generation"]["state"] == before
+    assert not list((ai / "20-Review").glob("*.approval.json"))
+
+
+def test_generic_human_review_must_not_approve_external_generated_note(tmp_path):
+    from obsidian_automation.artifact_lifecycle import ArtifactLifecycleError
+    from obsidian_automation.knowledge_review import create_evaluation_bound_review
+
+    ai, private, preview, staged, vault = setup(tmp_path)
+    reached = run(ai, private, preview, staged, vault)
+    assert reached.awaiting_human_review
+    with pytest.raises(
+        ArtifactLifecycleError, match="external Source requires separate Human Review",
+    ):
+        create_evaluation_bound_review(
+            ai, evaluation_sha256=reached.evaluation_sha256,
+            decision="approve", approver="synthetic-human-test",
+        )
+    assert not list((ai / "20-Review").glob("*.approval.json"))
+    assert job_status(ai, staged["job_id"])["current_generation"]["state"] == (
+        "awaiting_human_review"
+    )
+
+
+
+def test_legacy_reconcile_limit_does_not_starve_approved_legacy_job(tmp_path):
+    from test_post_review_control_plane import (
+        _recipe,
+        _stage_output,
+        _write_v2_review,
+    )
+
+    from obsidian_automation.context_bundle import ContextBundle, store_context_bundle
+    from obsidian_automation.pre_review_job import (
+        complete_attempt,
+        start_attempt,
+        submit_job,
+    )
+    from obsidian_automation.pre_review_reconcile import reconcile_post_review
+
+    ai, private, preview, staged, vault = setup(tmp_path)
+    external = run(ai, private, preview, staged, vault)
+    assert external.awaiting_human_review
+
+    bundle_sha, _ = store_context_bundle(
+        ai, ContextBundle(
+            query="Synthetic legacy Knowledge review",
+            created_at="2026-10-21T00:00:00Z", sources=(),
+        ),
+    )
+    submitted = submit_job(ai, context_sha256=bundle_sha, recipe=_recipe())
+    legacy_id = submitted["generation_id"]
+    for stage in ("generation", "validation", "evaluation_context", "evaluation"):
+        attempt = start_attempt(ai, legacy_id, stage)
+        complete_attempt(
+            ai, attempt["attempt_id"], outcome="succeeded",
+            output=_stage_output(stage),
+        )
+    assert job_status(ai, submitted["job_id"])["current_generation"]["state"] == (
+        "awaiting_human_review"
+    )
+    _write_v2_review(ai, "reject")
+    # With max_items=1, an earlier pending External Source must not
+    # perpetually occupy the entire legacy reconciliation page.
+    result = reconcile_post_review(ai, max_items=1)
+    assert result["human_rejected"] == 1
+    assert job_status(ai, submitted["job_id"])["current_generation"]["state"] == (
+        "human_rejected"
+    )
+    assert job_status(ai, staged["job_id"])["current_generation"]["state"] == (
+        "awaiting_human_review"
+    )
