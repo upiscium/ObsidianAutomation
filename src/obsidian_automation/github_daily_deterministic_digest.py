@@ -26,7 +26,7 @@ MAX_ENTITIES = 10000
 MAX_RENDER_BYTES = 2 * 1024 * 1024
 MAX_RECORD_BYTES = 4 * 1024 * 1024
 _SHA = re.compile(r"^[a-f0-9]{64}$")
-_COMMIT = re.compile(r"^(feat|fix|test|refactor|perf|docs|chore|style)(?:\([^\r\n)]*\))?[!: ]", re.I)
+_COMMIT = re.compile(r"^(feat|fix|test|refactor|perf|docs|chore|style)(?:\([^\r\n)]*\))?!?:", re.I)
 _ROUTINE_COMMIT = re.compile(
     r"(?:\b(?:whitespace|formatting|typo|generated snapshot|snapshot formatting)\b|"
     r"(?:空白|書式|整形|誤字))", re.I)
@@ -81,12 +81,22 @@ def _human_comment(event: Mapping[str, object]) -> str:
     actor=event.get("actor")
     if entity._is_bot(event) or type(actor) not in (str,type(None)):
         return ""
+    raw=event.get("body")
     text=_source_text(event,"body").strip()
+    if type(raw) is dict and raw.get("truncated") is True:
+        # The short head is proof only that an original long comment exists,
+        # NOT sufficient evidence that an apparent "PASS" is the final state.
+        return "長文の進捗コメントの抜粋が記録されました。"
     if not text or _ROUTINE_MESSAGE.fullmatch(text.strip(" 。.!！　")):
         return ""
-    # Whitespace-only and bot chatter are not a meaningful progress signal.
-    if len(text)<12 or len(text.encode("utf-8"))>32768:
+    # Accept concise, *specific* original reports such as "GPU PASS";
+    # disallow generic one-word chatter, which is not a progress milestone.
+    low=text.casefold()
+    if len(text)<12 and not any(word in low for word in (
+            "gpu","pass","検証","修正","fix","承認","稼働","移行")):
         return ""
+    if len(text.encode("utf-8"))>32768:
+        return "長文の進捗コメントの抜粋が記録されました。"
     return text
 
 
@@ -101,8 +111,11 @@ def _commit_type(event: Mapping[str, object]) -> str | None:
         return None
     if category=="test" and _ROUTINE_COMMIT.search(subject):
         return None
-    if category=="unknown" and len(subject)<12:
-        return None
+    if category=="unknown":
+        if (len(subject)<12 or _ROUTINE_COMMIT.search(subject)
+                or re.search(r"\b(?:readme|documentation|docs?|format|"
+                             r"whitespace|typos?)\b",subject,re.I)):
+            return None
     return category
 
 
@@ -255,7 +268,7 @@ def build_digest_from_bundle(bundle: EvidenceBundle, *,
         substantive=[]
         for row in events:
             if row["kind"] not in ("issue_comment","pull_request_comment",
-                                  "pull_request_review_comment"):
+                                  "pull_request_review_comment","pull_request_review"):
                 continue
             text=_human_comment(row)
             if text:
@@ -294,8 +307,10 @@ def build_digest_from_bundle(bundle: EvidenceBundle, *,
                 label="修正コミットが記録されました。"
             elif "feat" in categories or "fix" in categories:
                 label="実装・修正に関するコミットが記録されました。"
+            elif categories=={"unknown"}:
+                label="コミットが記録されました（変更内容はGitHubで確認）。"
             else:
-                label="コード変更のコミットが記録されました。"
+                label="コミットが記録されました（変更内容はGitHubで確認）。"
             add(label,[r for _,r in commits])
         # Two distinct source-reported categories may help reconstruct an
         # experiment/decision, but never promote the report into a true GA state.
@@ -310,6 +325,10 @@ def build_digest_from_bundle(bundle: EvidenceBundle, *,
             # Preserve at most two types while leaving room for verified merge.
             reserved=1 if merges else 0
             for label in ordered:
+                if label=="進捗コメントが記録されました。" and phrases:
+                    # Generic chat should not consume a third line after
+                    # concrete GPU/test/decision updates were already found.
+                    continue
                 if label in selected and len(phrases)<3-reserved:
                     add(label,[selected[label]])
         if not merges:

@@ -82,3 +82,26 @@ private preview artifacts (actual source text is NOT published on GitHub):
 DigestとC1a/C0のsource censusは再照合していますが、**稼働中LXCの
 実Collector UID/GID・実Writer/Timerを通した本番受け入れではありません**。
 後続の本番ゲートはこの隔離試験と区別して実施してください。
+
+
+## 独立Correctnessレビューの修正結果
+
+初回独立ソースレビューで次の汎用P2負例が検出され、特定PR番号を
+条件分岐に使わず修正しました。
+
+1. `pull_request_review` の `COMMENTED` 本文に重要な進捗が
+   あっても、承認・変更要求の型でないという理由でIssue/PR全体が
+   消える → 本文が実質的なら他の人間コメント同様に検出。
+2. Collectorが長文の本文を切り詰めた、または`GPU PASS`のような
+   短い具体的報告は落ちる → 前者は**「長文コメントがあった」**
+   という中立表現、後者は報告内容として扱う。切り詰められた
+   本文の不完全な主張を補完・断定しない。
+3. `Update README documentation`のようなConvention未使用の
+   コミットが誤って**コード変更**になる → `feat(...):`など
+   厳密なConventional Commitのみ変更種別を認定。書式/READMEのみの
+   変更を除外し、種類不明でも実質的な内容は
+   「コミットが記録されました（変更内容はGitHubで確認）」とする。
+
+元イベントはどの場合も削除せず、検査可能な私有記録へ残します。
+修正後のテストは元のIssue/PR・source CAS・section-only Writer
+previewを含めた複数の別Project/番号の回帰で再検証します。

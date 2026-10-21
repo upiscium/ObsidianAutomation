@@ -274,3 +274,58 @@ def test_same_comment_can_report_test_evidence_and_separate_migration_decision()
     assert "方針・承認に関する更新が記録されました。" in doc.items[0]["sentences"]
     assert doc.items[0]["evidence_ids"]==[item.evidence_id]
     assert doc.report()["publication_authorized"] is False
+
+
+
+def test_commented_pr_review_with_substantive_body_is_not_dropped():
+    doc=run(event("pull_request_review",991,offset=12,state="COMMENTED",
+                  body="Actual GPU acceptance failed; rollback remains required."))
+    assert len(doc.items)==1
+    assert doc.items[0]["entity"]["number"]==991
+    assert "進捗コメント" in doc.render() or "GPU検証" in doc.render()
+    assert "PRがマージ" not in doc.render()
+
+
+def test_short_source_report_gpu_pass_is_not_silently_discarded():
+    doc=run(event("issue_comment",814,body="GPU PASS",offset=8))
+    assert len(doc.items)==1
+    assert doc.items[0]["sentences"]==["GPU検証に関する結果が報告されました。"]
+
+
+def test_truncated_original_comment_emits_neutral_report_not_false_pass():
+    ev=event("issue_comment",718,body="GPU PASS anticipated later. "+("X"*8500),offset=9)
+    assert ev.body.truncated is True
+    doc=run(ev)
+    assert len(doc.items)==1
+    assert "進捗コメント" in doc.render()
+    assert "GPU検証" not in doc.render()
+    assert "PASS" not in doc.render()
+
+
+def test_unknown_commit_is_neutral_not_asserted_as_code():
+    ev=commit("Update synchronization state diagrams and notes",num=302)
+    doc=run(ev)
+    assert len(doc.items)==1
+    assert "コミットが記録されました" in doc.render()
+    assert "コード変更" not in doc.render()
+
+
+@pytest.mark.parametrize("subject",["Update README documentation","Adjust whitespace",
+                                    "Fix documentation typos", "Format docs only"])
+def test_unknown_documentation_commits_not_mistaken_for_code_changes(subject):
+    doc=run(commit(subject,num=735))
+    assert doc.items==()
+
+
+
+def test_generic_chat_does_not_become_third_sentence_after_specific_updates():
+    doc=run(
+        event("issue_comment",170,body="Actual GPU acceptance PASS on deneb.",offset=3),
+        event("issue_comment",170,body="Migration approved with rollback path.",offset=8),
+        event("issue_comment",170,body="A long explanatory commentary about no further changes.",offset=11),
+    )
+    assert len(doc.items)==1
+    assert doc.items[0]["sentences"]==[
+        "GPU検証に関する結果が報告されました。",
+        "方針・承認に関する更新が記録されました。",
+    ]
