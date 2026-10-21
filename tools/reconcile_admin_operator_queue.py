@@ -133,6 +133,34 @@ def qualify_root_entrypoint() -> None:
     root_file(path,bound=MAX_FILE_BYTES)
 
 
+def qualify_package_entry(entry: Path) -> None:
+    """Check the whole installed package for unsafe import shadow artifacts.
+
+    The manifest intentionally pins the privileged *subset* of this normal
+    production package, rather than all unrelated application modules.
+    Those unrelated .py files are permitted only as root-owned, non-writable,
+    single-link regular files; the privileged subset is separately SHA-pinned.
+    """
+    try:
+        info=entry.lstat()
+    except OSError:
+        raise ReconcileBlocked("unreviewed_package_entry") from None
+    need(not stat.S_ISLNK(info.st_mode),
+         "unreviewed_import_symlink")
+    need(info.st_uid==0
+         and (stat.S_IMODE(info.st_mode)&0o022)==0,
+         "unsafe_package_entry_ownership")
+    if stat.S_ISREG(info.st_mode):
+        need(info.st_nlink==1,"unreviewed_package_hardlink")
+        need(entry.suffix not in (".pyc",".pyo",".so",".pyd"),
+             "unreviewed_executable_import_artifact")
+    elif stat.S_ISDIR(info.st_mode):
+        need(entry.name=="__pycache__",
+             "unexpected_privileged_import_directory")
+    else:
+        raise ReconcileBlocked("unexpected_privileged_import_inode")
+
+
 def strict_unchanged_authority() -> dict:
     raw=root_file(AUTHORITY,bound=6500)
     def pairs(value):
@@ -173,22 +201,16 @@ def strict_unchanged_authority() -> dict:
          and digest==EXPECTED_QUEUE_SHA and digest!=PREVIOUS_MODULE_SHA,
          "reviewed_reconcile_queue_not_installed")
     pinned_dir=SOURCE_PACKAGE/"obsidian_automation"
-    # Python extensions or direct bytecode take precedence over .py. The
-    # source-only interpreter does not read __pycache__; reject all direct
-    # native/bytecode shadows before importing any privileged package code.
+    # On the deployed host this package contains 14 authority-pinned modules
+    # and 88 unrelated root-owned application .py files. They are NOT part
+    # of the privileged import closure. Their mere presence must not block
+    # recovery; keep unsafe symlinks/writable entries/native/bytecode shadows
+    # fail-closed, and fully verify every module in the pinned import closure.
     for entry in pinned_dir.iterdir():
-        need(not entry.is_symlink(),"unreviewed_import_symlink")
-        if entry.is_file() and entry.suffix in (".pyc",".pyo",".so",".pyd"):
-            raise ReconcileBlocked("unreviewed_executable_import_artifact")
-        if entry.is_file() and entry.suffix==".py":
-            need(entry.name in doc["module_sha256"],
-                 "unexpected_privileged_source")
+        qualify_package_entry(entry)
     for name,want in doc["module_sha256"].items():
         need(sha(root_file(pinned_dir/name,bound=256000))==want,
              "privileged_module_drift")
-    for entry in pinned_dir.iterdir():
-        if entry.is_dir():
-            need(entry.name=="__pycache__","unexpected_privileged_import_directory")
     for name,want in doc["unit_sha256"].items():
         need(sha(root_file(Path("/etc/systemd/system")/name,bound=16000))==want,
              "managed_unit_drift")
