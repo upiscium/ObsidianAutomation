@@ -95,3 +95,29 @@ grounds. This work is *not* a general contradiction-detection system.
   gate, independent review, CI and user approval. No main merge,
   installed model-profile switch, Writer/Timer, LXC, Vault or Nextcloud
   action is authorized here.
+
+
+## Independent source-security review correction (2026-10-21)
+
+An independent read-only reviewer found two additional, concrete P2
+source-presentation cases: an HTML `<pre><code>` example carrying a
+fake positive GA-site update, and a **multi-paragraph** unfenced sample
+whose paragraph separator previously ended the entire site's
+illustrative-status suppression. Both could supersede a real older
+no-GA-live caveat *inside the optional feature-first hint*, despite
+unchanged original evidence.
+
+The bounded status-line lexer now excludes HTML code/pre blocks
+(including nested HTML tags and same-line open/close), and requires an
+explicit new actual-status/Markdown heading to treat a later same-field
+site transition as authoritative after an illustrative example's
+blank paragraph. It retains existing independent worker-control
+updates after appropriate boundaries and leaves all original C4/CAS
+source text available. A previously positive synthetic example case
+was intentionally tightened to **deny** an unlabelled post-example GA
+assertion; an explicit `## Actual status:` positive control remains
+eligible. No source text, Writer authority, or site state is rewritten.
+
+A read-only source review, current exact-head CI, and independent Linux
+regressions must be repeated on this corrective commit before any
+technical merge decision. Semantic quality remains **not accepted**.

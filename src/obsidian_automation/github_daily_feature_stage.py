@@ -129,6 +129,9 @@ def _status_source_lines(value: dict, ref: int, field: str):
     active_unfenced_example=False
     illustrative_payload_seen=False
     active_html_comment=False
+    active_html_code_depth=0
+    site_after_example_blank=False
+    html_code_tag=re.compile(r"</?(?:pre|code)\b[^>]*>",re.IGNORECASE)
     # Fence closers require matching marker family, equal-or-longer run,
     # and no trailing language/info string (a nested opener is not a closer).
     fence_marker_pattern=re.compile(r"^(" + chr(96) + r"{3,}|~{3,})")
@@ -182,6 +185,30 @@ def _status_source_lines(value: dict, ref: int, field: str):
             active_fence=(marker_type,marker_length)
             cursor+=len(line)
             continue
+        html_code_tags=list(html_code_tag.finditer(line))
+        # A standalone HTML comment starting before a literal <pre>/<code>
+        # tag is not an HTML code block. Conversely, comments inside an
+        # already-open <pre> block are inert example text.
+        if ("<!--" in line and active_html_code_depth==0
+                and (not html_code_tags or
+                     line.index("<!--") < html_code_tags[0].start())):
+            skipped_offsets.add(cursor)
+            active_html_comment=_html_comment_open_after_line(
+                line, initially_open=False)
+            cursor+=len(line)
+            continue
+        if active_html_code_depth or html_code_tags:
+            skipped_offsets.add(cursor)
+            if (active_unfenced_example and active_html_code_depth
+                    and not html_code_tags and stripped.strip()):
+                illustrative_payload_seen=True
+            for tag in html_code_tags:
+                if tag.group(0).startswith("</"):
+                    active_html_code_depth=max(0,active_html_code_depth-1)
+                else:
+                    active_html_code_depth+=1
+            cursor+=len(line)
+            continue
         if "<!--" in line:
             skipped_offsets.add(cursor)
             active_html_comment=_html_comment_open_after_line(
@@ -207,9 +234,13 @@ def _status_source_lines(value: dict, ref: int, field: str):
             if illustrative_payload_seen:
                 active_unfenced_example=False
                 illustrative_payload_seen=False
+                # A blank alone does not authenticate a positive GA/site
+                # transition under the same illustrative heading.
+                site_after_example_blank=True
         elif illustrative or (label.endswith(":") and label not in operational_heading):
             active_unfenced_example=True
             illustrative_payload_seen=False
+            site_after_example_blank=False
         elif label in operational_heading:
             # A purported "Actual status" header directly after a sample
             # heading (with no sample payload yet) may itself be part of the
@@ -219,11 +250,20 @@ def _status_source_lines(value: dict, ref: int, field: str):
             if not active_unfenced_example or illustrative_payload_seen:
                 active_unfenced_example=False
                 illustrative_payload_seen=False
+                site_after_example_blank=False
         elif active_unfenced_example and heading is None:
             illustrative_payload_seen=True
+        elif heading is not None and not active_unfenced_example:
+            # A distinct explicit Markdown section is a real source boundary.
+            site_after_example_blank=False
         # An arbitrary Markdown heading within an unfenced example is NOT
-        # a boundary. Only a post-payload blank or exact status label ends it.
-        if active_unfenced_example:
+        # a boundary. A blank ends generic example text, but a subsequent
+        # GA/site transition needs an explicit heading to be authoritative.
+        if active_unfenced_example or (
+                site_after_example_blank and (
+                    "site" in _positive_status_scopes(line)
+                    or _SITE_NOT_PROMOTED.search(line)
+                    or "本番" in line)):
             skipped_offsets.add(cursor)
         cursor+=len(line)
     if cursor!=len(text):
