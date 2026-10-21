@@ -78,10 +78,50 @@ def test_generic_prompt_recall_and_temporal_qualifiers_are_versioned():
     prompt=runtime.RECENT_SOURCE_PROMPT
     assert "pull_request_commit" in prompt
     assert "test(...)" in prompt
-    assert "テスト専用の変更が記録された" in prompt
+    assert "具体的な検証対象" in prompt
+    assert "単なる test(...)" in prompt
+    assert "既存fixture・snapshotの空白調整" in prompt
+    assert "新しい検証ケース" in prompt
+    assert "具体性が不足する場合も空配列が適切" in prompt
     assert "製品機能の完成" in prompt
     assert "source_ref" in prompt
     assert "当日" in prompt and "push" in prompt
     assert "本番反映" in prompt
     assert "重要な元イベントも" in prompt
     assert runtime.RECENT_SOURCE_CONTRACT=="c4-sentences-recent-source-v3"
+
+
+
+@pytest.mark.parametrize("repo,number,message,description", [
+    ("synthetic/ALTAIR",31,"test: format snapshot fixture whitespace",
+     "Only fixture whitespace was reformatted; there are no new tests or behavior."),
+    ("synthetic/VEGA",807,"test(runtime): generated sample updates",
+     "Generated snapshots were regenerated without expanding verification coverage."),
+    ("synthetic/SIRIUS",5001,"test: maintenance","No concrete new validation."),
+])
+def test_routine_test_only_changes_can_abstain_with_original_events_pending(
+    repo: str, number: int, message: str, description: str,
+) -> None:
+    # Pure source-contract control: no fabricated publication candidate on
+    # abstention, and the original GitHub Evidence is never discarded.
+    ctx = {
+        "stage":"github_daily_narrative_context_v4",
+        "entity":{"repository":repo,"entity_type":"pull_request","number":number},
+        "date":"2026-10-18","publication_authorized":False,
+        "sources":[
+            event(0,"pull_request_commit",message=message,
+                  source_status="content_addressed_commit_not_push_time"),
+            event(1,"pull_request_comment",body=description),
+        ],
+    }
+    saved=deepcopy(ctx["sources"])
+    shown=source_view.build_recent_c5_source_view(ctx)
+    assert shown.shown_source_refs == (0,1)
+    raw=runtime._json({"sentences":[]})
+    admitted=json.loads(runtime._admit_editorial(
+        ctx,raw,runtime.RECENT_SOURCE_CONTRACT,
+    ))
+    assert admitted["sentences"]==[]
+    assert admitted["pending_source_refs"]==[0,1]
+    assert ctx["publication_authorized"] is False
+    assert ctx["sources"]==saved
