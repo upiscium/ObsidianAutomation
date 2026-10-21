@@ -42,12 +42,8 @@ from .chatgpt_external_job import (
     load_external_admission_recipe,
 )
 from .evaluation_artifact import (
-    build_evaluation_context,
     build_evaluation_record,
-    create_evaluation_request,
-    load_evaluation_context,
     load_evaluation_record,
-    store_evaluation_context,
     store_evaluation_record,
 )
 from .evaluator_contract import (
@@ -57,19 +53,23 @@ from .evaluator_contract import (
     prompt_template_sha256 as evaluator_prompt_sha256,
 )
 from .generation_artifact import load_generation_record
-from .knowledge_index import build_knowledge_index, store_knowledge_index
 from .knowledge_validator import validate_proposal
 from .pre_review_job import (
     _STAGE_PREVIOUS,
     _STAGE_START,
     PreReviewJobError,
     _attempt_id,
+    _awaiting_review_count_conn,
     _complete_source_bound_external_attempt,
     _connect_rw,
     _load_stage_output_conn,
     stage_output,
 )
-from .production_io import ProductionIOError, mirror_read_lock
+from .pre_review_shared_artifacts import (
+    build_bound_fresh_retrieval,
+    create_bound_evaluation_request,
+)
+from .production_io import ProductionIOError
 
 EXTERNAL_STAGES = (
     "external_generation",
@@ -232,16 +232,11 @@ def _claim_external_stage(
                     or current["recipe_sha256"] != item["recipe_sha256"]
                 ):
                     raise ExternalWorkerError("external_stage_binding_changed")
-                if stage == EXTERNAL_STAGES[0]:
-                    count = conn.execute(
-                        "SELECT COUNT(*) AS n FROM generations g "
-                        "WHERE g.state='awaiting_human_review' AND "
-                        "NOT EXISTS (SELECT 1 FROM generations newer "
-                        "WHERE newer.job_id=g.job_id AND "
-                        "newer.generation_index>g.generation_index)"
-                    ).fetchone()["n"]
-                    if count >= max_awaiting_review:
-                        raise ExternalWorkerError("external_review_backpressure")
+                if (
+                    stage == EXTERNAL_STAGES[0]
+                    and _awaiting_review_count_conn(conn) >= max_awaiting_review
+                ):
+                    raise ExternalWorkerError("external_review_backpressure")
                 previous = _STAGE_PREVIOUS[stage]
                 if (
                     previous is not None
@@ -568,12 +563,11 @@ def run_external_synthetic_worker_once(
                 )
                 if result["result"] != "accepted":
                     raise ExternalWorkerError("external_structural_validation_rejected")
-                req_sha, _, req = create_evaluation_request(
+                req_sha = create_bound_evaluation_request(
                     ai_root,
-                    str(previous["proposal_sha256"]),
+                    proposal_sha256=str(previous["proposal_sha256"]),
+                    mutation_sha256=str(result["mutation_sha256"]),
                 )
-                if req.mutation_sha256 != result["mutation_sha256"]:
-                    raise ExternalWorkerError("external_validation_request_mismatch")
                 outputs = {
                     **previous,
                     "mutation_sha256": str(result["mutation_sha256"]),
@@ -581,24 +575,16 @@ def run_external_synthetic_worker_once(
                 }
             elif stage == "external_evaluation_context":
                 assert previous is not None
-                # Real locked Vault read and fresh Knowledge index/retrieval.
-                with mirror_read_lock(ai_root):
-                    index = build_knowledge_index(vault_root)
-                index_sha, _ = store_knowledge_index(ai_root, index)
-                ec = build_evaluation_context(
+                # Same fresh Knowledge retrieval as the legacy Reader Worker.
+                # External Source admission/provenance stays separately gated.
+                index_sha, ec_sha = build_bound_fresh_retrieval(
                     ai_root,
                     vault_root,
+                    proposal_sha256=str(previous["proposal_sha256"]),
+                    mutation_sha256=str(previous["mutation_sha256"]),
                     request_sha256=str(previous["request_sha256"]),
-                    index_sha256=index_sha,
                     top_k=5,
                 )
-                ec_sha, _ = store_evaluation_context(ai_root, ec)
-                loaded = load_evaluation_context(ai_root, ec_sha)
-                if (
-                    loaded.proposal_sha256 != previous["proposal_sha256"]
-                    or loaded.mutation_sha256 != previous["mutation_sha256"]
-                ):
-                    raise ExternalWorkerError("external_fresh_retrieval_invalid")
                 outputs = {
                     **previous,
                     "index_sha256": index_sha,

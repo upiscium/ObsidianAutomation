@@ -1761,22 +1761,31 @@ def retry_generation(ai_root: Path, generation_id: str) -> dict[str, object]:
     }
 
 
+def _awaiting_review_count_conn(conn: sqlite3.Connection) -> int:
+    """Shared backlog authority for Vault and External job reservations.
+
+    Count only each Job's latest Generation. The caller holds a SQLite
+    transaction when using the value as a Stage-admission backpressure gate.
+    """
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM generations g
+        WHERE g.state = 'awaiting_human_review'
+          AND NOT EXISTS (
+            SELECT 1 FROM generations newer
+            WHERE newer.job_id = g.job_id
+              AND newer.generation_index > g.generation_index
+          )
+        """
+    ).fetchone()
+    return int(row["count"])
+
+
 def awaiting_human_review_count(ai_root: Path) -> int:
     conn = _connect_ro(ai_root)
     try:
-        row = conn.execute(
-            """
-            SELECT COUNT(*) AS count
-            FROM generations g
-            WHERE g.state = 'awaiting_human_review'
-              AND NOT EXISTS (
-                SELECT 1 FROM generations newer
-                WHERE newer.job_id = g.job_id
-                  AND newer.generation_index > g.generation_index
-              )
-            """
-        ).fetchone()
-        return int(row["count"])
+        return _awaiting_review_count_conn(conn)
     finally:
         conn.close()
 
@@ -1848,19 +1857,7 @@ def claim_next_attempt(
             _recover_running_stage_attempts(conn, stage=stage_name, now=now)
 
         if stage_name == "generation":
-            count_row = conn.execute(
-                """
-                SELECT COUNT(*) AS count
-                FROM generations g
-                WHERE g.state = 'awaiting_human_review'
-                  AND NOT EXISTS (
-                    SELECT 1 FROM generations newer
-                    WHERE newer.job_id = g.job_id
-                      AND newer.generation_index > g.generation_index
-                  )
-                """
-            ).fetchone()
-            if int(count_row["count"]) >= max_awaiting_review:
+            if _awaiting_review_count_conn(conn) >= max_awaiting_review:
                 conn.commit()
                 return None
 

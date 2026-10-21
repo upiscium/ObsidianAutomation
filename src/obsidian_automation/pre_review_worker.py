@@ -4,20 +4,19 @@ import argparse
 import json
 import os
 import sys
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Mapping, Sequence
 from urllib.parse import urlsplit
 
 from .artifact_lifecycle import ArtifactLifecycleError
 from .evaluation_artifact import (
-    build_evaluation_context,
-    create_evaluation_request,
-    load_evaluation_context,
+    load_evaluation_context,  # noqa: F401 - historic worker test/provider adapter
     load_evaluation_record,
-    store_evaluation_context,
 )
 from .evaluator_contract import (
     EVALUATOR_PROMPT_TEMPLATE_VERSION,
+)
+from .evaluator_contract import (
     prompt_template_sha256 as evaluator_prompt_sha256,
 )
 from .generation_artifact import (
@@ -25,28 +24,33 @@ from .generation_artifact import (
     load_generation_record,
     store_generation_record,
 )
+from .generator_contract import (
+    PROMPT_TEMPLATE_VERSION,
+)
+from .generator_contract import (
+    prompt_template_sha256 as generator_prompt_sha256,
+)
 from .human_projection import (
     emit_evaluation_and_review_projections,
     emit_generation_projection,
     emit_validation_projection,
 )
-from .generator_contract import (
-    PROMPT_TEMPLATE_VERSION,
-    prompt_template_sha256 as generator_prompt_sha256,
-)
-from .knowledge_index import build_knowledge_index, store_knowledge_index
+
+# Compatibility: existing synthetic E2E fixtures import these legacy module
+# bindings. The actual Worker stage now calls pre_review_shared_artifacts.
+from .knowledge_index import build_knowledge_index, store_knowledge_index  # noqa: F401
 from .knowledge_validator import validate_proposal
+from .ollama_evaluator import evaluate_knowledge_note_with_ollama
+from .ollama_generator import (
+    OllamaProviderError,
+    generate_knowledge_note_with_ollama,
+)
 from .openai_compatible import (
     DEFAULT_TIMEOUT_SECONDS,
     OpenAICompatibleProviderError,
 )
 from .openai_evaluator import evaluate_knowledge_note_with_openai_compatible
 from .openai_generator import generate_knowledge_note_with_openai_compatible
-from .ollama_evaluator import evaluate_knowledge_note_with_ollama
-from .ollama_generator import (
-    OllamaProviderError,
-    generate_knowledge_note_with_ollama,
-)
 from .pre_review_job import (
     PreReviewJobError,
     RecipeComponent,
@@ -56,20 +60,27 @@ from .pre_review_job import (
     load_recipe,
     stage_output,
 )
-from .production_io import ProductionIOError, mirror_read_lock
+from .pre_review_shared_artifacts import (
+    build_bound_fresh_retrieval,
+    create_bound_evaluation_request,
+)
+from .production_io import ProductionIOError
 from .semantic_objective import (
     DEEP_KNOWLEDGE,
-    PROMPT_VERSION as SEMANTIC_OBJECTIVE_PROMPT_VERSION,
     NoCandidate,
     load_objective_candidate,
-    prompt_template_sha256 as semantic_objective_prompt_sha256,
     store_deep_knowledge_proposal,
+)
+from .semantic_objective import (
+    PROMPT_VERSION as SEMANTIC_OBJECTIVE_PROMPT_VERSION,
+)
+from .semantic_objective import (
+    prompt_template_sha256 as semantic_objective_prompt_sha256,
 )
 from .semantic_objective_generation import (
     generate_semantic_objective_with_ollama,
     generate_semantic_objective_with_openai_compatible,
 )
-
 
 DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_MAX_AWAITING_REVIEW = 8
@@ -531,12 +542,9 @@ def run_validator_worker(
         return _block(ai_root, work, reason_code="validation_result_binding_error")
 
     try:
-        request_sha, _path, request = create_evaluation_request(ai_root, proposal_sha)
-        if (
-            request.proposal_sha256 != proposal_sha
-            or request.mutation_sha256 != mutation_sha
-        ):
-            raise PreReviewJobError("evaluation request does not match validation")
+        request_sha = create_bound_evaluation_request(
+            ai_root, proposal_sha256=proposal_sha, mutation_sha256=mutation_sha,
+        )
     except (ArtifactLifecycleError, PreReviewJobError, OSError):
         return _block(ai_root, work, reason_code="evaluation_request_binding_error")
 
@@ -592,24 +600,13 @@ def run_reader_worker(
         return _block(ai_root, work, reason_code="missing_validation_output")
 
     try:
-        with mirror_read_lock(ai_root):
-            index = build_knowledge_index(vault_root)
-        index_sha, _ = store_knowledge_index(ai_root, index)
-        context = build_evaluation_context(
-            ai_root,
-            vault_root,
+        index_sha, context_sha = build_bound_fresh_retrieval(
+            ai_root, vault_root,
+            proposal_sha256=str(selected["proposal_sha256"]),
+            mutation_sha256=str(selected["mutation_sha256"]),
             request_sha256=str(selected["request_sha256"]),
-            index_sha256=index_sha,
             top_k=recipe.evaluation_context_top_k,
         )
-        context_sha, _ = store_evaluation_context(ai_root, context)
-        loaded = load_evaluation_context(ai_root, context_sha)
-        if (
-            loaded.proposal_sha256 != selected["proposal_sha256"]
-            or loaded.mutation_sha256 != selected["mutation_sha256"]
-            or loaded.request_sha256 != selected["request_sha256"]
-        ):
-            raise PreReviewJobError("evaluation context binding mismatch")
     except (ArtifactLifecycleError, ProductionIOError, PreReviewJobError, OSError):
         return _retry(ai_root, work, reason_code="reader_view_or_binding_error")
 
