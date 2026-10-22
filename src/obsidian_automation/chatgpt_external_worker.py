@@ -55,8 +55,13 @@ from .evaluation_artifact import (
 )
 from .evaluator_contract import (
     EXTERNAL_EVALUATOR_PROMPT_VERSION,
-    EvaluatorOutput,
+    EvaluatorPrompt,
+    aggregate_evaluator_outputs,
+    bind_candidate_output,
+    bind_consistency_proposals,
     external_evaluator_prompt_sha256,
+    finalize_consistency_candidate,
+    parse_dimension_evaluator_output,
     render_evaluator_prompts,
 )
 from .generation_artifact import load_generation_record
@@ -88,6 +93,24 @@ REVIEW_PROJECTION_VERSION = "chatgpt-external-pending-review-v0"
 EXTERNAL_EVALUATION_FAKE_PROVIDER = "synthetic-fake-only"
 MAX_FAKE_OUTPUT_BYTES = 64 * 1024
 MAX_AWAITING_REVIEW = 8
+
+
+def _synthetic_evaluator_wire(prompt: EvaluatorPrompt) -> bytes:
+    """Fixed fake model response, not a verdict about the supplied Source."""
+    assessments = {
+        "groundedness": "pass",  # Deliberately overconfident; clamp below.
+        "knowledge_quality": "unknown",
+        "epistemic_status": "pass",
+        "redundancy": "none",
+        "consistency": "unknown",
+    }
+    payload: dict[str, object] = {
+        "assessment": assessments[prompt.dimension],
+        "findings": [],
+    }
+    if prompt.dimension == "consistency":
+        payload["conflicts"] = []
+    return _canonical_json_bytes(payload)
 
 
 class ExternalWorkerError(ValueError):
@@ -631,21 +654,53 @@ def run_external_synthetic_worker_once(
                     )
                 ):
                     raise ExternalWorkerError("external_eval_prompt_contract_invalid")
-                # A synthetic Fake model cannot upgrade conversational
-                # assertions to verified facts. Run the SAME deterministic
-                # Evaluator aggregation/policy with one deliberately
-                # overconfident PASS, then clamp unsupported Source certainty
-                # to UNKNOWN/manual_review. No provider/transport is called.
+                # Fake schema wire passes through the original parser, pairwise
+                # binding and aggregation. No provider/transport is called.
+                generation_outputs = {}
+                redundancy_pairs = []
+                consistency_pairs = []
+                candidates = {
+                    c.path: c for c in current_eval_context.candidates
+                }
+                for prompt in prepared_prompts:
+                    parsed = parse_dimension_evaluator_output(
+                        _synthetic_evaluator_wire(prompt),
+                        dimension=prompt.dimension,
+                    )
+                    if prompt.candidate_path is None:
+                        generation_outputs[prompt.dimension] = parsed
+                    elif prompt.pass_kind == "redundancy":
+                        redundancy_pairs.append(bind_candidate_output(
+                            parsed, candidate_path=prompt.candidate_path,
+                        ))
+                    elif prompt.pass_kind == "consistency_proposer":
+                        candidate = candidates[prompt.candidate_path]
+                        bound = bind_consistency_proposals(
+                            parsed,
+                            candidate_path=prompt.candidate_path,
+                            proposal_content=proposal_content,
+                            candidate_content=candidate.content,
+                        )
+                        # Fake unknown has no conflict proposals to verify.
+                        consistency_pairs.append(finalize_consistency_candidate(
+                            bound, (),
+                        ))
+                    else:
+                        raise ExternalWorkerError("external_eval_pass_invalid")
+                if set(generation_outputs) != {
+                    "groundedness", "knowledge_quality", "epistemic_status",
+                }:
+                    raise ExternalWorkerError("external_eval_pass_invalid")
+                aggregated = aggregate_evaluator_outputs(
+                    groundedness=generation_outputs["groundedness"],
+                    knowledge_quality=generation_outputs["knowledge_quality"],
+                    epistemic_status=generation_outputs["epistemic_status"],
+                    redundancy_pairs=redundancy_pairs,
+                    consistency_pairs=consistency_pairs,
+                )
+                # Fake PASS cannot establish Source truth or human approval.
                 synthetic_assessment = conservative_external_assessment(
-                    EvaluatorOutput(
-                        groundedness="pass",
-                        knowledge_quality="unknown",
-                        epistemic_status="pass",
-                        redundancy="none",
-                        consistency="unknown",
-                        findings=(),
-                    ),
-                    external_evidence,
+                    aggregated, external_evidence,
                 )
                 if (
                     synthetic_assessment.groundedness != "unknown"

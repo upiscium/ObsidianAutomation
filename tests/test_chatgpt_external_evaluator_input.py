@@ -33,6 +33,103 @@ from obsidian_automation.evaluator_contract import (
 from obsidian_automation.pre_review_job import stage_output
 
 
+def test_worker_routes_synthetic_outputs_through_native_aggregation(tmp_path, monkeypatch):
+    import obsidian_automation.chatgpt_external_worker as worker
+    from obsidian_automation.evaluation_artifact import load_evaluation_record
+    from obsidian_automation.evaluator_contract import aggregate_evaluator_outputs
+
+    ai, private, preview, staged, vault = setup(tmp_path)
+    calls = []
+
+    def observing_aggregate(**outputs):
+        result = aggregate_evaluator_outputs(**outputs)
+        calls.append(result)
+        return result
+
+    monkeypatch.setattr(worker, "aggregate_evaluator_outputs", observing_aggregate)
+    completed = run(ai, private, preview, staged, vault)
+    assert completed.awaiting_human_review
+    assert len(calls) == 1
+    record = load_evaluation_record(ai, completed.evaluation_sha256)
+    assert record.assessment.knowledge_quality == calls[0].knowledge_quality
+
+
+def test_worker_persists_changed_fake_dimension_and_pairwise_results(tmp_path, monkeypatch):
+    import obsidian_automation.chatgpt_external_worker as worker
+    from obsidian_automation.evaluation_artifact import load_evaluation_record
+
+    ai, private, preview, staged, vault = setup(tmp_path)
+    original = worker._synthetic_evaluator_wire
+    seen = []
+    aggregated = []
+    native = worker.aggregate_evaluator_outputs
+
+    def observing_aggregate(**outputs):
+        result = native(**outputs)
+        aggregated.append(result)
+        return result
+
+    def alternate(prompt):
+        if prompt.dimension == "knowledge_quality":
+            return b'{"assessment":"unknown","findings":[{"detail":"Synthetic reusability unverified"}]}'
+        if prompt.dimension == "redundancy":
+            seen.append(prompt.candidate_path)
+            return b'{"assessment":"possible","findings":[{"detail":"Synthetic overlap"}]}'
+        return original(prompt)
+
+    monkeypatch.setattr(worker, "_synthetic_evaluator_wire", alternate)
+    monkeypatch.setattr(worker, "aggregate_evaluator_outputs", observing_aggregate)
+    completed = run(ai, private, preview, staged, vault)
+    assert completed.awaiting_human_review
+    assert seen  # A real fresh-retrieval candidate was compared pairwise.
+    assert len(aggregated) == 1
+    assert aggregated[0].redundancy == "possible"
+    assert aggregated[0].knowledge_quality == "unknown"
+    assessment = load_evaluation_record(ai, completed.evaluation_sha256).assessment
+    assert assessment.knowledge_quality == "unknown"
+    assert assessment.redundancy == "possible"
+    assert "knowledge_quality: Synthetic reusability unverified" in assessment.findings
+    assert any("redundancy: [11-Knowledge/" in item and "Synthetic overlap" in item
+               for item in assessment.findings)
+    assert assessment.findings[:-1] == aggregated[0].findings
+    assert assessment.groundedness == "unknown"
+    assert assessment.epistemic_status == "unknown"
+    assert assessment.recommendation == "manual_review"
+    assert not completed.human_approval_granted
+    assert not completed.canonical_vault_mutated
+
+
+def test_worker_fake_concern_blocks_instead_of_selecting_review(tmp_path, monkeypatch):
+    import obsidian_automation.chatgpt_external_worker as worker
+
+    ai, private, preview, staged, vault = setup(tmp_path)
+    original = worker._synthetic_evaluator_wire
+    clamp = worker.conservative_external_assessment
+    assessments = []
+
+    def observing_clamp(output, source):
+        result = clamp(output, source)
+        assessments.append(result)
+        return result
+
+    def concerned(prompt):
+        if prompt.dimension == "groundedness":
+            return b'{"assessment":"concern","findings":[{"detail":"Synthetic unsupported result"}]}'
+        return original(prompt)
+
+    monkeypatch.setattr(worker, "_synthetic_evaluator_wire", concerned)
+    monkeypatch.setattr(worker, "conservative_external_assessment", observing_clamp)
+    completed = run(ai, private, preview, staged, vault)
+    assert len(assessments) == 1
+    assert assessments[0].groundedness == "concern"
+    assert assessments[0].recommendation == "do_not_proceed"
+    assert completed.state == "blocked"
+    assert completed.completed_stages == (
+        "external_generation", "external_validation", "external_evaluation_context",
+    )
+    assert stage_output(ai, staged["generation_id"], "external_evaluation") is None
+
+
 def _snapshot(tmp_path):
     ai, private, preview, staged, vault = setup(tmp_path)
     result = run(ai, private, preview, staged, vault)
