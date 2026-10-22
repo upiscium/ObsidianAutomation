@@ -96,6 +96,15 @@ forbidding any replay of that UUID.
 
 ## Two-stage audited commit
 
+The root CLI first checks whether the reserved evidence filename is
+occupied using Queue's no-follow existence predicate. On the first
+invocation it creates the new immutable record; if anything occupies
+that filename (including a symlink, partial write, or malformed record),
+the CLI reads and verifies it instead of recreating or replacing it.
+The broker's private-record reader maps ENOENT to `BrokerRejected`,
+not `FileNotFoundError`; existence must be tested before that reader
+is called.
+
 The root CLI creates one immutable
 `manual-evidence-<UUID>.json` in the protected Queue, containing:
 

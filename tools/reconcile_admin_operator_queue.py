@@ -414,40 +414,45 @@ def main() -> int:
             fd,lock=queue._open()
             try:
                 filename=f"manual-evidence-{UUID}.json"
-                # Never overwrite or reinterpret an existing root-owned
-                # evidence file. _read_private verifies symlinks, length,
-                # owner, mode and duplicate keys, and Queue later verifies
-                # all original-record hashes again before finalization.
-                recorded=read(fd,filename)
-                need(recorded["approval_reference"]==args.approval_reference,
-                     "manual_evidence_reference_mismatch")
-                evidence_boot=previously_recorded_boot(
-                    recorded,boot,
-                    resume_across_reboot=args.resume_across_reboot,
-                )
-            except FileNotFoundError:
-                need(not args.resume_across_reboot,
-                     "reboot_continuation_without_prior_evidence")
-                evidence={
-                    "record_version":1,"request_id":UUID,
-                    "service_id":TARGET_ROLE,"action":"run_once",
-                    "state":"root_verified_manual_evidence",
-                    "decision":"acknowledge_unknown_no_replay",
-                    "approval_reference":args.approval_reference,
-                    "observed_at":datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                    "boot_id":boot,
-                    "operator_inactive":True,
-                    "authority_disabled":True,
-                    "socket_absent":True,
-                    "role_services_idle":True,
-                    "timer_intents_restored":True,
-                    "business_outcome":"unknown_no_success_claim",
-                    "request_sha256":raw_sha(fd,"request-"+UUID+".json"),
-                    "processing_sha256":raw_sha(fd,"processing-"+UUID+".json"),
-                    "result_sha256":raw_sha(fd,"result-"+UUID+".json"),
-                    "active_sha256":raw_sha(fd,"active.json"),
-                }
-                _store(fd,filename,evidence)
+                # _read_private normalizes even a missing file to
+                # BrokerRejected("unsafe_audit_record"); it NEVER exposes
+                # FileNotFoundError. Check the reserved filename with Queue's
+                # no-follow lstat predicate FIRST, so initial evidence can be
+                # safely created. Any existing occupant (including symlink,
+                # malformed/partial file) must be READ and verified, never
+                # replaced or misclassified as absent.
+                from obsidian_automation.admin_operation_queue import _exists
+                if _exists(fd,filename):
+                    recorded=read(fd,filename)
+                    need(recorded["approval_reference"]==args.approval_reference,
+                         "manual_evidence_reference_mismatch")
+                    evidence_boot=previously_recorded_boot(
+                        recorded,boot,
+                        resume_across_reboot=args.resume_across_reboot,
+                    )
+                else:
+                    need(not args.resume_across_reboot,
+                         "reboot_continuation_without_prior_evidence")
+                    evidence={
+                        "record_version":1,"request_id":UUID,
+                        "service_id":TARGET_ROLE,"action":"run_once",
+                        "state":"root_verified_manual_evidence",
+                        "decision":"acknowledge_unknown_no_replay",
+                        "approval_reference":args.approval_reference,
+                        "observed_at":datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        "boot_id":boot,
+                        "operator_inactive":True,
+                        "authority_disabled":True,
+                        "socket_absent":True,
+                        "role_services_idle":True,
+                        "timer_intents_restored":True,
+                        "business_outcome":"unknown_no_success_claim",
+                        "request_sha256":raw_sha(fd,"request-"+UUID+".json"),
+                        "processing_sha256":raw_sha(fd,"processing-"+UUID+".json"),
+                        "result_sha256":raw_sha(fd,"result-"+UUID+".json"),
+                        "active_sha256":raw_sha(fd,"active.json"),
+                    }
+                    _store(fd,filename,evidence)
             finally:
                 queue._close(fd,lock)
             fd,lock=queue._open()
