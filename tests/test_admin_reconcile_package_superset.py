@@ -90,25 +90,51 @@ def test_missing_unreadable_lstat_is_denied_without_side_effects():
         mod.qualify_package_entry(Broken("unreadable.py"))
 
 
+def local_package_imports(tree: ast.AST) -> set[str]:
+    """Conservatively resolve imports that may load local package modules."""
+    imported=set()
+    for node in ast.walk(tree):
+        if isinstance(node,ast.ImportFrom):
+            if node.level and node.module:
+                imported.add(node.module.split(".")[0]+".py")
+            elif node.level and node.module is None:
+                imported.update(alias.name+".py" for alias in node.names)
+            elif node.module=="obsidian_automation":
+                # Python can resolve package-root attributes as submodules.
+                # Treat "*" as an unreviewed candidate and fail the closure.
+                imported.update(alias.name+".py" for alias in node.names)
+            elif node.module and node.module.startswith("obsidian_automation."):
+                imported.add(node.module.split(".")[1]+".py")
+        elif isinstance(node,ast.Import):
+            imported.update(alias.name.split(".")[1]+".py"
+                for alias in node.names
+                if alias.name.startswith("obsidian_automation."))
+    return imported
+
+
+@pytest.mark.parametrize("source,expected",[
+    ("from obsidian_automation import admin_status",{"admin_status.py"}),
+    ("from obsidian_automation import unrelated_feature",
+     {"unrelated_feature.py"}),
+    ("from obsidian_automation import unrelated_feature as alias",
+     {"unrelated_feature.py"}),
+    ("from obsidian_automation import *",{"*.py"}),
+    ("from . import unrelated_feature",{"unrelated_feature.py"}),
+    ("import obsidian_automation.admin_status",{"admin_status.py"}),
+])
+def test_local_package_import_closure_recognizes_root_aliases(source,expected):
+    assert local_package_imports(ast.parse(source))==expected
+    if "unrelated_feature.py" in expected or "*.py" in expected:
+        assert not local_package_imports(ast.parse(source))<=PINNED
+
+
 def test_real_pinned_source_import_graph_has_no_unpinned_local_imports():
     """The 14 source hashes pin the complete privileged Python import graph."""
     root=ROOT/"src/obsidian_automation"
     assert len(PINNED)==14
     for name in sorted(PINNED):
         tree=ast.parse((root/name).read_text(),filename=name)
-        imported=set()
-        for node in ast.walk(tree):
-            if isinstance(node,ast.ImportFrom):
-                if node.level and node.module:
-                    imported.add(node.module.split(".")[0]+".py")
-                elif node.level and node.module is None:
-                    imported.update(alias.name+".py" for alias in node.names)
-                elif node.module and node.module.startswith("obsidian_automation."):
-                    imported.add(node.module.split(".")[1]+".py")
-            elif isinstance(node,ast.Import):
-                imported.update(alias.name.split(".")[1]+".py"
-                    for alias in node.names
-                    if alias.name.startswith("obsidian_automation."))
+        imported=local_package_imports(tree)
         assert imported <= PINNED,(name,sorted(imported-PINNED))
 
 
