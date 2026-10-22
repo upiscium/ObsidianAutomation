@@ -149,6 +149,64 @@ def test_v3_requires_nonzero_external_jobs_and_no_private_ids(tmp_path):
     assert staged["job_id"] not in raw
 
 
+def test_v3_external_jobs_cover_disjoint_states_and_review_waiting():
+    # A current generation has exactly one state; External review waiters
+    # cannot also be in an external_* state.
+    frame = {
+        "record_version": 3,
+        "authority": "orchestration_status_projection_only",
+        "generated_at": "2026-10-21T00:00:00Z",
+        "pipeline_health": "OK",
+        "reasons": [],
+        "current_jobs": 2,
+        "states": {name: 0 for name in ALL_STATES},
+        "review_wait": {
+            "count": 1,
+            "oldest_age_seconds": 0,
+            "reminder_after_seconds": 86400,
+            "reminder_due": False,
+        },
+        "backpressure": {"threshold": 8, "active": False},
+        "planner_cadence": {
+            "eligible": True,
+            "interval_seconds": 3600,
+            "reason": "synthetic_cadence",
+            "awaiting_human_review": 1,
+            "last_submission_at": None,
+            "next_eligible_at": "2026-10-21T00:00:00Z",
+            "last_selection_policy": None,
+            "last_objective_policy": None,
+            "last_novelty_skip_at": None,
+            "last_novelty_skip_reason": None,
+        },
+        "external_source": {"jobs": 1, "review_waiting": 1},
+    }
+    frame["states"]["external_admitted"] = 1
+    frame["states"]["awaiting_human_review"] = 1
+
+    def parse_frame():
+        return parse_status(json.dumps(frame).encode())
+
+    with pytest.raises(PreReviewStatusError, match="external status summary counts invalid"):
+        parse_frame()
+
+    frame["external_source"]["jobs"] = 2
+    valid = parse_frame()
+    assert valid.external_jobs == 2
+    assert valid.external_review_waiting == 1
+    assert valid.current_jobs == sum(valid.states.values()) == 2
+
+    frame["states"]["queued"] = 1  # Native work is not counted as External.
+    frame["current_jobs"] = 3
+    mixed = parse_frame()
+    assert mixed.current_jobs == sum(mixed.states.values()) == 3
+    assert mixed.external_jobs == 2
+
+    frame["current_jobs"] = 2  # Total state count must still match current_jobs.
+    with pytest.raises(PreReviewStatusError, match="state counts do not equal current_jobs"):
+        parse_frame()
+
+
 def test_versioned_schema_keeps_old_contract_immutable():
     legacy = json.loads(
         Path("schemas/pre-review-operational-status-v1.schema.json").read_text()

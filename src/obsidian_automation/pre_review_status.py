@@ -335,7 +335,10 @@ def parse_status(data: bytes) -> PreReviewStatus:
             type(external_review_waiting) is not int or
             not 0 <= external_review_waiting <= external_jobs <= current_jobs or
             external_review_waiting > normalized_states["awaiting_human_review"] or
-            external_jobs < sum(normalized_states[name] for name in EXTERNAL_STATES) or
+            external_jobs < (
+                sum(normalized_states[name] for name in EXTERNAL_STATES)
+                + external_review_waiting
+            ) or
             external_jobs == 0
         ):
             raise PreReviewStatusError("external status summary counts invalid")
