@@ -6,12 +6,12 @@ import os
 import stat
 import sys
 import tempfile
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Mapping, Sequence
 
-from .artifact_lifecycle import ArtifactLifecycleError, _decode_json_object, _utc_now
+from .artifact_lifecycle import ArtifactLifecycleError, _decode_json_object
 from .planner_cadence import (
     NORMAL_INTERVAL_SECONDS,
     PlannerCadenceSnapshot,
@@ -19,13 +19,13 @@ from .planner_cadence import (
 )
 from .pre_review_job import _connect_ro
 
-
 STATUS_RECORD_VERSION = 2
+EXTERNAL_STATUS_RECORD_VERSION = 3
 LEGACY_STATUS_RECORD_VERSION = 1
 STATUS_AUTHORITY = "orchestration_status_projection_only"
 DEFAULT_REVIEW_REMINDER_SECONDS = 24 * 60 * 60
 DEFAULT_BACKPRESSURE_THRESHOLD = 8
-ALL_STATES = (
+LEGACY_STATES = (
     "queued",
     "generating",
     "validating",
@@ -42,6 +42,15 @@ ALL_STATES = (
     "deterministic_reject",
     "superseded",
 )
+EXTERNAL_STATES = (
+    "external_admitted",
+    "external_generating",
+    "external_validating",
+    "external_building_evaluation_context",
+    "external_evaluating",
+    "external_review_recorded",
+)
+ALL_STATES = LEGACY_STATES + EXTERNAL_STATES
 
 
 class PreReviewStatusError(ArtifactLifecycleError):
@@ -61,35 +70,53 @@ class PreReviewStatus:
     backpressure_active: bool
     backpressure_threshold: int
     planner_cadence: PlannerCadenceSnapshot
+    record_version: int = STATUS_RECORD_VERSION
+    external_jobs: int = 0
+    external_review_waiting: int = 0
 
     def to_json_bytes(self) -> bytes:
+        if self.record_version not in {
+            STATUS_RECORD_VERSION, EXTERNAL_STATUS_RECORD_VERSION,
+        }:
+            raise PreReviewStatusError("unsupported status record_version")
+        emitted_states = (
+            ALL_STATES if self.record_version == EXTERNAL_STATUS_RECORD_VERSION
+            else LEGACY_STATES
+        )
+        if self.record_version == STATUS_RECORD_VERSION and (
+            self.external_jobs or self.external_review_waiting or
+            any(self.states.get(name, 0) for name in EXTERNAL_STATES)
+        ):
+            raise PreReviewStatusError("legacy status cannot encode External jobs")
+        data = {
+            "record_version": self.record_version,
+            "authority": STATUS_AUTHORITY,
+            "generated_at": self.generated_at,
+            "pipeline_health": self.pipeline_health,
+            "reasons": list(self.reasons),
+            "current_jobs": self.current_jobs,
+            "states": {name: self.states[name] for name in emitted_states},
+            "review_wait": {
+                "count": self.states["awaiting_human_review"],
+                "oldest_age_seconds": self.oldest_review_wait_seconds,
+                "reminder_after_seconds": self.review_reminder_seconds,
+                "reminder_due": self.review_reminder_due,
+            },
+            "backpressure": {
+                "threshold": self.backpressure_threshold,
+                "active": self.backpressure_active,
+            },
+            "planner_cadence": self.planner_cadence.payload(),
+        }
+        if self.record_version == EXTERNAL_STATUS_RECORD_VERSION:
+            data["external_source"] = {
+                "jobs": self.external_jobs,
+                "review_waiting": self.external_review_waiting,
+            }
         return (
             json.dumps(
-                {
-                    "record_version": STATUS_RECORD_VERSION,
-                    "authority": STATUS_AUTHORITY,
-                    "generated_at": self.generated_at,
-                    "pipeline_health": self.pipeline_health,
-                    "reasons": list(self.reasons),
-                    "current_jobs": self.current_jobs,
-                    "states": dict(self.states),
-                    "review_wait": {
-                        "count": self.states["awaiting_human_review"],
-                        "oldest_age_seconds": self.oldest_review_wait_seconds,
-                        "reminder_after_seconds": self.review_reminder_seconds,
-                        "reminder_due": self.review_reminder_due,
-                    },
-                    "backpressure": {
-                        "threshold": self.backpressure_threshold,
-                        "active": self.backpressure_active,
-                    },
-                    "planner_cadence": self.planner_cadence.payload(),
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            + "\n"
+                data, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+            ) + "\n"
         ).encode("utf-8")
 
 
@@ -129,7 +156,24 @@ def build_status(
     try:
         rows = conn.execute(
             """
-            SELECT g.state, g.updated_at
+            SELECT g.state, g.updated_at,
+                   (
+                     EXISTS (
+                       SELECT 1 FROM stage_outputs s
+                       WHERE s.generation_id=g.generation_id
+                         AND s.stage IN (
+                           'external_generation', 'external_validation',
+                           'external_evaluation_context', 'external_evaluation'
+                         )
+                     ) OR EXISTS (
+                       SELECT 1 FROM attempts a
+                       WHERE a.generation_id=g.generation_id
+                         AND a.stage IN (
+                           'external_generation', 'external_validation',
+                           'external_evaluation_context', 'external_evaluation'
+                         )
+                     )
+                   ) AS external_stage_selected
             FROM generations g
             WHERE NOT EXISTS (
                 SELECT 1
@@ -145,11 +189,17 @@ def build_status(
 
     counts = {state: 0 for state in ALL_STATES}
     oldest_review: datetime | None = None
+    external_jobs = 0
+    external_review_waiting = 0
     for row in rows:
         state = row["state"]
         if state not in counts:
             raise PreReviewStatusError("orchestration database contains unknown state")
         counts[state] += 1
+        if state in EXTERNAL_STATES or row["external_stage_selected"] == 1:
+            external_jobs += 1
+            if state == "awaiting_human_review":
+                external_review_waiting += 1
         if state == "awaiting_human_review":
             updated = _parse_timestamp(row["updated_at"], label="generation.updated_at")
             if updated > observed_now:
@@ -193,6 +243,12 @@ def build_status(
             awaiting_human_review=awaiting,
             now=observed_now,
         ),
+        record_version=(
+            EXTERNAL_STATUS_RECORD_VERSION if external_jobs
+            else STATUS_RECORD_VERSION
+        ),
+        external_jobs=external_jobs,
+        external_review_waiting=external_review_waiting,
     )
 
 
@@ -213,6 +269,9 @@ def parse_status(data: bytes) -> PreReviewStatus:
         "backpressure",
     }
     current_required = legacy_required | {"planner_cadence"}
+    external_required = current_required | {"external_source"}
+    if type(record_version) is not int:
+        raise PreReviewStatusError("unsupported status record_version")
     if record_version == LEGACY_STATUS_RECORD_VERSION:
         if set(value) != legacy_required:
             raise PreReviewStatusError(
@@ -222,6 +281,11 @@ def parse_status(data: bytes) -> PreReviewStatus:
         if set(value) != current_required:
             raise PreReviewStatusError(
                 "status projection properties do not match contract"
+            )
+    elif record_version == EXTERNAL_STATUS_RECORD_VERSION:
+        if set(value) != external_required:
+            raise PreReviewStatusError(
+                "external status projection properties do not match contract"
             )
     else:
         raise PreReviewStatusError("unsupported status record_version")
@@ -243,16 +307,41 @@ def parse_status(data: bytes) -> PreReviewStatus:
         raise PreReviewStatusError("current_jobs is invalid")
 
     states = value["states"]
-    if not isinstance(states, dict) or set(states) != set(ALL_STATES):
+    required_states = (
+        ALL_STATES if record_version == EXTERNAL_STATUS_RECORD_VERSION
+        else LEGACY_STATES
+    )
+    if not isinstance(states, dict) or set(states) != set(required_states):
         raise PreReviewStatusError("status states do not match contract")
-    normalized_states: dict[str, int] = {}
-    for state in ALL_STATES:
+    normalized_states: dict[str, int] = {name: 0 for name in ALL_STATES}
+    for state in required_states:
         count = states[state]
         if type(count) is not int or count < 0:
             raise PreReviewStatusError("status state count is invalid")
         normalized_states[state] = count
     if sum(normalized_states.values()) != current_jobs:
         raise PreReviewStatusError("status state counts do not equal current_jobs")
+
+    external_jobs = 0
+    external_review_waiting = 0
+    if record_version == EXTERNAL_STATUS_RECORD_VERSION:
+        ext = value["external_source"]
+        if type(ext) is not dict or set(ext) != {"jobs", "review_waiting"}:
+            raise PreReviewStatusError("external status summary properties invalid")
+        external_jobs = ext["jobs"]
+        external_review_waiting = ext["review_waiting"]
+        if (
+            type(external_jobs) is not int or
+            type(external_review_waiting) is not int or
+            not 0 <= external_review_waiting <= external_jobs <= current_jobs or
+            external_review_waiting > normalized_states["awaiting_human_review"] or
+            external_jobs < (
+                sum(normalized_states[name] for name in EXTERNAL_STATES)
+                + external_review_waiting
+            ) or
+            external_jobs == 0
+        ):
+            raise PreReviewStatusError("external status summary counts invalid")
 
     review = value["review_wait"]
     if not isinstance(review, dict) or set(review) != {
@@ -392,6 +481,12 @@ def parse_status(data: bytes) -> PreReviewStatus:
         backpressure_active=backpressure["active"],
         backpressure_threshold=threshold,
         planner_cadence=cadence,
+        record_version=(
+            EXTERNAL_STATUS_RECORD_VERSION if record_version == EXTERNAL_STATUS_RECORD_VERSION
+            else STATUS_RECORD_VERSION
+        ),
+        external_jobs=external_jobs,
+        external_review_waiting=external_review_waiting,
     )
 
 

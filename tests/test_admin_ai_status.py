@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from obsidian_automation.admin_ai_status import load_ai_health
-from obsidian_automation.pre_review_status import ALL_STATES
+from obsidian_automation.pre_review_status import LEGACY_STATES
 
 
 UTC_NOW = datetime(2026, 10, 11, 11, 0, tzinfo=timezone.utc)
@@ -20,7 +20,7 @@ def _projection(
     *, health: str | None = None, current_version: bool = False,
     state_overrides: dict[str, int] | None = None,
 ) -> bytes:
-    states = {name: 0 for name in ALL_STATES}
+    states = {name: 0 for name in LEGACY_STATES}
     states.update({
         "awaiting_human_review": 2,
         "retryable_failure": 1,
