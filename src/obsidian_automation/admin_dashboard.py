@@ -28,6 +28,7 @@ from .admin_operation_web import (
 )
 from .admin_status import aggregate_status
 from .admin_ai_status import load_ai_health
+from .snapshot_job import SnapshotJob, Invalid as SnapshotInvalid
 
 HTML = """<!doctype html>
 <html lang="ja">
@@ -60,6 +61,16 @@ HTML = """<!doctype html>
       <div id="pipeline-details" class="pipeline-details"></div>
     </section>
     <section id="services" class="cards" aria-label="サービス一覧" aria-live="polite"></section>
+    <section class="pipeline" aria-label="Vault Snapshot">
+      <h2>Vault Snapshot → private Gitea</h2>
+      <p id="snapshot-state">未設定 / 状態未確認</p>
+      <p id="snapshot-last">最終結果: —</p><p id="snapshot-due">次回: —</p>
+      <label>定期実行 <input id="snapshot-enabled" type="checkbox" disabled></label>
+      <label>間隔（秒） <input id="snapshot-interval" type="number" min="60" max="86400" disabled></label>
+      <button id="snapshot-save" type="button" disabled>設定を保存</button>
+      <button id="snapshot-run" type="button" disabled>Run now</button>
+      <p id="snapshot-message" role="status"></p>
+    </section>
     <section id="operation-preview" class="pipeline" aria-label="操作の事前確認">
       <h2>サービス操作のプレビュー</h2>
       <p>現在の状態で操作を検討できるか確認します。これは実行許可ではなく、サービスへの変更も発生しません。</p>
@@ -226,6 +237,60 @@ function renderAi(p) {
     );
   }
 }
+let snapshotSettings = null;
+async function snapshotRefresh() {
+  try {
+    const r = await fetch("/api/v1/snapshot", {cache:"no-store", credentials:"same-origin"});
+    if (!r.ok) throw Error("unavailable");
+    const data = await r.json();
+    if (data.version !== 1 || data.job !== "vault_snapshot") throw Error("schema");
+    snapshotSettings = data.settings;
+    $("snapshot-enabled").checked = data.settings.enabled;
+    $("snapshot-interval").value = data.settings.interval_seconds;
+    $("snapshot-state").textContent = data.settings.configured
+      ? (data.settings.enabled ? "定期実行 On" : "定期実行 Off") : "未設定（実行不可）";
+    $("snapshot-last").textContent = data.last_run
+      ? "最終結果: " + data.last_run.status + " / " + data.last_run.stage + " / " + (data.last_run.completed || data.last_run.created)
+      : "最終結果: なし";
+    $("snapshot-due").textContent = "次回: " + (data.settings.next_due ? new Date(data.settings.next_due * 1000).toLocaleString() : "なし");
+    for (const id of ["snapshot-enabled","snapshot-interval","snapshot-save","snapshot-run"])
+      $(id).disabled = !data.settings.configured;
+  } catch {
+    snapshotSettings = null;
+    $("snapshot-state").textContent = "状態未確認（操作不可）";
+    $("snapshot-last").textContent = "最終結果: —";
+    $("snapshot-due").textContent = "次回: —";
+    for (const id of ["snapshot-enabled","snapshot-interval","snapshot-save","snapshot-run"])
+      $(id).disabled = true;
+  }
+}
+async function snapshotPost(path, body) {
+  const token = await newCsrfToken();
+  const response = await fetch(path, {method:"POST", cache:"no-store", credentials:"same-origin",
+    headers:{"Content-Type":"application/json", "X-Obsidian-CSRF":token}, body:JSON.stringify(body)});
+  if (!response.ok) throw Error("request_failed");
+  return response.json();
+}
+$("snapshot-save").addEventListener("click", async () => {
+  if (!snapshotSettings) return;
+  $("snapshot-save").disabled = true;
+  try {
+    await snapshotPost("/api/v1/snapshot/settings", {enabled:$("snapshot-enabled").checked,
+      interval_seconds:Number($("snapshot-interval").value),
+      source_name:snapshotSettings.source_name, destination_name:snapshotSettings.destination_name});
+    $("snapshot-message").textContent = "設定を保存しました（ジョブは開始していません）";
+  } catch { $("snapshot-message").textContent = "保存できませんでした"; }
+  await snapshotRefresh();
+});
+$("snapshot-run").addEventListener("click", async () => {
+  $("snapshot-run").disabled = true;
+  try {
+    const result = await snapshotPost("/api/v1/snapshot/runs", {request_id:crypto.randomUUID().replaceAll("-", "")});
+    $("snapshot-message").textContent = result.run_id
+      ? "受付: " + result.run_id + "（結果は未確認。更新して確認）" : "実行中または未設定";
+  } catch { $("snapshot-message").textContent = "受付不明。二重実行せず管理者に確認してください"; }
+  await snapshotRefresh();
+});
 let previewGeneration = 0;
 let pendingConfirmation = null;
 let latestOperationId = null;
@@ -272,6 +337,7 @@ async function fetchOperatorReadiness() {
   }
 }
 async function refresh() {
+  await snapshotRefresh();
   ++previewGeneration; // Invalidate any in-flight operation preview.
   invalidateConfirmation();
   $("preview-check").disabled = true;
@@ -727,6 +793,18 @@ class Handler(BaseHTTPRequestHandler):
         if not self._origin_allowed():
             self._reply(403, b"Forbidden")
             return
+        if self.path == "/api/v1/snapshot" or self.path.startswith("/api/v1/snapshot/runs/"):
+            job = self.server.snapshot_job
+            if job is None:
+                self._reply(503, b'{"error":"snapshot_disabled"}', "application/json")
+                return
+            value = (job.status() if self.path == "/api/v1/snapshot" else
+                     job.run(self.path[len("/api/v1/snapshot/runs/"):]))
+            if value is None:
+                self._reply(404, b"Not found")
+            else:
+                self._reply(200, json.dumps(value).encode(), "application/json")
+            return
         if self.path == "/api/v1/operator-ready":
             result = self._operator_capabilities()
             self._reply(200, json.dumps(
@@ -847,6 +925,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if self.path not in (
             "/api/v1/operation-previews", "/api/v1/operations",
+            "/api/v1/snapshot/settings", "/api/v1/snapshot/runs",
         ):
             self._reply(405, b"Method not allowed")
             return
@@ -870,6 +949,30 @@ class Handler(BaseHTTPRequestHandler):
         tokens = self.headers.get_all("X-Obsidian-CSRF", [])
         if len(tokens) != 1 or not self.server.preview_csrf.consume(tokens[0]):
             self._reply(403, b'{"error":"csrf_rejected"}', "application/json")
+            return
+        if self.path in ("/api/v1/snapshot/settings", "/api/v1/snapshot/runs"):
+            job = self.server.snapshot_job
+            if job is None:
+                self._reply(503, b'{"error":"snapshot_disabled"}', "application/json")
+                return
+            try:
+                payload = json.loads(self._read_bounded_json())
+                if self.path.endswith("/settings"):
+                    result = job.update(payload)
+                    code = 200
+                else:
+                    if type(payload) is not dict or set(payload) != {"request_id"}:
+                        raise SnapshotInvalid("invalid_request")
+                    outcome, receipt = job.submit(payload["request_id"])
+                    result = {"version": 1, "outcome": outcome, "run_id": receipt["run_id"] if receipt else None}
+                    code = 202 if outcome in ("accepted", "replayed") else 409
+            except (SnapshotInvalid, PreviewRequestRejected, ValueError, TypeError):
+                self._reply(400, b'{"error":"invalid_snapshot_request"}', "application/json")
+                return
+            except Exception:
+                self._reply(503, b'{"error":"snapshot_unavailable"}', "application/json")
+                return
+            self._reply(code, json.dumps(result).encode(), "application/json")
             return
 
         if self.path == "/api/v1/operations":
@@ -961,6 +1064,7 @@ def make_server(
     preview_observer: Callable[[dict[str, object]], dict[str, object]] = lambda _: unavailable_preview(),
     operator: OperatorHTTPClient | None = None,
     operator_ui_enabled: bool = False,
+    snapshot_job: SnapshotJob | None = None,
 ) -> ThreadingHTTPServer:
     if not isinstance(port, int) or not 0 <= port <= 65535:
         raise ValueError("port must be between 0 and 65535")
@@ -977,6 +1081,7 @@ def make_server(
     # Operator UI trusts the configured LAN/VPN network perimeter.
     # It remains disabled unless --operator-ui is explicitly selected.
     server.operator_ui_enabled = operator_ui_enabled is True
+    server.snapshot_job = snapshot_job
     server.daemon_threads = True
     return server
 
