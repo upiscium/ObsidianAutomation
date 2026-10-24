@@ -1,0 +1,123 @@
+"""Offline read-only Daily section preview from an exact Collector CAS index."""
+from __future__ import annotations
+
+import argparse
+from datetime import date, datetime, timedelta
+import os
+from pathlib import Path
+import stat
+import sys
+from types import SimpleNamespace
+from zoneinfo import ZoneInfo
+
+from .github_daily_deterministic_digest import (
+    DeterministicDigestError, build_digest_from_verified_capture,
+)
+from .github_daily_progress import MAX_DAILY_BYTES, DailyProgressError, prepare_daily_update
+
+
+def _private_root(root: Path) -> None:
+    if not root.is_absolute() or '..' in root.parts:
+        raise DeterministicDigestError('output directory must be absolute without traversal')
+    ancestor = Path('/')
+    for part in root.parts[1:]:
+        ancestor = ancestor / part
+        if stat.S_ISLNK(os.lstat(ancestor).st_mode):
+            raise DeterministicDigestError('output path traverses a symlink')
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        meta = os.fstat(fd)
+        if (not stat.S_ISDIR(meta.st_mode) or meta.st_uid != os.geteuid()
+                or stat.S_IMODE(meta.st_mode) & 0o077):
+            raise DeterministicDigestError('output directory must be owned and private')
+    finally:
+        os.close(fd)
+
+
+def _read_daily(path: Path) -> bytes:
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    try:
+        meta = os.fstat(fd)
+        if not stat.S_ISREG(meta.st_mode) or meta.st_size > MAX_DAILY_BYTES:
+            raise DeterministicDigestError('Daily input is not a bounded regular file')
+        with os.fdopen(os.dup(fd), 'rb') as input_file:
+            data = input_file.read(MAX_DAILY_BYTES + 1)
+        if len(data) != meta.st_size:
+            raise DeterministicDigestError('Daily input changed during read')
+        return data
+    finally:
+        os.close(fd)
+
+
+def _publish(root: Path, name: str, content: bytes) -> None:
+    # fd-relative create-only: never replace a local Daily or existing preview.
+    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        try:
+            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                         0o600, dir_fd=directory)
+        except FileExistsError as exc:
+            raise DeterministicDigestError('preview artifact already exists') from exc
+        with os.fdopen(fd, 'wb') as target:
+            target.write(content)
+            target.flush()
+            os.fsync(target.fileno())
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description='Offline no-LLM Collector CAS Daily preview')
+    parser.add_argument('--capture-sha', required=True)
+    day = parser.add_mutually_exclusive_group(required=True)
+    day.add_argument('--target-date')
+    day.add_argument('--yesterday', action='store_true')
+    parser.add_argument('--output-dir', type=Path)
+    parser.add_argument('--preview-daily', type=Path)
+    args = parser.parse_args(argv)
+    if args.preview_daily and not args.output_dir:
+        parser.error('--preview-daily requires --output-dir')
+    try:
+        if args.target_date:
+            expected = date.fromisoformat(args.target_date).isoformat()
+            if expected != args.target_date:
+                raise DeterministicDigestError('noncanonical target date')
+        else:
+            expected = (datetime.now(ZoneInfo('Asia/Tokyo')).date() -
+                        timedelta(days=1)).isoformat()
+        digest = build_digest_from_verified_capture(args.capture_sha)
+        if digest.capture_sha256 != args.capture_sha or digest.date != expected:
+            raise DeterministicDigestError('capture identity or target JST day differs')
+        markdown = digest.render().encode('utf-8')
+        if args.output_dir is None:
+            sys.stdout.buffer.write(markdown)
+            return 0
+        root = args.output_dir
+        _private_root(root)
+        files = [(f'{digest.sha256}.deterministic-daily.md', markdown),
+                 (f'{digest.sha256}.deterministic-daily.json', digest.canonical_bytes)]
+        if args.preview_daily:
+            original = _read_daily(args.preview_daily)
+            _, changed = prepare_daily_update(
+                SimpleNamespace(section_body=digest.render().rstrip('\n') + '\n\n'),
+                original)
+            files.append((f'{digest.sha256}.daily-note.preview.md', changed))
+        # Fail before any write on an existing name or a Daily path alias.
+        for name, _ in files:
+            if (root / name).exists() or (root / name).is_symlink():
+                raise DeterministicDigestError('preview artifact already exists')
+        for name, content in files:
+            _publish(root, name, content)
+        print('PREVIEW_ONLY MODEL_USED=false PUBLICATION_AUTHORIZED=false')
+        for name, _ in files:
+            print(f'ARTIFACT={root / name}')
+        return 0
+    except (DeterministicDigestError, DailyProgressError, OSError, ValueError,
+            UnicodeError) as exc:
+        print(f'deterministic-daily-preview blocked: {type(exc).__name__}', file=sys.stderr)
+        return 2
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
