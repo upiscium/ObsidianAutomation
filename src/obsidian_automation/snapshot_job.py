@@ -30,7 +30,8 @@ class SnapshotJob:
     """
 
     def __init__(self, state: Path, runner: Callable[[str], tuple[str, str, str | None]],
-                 *, configured: bool = True, clock: Callable[[], float] = time.time):
+                 *, configured: bool = True, clock: Callable[[], float] = time.time,
+                 connection_generation: str | None = None):
         self.state = state
         state.mkdir(mode=0o700, parents=True, exist_ok=True)
         self._lock_file = (state / "snapshot.lock").open("a+b")
@@ -43,7 +44,19 @@ class SnapshotJob:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK(id=1), enabled INTEGER NOT NULL, interval INTEGER NOT NULL, next_due REAL, source_name TEXT NOT NULL, destination_name TEXT NOT NULL)")
         self.db.execute("CREATE TABLE IF NOT EXISTS runs (run_id TEXT PRIMARY KEY, request_id TEXT UNIQUE NOT NULL, trigger TEXT NOT NULL, status TEXT NOT NULL, created REAL NOT NULL, completed REAL, stage TEXT NOT NULL, remote_ref TEXT)")
+        self.db.execute("CREATE TABLE IF NOT EXISTS connection_write (id INTEGER PRIMARY KEY CHECK(id=1), verified INTEGER NOT NULL)")
+        self.db.execute("INSERT OR IGNORE INTO connection_write VALUES (1,0)")
+        self.db.execute("CREATE TABLE IF NOT EXISTS connection_binding (id INTEGER PRIMARY KEY CHECK(id=1), generation TEXT)")
+        if connection_generation is not None:
+            previous = self.db.execute("SELECT generation FROM connection_binding WHERE id=1").fetchone()
+            if previous is None or previous[0] != connection_generation:
+                self.db.execute("UPDATE settings SET enabled=0,next_due=NULL WHERE id=1")
+                self.db.execute("UPDATE connection_write SET verified=0 WHERE id=1")
+                self.db.execute("INSERT OR REPLACE INTO connection_binding VALUES (1,?)", (connection_generation,))
         self.db.execute("INSERT OR IGNORE INTO settings VALUES (1,0,300,NULL,'nextcloud','gitea')")
+        if not configured:
+            self.db.execute("UPDATE settings SET enabled=0,next_due=NULL WHERE id=1")
+            self.db.execute("UPDATE connection_write SET verified=0 WHERE id=1")
         self.db.execute("UPDATE runs SET status='unconfirmed',stage='interrupted',completed=? WHERE status IN ('queued','running')", (clock(),))
         self.db.commit()
         self.runner, self.configured, self.clock = runner, configured, clock
@@ -71,7 +84,18 @@ class SnapshotJob:
             ).fetchone()
             return dict(version=1, configured=self.configured, enabled=bool(enabled),
                         interval_seconds=interval, next_due=due if enabled else None,
-                        source_name=source, destination_name=destination)
+                        source_name=source, destination_name=destination,
+                        gitea_write="verified" if self.db.execute("SELECT verified FROM connection_write WHERE id=1").fetchone()[0] else "unverified")
+
+    def connections_saved(self, generation: str | None = None) -> None:
+        """Caller holds the job lock across probe/save and this schedule reset."""
+        with self._lock:
+            with self.db:
+                self.db.execute("UPDATE settings SET enabled=0,next_due=NULL WHERE id=1")
+                self.db.execute("UPDATE connection_write SET verified=0 WHERE id=1")
+                if generation is not None:
+                    self.db.execute("INSERT OR REPLACE INTO connection_binding VALUES (1,?)", (generation,))
+            self.configured = True
 
     def update(self, payload: dict) -> dict:
         if type(payload) is not dict or set(payload) != {"enabled", "interval_seconds", "source_name", "destination_name"}:
@@ -138,6 +162,8 @@ class SnapshotJob:
             with self.db:
                 self.db.execute("UPDATE runs SET status=?,stage=?,remote_ref=?,completed=? WHERE run_id=?",
                                 (status, stage, remote_ref, self.clock(), run_id))
+                if status == "saved":
+                    self.db.execute("UPDATE connection_write SET verified=1 WHERE id=1")
 
     def tick(self) -> bool:
         with self._lock:

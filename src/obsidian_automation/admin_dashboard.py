@@ -61,6 +61,22 @@ HTML = """<!doctype html>
       <div id="pipeline-details" class="pipeline-details"></div>
     </section>
     <section id="services" class="cards" aria-label="サービス一覧" aria-live="polite"></section>
+    <section class="pipeline" aria-label="接続設定">
+      <h2>接続設定（各１アカウント）</h2>
+      <p id="connection-state">状態を確認中</p>
+      <form id="connections-form" autocomplete="off">
+        <label>Nextcloud WebDAV URL <input name="webdav_url" type="url" required placeholder="https://cloud.example/remote.php/dav/files/user/"></label>
+        <label>Vault folder <input name="vault_folder" required placeholder="Vault"></label>
+        <label>Nextcloud user <input name="nextcloud_user" required></label>
+        <label>Nextcloud app password <input name="nextcloud_password" type="password" required></label>
+        <label>Private Gitea HTTPS .git URL <input name="git_url" type="url" required></label>
+        <label>Gitea user <input name="git_user" required></label>
+        <label>Gitea token <input name="git_token" type="password" required></label>
+        <label>Branch <input name="branch" value="main" required></label>
+        <button type="submit">接続を検証して保存</button>
+      </form>
+      <p id="connection-message" role="status"></p>
+    </section>
     <section class="pipeline" aria-label="Vault Snapshot">
       <h2>Vault Snapshot → private Gitea</h2>
       <p id="snapshot-state">未設定 / 状態未確認</p>
@@ -143,6 +159,9 @@ button:disabled { opacity:.55; cursor:wait }
 .rowline .value { color:var(--muted); text-align:right }
 .error { color:#cb4545; min-height:1.5em }
 .operation-controls { display:flex; flex-wrap:wrap; align-items:end; gap:12px; margin:12px 0 }
+#connections-form { display:grid; gap:10px; max-width:620px }
+#connections-form label { display:grid; gap:3px }
+#connections-form input { padding:7px; max-width:100%; background:var(--surface); color:var(--ink); border:1px solid var(--border) }
 .operation-controls label { display:flex; flex:1 1 170px; flex-direction:column; gap:5px; min-width:0 }
 .operation-controls select { width:100%; min-height:42px; border:1px solid var(--border);
   background:var(--surface); color:var(--ink); border-radius:9px; font:inherit; padding:7px 9px }
@@ -238,6 +257,29 @@ function renderAi(p) {
   }
 }
 let snapshotSettings = null;
+async function connectionRefresh() {
+  try {
+    const r = await fetch("/api/v1/snapshot/connections", {cache:"no-store", credentials:"same-origin"});
+    if (!r.ok) throw Error("unavailable");
+    const data = await r.json();
+    $("connection-state").textContent = data.configured ? "接続設定済み（秘密情報は表示されません）" : "未設定";
+  } catch { $("connection-state").textContent = "接続状態を確認できません"; }
+}
+$("connections-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const button = form.querySelector("button");
+  button.disabled = true;
+  try {
+    const body = Object.fromEntries(new FormData(form));
+    await snapshotPost("/api/v1/snapshot/connections", body);
+    $("connection-message").textContent = "接続を確認して保存しました。定期実行を Off にしました。Git 書き込みは初回の保存成功まで未検証です。";
+    form.reset();
+  } catch { $("connection-message").textContent = "検証または保存に失敗しました。以前の設定は変更されていません。"; }
+  button.disabled = false;
+  await connectionRefresh();
+  await snapshotRefresh();
+});
 async function snapshotRefresh() {
   try {
     const r = await fetch("/api/v1/snapshot", {cache:"no-store", credentials:"same-origin"});
@@ -249,6 +291,9 @@ async function snapshotRefresh() {
     $("snapshot-interval").value = data.settings.interval_seconds;
     $("snapshot-state").textContent = data.settings.configured
       ? (data.settings.enabled ? "定期実行 On" : "定期実行 Off") : "未設定（実行不可）";
+    if (data.settings.configured) $("connection-state").textContent =
+      "Gitea private / 読み取り検証済み（保存時）。書き込み: " +
+      (data.settings.gitea_write === "verified" ? "最終 push 検証済み" : "未検証（初回の保存成功まで）");
     $("snapshot-last").textContent = data.last_run
       ? "最終結果: " + data.last_run.status + " / " + data.last_run.stage + " / " + (data.last_run.completed || data.last_run.created)
       : "最終結果: なし";
@@ -337,6 +382,7 @@ async function fetchOperatorReadiness() {
   }
 }
 async function refresh() {
+  await connectionRefresh();
   await snapshotRefresh();
   ++previewGeneration; // Invalidate any in-flight operation preview.
   invalidateConfirmation();
@@ -793,6 +839,10 @@ class Handler(BaseHTTPRequestHandler):
         if not self._origin_allowed():
             self._reply(403, b"Forbidden")
             return
+        if self.path == "/api/v1/snapshot/connections":
+            store = self.server.snapshot_setup
+            self._reply(200 if store else 503, json.dumps(store.status() if store else {"error":"setup_disabled"}).encode(), "application/json")
+            return
         if self.path == "/api/v1/snapshot" or self.path.startswith("/api/v1/snapshot/runs/"):
             job = self.server.snapshot_job
             if job is None:
@@ -926,6 +976,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path not in (
             "/api/v1/operation-previews", "/api/v1/operations",
             "/api/v1/snapshot/settings", "/api/v1/snapshot/runs",
+            "/api/v1/snapshot/connections",
         ):
             self._reply(405, b"Method not allowed")
             return
@@ -973,6 +1024,34 @@ class Handler(BaseHTTPRequestHandler):
                 self._reply(503, b'{"error":"snapshot_unavailable"}', "application/json")
                 return
             self._reply(code, json.dumps(result).encode(), "application/json")
+            return
+
+        if self.path == "/api/v1/snapshot/connections":
+            store, job = self.server.snapshot_setup, self.server.snapshot_job
+            if store is None or job is None:
+                self._reply(503, b'{"error":"setup_disabled"}', "application/json")
+                return
+            try:
+                payload = json.loads(self._read_bounded_json())
+                with job._lock:
+                    if job.db.execute("SELECT 1 FROM runs WHERE status IN ('queued','running') LIMIT 1").fetchone():
+                        self._reply(409, b'{"error":"snapshot_busy"}', "application/json")
+                        return
+                    if not store.save(payload):
+                        self._reply(422, b'{"error":"connection_probe_failed"}', "application/json")
+                        return
+                    try:
+                        job.connections_saved(store.generation())
+                    except Exception:
+                        # Disk commit succeeded but SQLite reset did not: block
+                        # new jobs in this process; startup reconciles generation.
+                        job.configured = False
+                        raise
+                self._reply(200, json.dumps(store.status()).encode(), "application/json")
+            except (ValueError, TypeError, PreviewRequestRejected):
+                self._reply(400, b'{"error":"invalid_connection"}', "application/json")
+            except Exception:
+                self._reply(503, b'{"error":"connection_unavailable"}', "application/json")
             return
 
         if self.path == "/api/v1/operations":
@@ -1065,6 +1144,7 @@ def make_server(
     operator: OperatorHTTPClient | None = None,
     operator_ui_enabled: bool = False,
     snapshot_job: SnapshotJob | None = None,
+    snapshot_setup=None,
 ) -> ThreadingHTTPServer:
     if not isinstance(port, int) or not 0 <= port <= 65535:
         raise ValueError("port must be between 0 and 65535")
@@ -1082,6 +1162,7 @@ def make_server(
     # It remains disabled unless --operator-ui is explicitly selected.
     server.operator_ui_enabled = operator_ui_enabled is True
     server.snapshot_job = snapshot_job
+    server.snapshot_setup = snapshot_setup
     server.daemon_threads = True
     return server
 
