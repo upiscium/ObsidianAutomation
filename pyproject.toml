@@ -64,6 +64,7 @@ obsidian-github-project-watch = "obsidian_automation.github_project_watcher_runt
 obsidian-github-daily-activity-collect = "obsidian_automation.github_daily_activity:main"
 obsidian-github-daily-summary-run = "obsidian_automation.github_daily_summary_generation:main"
 obsidian-github-daily-progress-render = "obsidian_automation.github_daily_progress:render_main"
+obsidian-github-daily-deterministic-preview = "obsidian_automation.github_daily_deterministic_preview:main"
 obsidian-github-daily-progress-apply = "obsidian_automation.github_daily_progress:apply_main"
 obsidian-github-daily-production-schedule = "obsidian_automation.github_daily_production:schedule_main"
 obsidian-github-daily-production-collect = "obsidian_automation.github_daily_production:collect_main"
