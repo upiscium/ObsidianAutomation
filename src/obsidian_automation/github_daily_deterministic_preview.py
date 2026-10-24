@@ -120,6 +120,8 @@ def main(argv: list[str] | None = None) -> int:
     day.add_argument('--target-date')
     day.add_argument('--yesterday', action='store_true')
     parser.add_argument('--output-dir', type=Path)
+    parser.add_argument('--standard-cas-root', type=Path,
+                        help='Explicit private single-user CAS root (Standard profile)')
     parser.add_argument('--preview-daily', type=Path)
     args = parser.parse_args(argv)
     if args.preview_daily and not args.output_dir:
@@ -132,7 +134,14 @@ def main(argv: list[str] | None = None) -> int:
         else:
             expected = (datetime.now(ZoneInfo('Asia/Tokyo')).date() -
                         timedelta(days=1)).isoformat()
-        digest = build_digest_from_verified_capture(args.capture_sha)
+        if args.standard_cas_root is None:
+            digest = build_digest_from_verified_capture(args.capture_sha)
+        else:
+            from .github_daily_standard_source import read_standard_digest, StandardSourceError
+            try:
+                digest = read_standard_digest(args.standard_cas_root, args.capture_sha)
+            except (StandardSourceError, OSError) as exc:
+                raise DeterministicDigestError('Standard source unavailable') from exc
         if digest.capture_sha256 != args.capture_sha or digest.date != expected:
             raise DeterministicDigestError('capture identity or target JST day differs')
         markdown = digest.render().encode('utf-8')
