@@ -25,6 +25,7 @@ class Connections:
     policy: Path
     rclone_config: Path
     allow_local_fixture: bool = False
+    git_credentials: Path | None = None
 
     def validate(self) -> None:
         # Remote folder is an explicit, non-root shared Vault folder.
@@ -43,6 +44,24 @@ class Connections:
             raise ValueError("invalid private Git endpoint")
         if not self.state.is_absolute() or not self.policy.is_file() or not self.rclone_config.is_file():
             raise ValueError("missing local configuration")
+        if self.git_credentials is not None and not self.git_credentials.is_file():
+            raise ValueError("missing credentials")
+
+
+def git_environment(local_fixture: bool, credentials: Path | None = None,
+                    helper: Path | None = None) -> dict[str, str]:
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith(("GIT_CONFIG_", "GIT_TRACE", "GIT_SSH", "GIT_ASKPASS"))}
+    # Bind every Git HTTP operation to its checked destination. Git otherwise
+    # follows initial HTTP redirects, which could point at a different repo.
+    env.update(GIT_TERMINAL_PROMPT="0", GIT_ALLOW_PROTOCOL="https:file" if local_fixture else "https",
+               GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL="/dev/null", GIT_NO_REPLACE_OBJECTS="1",
+               GIT_LFS_SKIP_SMUDGE="1", GIT_CONFIG_COUNT="1",
+               GIT_CONFIG_KEY_0="http.followRedirects", GIT_CONFIG_VALUE_0="false")
+    if credentials is not None and helper is not None:
+        env["SNAPSHOT_CREDENTIALS"] = str(credentials)
+        env["GIT_ASKPASS"] = str(helper)
+    return env
 
 
 def _command(args: list[str], *, cwd: Path, env: dict[str, str], timeout: int = 120) -> tuple[bool, str]:
@@ -86,14 +105,10 @@ class SnapshotAdapter:
             return "failed", "sync", None
         mirror, bare, work = directory / "mirror", directory / "cache.git", directory / "work"
         mirror.mkdir(mode=0o700)
-        # Prevent Git hooks, prompts and git configuration supplied by a hostile
-        # service environment. Credentials, if necessary, must be provisioned
-        # explicitly via a separate noninteractive credential helper in P3.
-        env = {key: value for key, value in os.environ.items()
-               if not key.startswith(("GIT_CONFIG_", "GIT_TRACE", "GIT_SSH", "GIT_ASKPASS"))}
-        env.update(GIT_TERMINAL_PROMPT="0", GIT_ALLOW_PROTOCOL="https:file" if c.allow_local_fixture else "https",
-                   GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL="/dev/null", GIT_NO_REPLACE_OBJECTS="1",
-                   GIT_LFS_SKIP_SMUDGE="1")
+        # Isolate system/global Git configuration; the fixed private askpass
+        # helper reads credentials from the service-owned state, never argv.
+        env = git_environment(c.allow_local_fixture, c.git_credentials,
+                              c.state / "git-askpass" if c.git_credentials else None)
         rclone = ["rclone", "--config", str(c.rclone_config)]
         for action in ("sync", "sync", "check"):
             args = rclone + [action, c.rclone_remote, str(mirror), "--retries", "1", "--low-level-retries", "1"]
@@ -115,18 +130,27 @@ class SnapshotAdapter:
         if not ok:
             return "failed", "fetch", None
         ref = f"refs/heads/{c.branch}"
-        ok, output = _command(["git", "ls-remote", "--exit-code", c.git_remote, ref], cwd=directory, env=env)
-        if not ok or not re.fullmatch(r"[a-f0-9]{40}\t" + re.escape(ref), output):
-            # First-run initialization is intentionally not inferred.
-            return "failed", "fetch", None
-        baseline = output.split("\t", 1)[0]
-        ok, _ = _command(["git", "--git-dir", str(bare), "fetch", "--no-tags", c.git_remote, ref], cwd=directory, env=env)
+        ok, output = _command(["git", "ls-remote", c.git_remote], cwd=directory, env=env)
         if not ok:
             return "failed", "fetch", None
-        ok, fetched = _command(["git", "--git-dir", str(bare), "rev-parse", "FETCH_HEAD"], cwd=directory, env=env)
-        if not ok or fetched != baseline:
+        heads = [line for line in output.splitlines() if line.endswith("\t" + ref)]
+        if len(heads) > 1 or (heads and not re.fullmatch(r"[a-f0-9]{40}\t" + re.escape(ref), heads[0])):
             return "failed", "fetch", None
-        ok, _ = _command(["git", "--git-dir", str(bare), "worktree", "add", "--detach", str(work), baseline], cwd=directory, env=env)
+        baseline = heads[0].split("\t", 1)[0] if heads else None
+        if baseline is None and output.strip():
+            # A nonempty repository with a missing branch requires operator intervention.
+            return "failed", "fetch", None
+        if baseline:
+            ok, _ = _command(["git", "--git-dir", str(bare), "fetch", "--no-tags", c.git_remote, ref], cwd=directory, env=env)
+            if not ok:
+                return "failed", "fetch", None
+            ok, fetched = _command(["git", "--git-dir", str(bare), "rev-parse", "FETCH_HEAD"], cwd=directory, env=env)
+            if not ok or fetched != baseline:
+                return "failed", "fetch", None
+            ok, _ = _command(["git", "--git-dir", str(bare), "worktree", "add", "--detach", str(work), baseline], cwd=directory, env=env)
+        else:
+            work.mkdir(mode=0o700)
+            ok, _ = _command(["git", "-C", str(work), "init", "--initial-branch", c.branch], cwd=directory, env=env)
         if not ok:
             return "failed", "fetch", None
         try:
@@ -145,9 +169,22 @@ class SnapshotAdapter:
         if result.changed and (not expected or not re.fullmatch(r"[a-f0-9]{40}", expected)):
             return "failed", "snapshot", None
         if result.changed:
+            if c.git_credentials is not None and not c.allow_local_fixture:
+                # Refuse a repository that became public since setup. Credentials
+                # never reach Git argv or an HTTP response.
+                try:
+                    import json
+                    from .snapshot_setup import private_repo
+                    saved = json.loads(c.git_credentials.read_text(encoding="utf-8"))
+                    if saved.get("git_url") != c.git_remote or not private_repo(saved):
+                        return "failed", "push", None
+                except (OSError, ValueError, TypeError):
+                    return "failed", "push", None
             # Race check before push. No force, no replay on an uncertain effect.
-            ok, current = _command(["git", "ls-remote", "--exit-code", c.git_remote, ref], cwd=directory, env=env)
-            if not ok or current != f"{baseline}\t{ref}":
+            ok, current = _command(["git", "ls-remote", c.git_remote], cwd=directory, env=env)
+            lines = current.splitlines()
+            if not ok or (([line for line in lines if line.endswith("\t" + ref)] != [f"{baseline}\t{ref}"])
+                          if baseline else bool(lines)):
                 return "unconfirmed", "push", None
             pushed, _ = _command(["git", "-C", str(work), "push", c.git_remote,
                                   f"HEAD:{ref}"], cwd=directory, env=env)
