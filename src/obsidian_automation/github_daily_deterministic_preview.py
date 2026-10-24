@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 from datetime import date, datetime, timedelta
 import os
+import secrets
 from pathlib import Path
 import stat
 import sys
@@ -49,19 +50,64 @@ def _read_daily(path: Path) -> bytes:
         os.close(fd)
 
 
-def _publish(root: Path, name: str, content: bytes) -> None:
-    # fd-relative create-only: never replace a local Daily or existing preview.
+def _matches_existing(directory: int, name: str, content: bytes) -> bool:
+    """Accept a retry only when the already-published artifact is byte-identical."""
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                     dir_fd=directory)
+    except FileNotFoundError:
+        return False
+    try:
+        meta = os.fstat(fd)
+        if (not stat.S_ISREG(meta.st_mode) or meta.st_uid != os.geteuid()
+                or meta.st_size != len(content)):
+            raise DeterministicDigestError('preview artifact conflicts with retry')
+        with os.fdopen(os.dup(fd), 'rb') as source:
+            if source.read(len(content) + 1) != content:
+                raise DeterministicDigestError('preview artifact conflicts with retry')
+        return True
+    finally:
+        os.close(fd)
+
+
+def _preflight(root: Path, files: list[tuple[str, bytes]]) -> None:
+    """Reject a conflicting artifact before writing any part of the new set."""
     directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
+        for name, content in files:
+            _matches_existing(directory, name, content)
+    finally:
+        os.close(directory)
+
+
+def _publish(root: Path, name: str, content: bytes) -> None:
+    # Write and fsync a private temporary inode, then link into place without
+    # replacement. After an interrupted multi-artifact run, identical files
+    # may be reused; a partial or different final file is never overwritten.
+    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        if _matches_existing(directory, name, content):
+            os.fsync(directory)
+            return
+        temporary = f'.{name}.{secrets.token_hex(12)}.pending'
+        created = False
         try:
-            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                          0o600, dir_fd=directory)
-        except FileExistsError as exc:
-            raise DeterministicDigestError('preview artifact already exists') from exc
-        with os.fdopen(fd, 'wb') as target:
-            target.write(content)
-            target.flush()
-            os.fsync(target.fileno())
+            created = True
+            with os.fdopen(fd, 'wb') as target:
+                target.write(content)
+                target.flush()
+                os.fsync(target.fileno())
+            try:
+                os.link(temporary, name, src_dir_fd=directory,
+                        dst_dir_fd=directory, follow_symlinks=False)
+            except FileExistsError:
+                if not _matches_existing(directory, name, content):
+                    raise DeterministicDigestError('preview artifact conflicts with retry')
+        finally:
+            if created:
+                os.unlink(temporary, dir_fd=directory)
         os.fsync(directory)
     finally:
         os.close(directory)
@@ -103,10 +149,7 @@ def main(argv: list[str] | None = None) -> int:
                 SimpleNamespace(section_body=digest.render().rstrip('\n') + '\n\n'),
                 original)
             files.append((f'{digest.sha256}.daily-note.preview.md', changed))
-        # Fail before any write on an existing name or a Daily path alias.
-        for name, _ in files:
-            if (root / name).exists() or (root / name).is_symlink():
-                raise DeterministicDigestError('preview artifact already exists')
+        _preflight(root, files)
         for name, content in files:
             _publish(root, name, content)
         print('PREVIEW_ONLY MODEL_USED=false PUBLICATION_AUTHORIZED=false')

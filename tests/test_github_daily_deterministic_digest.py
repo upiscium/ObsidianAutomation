@@ -651,8 +651,84 @@ def test_cli_private_section_only_and_no_overwrite(tmp_path, monkeypatch):
     preview = next(private.glob('*.daily-note.preview.md')).read_text()
     assert '# My Notes\nkeep this text\n' in preview
     assert 'old\n' not in preview
-    assert cli.main(args) == 2
+    assert cli.main(args) == 0  # Identical retry is idempotent.
     assert len(list(private.iterdir())) == 3
+
+
+def test_cli_recovers_after_one_artifact_is_published(tmp_path, monkeypatch):
+    doc = digest.build_digest_from_bundle(bundle(event('issue_created', 41)))
+    trusted = replace(doc, capture_sha256=CAPTURE)
+    monkeypatch.setattr(cli, 'build_digest_from_verified_capture', lambda sha: trusted)
+    private = tmp_path / 'private'
+    private.mkdir(mode=0o700)
+    daily = tmp_path / 'daily.md'
+    original = (b'---\ntype: daily-review\n---\n# Project Progress\nold\n'
+                b'# My Notes\nkeep this text\n')
+    daily.write_bytes(original)
+    args = ['--capture-sha', CAPTURE, '--target-date', str(DAY),
+            '--output-dir', str(private), '--preview-daily', str(daily)]
+    original_publish = cli._publish
+    calls = []
+
+    def fail_second(root, name, content):
+        calls.append(name)
+        if len(calls) == 2:
+            raise OSError('simulated interruption')
+        original_publish(root, name, content)
+
+    monkeypatch.setattr(cli, '_publish', fail_second)
+    assert cli.main(args) == 2
+    assert len(list(private.iterdir())) == 1
+    first = next(private.iterdir())
+    contents = first.read_bytes()
+    monkeypatch.setattr(cli, '_publish', original_publish)
+    assert cli.main(args) == 0
+    assert len(list(private.iterdir())) == 3
+    assert first.read_bytes() == contents
+    assert daily.read_bytes() == original
+    assert cli.main(args) == 0
+    assert len(list(private.iterdir())) == 3
+
+
+def test_cli_atomic_artifact_write_recovers_after_link_failure(tmp_path, monkeypatch):
+    doc = digest.build_digest_from_bundle(bundle(event('issue_created', 41)))
+    trusted = replace(doc, capture_sha256=CAPTURE)
+    monkeypatch.setattr(cli, 'build_digest_from_verified_capture', lambda sha: trusted)
+    private = tmp_path / 'private'
+    private.mkdir(mode=0o700)
+    args = ['--capture-sha', CAPTURE, '--target-date', str(DAY), '--output-dir', str(private)]
+    original_link = cli.os.link
+
+    def cannot_link(*args, **kwargs):
+        raise OSError('simulated publication failure')
+
+    monkeypatch.setattr(cli.os, 'link', cannot_link)
+    assert cli.main(args) == 2
+    assert list(private.iterdir()) == []  # No incomplete final or temp artifact.
+    monkeypatch.setattr(cli.os, 'link', original_link)
+    assert cli.main(args) == 0
+    assert len(list(private.iterdir())) == 2
+
+
+def test_cli_conflicting_retry_does_not_overwrite_or_publish_anything(tmp_path, monkeypatch):
+    doc = digest.build_digest_from_bundle(bundle(event('issue_created', 41)))
+    trusted = replace(doc, capture_sha256=CAPTURE)
+    monkeypatch.setattr(cli, 'build_digest_from_verified_capture', lambda sha: trusted)
+    private = tmp_path / 'private'
+    private.mkdir(mode=0o700)
+    # A conflict in the last artifact must prevent earlier artifact creation.
+    conflict = private / f'{trusted.sha256}.daily-note.preview.md'
+    conflict.write_bytes(b'other-output')
+    daily = tmp_path / 'daily.md'
+    original = (b'---\ntype: daily-review\n---\n# Project Progress\nold\n'
+                b'# My Notes\nkeep this text\n')
+    daily.write_bytes(original)
+    args = ['--capture-sha', CAPTURE, '--target-date', str(DAY),
+            '--output-dir', str(private), '--preview-daily', str(daily)]
+    assert cli.main(args) == 2
+    assert list(private.iterdir()) == [conflict]
+    assert conflict.read_bytes() == b'other-output'
+    assert daily.read_bytes() == original
 
 
 def test_cli_rejects_unsafe_output_and_wrong_day(tmp_path, monkeypatch):
