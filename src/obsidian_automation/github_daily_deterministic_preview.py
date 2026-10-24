@@ -113,6 +113,30 @@ def _publish(root: Path, name: str, content: bytes) -> None:
         os.close(directory)
 
 
+
+def publish_digest_artifacts(
+    root: Path, digest, preview_daily: Path | None = None,
+) -> tuple[Path, ...]:
+    """Produce private create-only Preview files; never apply to a live Vault.
+
+    Shared by offline CLI and B4 single-user run-once adapter so both paths
+    enforce the same CHG-006 retry, collision and no-overwrite semantics.
+    """
+    _private_root(root)
+    markdown = digest.render().encode('utf-8')
+    files = [(f'{digest.sha256}.deterministic-daily.md', markdown),
+             (f'{digest.sha256}.deterministic-daily.json', digest.canonical_bytes)]
+    if preview_daily is not None:
+        original = _read_daily(preview_daily)
+        _, changed = prepare_daily_update(
+            SimpleNamespace(section_body=digest.render().rstrip('\n') + '\n\n'),
+            original)
+        files.append((f'{digest.sha256}.daily-note.preview.md', changed))
+    _preflight(root, files)
+    for name, content in files:
+        _publish(root, name, content)
+    return tuple(root / name for name, _ in files)
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description='Offline no-LLM Collector CAS Daily preview')
     parser.add_argument('--capture-sha', required=True)
@@ -148,22 +172,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.output_dir is None:
             sys.stdout.buffer.write(markdown)
             return 0
-        root = args.output_dir
-        _private_root(root)
-        files = [(f'{digest.sha256}.deterministic-daily.md', markdown),
-                 (f'{digest.sha256}.deterministic-daily.json', digest.canonical_bytes)]
-        if args.preview_daily:
-            original = _read_daily(args.preview_daily)
-            _, changed = prepare_daily_update(
-                SimpleNamespace(section_body=digest.render().rstrip('\n') + '\n\n'),
-                original)
-            files.append((f'{digest.sha256}.daily-note.preview.md', changed))
-        _preflight(root, files)
-        for name, content in files:
-            _publish(root, name, content)
+        paths = publish_digest_artifacts(args.output_dir, digest, args.preview_daily)
         print('PREVIEW_ONLY MODEL_USED=false PUBLICATION_AUTHORIZED=false')
-        for name, _ in files:
-            print(f'ARTIFACT={root / name}')
+        for path in paths:
+            print(f'ARTIFACT={path}')
         return 0
     except (DeterministicDigestError, DailyProgressError, OSError, ValueError,
             UnicodeError) as exc:
