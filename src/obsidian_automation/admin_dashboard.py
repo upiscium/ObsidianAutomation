@@ -29,6 +29,7 @@ from .admin_operation_web import (
 from .admin_status import aggregate_status
 from .admin_ai_status import load_ai_health
 from .snapshot_job import SnapshotJob, Invalid as SnapshotInvalid
+from .unified_workflows import workflow_catalog
 
 HTML = """<!doctype html>
 <html lang="ja">
@@ -60,7 +61,12 @@ HTML = """<!doctype html>
       <p id="pipeline-summary">AIの運用状況を取得しています…</p>
       <div id="pipeline-details" class="pipeline-details"></div>
     </section>
-    <section id="services" class="cards" aria-label="サービス一覧" aria-live="polite"></section>
+    <section class="pipeline" aria-label="5つの自動化機能">
+      <h2>自動化機能 B1〜B5</h2>
+      <p id="workflow-summary">共通WebUIへの接続状態を取得しています…</p>
+      <div id="workflow-catalog" class="cards" aria-live="polite"></div>
+    </section>
+    <section id="services" class="cards" aria-label="既存systemdサービス一覧" aria-live="polite"></section>
     <section class="pipeline" aria-label="接続設定">
       <h2>接続設定（各１アカウント）</h2>
       <p id="connection-state">状態を確認中</p>
@@ -77,7 +83,7 @@ HTML = """<!doctype html>
       </form>
       <p id="connection-message" role="status"></p>
     </section>
-    <section class="pipeline" aria-label="Vault Snapshot">
+    <section id="snapshot-controls" class="pipeline" aria-label="Vault Snapshot">
       <h2>Vault Snapshot → private Gitea</h2>
       <p id="snapshot-state">未設定 / 状態未確認</p>
       <p id="snapshot-last">最終結果: —</p><p id="snapshot-due">次回: —</p>
@@ -147,7 +153,8 @@ button:disabled { opacity:.55; cursor:wait }
 .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:16px }
 .card { background:var(--surface); border:1px solid var(--border); border-radius:14px;
   padding:18px 19px; min-height:168px }
-.card h2 { margin:0; font-size:1.08rem }
+.card h2,.card h3 { margin:0; font-size:1.08rem }
+.card a { color:var(--accent); display:inline-block; margin-top:8px; font-weight:650 }
 .card .small { font-size:.81rem; color:var(--muted); margin-top:8px; overflow-wrap:anywhere }
 .headline { display:flex; justify-content:space-between; align-items:center; gap:8px }
 .state { padding:3px 9px; border:1px solid var(--border); border-radius:999px;
@@ -215,6 +222,70 @@ function card(service) {
   name.textContent = service.id;
   box.append(top, name, line("定期実行", service.schedule), line("直近の実行", service.latest_execution));
   return box;
+}
+const workflowLabels = {
+  pending:"共通Job未接続", connected:"このWebUIに接続済み",
+  not_attached:"このサーバーでは未接続", unavailable:"状態取得不可",
+  configured:"設定済み", missing:"未設定", not_observed:"未観測",
+  on:"On", off:"Off", not_applicable:"定期実行は不要",
+  saved:"リモート保存確認済み", no_changes:"変更なし",
+  failed:"失敗", unconfirmed:"結果不明", queued:"受付済み",
+  running:"実行中", unknown:"未確認",
+};
+function catalogLine(name, state) {
+  const node = line(name, "unknown");
+  node.lastElementChild.textContent = workflowLabels[state] || "未確認";
+  return node;
+}
+function workflowCard(w) {
+  const box = document.createElement("article");
+  box.className = "card";
+  const heading = document.createElement("h3");
+  heading.textContent = w.id.toUpperCase() + " " + w.label;
+  const detail = document.createElement("p");
+  detail.className = "small";
+  detail.textContent = w.note;
+  box.append(heading, detail, catalogLine("統合状態", w.integration),
+    catalogLine("接続設定", w.configuration),
+    catalogLine("定期実行", w.schedule),
+    catalogLine("最終結果", w.last_result || "not_observed"));
+  if (w.id === "b2" && w.control_available === true) {
+    const link = document.createElement("a");
+    link.href = "#snapshot-controls";
+    link.textContent = "Snapshot操作へ";
+    box.append(link);
+  }
+  return box;
+}
+let workflowRefreshGeneration = 0;
+async function workflowCatalogRefresh() {
+  const generation = ++workflowRefreshGeneration;
+  try {
+    const response = await fetch("/api/v1/workflows", {
+      cache:"no-store", credentials:"same-origin",
+    });
+    if (!response.ok) throw Error("workflows_unavailable");
+    const data = await response.json();
+    if (generation !== workflowRefreshGeneration) return;
+    const ids = ["b1","b2","b3","b4","b5"];
+    if (data.version !== 1 || data.authority !== "observation_only"
+        || !Array.isArray(data.workflows) || data.workflows.length !== 5
+        || data.workflows.some((w, i) =>
+          w.id !== ids[i] || typeof w.label !== "string"
+          || typeof w.note !== "string" || typeof w.control_available !== "boolean"
+          || !Object.hasOwn(workflowLabels, w.integration)
+          || !Object.hasOwn(workflowLabels, w.configuration)
+          || !Object.hasOwn(workflowLabels, w.schedule))) {
+      throw Error("invalid_workflow_projection");
+    }
+    $("workflow-catalog").replaceChildren(...data.workflows.map(workflowCard));
+    $("workflow-summary").textContent =
+      "5機能の共通WebUI統合状況です。旧systemdサービスの観測とは別に表示します。";
+  } catch {
+    if (generation !== workflowRefreshGeneration) return;
+    $("workflow-catalog").replaceChildren();
+    $("workflow-summary").textContent = "統合状況を取得できません（古い表示は消去しました）";
+  }
 }
 function renderAi(p) {
   if (!p || !["fresh","stale","unavailable","invalid"].includes(p.freshness)) {
@@ -307,6 +378,8 @@ async function snapshotRefresh() {
     $("snapshot-due").textContent = "次回: —";
     for (const id of ["snapshot-enabled","snapshot-interval","snapshot-save","snapshot-run"])
       $(id).disabled = true;
+  } finally {
+    await workflowCatalogRefresh();
   }
 }
 async function snapshotPost(path, body) {
@@ -838,6 +911,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if not self._origin_allowed():
             self._reply(403, b"Forbidden")
+            return
+        if self.path == "/api/v1/workflows":
+            value = workflow_catalog(self.server.snapshot_job)
+            self._reply(200, json.dumps(value, ensure_ascii=False, sort_keys=True).encode("utf-8"),
+                        "application/json; charset=utf-8")
             return
         if self.path == "/api/v1/snapshot/connections":
             store = self.server.snapshot_setup
