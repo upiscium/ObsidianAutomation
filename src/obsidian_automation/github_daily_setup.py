@@ -37,14 +37,18 @@ class DailySetup:
         self.copier = copier or pull_project_notes
 
     def _shared(self):
-        connections = self.shared.connections()
+        # Prefer the shared provider-only API, which is valid without
+        # Gitea. Retain support for the existing injected B2 test fixtures.
+        source = getattr(self.shared, "source_connections", self.shared.connections)
+        connections = source()
         if connections is None:
             raise DailySetupError("nextcloud_not_configured")
         connections.validate()
         # Bind semantic WebDAV credentials and the selected Vault, not the
         # bytes of rclone's obscured password (obscure may use fresh salt).
         # Gitea-only rotation must not force another GitHub setup.
-        shared_values = self.shared.load()
+        loader = getattr(self.shared, "load_nextcloud", self.shared.load)
+        shared_values = loader()
         fields = ("webdav_url", "vault_folder", "nextcloud_user", "nextcloud_password")
         if (type(shared_values) is not dict
                 or any(type(shared_values.get(key)) is not str
@@ -76,7 +80,8 @@ class DailySetup:
     def status(self) -> dict[str, object]:
         with self._lock:
             ready = self.configured()
-            available = self.shared.connections() is not None
+            source = getattr(self.shared, "source_connections", self.shared.connections)
+            available = source() is not None
             return {
                 "version": 1, "configured": ready,
                 "github": "configured" if ready else "missing",
