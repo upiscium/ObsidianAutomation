@@ -98,9 +98,13 @@ def _daily(job: SnapshotObservation | None) -> dict[str, object]:
         result["configuration"] = "configured" if settings["configured"] else "missing"
         result["schedule"] = "on" if settings["configured"] and settings["enabled"] else "off"
         result["control_available"] = settings["configured"]
+        result["note"] = ("Writer有効。Daily Note反映は各Runの検証済み結果で確認"
+                          if observed.get("publication_enabled") is True else
+                          "Previewのみ。Daily Noteへの自動反映・Writerは未導入")
         latest = observed.get("last_run")
         if latest is not None:
-            allowed = {"preview_ready", "failed", "unconfirmed", "queued", "running"}
+            allowed = {"preview_ready", "published", "publish_failed",
+                       "failed", "unconfirmed", "queued", "running"}
             result["last_result"] = (
                 latest.get("status") if type(latest) is dict and
                 latest.get("status") in allowed else "unknown")

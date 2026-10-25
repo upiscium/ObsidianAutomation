@@ -13,6 +13,7 @@ from .snapshot_setup import SetupStore
 from .github_daily_job import DailyJob
 from .github_daily_setup import DailySetup
 from .github_daily_runonce import run_once
+from .github_daily_deterministic_writer import publish_verified_daily
 from .github_project_watcher import GitHubClient
 
 
@@ -21,9 +22,16 @@ def main() -> int:
     parser.add_argument("--config", type=Path, help="Legacy provisioned connection file")
     parser.add_argument("--state", type=Path, help="Fresh service-owned state directory")
     parser.add_argument("--port", type=int, default=8370)
+    parser.add_argument(
+        "--daily-publish", action="store_true",
+        help="Explicitly opt into B4 canonical Daily Note delivery after verified Preview; "
+             "normal/default service starts remain Preview-only",
+    )
     args = parser.parse_args()
     if (args.config is None) == (args.state is None):
         parser.error("select exactly one of --config and --state")
+    if args.daily_publish and args.state is None:
+        parser.error("--daily-publish requires the fresh shared --state app")
     store = None
     if args.state is not None:
         if not args.state.is_absolute():
@@ -59,8 +67,20 @@ def main() -> int:
             return run_once(config, client, cas_root=daily_state / "cas",
                             preview_root=daily_state / "preview")
 
-    daily_context = (DailyJob(daily_state, daily_runner, configured=daily_setup.configured)
-                     if daily_setup is not None else nullcontext(None))
+    def daily_publisher(preview_receipt):
+        if daily_setup is None or not daily_setup.configured():
+            raise ValueError("Daily delivery source no longer configured")
+        return publish_verified_daily(
+            preview_receipt, cas_root=daily_state / "cas", shared=store,
+        )
+
+    # One already-existing in-app timer invokes DailyJob.tick. Without this
+    # explicit startup option, even enabled daily runs remain Preview-only.
+    daily_context = (
+        DailyJob(daily_state, daily_runner, configured=daily_setup.configured,
+                 publisher=daily_publisher if args.daily_publish else None)
+        if daily_setup is not None else nullcontext(None)
+    )
     with make_server(port=args.port, snapshot_setup=store) as server, _job_context(
             state, runner, configured=c is not None,
             connection_generation=store.generation() if store else None) as job, daily_context as daily_job:

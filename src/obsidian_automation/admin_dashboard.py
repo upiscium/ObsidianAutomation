@@ -113,7 +113,8 @@ HTML = """<!doctype html>
       <p id="snapshot-message" role="status"></p>
     </section>
     <section id="github-daily" class="pipeline" aria-label="GitHub Daily Preview">
-      <h2>GitHub Daily（LLM不使用・Previewのみ）</h2>
+      <h2 id="daily-title">GitHub Daily（LLM不使用・Previewのみ）</h2>
+      <p id="daily-mode">Daily Note反映は未有効化です。</p>
       <p id="daily-connection-state">GitHub接続を確認中</p>
       <form id="daily-connections-form" autocomplete="off">
         <label>GitHub Access Token
@@ -131,7 +132,7 @@ HTML = """<!doctype html>
       <button id="daily-run" type="button" disabled>Run now</button>
       <button id="daily-refresh" type="button">結果を更新</button>
       <p id="daily-message" role="status"></p>
-      <p>現段階ではGitHubから読み取り、非公開Previewを作成するだけです。Daily Noteへは書き込みません。</p>
+      <p>GitHub進捗はLLMを使わず決定的に生成します。Writer有効時も前日JSTの既存Daily Noteの該当セクションだけを更新し、結果を検証します。</p>
     </section>
     <section id="operation-preview" class="pipeline" aria-label="操作の事前確認">
       <h2>サービス操作のプレビュー</h2>
@@ -270,7 +271,9 @@ const workflowLabels = {
   on:"On", off:"Off", not_applicable:"定期実行は不要",
   saved:"リモート保存確認済み", no_changes:"変更なし",
   failed:"失敗", unconfirmed:"結果不明", queued:"受付済み",
-  running:"実行中", preview_ready:"Preview生成済み（Vault未反映）", unknown:"未確認",
+  running:"実行中", preview_ready:"Preview生成済み（Vault未反映）",
+  published:"Daily Note反映確認済み", publish_failed:"Preview生成済み・反映未確認",
+  unknown:"未確認",
 };
 function catalogLine(name, state) {
   const node = line(name, "unknown");
@@ -545,13 +548,29 @@ async function dailyRefresh() {
     const r = await fetch("/api/v1/daily", {cache:"no-store",credentials:"same-origin"});
     if (!r.ok) throw Error("unavailable");
     const data = await r.json();
-    if (data.version !== 1 || data.job !== "github_daily_preview") throw Error("schema");
+    if (data.version !== 1 || data.job !== "github_daily_preview"
+        || (data.publication_enabled !== undefined
+            && typeof data.publication_enabled !== "boolean")) throw Error("schema");
+    const publicationEnabled = data.publication_enabled === true;
+    if ($("daily-title")) $("daily-title").textContent = publicationEnabled
+      ? "GitHub Daily（決定的生成・Writer有効）"
+      : "GitHub Daily（LLM不使用・Previewのみ）";
+    if ($("daily-mode")) $("daily-mode").textContent = publicationEnabled
+      ? "書き込み対象: 既存Daily NoteのProject Progressのみ。結果は確認後に表示します。"
+      : "Daily Note反映は未有効化です。";
     $("daily-enabled").checked = data.settings.enabled;
     $("daily-interval").value = data.settings.interval_seconds;
     $("daily-state").textContent = data.settings.configured
       ? (data.settings.enabled ? "定期Preview On" : "定期Preview Off") : "GitHub接続未設定（実行不可）";
     $("daily-last").textContent = data.last_run
-      ? "最終結果: " + data.last_run.status + (data.last_run.date_jst ? " / " + data.last_run.date_jst : "") : "最終結果: なし";
+      ? "最終結果: " + data.last_run.status
+        + (data.last_run.status === "published"
+            ? "（Daily Note反映確認済み: " + data.last_run.publication_outcome + "）"
+            : data.last_run.status === "publish_failed"
+            ? "（Preview生成済み・反映未確認）"
+            : data.last_run.status === "preview_ready" ? "（Vault未反映）" : "")
+        + (data.last_run.date_jst ? " / " + data.last_run.date_jst : "")
+      : "最終結果: なし";
     $("daily-due").textContent = "次回: " +
       (data.settings.next_due ? new Date(data.settings.next_due * 1000).toLocaleString() : "なし");
     for (const id of ["daily-enabled","daily-interval","daily-save","daily-run"])
@@ -559,6 +578,8 @@ async function dailyRefresh() {
     if (data.last_run && ["queued","running"].includes(data.last_run.status))
       $("daily-run").disabled = true;
   } catch {
+    if ($("daily-title")) $("daily-title").textContent = "GitHub Daily（状態未確認）";
+    if ($("daily-mode")) $("daily-mode").textContent = "Writerの現在の有効状態を確認できません";
     $("daily-state").textContent = "状態未確認（操作不可）";
     $("daily-last").textContent = "最終結果: —";
     $("daily-due").textContent = "次回: —";
@@ -572,7 +593,8 @@ $("daily-save").addEventListener("click", async () => {
     await snapshotPost("/api/v1/daily/settings", {
       enabled:$("daily-enabled").checked,
       interval_seconds:Number($("daily-interval").value)});
-    $("daily-message").textContent = "設定を保存しました（Previewのみ・Vault更新なし）";
+    $("daily-message").textContent =
+      "定期実行設定を保存しました。実行モードは起動設定で固定されています。";
   } catch { $("daily-message").textContent = "設定の保存に失敗しました"; }
   await dailyRefresh();
   await workflowCatalogRefresh();
@@ -587,10 +609,14 @@ async function pollDailyResult(runId) {
     if (receipt.run_id !== runId || typeof receipt.status !== "string")
       throw Error("run_status_invalid");
     if (!["queued","running"].includes(receipt.status)) {
-      const result = ["preview_ready","failed","unconfirmed"].includes(receipt.status)
+      const result = ["preview_ready","published","publish_failed",
+                      "failed","unconfirmed"].includes(receipt.status)
         ? receipt.status : "unknown";
       $("daily-message").textContent = result === "preview_ready"
-        ? "Preview生成完了（Vaultへは未反映）" : "実行結果: " + result;
+        ? "Preview生成完了（Vaultへは未反映）"
+        : result === "published" ? "Daily Noteへの反映を再取得して確認しました"
+        : result === "publish_failed" ? "Preview生成済み・Daily Note反映に失敗または未確認"
+        : "実行結果: " + result;
       await dailyRefresh();
       await workflowCatalogRefresh();
       return;
@@ -609,7 +635,7 @@ $("daily-run").addEventListener("click", async () => {
       request_id:crypto.randomUUID().replaceAll("-", "")});
     runId = data.run_id;
     $("daily-message").textContent = runId
-      ? "受付: " + runId + "（Previewを生成中）" : "実行中または未設定";
+      ? "受付: " + runId + "（GitHub進捗を処理中）" : "実行中または未設定";
   } catch { $("daily-message").textContent = "受付未確認。同じ処理を自動で再投入しません"; }
   await dailyRefresh();
   await workflowCatalogRefresh();
