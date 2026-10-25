@@ -78,7 +78,42 @@ def _snapshot(job: SnapshotObservation | None) -> dict[str, object]:
     return result
 
 
-def workflow_catalog(snapshot_job: SnapshotObservation | None) -> dict[str, object]:
+def _daily(job: SnapshotObservation | None) -> dict[str, object]:
+    result = _pending(
+        "b4", "GitHub進捗をDaily Noteに反映",
+        "Previewのみ。Daily Noteへの自動反映・Writerは未導入")
+    if job is None:
+        return result
+    result.update(integration="unavailable")
+    try:
+        observed = job.status()
+        if (type(observed) is not dict or observed.get("version") != 1
+                or observed.get("job") != "github_daily_preview"
+                or type(observed.get("settings")) is not dict):
+            return result
+        settings = observed["settings"]
+        if type(settings.get("enabled")) is not bool or type(settings.get("configured")) is not bool:
+            return result
+        result["integration"] = "connected"
+        result["configuration"] = "configured" if settings["configured"] else "missing"
+        result["schedule"] = "on" if settings["configured"] and settings["enabled"] else "off"
+        result["control_available"] = settings["configured"]
+        latest = observed.get("last_run")
+        if latest is not None:
+            allowed = {"preview_ready", "failed", "unconfirmed", "queued", "running"}
+            result["last_result"] = (
+                latest.get("status") if type(latest) is dict and
+                latest.get("status") in allowed else "unknown")
+    except Exception:
+        result.update(integration="unavailable", configuration="not_observed",
+                      schedule="not_observed", last_result=None, control_available=False)
+    return result
+
+
+def workflow_catalog(
+    snapshot_job: SnapshotObservation | None,
+    daily_job: SnapshotObservation | None = None,
+) -> dict[str, object]:
     pending = {identifier: _pending(identifier, label, note)
                for identifier, label, note in _PENDING}
     return {
@@ -86,6 +121,6 @@ def workflow_catalog(snapshot_job: SnapshotObservation | None) -> dict[str, obje
         "authority": "observation_only",
         "workflows": [
             pending["b1"], _snapshot(snapshot_job),
-            pending["b3"], pending["b4"], pending["b5"],
+            pending["b3"], _daily(daily_job), pending["b5"],
         ],
     }

@@ -176,16 +176,22 @@ class SnapshotJob:
                 self.db.execute("UPDATE settings SET next_due=? WHERE id=1", (self.clock() + settings["interval_seconds"],))
             return self.submit(uuid.uuid4().hex, "scheduled")[0] == "accepted"
 
-    def start_scheduler(self) -> None:
+    def start_scheduler(self, *, tick_hooks: tuple[Callable[[], bool], ...] = ()) -> None:
+        """One application scheduler may tick other independently persisted jobs."""
         if self._scheduler is not None:
             raise Busy("scheduler_already_started")
+        if type(tick_hooks) is not tuple or any(not callable(t) for t in tick_hooks):
+            raise Invalid("invalid_scheduler_hooks")
+        self._tick_hooks = tick_hooks
         self._scheduler = threading.Thread(target=self._schedule_loop, daemon=False)
         self._scheduler.start()
 
     def _schedule_loop(self) -> None:
         while not self._stop.wait(1):
-            try:
-                self.tick()
-            except Exception:
-                # Never auto-replay an uncertain run; operator inspects persisted state.
-                pass
+            for tick in (self.tick, *self._tick_hooks):
+                try:
+                    tick()
+                except Exception:
+                    # One job failure cannot disable scheduling of other jobs.
+                    # Never auto-replay an uncertain run; its owner tracks it.
+                    pass

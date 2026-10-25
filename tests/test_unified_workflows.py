@@ -9,11 +9,12 @@ from contextlib import contextmanager
 
 from obsidian_automation.admin_dashboard import HTML, JS, make_server
 from obsidian_automation.snapshot_job import SnapshotJob
+from obsidian_automation.github_daily_job import DailyJob
 from obsidian_automation.unified_workflows import workflow_catalog
 
 
 @contextmanager
-def server_with(snapshot_job=None):
+def server_with(snapshot_job=None, daily_job=None):
     def unexpected_observer():
         raise AssertionError("catalog must not read legacy systemd/AI observers")
     server = make_server(
@@ -21,6 +22,7 @@ def server_with(snapshot_job=None):
         observer=unexpected_observer,
         ai_observer=unexpected_observer,
         snapshot_job=snapshot_job,
+        daily_job=daily_job,
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -275,3 +277,175 @@ exercise().catch(e => { console.error(e); process.exitCode = 1; });
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "latest_response_wins=PASS" in result.stdout
+
+
+
+def test_b4_job_catalog_shows_preview_only_without_claiming_vault_publication(tmp_path):
+    available = [False]
+    def preview():
+        return {
+            "version":1, "status":"preview_ready", "date_jst":"2026-10-24",
+            "capture_sha256":"a"*64, "digest_sha256":"b"*64,
+            "original_event_count":21, "rendered_entity_count":5,
+            "publication_authorized":False, "vault_modified":False,
+            "model_used":False,
+        }
+
+    with DailyJob(tmp_path / "b4", preview, configured=lambda: available[0]) as job:
+        pending = entry(workflow_catalog(None), "b4")
+        assert pending["integration"] == "pending"
+        before = entry(workflow_catalog(None, job), "b4")
+        assert before["integration"] == "connected"
+        assert before["configuration"] == "missing"
+        assert before["schedule"] == "off"
+        assert before["control_available"] is False
+        available[0] = True
+        ready = entry(workflow_catalog(None, job), "b4")
+        assert ready["control_available"] and ready["last_result"] is None
+        job.update({"enabled": True, "interval_seconds": 86400})
+        assert entry(workflow_catalog(None, job), "b4")["schedule"] == "on"
+        kind, receipt = job.submit(uuid.uuid4().hex)
+        assert kind == "accepted"
+        job._worker.join(3)
+        result = entry(workflow_catalog(None, job), "b4")
+        assert result["last_result"] == "preview_ready"
+        assert "Preview" in result["note"]
+        assert "未導入" in result["note"]
+        payload = json.dumps(workflow_catalog(None, job))
+        assert receipt["run_id"] not in payload
+        assert "a"*64 not in payload
+        assert "b"*64 not in payload
+
+        with server_with(daily_job=job) as server:
+            status, _, raw = request(server)
+            assert status == 200
+            value = entry(json.loads(raw), "b4")
+            assert value["integration"] == "connected"
+            assert value["last_result"] == "preview_ready"
+
+
+def test_b4_catalog_rejects_unknown_status_and_redacts_exceptions():
+    class Explodes:
+        def status(self):
+            raise RuntimeError("SECRET-GITHUB-TOKEN")
+    class Bad:
+        def status(self):
+            return {"version":1,"job":"github_daily_preview",
+                    "settings":{"configured":True,"enabled":True},
+                    "last_run":{"status":"token=SECRET"}}
+    item = entry(workflow_catalog(None, Explodes()), "b4")
+    assert item["integration"] == "unavailable"
+    assert item["last_result"] is None
+    assert "SECRET" not in json.dumps(item)
+    item = entry(workflow_catalog(None, Bad()), "b4")
+    assert item["integration"] == "connected"
+    assert item["last_result"] == "unknown"
+    assert "SECRET" not in json.dumps(item)
+    assert 'link.href = "#github-daily"' in JS
+    assert "preview_ready:" in JS
+
+
+
+def test_b4_browser_actions_reconcile_both_panel_and_unified_catalog():
+    """B4 settings and async Run now both refresh the five-workflow catalog."""
+    start = JS.index('$("daily-save").addEventListener')
+    end = JS.index('let previewGeneration', start)
+    handlers = JS[start:end]
+    save = handlers[:handlers.index('async function pollDailyResult')]
+    run = handlers[handlers.index('$("daily-run").addEventListener'):]
+    poll = handlers[handlers.index('async function pollDailyResult'):
+                    handlers.index('$("daily-run").addEventListener')]
+    assert 'await dailyRefresh();' in save
+    assert 'await workflowCatalogRefresh();' in save
+    assert 'await pollDailyResult(runId);' in run
+    assert 'await workflowCatalogRefresh();' in poll
+    assert 'for (let attempt = 0; attempt < 90; ++attempt)' in poll
+    assert '["queued","running"].includes(receipt.status)' in poll
+    assert 'result === "preview_ready"' in poll
+    assert "preview_ready:" in JS
+
+
+
+def test_real_b4_browser_javascript_polls_until_terminal_and_refreshes_catalog():
+    """Execute the authored JS handler, not a Python imitation of its async flow."""
+    import os
+    import shutil
+    import subprocess
+    import pytest
+
+    node = os.environ.get("NODE_BINARY") or shutil.which("node")
+    if not node:
+        pytest.skip("Node.js optional UI runtime is absent")
+
+    start = JS.index("async function dailyRefresh()")
+    end = JS.index("let previewGeneration", start)
+    fragment = JS[start:end]
+    script = r"""
+"use strict";
+const assert = require("node:assert/strict");
+const vm = require("node:vm");
+const fs = require("node:fs");
+class Node {
+  constructor() {
+    this.textContent = ""; this.disabled = false; this.checked = false;
+    this.value = "86400"; this.handlers = {};
+  }
+  addEventListener(type, callback) { this.handlers[type] = callback; }
+}
+const names = [
+  "daily-state", "daily-last", "daily-due", "daily-enabled",
+  "daily-interval", "daily-save", "daily-run", "daily-refresh", "daily-message"
+];
+const nodes = Object.fromEntries(names.map(id => [id, new Node()]));
+const runId = "a".repeat(32);
+let runStatus = null;
+let pollCount = 0;
+let catalogCalls = 0;
+let postCount = 0;
+const sandbox = {
+  $: id => nodes[id],
+  setTimeout: callback => callback(),
+  crypto: {randomUUID: () => "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"},
+  snapshotPost: async (path, data) => {
+    assert.equal(path, "/api/v1/daily/runs");
+    assert.match(data.request_id, /^[a-f0-9]{32}$/);
+    ++postCount; runStatus = "queued";
+    return {run_id: runId};
+  },
+  workflowCatalogRefresh: async () => {++catalogCalls;},
+  fetch: async path => {
+    if (path === "/api/v1/daily") {
+      return {ok:true, json:async () => ({
+        version:1, job:"github_daily_preview",
+        settings:{enabled:false, configured:true,
+                  interval_seconds:86400, next_due:null},
+        last_run:runStatus ? {status:runStatus, date_jst:"2026-10-24"} : null
+      })};
+    }
+    assert.equal(path, "/api/v1/daily/runs/" + runId);
+    ++pollCount;
+    runStatus = pollCount >= 3 ? "preview_ready" : "running";
+    return {ok:true,json:async()=>({run_id:runId,status:runStatus})};
+  }
+};
+vm.runInNewContext(fs.readFileSync(0,"utf8"), sandbox);
+assert.equal(typeof nodes["daily-run"].handlers.click,"function");
+Promise.resolve(nodes["daily-run"].handlers.click()).then(() => {
+  assert.equal(postCount,1);
+  assert.equal(pollCount,3);
+  assert.ok(catalogCalls>=2);
+  assert.ok(nodes["daily-last"].textContent.includes("preview_ready"));
+  assert.ok(nodes["daily-message"].textContent.includes("Vault"));
+  assert.equal(runStatus,"preview_ready");
+  assert.equal(typeof nodes["daily-refresh"].handlers.click,"function");
+  const beforeRefresh = catalogCalls;
+  return Promise.resolve(nodes["daily-refresh"].handlers.click()).then(() => {
+    assert.ok(catalogCalls > beforeRefresh);
+    assert.equal(postCount,1); // Refresh never re-submits the job.
+    assert.ok(nodes["daily-last"].textContent.includes("preview_ready"));
+  });
+}).catch(err => { console.error(err); process.exitCode=1; });
+"""
+    result = subprocess.run([node, "-e", script], input=fragment,
+                            text=True, capture_output=True, timeout=12)
+    assert result.returncode == 0, result.stderr
