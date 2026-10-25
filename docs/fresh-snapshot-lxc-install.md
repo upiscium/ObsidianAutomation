@@ -102,3 +102,12 @@ journalctl -u obsidian-snapshot.service --no-pager
 - Privacy may change between the immediate pre-push API check and Git push;
   no cross-protocol atomic guarantee exists. The disposable E2E substitutes
   a local bare Git repository for HTTPS Gitea and a fake rclone for Nextcloud.
+
+## Private LAN Dashboard and umask recovery
+
+For a fresh LXC with a dedicated RFC1918 interface, see
+[Fresh private LAN install](fresh-private-lan-install.md) for an optional
+direct private-IP WebUI binding, no second ingress daemon, and the child-process
+umask 022 fix required for root-shell umask 077 installations. The older
+default remains loopback-only. The current shared Nextcloud setup can configure
+B4 without Gitea; Gitea is needed only when using B2 Snapshot.

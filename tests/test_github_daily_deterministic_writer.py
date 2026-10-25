@@ -322,3 +322,37 @@ def test_startup_mode_default_off_explicit_opt_in_requires_state(tmp_path, monke
     assert observed == [False, True]
     assert "published:" in JS and "publish_failed:" in JS
     assert "publication_enabled" in JS
+
+
+def test_private_lan_bind_and_writer_opt_in_can_coexist(tmp_path, monkeypatch):
+    """Merged #461 --bind and #462 --daily-publish must not drop either flag."""
+    import sys
+    from obsidian_automation import snapshot_app
+
+    created = []
+
+    class FakeServer:
+        def __init__(self, kwargs):
+            created.append(kwargs)
+        def __enter__(self):
+            return self
+        def __exit__(self, *_):
+            return None
+        def serve_forever(self, **kwargs):
+            assert created[-1]["bind_address"] == "10.12.2.15"
+            assert self.daily_job.publisher is not None
+            assert self.daily_job.settings()["enabled"] is False
+            assert self.daily_job.status()["publication_enabled"] is True
+            assert self.snapshot_job.settings()["configured"] is False
+            assert self.snapshot_job.settings()["enabled"] is False
+            assert self.snapshot_job._scheduler is not None
+            assert not hasattr(self.daily_job, "_scheduler")
+
+    monkeypatch.setattr(snapshot_app, "make_server", lambda **kwargs: FakeServer(kwargs))
+    monkeypatch.setattr(sys, "argv", [
+        "snapshot-app", "--state", str(tmp_path / "fresh-app"),
+        "--port", "0", "--bind", "10.12.2.15", "--daily-publish",
+    ])
+    assert snapshot_app.main() == 0
+    assert len(created) == 1
+    assert created[0]["port"] == 0

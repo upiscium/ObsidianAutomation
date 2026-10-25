@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import json
+import ipaddress
 import os
 from pathlib import Path, PurePosixPath
 import subprocess
@@ -93,8 +94,27 @@ class InstallPlan:
         ) + "\n"
 
 
-def _service_unit() -> str:
-    return """[Unit]
+def _validate_bind_address(value: str) -> str:
+    """Exact RFC1918 or loopback address only; never bind public/wildcard."""
+    if type(value) is not str:
+        raise InstallerError("invalid_bind_address")
+    try:
+        ip = ipaddress.IPv4Address(value)
+    except ipaddress.AddressValueError as exc:
+        raise InstallerError("invalid_bind_address") from exc
+    networks = (ipaddress.IPv4Network(v) for v in
+                ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
+    if (value != str(ip) or
+            (ip != ipaddress.IPv4Address("127.0.0.1")
+             and not any(ip in n for n in networks))):
+        raise InstallerError("non_private_bind_refused")
+    return value
+
+
+def _service_unit(bind_address: str = "127.0.0.1") -> str:
+    address = _validate_bind_address(bind_address)
+    suffix = f" --bind {address}" if address != "127.0.0.1" else ""
+    return f"""[Unit]
 Description=Obsidian Snapshot application
 After=network-online.target
 Wants=network-online.target
@@ -105,7 +125,7 @@ User=obsidian-snapshot
 Group=obsidian-snapshot
 WorkingDirectory=/var/lib/obsidian-snapshot
 Environment=HOME=/var/lib/obsidian-snapshot
-ExecStart=/opt/obsidian-snapshot/venv/bin/obsidian-snapshot-app --state /var/lib/obsidian-snapshot
+ExecStart=/opt/obsidian-snapshot/venv/bin/obsidian-snapshot-app --state /var/lib/obsidian-snapshot{suffix}
 Restart=on-failure
 RestartSec=5s
 
@@ -145,6 +165,7 @@ def build_plan(
     source_root: Path,
     *,
     target_root: Path = Path("/"),
+    bind_address: str = "127.0.0.1",
 ) -> InstallPlan:
     """Build the install actions without invoking a command or writing files.
 
@@ -153,6 +174,7 @@ def build_plan(
     """
     source = _validate_source_root(Path(source_root))
     target = _validate_target_root(Path(target_root))
+    bind_address = _validate_bind_address(bind_address)
     pip = f"{VENV_ROOT}/bin/pip"
     steps = (
         Step("command", "refresh Debian package metadata", ("apt-get", "update")),
@@ -212,7 +234,7 @@ def build_plan(
         ),
         Step(
             "write_file", "install the single Snapshot systemd service",
-            path=UNIT_PATH, content=_service_unit(), mode=0o644,
+            path=UNIT_PATH, content=_service_unit(bind_address), mode=0o644,
         ),
         Step(
             "command", "reload systemd unit inventory",
@@ -270,6 +292,10 @@ def _subprocess_runner(argv: Sequence[str]) -> CommandResult:
         check=False,
         capture_output=True,
         text=True,
+        # Root's inherited umask may be 077. Virtualenv and package Python
+        # code must be traversable/readable by the nonroot service, while
+        # persistent state remains explicitly 0700 via install -d -m.
+        umask=0o022,
     )
     return CommandResult(completed.returncode, completed.stdout, completed.stderr)
 
@@ -322,6 +348,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="reviewed source checkout to install (default: this repository)",
     )
     parser.add_argument(
+        "--bind-address",
+        default="127.0.0.1",
+        help="Explicit RFC1918 address for a private LAN Dashboard; default loopback",
+    )
+    parser.add_argument(
         "--apply",
         action="store_true",
         help="perform the host mutations described by the generated plan",
@@ -332,7 +363,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
-        plan = build_plan(args.source_root)
+        plan = build_plan(args.source_root, bind_address=args.bind_address)
         if not args.apply:
             sys.stdout.write(plan.to_json())
             return 0

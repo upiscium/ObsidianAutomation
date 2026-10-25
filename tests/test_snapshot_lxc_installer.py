@@ -144,3 +144,41 @@ def test_existing_service_account_fails_before_install_steps(tmp_path: Path) -> 
         installer.execute_plan(plan, fake_runner, require_root=False)
 
     assert calls == [("getent", "passwd", "obsidian-snapshot")]
+
+
+def test_private_lan_binding_is_explicit_and_default_is_loopback(tmp_path):
+    source = _source(tmp_path)
+    default = installer.build_plan(source)
+    default_unit = next(step.content for step in default.steps
+                        if step.kind == "write_file")
+    assert "obsidian-snapshot-app --state /var/lib/obsidian-snapshot\n" in default_unit
+    assert " --bind " not in default_unit
+    private = installer.build_plan(source, bind_address="10.12.2.15")
+    private_unit = next(step.content for step in private.steps
+                        if step.kind == "write_file")
+    assert "obsidian-snapshot-app --state /var/lib/obsidian-snapshot --bind 10.12.2.15\n" in private_unit
+    assert "User=obsidian-snapshot" in private_unit
+    assert "Restart=on-failure" in private_unit
+    for bad in ("0.0.0.0", "8.8.8.8", "::", "public.example", "10.12.2.15;id",
+                "", "127.0.0.2"):
+        with pytest.raises(installer.InstallerError):
+            installer.build_plan(source, bind_address=bad)
+
+
+def test_installer_commands_have_world_traversable_code_even_under_umask_077(tmp_path):
+    """A real Debian LXC failed with ExecStart 203/EXEC due to inherited 077."""
+    import os
+    directory = tmp_path / "created-by-root-side-runner"
+    script = ("import pathlib; root=pathlib.Path(" + repr(str(directory)) +
+              "); root.mkdir(); (root/'code.py').write_text('x=1\\n')")
+    old = os.umask(0o077)
+    try:
+        result = installer._subprocess_runner((sys.executable, "-c", script))
+        # umask mutation must stay inside the child process.
+        observed = os.umask(0o077)
+        assert observed == 0o077
+    finally:
+        os.umask(old)
+    assert result.returncode == 0, result.stderr
+    assert stat.S_IMODE(directory.stat().st_mode) == 0o755
+    assert stat.S_IMODE((directory / "code.py").stat().st_mode) == 0o644

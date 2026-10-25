@@ -22,6 +22,9 @@ def main() -> int:
     parser.add_argument("--config", type=Path, help="Legacy provisioned connection file")
     parser.add_argument("--state", type=Path, help="Fresh service-owned state directory")
     parser.add_argument("--port", type=int, default=8370)
+    parser.add_argument("--bind", default="127.0.0.1",
+                        help="Explicit RFC1918/LAN IPv4 for a trusted private dashboard; "
+                             "default is loopback")
     parser.add_argument(
         "--daily-publish", action="store_true",
         help="Explicitly opt into B4 canonical Daily Note delivery after verified Preview; "
@@ -74,14 +77,15 @@ def main() -> int:
             preview_receipt, cas_root=daily_state / "cas", shared=store,
         )
 
-    # One already-existing in-app timer invokes DailyJob.tick. Without this
-    # explicit startup option, even enabled daily runs remain Preview-only.
+    # The single in-app scheduler ticks B4. Publication requires explicit
+    # --daily-publish regardless of whether --bind exposes a private LAN UI.
     daily_context = (
         DailyJob(daily_state, daily_runner, configured=daily_setup.configured,
                  publisher=daily_publisher if args.daily_publish else None)
         if daily_setup is not None else nullcontext(None)
     )
-    with make_server(port=args.port, snapshot_setup=store) as server, _job_context(
+    with make_server(port=args.port, bind_address=args.bind,
+                     snapshot_setup=store) as server, _job_context(
             state, runner, configured=c is not None,
             connection_generation=store.generation() if store else None) as job, daily_context as daily_job:
         server.snapshot_job = job
