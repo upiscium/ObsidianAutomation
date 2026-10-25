@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 from contextlib import nullcontext
 import json
+import ipaddress
 import threading
 import time
 from datetime import datetime, timezone
@@ -1095,8 +1096,11 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def _origin_allowed(self) -> bool:
-        port = self.server.server_address[1]
-        hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+        address, port = self.server.server_address[:2]
+        # Host and Origin must match the actual interface this one Dashboard
+        # bound to. Never accept arbitrary Host values or proxy wildcards.
+        hosts = ({f"127.0.0.1:{port}", f"localhost:{port}"}
+                 if address == "127.0.0.1" else {f"{address}:{port}"})
         received_hosts = self.headers.get_all("Host", [])
         received_origins = self.headers.get_all("Origin", [])
         if len(received_hosts) != 1 or len(received_origins) > 1:
@@ -1590,8 +1594,28 @@ class Handler(BaseHTTPRequestHandler):
     do_OPTIONS = do_PUT
 
 
+_PRIVATE_IPV4 = tuple(ipaddress.IPv4Network(v) for v in
+                      ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
+
+
+def validate_bind_address(value: str) -> str:
+    """Accept only a concrete loopback or RFC1918 IPv4 interface."""
+    if type(value) is not str:
+        raise ValueError("invalid_private_bind")
+    try:
+        address = ipaddress.IPv4Address(value)
+    except ipaddress.AddressValueError as exc:
+        raise ValueError("invalid_private_bind") from exc
+    if value != str(address):
+        raise ValueError("invalid_private_bind")
+    if address != ipaddress.IPv4Address("127.0.0.1") and not any(
+            address in network for network in _PRIVATE_IPV4):
+        raise ValueError("nonprivate_bind_refused")
+    return value
+
+
 def make_server(
-    *, port: int = 8370,
+    *, port: int = 8370, bind_address: str = "127.0.0.1",
     observer: Observer = aggregate_status,
     ai_observer: AIObserver = load_ai_health,
     capabilities_observer: Callable[[], dict[str, object]] = _unavailable_capabilities,
@@ -1605,7 +1629,8 @@ def make_server(
 ) -> ThreadingHTTPServer:
     if not isinstance(port, int) or not 0 <= port <= 65535:
         raise ValueError("port must be between 0 and 65535")
-    server = BoundedDashboardServer(("127.0.0.1", port), Handler)
+    bind_address = validate_bind_address(bind_address)
+    server = BoundedDashboardServer((bind_address, port), Handler)
     server.observer = observer
     server.ai_observer = ai_observer
     server.status_singleflight = _StatusSingleFlight(observer, ai_observer)
