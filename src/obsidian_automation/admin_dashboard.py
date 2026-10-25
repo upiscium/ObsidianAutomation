@@ -29,6 +29,7 @@ from .admin_operation_web import (
 from .admin_status import aggregate_status
 from .admin_ai_status import load_ai_health
 from .snapshot_job import SnapshotJob, Invalid as SnapshotInvalid
+from .github_daily_job import DailyJob, Invalid as DailyInvalid
 
 HTML = """<!doctype html>
 <html lang="ja">
@@ -86,6 +87,17 @@ HTML = """<!doctype html>
       <button id="snapshot-save" type="button" disabled>設定を保存</button>
       <button id="snapshot-run" type="button" disabled>Run now</button>
       <p id="snapshot-message" role="status"></p>
+    </section>
+    <section id="github-daily" class="pipeline" aria-label="GitHub Daily Preview">
+      <h2>GitHub Daily（LLM不使用・Previewのみ）</h2>
+      <p id="daily-state">未設定 / 状態未確認</p>
+      <p id="daily-last">最終結果: —</p><p id="daily-due">次回: —</p>
+      <label>定期実行 <input id="daily-enabled" type="checkbox" disabled></label>
+      <label>間隔（秒） <input id="daily-interval" type="number" min="3600" max="86400" disabled></label>
+      <button id="daily-save" type="button" disabled>設定を保存</button>
+      <button id="daily-run" type="button" disabled>Run now</button>
+      <p id="daily-message" role="status"></p>
+      <p>現段階ではGitHubから読み取り、非公開Previewを作成するだけです。Daily Noteへは書き込みません。</p>
     </section>
     <section id="operation-preview" class="pipeline" aria-label="操作の事前確認">
       <h2>サービス操作のプレビュー</h2>
@@ -336,6 +348,50 @@ $("snapshot-run").addEventListener("click", async () => {
   } catch { $("snapshot-message").textContent = "受付不明。二重実行せず管理者に確認してください"; }
   await snapshotRefresh();
 });
+async function dailyRefresh() {
+  try {
+    const r = await fetch("/api/v1/daily", {cache:"no-store",credentials:"same-origin"});
+    if (!r.ok) throw Error("unavailable");
+    const data = await r.json();
+    if (data.version !== 1 || data.job !== "github_daily_preview") throw Error("schema");
+    $("daily-enabled").checked = data.settings.enabled;
+    $("daily-interval").value = data.settings.interval_seconds;
+    $("daily-state").textContent = data.settings.configured
+      ? (data.settings.enabled ? "定期Preview On" : "定期Preview Off") : "GitHub接続未設定（実行不可）";
+    $("daily-last").textContent = data.last_run
+      ? "最終結果: " + data.last_run.status + (data.last_run.date_jst ? " / " + data.last_run.date_jst : "") : "最終結果: なし";
+    $("daily-due").textContent = "次回: " +
+      (data.settings.next_due ? new Date(data.settings.next_due * 1000).toLocaleString() : "なし");
+    for (const id of ["daily-enabled","daily-interval","daily-save","daily-run"])
+      $(id).disabled = !data.settings.configured;
+  } catch {
+    $("daily-state").textContent = "状態未確認（操作不可）";
+    $("daily-last").textContent = "最終結果: —";
+    $("daily-due").textContent = "次回: —";
+    for (const id of ["daily-enabled","daily-interval","daily-save","daily-run"])
+      $(id).disabled = true;
+  }
+}
+$("daily-save").addEventListener("click", async () => {
+  $("daily-save").disabled = true;
+  try {
+    await snapshotPost("/api/v1/daily/settings", {
+      enabled:$("daily-enabled").checked,
+      interval_seconds:Number($("daily-interval").value)});
+    $("daily-message").textContent = "設定を保存しました（Previewのみ・Vault更新なし）";
+  } catch { $("daily-message").textContent = "設定の保存に失敗しました"; }
+  await dailyRefresh();
+});
+$("daily-run").addEventListener("click", async () => {
+  $("daily-run").disabled = true;
+  try {
+    const data = await snapshotPost("/api/v1/daily/runs", {
+      request_id:crypto.randomUUID().replaceAll("-", "")});
+    $("daily-message").textContent = data.run_id
+      ? "受付: " + data.run_id + "（結果は更新して確認）" : "実行中または未設定";
+  } catch { $("daily-message").textContent = "受付未確認。同じ処理を自動で再投入しません"; }
+  await dailyRefresh();
+});
 let previewGeneration = 0;
 let pendingConfirmation = null;
 let latestOperationId = null;
@@ -384,6 +440,7 @@ async function fetchOperatorReadiness() {
 async function refresh() {
   await connectionRefresh();
   await snapshotRefresh();
+  await dailyRefresh();
   ++previewGeneration; // Invalidate any in-flight operation preview.
   invalidateConfirmation();
   $("preview-check").disabled = true;
@@ -839,6 +896,17 @@ class Handler(BaseHTTPRequestHandler):
         if not self._origin_allowed():
             self._reply(403, b"Forbidden")
             return
+        if self.path == "/api/v1/daily" or self.path.startswith("/api/v1/daily/runs/"):
+            job = self.server.daily_job
+            if job is None:
+                self._reply(503, b'{"error":"daily_disabled"}', "application/json")
+                return
+            value = (job.status() if self.path == "/api/v1/daily" else
+                     job.run(self.path[len("/api/v1/daily/runs/"):]))
+            self._reply(200 if value is not None else 404,
+                        json.dumps(value).encode() if value is not None else b'{"error":"not_found"}',
+                        "application/json")
+            return
         if self.path == "/api/v1/snapshot/connections":
             store = self.server.snapshot_setup
             self._reply(200 if store else 503, json.dumps(store.status() if store else {"error":"setup_disabled"}).encode(), "application/json")
@@ -977,6 +1045,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/v1/operation-previews", "/api/v1/operations",
             "/api/v1/snapshot/settings", "/api/v1/snapshot/runs",
             "/api/v1/snapshot/connections",
+            "/api/v1/daily/settings", "/api/v1/daily/runs",
         ):
             self._reply(405, b"Method not allowed")
             return
@@ -1001,6 +1070,32 @@ class Handler(BaseHTTPRequestHandler):
         if len(tokens) != 1 or not self.server.preview_csrf.consume(tokens[0]):
             self._reply(403, b'{"error":"csrf_rejected"}', "application/json")
             return
+        if self.path in ("/api/v1/daily/settings", "/api/v1/daily/runs"):
+            job = self.server.daily_job
+            if job is None:
+                self._reply(503, b'{"error":"daily_disabled"}', "application/json")
+                return
+            try:
+                payload = json.loads(self._read_bounded_json())
+                if self.path.endswith("/settings"):
+                    result = job.update(payload)
+                    code = 200
+                else:
+                    if type(payload) is not dict or set(payload) != {"request_id"}:
+                        raise DailyInvalid("invalid_daily_request")
+                    outcome, receipt = job.submit(payload["request_id"])
+                    result = {"version":1, "outcome":outcome,
+                              "run_id":receipt["run_id"] if receipt else None}
+                    code = 202 if outcome in ("accepted","replayed") else 409
+            except (DailyInvalid, PreviewRequestRejected, ValueError, TypeError):
+                self._reply(400, b'{"error":"invalid_daily_request"}', "application/json")
+                return
+            except Exception:
+                self._reply(503, b'{"error":"daily_unavailable"}', "application/json")
+                return
+            self._reply(code, json.dumps(result).encode(), "application/json")
+            return
+
         if self.path in ("/api/v1/snapshot/settings", "/api/v1/snapshot/runs"):
             job = self.server.snapshot_job
             if job is None:
@@ -1145,6 +1240,7 @@ def make_server(
     operator_ui_enabled: bool = False,
     snapshot_job: SnapshotJob | None = None,
     snapshot_setup=None,
+    daily_job: DailyJob | None = None,
 ) -> ThreadingHTTPServer:
     if not isinstance(port, int) or not 0 <= port <= 65535:
         raise ValueError("port must be between 0 and 65535")
@@ -1163,6 +1259,7 @@ def make_server(
     server.operator_ui_enabled = operator_ui_enabled is True
     server.snapshot_job = snapshot_job
     server.snapshot_setup = snapshot_setup
+    server.daily_job = daily_job
     server.daemon_threads = True
     return server
 
