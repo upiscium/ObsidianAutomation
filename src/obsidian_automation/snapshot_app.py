@@ -11,7 +11,8 @@ from .snapshot_adapter import Connections, SnapshotAdapter
 from .snapshot_job import SnapshotJob
 from .snapshot_setup import SetupStore
 from .github_daily_job import DailyJob
-from .github_daily_runonce import load_run_config, run_once
+from .github_daily_setup import DailySetup
+from .github_daily_runonce import run_once
 from .github_project_watcher import GitHubClient
 
 
@@ -48,26 +49,24 @@ def main() -> int:
     # GitHub credentials and a pull-only local Project mirror are configured.
     daily_state = state / "github-daily" if store else None
 
-    def daily_configured():
-        try:
-            load_run_config(daily_state)
-            return True
-        except Exception:
-            return False
+    daily_setup = DailySetup(daily_state, store) if store is not None else None
 
     def daily_runner():
-        config, token = load_run_config(daily_state)
-        client = GitHubClient(token=token, timeout_seconds=config.request_timeout_seconds)
-        return run_once(config, client, cas_root=daily_state / "cas",
-                        preview_root=daily_state / "preview")
+        # B4 reuses the already configured B2 Nextcloud account but only
+        # downloads Project notes to a private disposable local mirror.
+        with daily_setup.project_source() as (config, token):
+            client = GitHubClient(token=token, timeout_seconds=config.request_timeout_seconds)
+            return run_once(config, client, cas_root=daily_state / "cas",
+                            preview_root=daily_state / "preview")
 
-    daily_context = (DailyJob(daily_state, daily_runner, configured=daily_configured)
-                     if daily_state is not None else nullcontext(None))
+    daily_context = (DailyJob(daily_state, daily_runner, configured=daily_setup.configured)
+                     if daily_setup is not None else nullcontext(None))
     with make_server(port=args.port, snapshot_setup=store) as server, _job_context(
             state, runner, configured=c is not None,
             connection_generation=store.generation() if store else None) as job, daily_context as daily_job:
         server.snapshot_job = job
         server.daily_job = daily_job
+        server.daily_setup = daily_setup
         job.start_scheduler(tick_hooks=(daily_job.tick,) if daily_job else ())
         server.serve_forever(poll_interval=0.25)
     return 0
