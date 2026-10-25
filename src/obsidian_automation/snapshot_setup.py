@@ -22,6 +22,10 @@ NEXTCLOUD_FIELDS = {"webdav_url", "vault_folder", "nextcloud_user", "nextcloud_p
 GITEA_FIELDS = {"git_url", "git_user", "git_token", "branch"}
 FIELDS = NEXTCLOUD_FIELDS | GITEA_FIELDS
 MARKER = "_rclone_sha256"
+# rclone obscure uses unpadded URL-safe Base64, which may contain "-" and "_".
+# Nextcloud accepts up to 512 Unicode characters: 4 UTF-8 bytes each plus
+# rclone's random 16-byte prefix still encode to fewer than 4096 characters.
+_RCLONE_OBSCURED_RE = re.compile(r"[A-Za-z0-9_-]{1,4096}\Z")
 
 
 @dataclass(frozen=True)
@@ -218,7 +222,7 @@ class SetupStore:
             if not probed and not self.nextcloud_probe(value):
                 return False
             obscured = self.obscure(value["nextcloud_password"])
-            if not re.fullmatch(r"[A-Za-z0-9+/=]+", obscured):
+            if _RCLONE_OBSCURED_RE.fullmatch(obscured) is None:
                 return False
             config = _rclone_config(value, obscured)
             old = self.rclone.read_text() if self.rclone.exists() else None
@@ -241,7 +245,7 @@ class SetupStore:
             if not probed and not self.probe(value):
                 return False
             obscured = self.obscure(value["nextcloud_password"])
-            if not re.fullmatch(r"[A-Za-z0-9+/=]+", obscured):
+            if _RCLONE_OBSCURED_RE.fullmatch(obscured) is None:
                 return False
             config = _rclone_config(value, obscured)
             # Policy is a fixed local default; no HTTP input reaches it.
