@@ -7,6 +7,7 @@ implemented, so this must remain on loopback/private ingress only.
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 import json
 import threading
 import time
@@ -30,6 +31,7 @@ from .admin_status import aggregate_status
 from .admin_ai_status import load_ai_health
 from .snapshot_job import SnapshotJob, Invalid as SnapshotInvalid
 from .github_daily_job import DailyJob, Invalid as DailyInvalid
+from .github_daily_setup import DailySetup, DailySetupError
 from .unified_workflows import workflow_catalog
 
 HTML = """<!doctype html>
@@ -96,6 +98,15 @@ HTML = """<!doctype html>
     </section>
     <section id="github-daily" class="pipeline" aria-label="GitHub Daily Preview">
       <h2>GitHub Daily（LLM不使用・Previewのみ）</h2>
+      <p id="daily-connection-state">GitHub接続を確認中</p>
+      <form id="daily-connections-form" autocomplete="off">
+        <label>GitHub Access Token
+          <input name="github_token" type="password" autocomplete="off" required
+                 placeholder="GitHub token（画面には再表示されません）"></label>
+        <button id="daily-connections-save" type="submit" disabled>GitHub接続を検証して保存</button>
+      </form>
+      <p id="daily-connection-message" role="status"></p>
+      <p>B2で設定したNextcloudアカウントを共有してProjectノートを読み取ります。新しいNextcloudアカウントは不要です。</p>
       <p id="daily-state">未設定 / 状態未確認</p>
       <p id="daily-last">最終結果: —</p><p id="daily-due">次回: —</p>
       <label>定期実行 <input id="daily-enabled" type="checkbox" disabled></label>
@@ -369,6 +380,9 @@ $("connections-form").addEventListener("submit", async (event) => {
   button.disabled = false;
   await connectionRefresh();
   await snapshotRefresh();
+  await dailyConnectionRefresh();
+  await dailyRefresh();
+  await workflowCatalogRefresh();
 });
 async function snapshotRefresh() {
   try {
@@ -427,6 +441,39 @@ $("snapshot-run").addEventListener("click", async () => {
       ? "受付: " + result.run_id + "（結果は未確認。更新して確認）" : "実行中または未設定";
   } catch { $("snapshot-message").textContent = "受付不明。二重実行せず管理者に確認してください"; }
   await snapshotRefresh();
+});
+async function dailyConnectionRefresh() {
+  try {
+    const r = await fetch("/api/v1/daily/connections", {
+      cache:"no-store",credentials:"same-origin"});
+    if (!r.ok) throw Error("unavailable");
+    const data = await r.json();
+    if (data.version !== 1) throw Error("schema");
+    $("daily-connection-state").textContent = data.configured
+      ? "GitHub接続済み（秘密情報は非表示、Projectミラーは実行時に読み取り）"
+      : data.nextcloud_source === "configured"
+        ? "GitHub未設定（B2のNextcloud接続を再利用）"
+        : "先にNextcloud・Gitea接続設定を保存してください";
+    $("daily-connections-save").disabled = data.nextcloud_source !== "configured";
+  } catch {
+    $("daily-connection-state").textContent = "GitHub接続状態を確認できません";
+    $("daily-connections-save").disabled = true;
+  }
+}
+$("daily-connections-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  $("daily-connections-save").disabled = true;
+  try {
+    await snapshotPost("/api/v1/daily/connections", Object.fromEntries(new FormData(form)));
+    $("daily-connection-message").textContent = "GitHubを検証して保存しました。定期PreviewはOffです。";
+    form.reset();
+  } catch {
+    $("daily-connection-message").textContent = "GitHubの検証または保存に失敗しました";
+  }
+  await dailyConnectionRefresh();
+  await dailyRefresh();
+  await workflowCatalogRefresh();
 });
 async function dailyRefresh() {
   try {
@@ -563,6 +610,7 @@ async function fetchOperatorReadiness() {
 async function refresh() {
   await connectionRefresh();
   await snapshotRefresh();
+  await dailyConnectionRefresh();
   await dailyRefresh();
   ++previewGeneration; // Invalidate any in-flight operation preview.
   invalidateConfirmation();
@@ -1019,6 +1067,12 @@ class Handler(BaseHTTPRequestHandler):
         if not self._origin_allowed():
             self._reply(403, b"Forbidden")
             return
+        if self.path == "/api/v1/daily/connections":
+            setup = self.server.daily_setup
+            self._reply(200 if setup else 503,
+                        json.dumps(setup.status() if setup else
+                                   {"error":"daily_setup_disabled"}).encode(), "application/json")
+            return
         if self.path == "/api/v1/daily" or self.path.startswith("/api/v1/daily/runs/"):
             job = self.server.daily_job
             if job is None:
@@ -1174,6 +1228,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/v1/snapshot/settings", "/api/v1/snapshot/runs",
             "/api/v1/snapshot/connections",
             "/api/v1/daily/settings", "/api/v1/daily/runs",
+            "/api/v1/daily/connections",
         ):
             self._reply(405, b"Method not allowed")
             return
@@ -1198,6 +1253,37 @@ class Handler(BaseHTTPRequestHandler):
         if len(tokens) != 1 or not self.server.preview_csrf.consume(tokens[0]):
             self._reply(403, b'{"error":"csrf_rejected"}', "application/json")
             return
+        if self.path == "/api/v1/daily/connections":
+            setup, job = self.server.daily_setup, self.server.daily_job
+            if setup is None or job is None:
+                self._reply(503, b'{"error":"daily_setup_disabled"}', "application/json")
+                return
+            try:
+                payload = json.loads(self._read_bounded_json())
+                with job._lock:
+                    if job.db.execute(
+                        "SELECT 1 FROM runs WHERE status IN ('queued','running') LIMIT 1"
+                    ).fetchone():
+                        self._reply(409, b'{"error":"daily_busy"}', "application/json")
+                        return
+                    setup.validate_payload(payload)
+                    # Commit Off before replacing the GitHub credential.
+                    # A failed SQLite reset must leave the previous token
+                    # untouched, not bind new credentials to an On schedule.
+                    current = job.settings()
+                    job.update({"enabled":False,
+                                "interval_seconds":current["interval_seconds"]})
+                    if not setup.save(payload):
+                        self._reply(422, b'{"error":"github_connection_probe_failed"}',
+                                    "application/json")
+                        return
+                self._reply(200, json.dumps(setup.status()).encode(), "application/json")
+            except (DailySetupError, DailyInvalid, PreviewRequestRejected, ValueError, TypeError):
+                self._reply(400, b'{"error":"invalid_github_connection"}', "application/json")
+            except Exception:
+                self._reply(503, b'{"error":"github_connection_unavailable"}', "application/json")
+            return
+
         if self.path in ("/api/v1/daily/settings", "/api/v1/daily/runs"):
             job = self.server.daily_job
             if job is None:
@@ -1256,18 +1342,35 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 payload = json.loads(self._read_bounded_json())
-                with job._lock:
+                daily = self.server.daily_job
+                with job._lock, (daily._lock if daily is not None else nullcontext()):
                     if job.db.execute("SELECT 1 FROM runs WHERE status IN ('queued','running') LIMIT 1").fetchone():
                         self._reply(409, b'{"error":"snapshot_busy"}', "application/json")
                         return
+                    # A running B4 pull must not race replacing the only
+                    # shared Nextcloud connection.
+                    if daily is not None and daily.db.execute(
+                        "SELECT 1 FROM runs WHERE status IN ('queued','running') LIMIT 1"
+                    ).fetchone():
+                        self._reply(409, b'{"error":"daily_busy"}', "application/json")
+                        return
+                    github_setup = self.server.daily_setup
+                    previous_source = (github_setup.source_fingerprint()
+                                       if github_setup is not None else None)
                     if not store.save(payload):
                         self._reply(422, b'{"error":"connection_probe_failed"}', "application/json")
                         return
                     try:
                         job.connections_saved(store.generation())
+                        # B4 only depends on the Nextcloud source, not Gitea.
+                        if (daily is not None and github_setup is not None
+                                and previous_source != github_setup.source_fingerprint()):
+                            settings = daily.settings()
+                            daily.update({"enabled":False,
+                                          "interval_seconds":settings["interval_seconds"]})
                     except Exception:
-                        # Disk commit succeeded but SQLite reset did not: block
-                        # new jobs in this process; startup reconciles generation.
+                        # Disk commit succeeded but schedule reset did not.
+                        # Never claim the prior B2 schedule remains valid.
                         job.configured = False
                         raise
                 self._reply(200, json.dumps(store.status()).encode(), "application/json")
@@ -1369,6 +1472,7 @@ def make_server(
     snapshot_job: SnapshotJob | None = None,
     snapshot_setup=None,
     daily_job: DailyJob | None = None,
+    daily_setup: DailySetup | None = None,
 ) -> ThreadingHTTPServer:
     if not isinstance(port, int) or not 0 <= port <= 65535:
         raise ValueError("port must be between 0 and 65535")
@@ -1388,6 +1492,7 @@ def make_server(
     server.snapshot_job = snapshot_job
     server.snapshot_setup = snapshot_setup
     server.daily_job = daily_job
+    server.daily_setup = daily_setup
     server.daemon_threads = True
     return server
 
