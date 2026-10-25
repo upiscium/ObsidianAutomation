@@ -21,6 +21,9 @@ def main() -> int:
     parser.add_argument("--config", type=Path, help="Legacy provisioned connection file")
     parser.add_argument("--state", type=Path, help="Fresh service-owned state directory")
     parser.add_argument("--port", type=int, default=8370)
+    parser.add_argument("--bind", default="127.0.0.1",
+                        help="Explicit RFC1918/LAN IPv4 for a trusted private dashboard; "
+                             "default is loopback")
     args = parser.parse_args()
     if (args.config is None) == (args.state is None):
         parser.error("select exactly one of --config and --state")
@@ -61,7 +64,8 @@ def main() -> int:
 
     daily_context = (DailyJob(daily_state, daily_runner, configured=daily_setup.configured)
                      if daily_setup is not None else nullcontext(None))
-    with make_server(port=args.port, snapshot_setup=store) as server, _job_context(
+    with make_server(port=args.port, bind_address=args.bind,
+                     snapshot_setup=store) as server, _job_context(
             state, runner, configured=c is not None,
             connection_generation=store.generation() if store else None) as job, daily_context as daily_job:
         server.snapshot_job = job
