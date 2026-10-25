@@ -69,6 +69,7 @@ HTML = """<!doctype html>
     <section class="pipeline" aria-label="5つの自動化機能">
       <h2>自動化機能 B1〜B5</h2>
       <p id="workflow-summary">共通WebUIへの接続状態を取得しています…</p>
+      <p class="small">「統合状態」が未接続の機能は、この画面から実行できません。各機能の状態と最後の結果を確認してください。</p>
       <div id="workflow-catalog" class="cards" aria-live="polite"></div>
     </section>
     <section id="services" class="cards" aria-label="既存systemdサービス一覧" aria-live="polite"></section>
@@ -329,8 +330,11 @@ async function workflowCatalogRefresh() {
       throw Error("invalid_workflow_projection");
     }
     $("workflow-catalog").replaceChildren(...data.workflows.map(workflowCard));
+    const usable = data.workflows.filter(w => w.integration === "connected").length;
+    const pending = data.workflows.filter(w => w.integration === "pending").length;
     $("workflow-summary").textContent =
-      "5機能の共通WebUI統合状況です。旧systemdサービスの観測とは別に表示します。";
+      "WebUI接続済み " + usable + "/5機能 ・ 未統合 " + pending +
+      "機能。旧systemdの稼働状況とは別に判定します。";
   } catch {
     if (generation !== workflowRefreshGeneration) return;
     $("workflow-catalog").replaceChildren();
