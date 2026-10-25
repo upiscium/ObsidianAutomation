@@ -343,3 +343,109 @@ def test_b4_catalog_rejects_unknown_status_and_redacts_exceptions():
     assert "SECRET" not in json.dumps(item)
     assert 'link.href = "#github-daily"' in JS
     assert "preview_ready:" in JS
+
+
+
+def test_b4_browser_actions_reconcile_both_panel_and_unified_catalog():
+    """B4 settings and async Run now both refresh the five-workflow catalog."""
+    start = JS.index('$("daily-save").addEventListener')
+    end = JS.index('let previewGeneration', start)
+    handlers = JS[start:end]
+    save = handlers[:handlers.index('async function pollDailyResult')]
+    run = handlers[handlers.index('$("daily-run").addEventListener'):]
+    poll = handlers[handlers.index('async function pollDailyResult'):
+                    handlers.index('$("daily-run").addEventListener')]
+    assert 'await dailyRefresh();' in save
+    assert 'await workflowCatalogRefresh();' in save
+    assert 'await pollDailyResult(runId);' in run
+    assert 'await workflowCatalogRefresh();' in poll
+    assert 'for (let attempt = 0; attempt < 90; ++attempt)' in poll
+    assert '["queued","running"].includes(receipt.status)' in poll
+    assert 'result === "preview_ready"' in poll
+    assert "preview_ready:" in JS
+
+
+
+def test_real_b4_browser_javascript_polls_until_terminal_and_refreshes_catalog():
+    """Execute the authored JS handler, not a Python imitation of its async flow."""
+    import os
+    import shutil
+    import subprocess
+    import pytest
+
+    node = os.environ.get("NODE_BINARY") or shutil.which("node")
+    if not node:
+        pytest.skip("Node.js optional UI runtime is absent")
+
+    start = JS.index("async function dailyRefresh()")
+    end = JS.index("let previewGeneration", start)
+    fragment = JS[start:end]
+    script = r"""
+"use strict";
+const assert = require("node:assert/strict");
+const vm = require("node:vm");
+const fs = require("node:fs");
+class Node {
+  constructor() {
+    this.textContent = ""; this.disabled = false; this.checked = false;
+    this.value = "86400"; this.handlers = {};
+  }
+  addEventListener(type, callback) { this.handlers[type] = callback; }
+}
+const names = [
+  "daily-state", "daily-last", "daily-due", "daily-enabled",
+  "daily-interval", "daily-save", "daily-run", "daily-refresh", "daily-message"
+];
+const nodes = Object.fromEntries(names.map(id => [id, new Node()]));
+const runId = "a".repeat(32);
+let runStatus = null;
+let pollCount = 0;
+let catalogCalls = 0;
+let postCount = 0;
+const sandbox = {
+  $: id => nodes[id],
+  setTimeout: callback => callback(),
+  crypto: {randomUUID: () => "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"},
+  snapshotPost: async (path, data) => {
+    assert.equal(path, "/api/v1/daily/runs");
+    assert.match(data.request_id, /^[a-f0-9]{32}$/);
+    ++postCount; runStatus = "queued";
+    return {run_id: runId};
+  },
+  workflowCatalogRefresh: async () => {++catalogCalls;},
+  fetch: async path => {
+    if (path === "/api/v1/daily") {
+      return {ok:true, json:async () => ({
+        version:1, job:"github_daily_preview",
+        settings:{enabled:false, configured:true,
+                  interval_seconds:86400, next_due:null},
+        last_run:runStatus ? {status:runStatus, date_jst:"2026-10-24"} : null
+      })};
+    }
+    assert.equal(path, "/api/v1/daily/runs/" + runId);
+    ++pollCount;
+    runStatus = pollCount >= 3 ? "preview_ready" : "running";
+    return {ok:true,json:async()=>({run_id:runId,status:runStatus})};
+  }
+};
+vm.runInNewContext(fs.readFileSync(0,"utf8"), sandbox);
+assert.equal(typeof nodes["daily-run"].handlers.click,"function");
+Promise.resolve(nodes["daily-run"].handlers.click()).then(() => {
+  assert.equal(postCount,1);
+  assert.equal(pollCount,3);
+  assert.ok(catalogCalls>=2);
+  assert.ok(nodes["daily-last"].textContent.includes("preview_ready"));
+  assert.ok(nodes["daily-message"].textContent.includes("Vault"));
+  assert.equal(runStatus,"preview_ready");
+  assert.equal(typeof nodes["daily-refresh"].handlers.click,"function");
+  const beforeRefresh = catalogCalls;
+  return Promise.resolve(nodes["daily-refresh"].handlers.click()).then(() => {
+    assert.ok(catalogCalls > beforeRefresh);
+    assert.equal(postCount,1); // Refresh never re-submits the job.
+    assert.ok(nodes["daily-last"].textContent.includes("preview_ready"));
+  });
+}).catch(err => { console.error(err); process.exitCode=1; });
+"""
+    result = subprocess.run([node, "-e", script], input=fragment,
+                            text=True, capture_output=True, timeout=12)
+    assert result.returncode == 0, result.stderr

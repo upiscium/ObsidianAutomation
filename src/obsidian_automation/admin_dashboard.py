@@ -102,6 +102,7 @@ HTML = """<!doctype html>
       <label>間隔（秒） <input id="daily-interval" type="number" min="3600" max="86400" disabled></label>
       <button id="daily-save" type="button" disabled>設定を保存</button>
       <button id="daily-run" type="button" disabled>Run now</button>
+      <button id="daily-refresh" type="button">結果を更新</button>
       <p id="daily-message" role="status"></p>
       <p>現段階ではGitHubから読み取り、非公開Previewを作成するだけです。Daily Noteへは書き込みません。</p>
     </section>
@@ -443,6 +444,8 @@ async function dailyRefresh() {
       (data.settings.next_due ? new Date(data.settings.next_due * 1000).toLocaleString() : "なし");
     for (const id of ["daily-enabled","daily-interval","daily-save","daily-run"])
       $(id).disabled = !data.settings.configured;
+    if (data.last_run && ["queued","running"].includes(data.last_run.status))
+      $("daily-run").disabled = true;
   } catch {
     $("daily-state").textContent = "状態未確認（操作不可）";
     $("daily-last").textContent = "最終結果: —";
@@ -460,16 +463,57 @@ $("daily-save").addEventListener("click", async () => {
     $("daily-message").textContent = "設定を保存しました（Previewのみ・Vault更新なし）";
   } catch { $("daily-message").textContent = "設定の保存に失敗しました"; }
   await dailyRefresh();
+  await workflowCatalogRefresh();
 });
+async function pollDailyResult(runId) {
+  if (!/^[a-f0-9]{32}$/.test(runId)) throw Error("invalid_run_id");
+  for (let attempt = 0; attempt < 90; ++attempt) {
+    const response = await fetch("/api/v1/daily/runs/" + runId, {
+      cache:"no-store",credentials:"same-origin"});
+    if (!response.ok) throw Error("run_status_unavailable");
+    const receipt = await response.json();
+    if (receipt.run_id !== runId || typeof receipt.status !== "string")
+      throw Error("run_status_invalid");
+    if (!["queued","running"].includes(receipt.status)) {
+      const result = ["preview_ready","failed","unconfirmed"].includes(receipt.status)
+        ? receipt.status : "unknown";
+      $("daily-message").textContent = result === "preview_ready"
+        ? "Preview生成完了（Vaultへは未反映）" : "実行結果: " + result;
+      await dailyRefresh();
+      await workflowCatalogRefresh();
+      return;
+    }
+    await new Promise(resolve => setTimeout(resolve, 2000));
+  }
+  $("daily-message").textContent = "処理中または結果未確定。「結果を更新」で再確認してください";
+  await dailyRefresh();
+  await workflowCatalogRefresh();
+}
 $("daily-run").addEventListener("click", async () => {
   $("daily-run").disabled = true;
+  let runId = null;
   try {
     const data = await snapshotPost("/api/v1/daily/runs", {
       request_id:crypto.randomUUID().replaceAll("-", "")});
-    $("daily-message").textContent = data.run_id
-      ? "受付: " + data.run_id + "（結果は更新して確認）" : "実行中または未設定";
+    runId = data.run_id;
+    $("daily-message").textContent = runId
+      ? "受付: " + runId + "（Previewを生成中）" : "実行中または未設定";
   } catch { $("daily-message").textContent = "受付未確認。同じ処理を自動で再投入しません"; }
   await dailyRefresh();
+  await workflowCatalogRefresh();
+  if (runId) {
+    try {
+      await pollDailyResult(runId);
+    } catch {
+      $("daily-message").textContent = "結果の取得に失敗しました。「結果を更新」で再確認してください（自動再投入はしません）";
+      await dailyRefresh();
+      await workflowCatalogRefresh();
+    }
+  }
+});
+$("daily-refresh").addEventListener("click", async () => {
+  await dailyRefresh();
+  await workflowCatalogRefresh();
 });
 let previewGeneration = 0;
 let pendingConfirmation = null;
