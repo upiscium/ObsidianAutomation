@@ -30,6 +30,7 @@ class Busy(RuntimeError):
 class DailyJob:
     def __init__(self, state: Path, runner: Callable[[], dict],
                  *, configured: Callable[[], bool] = lambda: False,
+                 publisher: Callable[[dict], dict] | None = None,
                  clock: Callable[[], float] = time.time):
         self.state = state
         state.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -51,6 +52,11 @@ class DailyJob:
                             "trigger TEXT NOT NULL, status TEXT NOT NULL, created REAL NOT NULL, "
                             "completed REAL, date_jst TEXT, capture_sha256 TEXT, digest_sha256 TEXT, "
                             "original_event_count INTEGER, rendered_entity_count INTEGER)")
+            # Preserve previous SQLite Job state across preview-to-writer
+            # upgrades. No existing records are replayed.
+            columns = {row[1] for row in self.db.execute("PRAGMA table_info(runs)")}
+            if "publication_outcome" not in columns:
+                self.db.execute("ALTER TABLE runs ADD COLUMN publication_outcome TEXT")
             self.db.execute("UPDATE runs SET status='unconfirmed',completed=? "
                             "WHERE status IN ('queued','running')", (clock(),))
             self.db.commit()
@@ -62,6 +68,9 @@ class DailyJob:
             raise
         self.runner = runner
         self.is_configured = configured
+        # None preserves the existing Preview-only behavior. An explicitly
+        # supplied publisher is the only route to canonical WebDAV writes.
+        self.publisher = publisher
         self.clock = clock
         self._lock = threading.RLock()
         self._worker: threading.Thread | None = None
@@ -120,16 +129,18 @@ class DailyJob:
         with self._lock:
             row = self.db.execute(
                 "SELECT run_id,request_id,trigger,status,created,completed,date_jst,"
-                "capture_sha256,digest_sha256,original_event_count,rendered_entity_count "
-                "FROM runs WHERE run_id=?", (run_id,)).fetchone()
+                "capture_sha256,digest_sha256,original_event_count,rendered_entity_count,"
+                "publication_outcome FROM runs WHERE run_id=?", (run_id,)).fetchone()
             return dict(zip(("run_id","request_id","trigger","status","created","completed",
                              "date_jst","capture_sha256","digest_sha256",
-                             "original_event_count","rendered_entity_count"), row)) if row else None
+                             "original_event_count","rendered_entity_count",
+                             "publication_outcome"), row)) if row else None
 
     def status(self) -> dict:
         with self._lock:
             row = self.db.execute("SELECT run_id FROM runs ORDER BY created DESC,rowid DESC LIMIT 1").fetchone()
             return {"version":1, "job":"github_daily_preview",
+                    "publication_enabled": self.publisher is not None,
                     "settings":self.settings(),
                     "last_run":self.run(row[0]) if row else None}
 
@@ -181,23 +192,56 @@ class DailyJob:
             raise Invalid("invalid_preview_result")
         return value
 
+    @staticmethod
+    def _validate_publication(value: object, preview: dict) -> str:
+        if (
+            type(value) is not dict or value.get("version") != 1
+            or value.get("status") != "published"
+            or value.get("publication_verified") is not True
+            or value.get("model_used") is not False
+            or type(value.get("vault_modified")) is not bool
+            or value.get("publication_outcome") not in
+                ("applied", "recovered", "already_desired")
+            or any(value.get(k) != preview[k] for k in
+                   ("date_jst", "capture_sha256", "digest_sha256"))
+            or any(type(value.get(k)) is not str or _SHA.fullmatch(value[k]) is None
+                   for k in ("before_content_sha256", "after_content_sha256"))
+        ):
+            raise Invalid("publication_result_not_verified")
+        before, after = value["before_content_sha256"], value["after_content_sha256"]
+        if (value["vault_modified"] != (before != after)
+                or (value["publication_outcome"] == "already_desired" and before != after)
+                or (value["publication_outcome"] != "already_desired" and before == after)):
+            raise Invalid("publication_effect_inconsistent")
+        return value["publication_outcome"]
+
     def _execute(self, run_id: str) -> None:
         with self._lock:
             with self.db:
                 self.db.execute("UPDATE runs SET status='running' WHERE run_id=?", (run_id,))
+        publication = None
         try:
             data = self._validate_result(self.runner())
             result = "preview_ready"
+            if self.publisher is not None:
+                try:
+                    publication = self._validate_publication(self.publisher(data), data)
+                    result = "published"
+                except Exception:
+                    # The local, validated Preview is still useful; do not
+                    # erase its evidence when a remote CAS write fails.
+                    result, publication = "publish_failed", None
         except Exception:
             data, result = {}, "failed"
         with self._lock:
             with self.db:
                 self.db.execute(
                     "UPDATE runs SET status=?,completed=?,date_jst=?,capture_sha256=?,"
-                    "digest_sha256=?,original_event_count=?,rendered_entity_count=? WHERE run_id=?",
+                    "digest_sha256=?,original_event_count=?,rendered_entity_count=?,"
+                    "publication_outcome=? WHERE run_id=?",
                     (result,self.clock(),data.get("date_jst"),data.get("capture_sha256"),
                      data.get("digest_sha256"),data.get("original_event_count"),
-                     data.get("rendered_entity_count"),run_id))
+                     data.get("rendered_entity_count"),publication,run_id))
 
     def tick(self) -> bool:
         """The parent Snapshot app invokes this from its one scheduler thread."""

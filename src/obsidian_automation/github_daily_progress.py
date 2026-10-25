@@ -1030,7 +1030,7 @@ def _result(
     )
 
 
-def apply_projection(
+def _apply_project_progress_section(
     projection: DailyProgressProjection,
     *,
     base_url: str,
@@ -1038,7 +1038,7 @@ def apply_projection(
     password: str,
     timeout: float = 30.0,
     transport: HTTPTransport | None = None,
-) -> DailyProgressTransportResult:
+) -> tuple[str, bytes, bytes]:
     if not username:
         raise DailyProgressError("WebDAV username must not be empty")
     if not password:
@@ -1061,12 +1061,7 @@ def apply_projection(
         before.content,
     )
     if disposition == "already_desired":
-        return _result(
-            projection,
-            outcome="already_desired",
-            before=before.content,
-            after=before.content,
-        )
+        return "already_desired", before.content, before.content
 
     etag = _strong_etag(before.etag)
     if etag is None:
@@ -1138,12 +1133,7 @@ def apply_projection(
         transport=transport,
     )
     if after.content == desired:
-        return _result(
-            projection,
-            outcome="recovered" if ambiguous else "applied",
-            before=before.content,
-            after=after.content,
-        )
+        return ("recovered" if ambiguous else "applied"), before.content, after.content
     if ambiguous and after.content == before.content:
         detail = "no canonical effect is observable"
         if response_status is not None:
@@ -1156,6 +1146,24 @@ def apply_projection(
     raise DailyProgressConflict(
         "remote Daily bytes diverged during CAS update"
     )
+
+
+def apply_projection(
+    projection: DailyProgressProjection,
+    *,
+    base_url: str,
+    username: str,
+    password: str,
+    timeout: float = 30.0,
+    transport: HTTPTransport | None = None,
+) -> DailyProgressTransportResult:
+    """Preserve the typed legacy Grounded Summary writer contract."""
+    outcome, before, after = _apply_project_progress_section(
+        projection, base_url=base_url, username=username,
+        password=password, timeout=timeout, transport=transport,
+    )
+    return _result(projection, outcome=outcome, before=before, after=after)
+
 
 
 def _safe_regular_file(path: Path, *, label: str) -> bytes:
