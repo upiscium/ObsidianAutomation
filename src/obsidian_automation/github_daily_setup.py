@@ -1,4 +1,4 @@
-"""B4 GitHub Connections with the existing B2 Nextcloud account.
+"""B4 GitHub Connections with the common Nextcloud account.
 
 Only a GitHub token is new. Project notes are pulled into disposable local
 staging before each no-LLM Preview run; the remote Vault is never written.
@@ -137,8 +137,8 @@ class DailySetup:
             ).encode("utf-8")
             self._atomic(self.state / "github.token", (token + "\n").encode("ascii"))
             self._atomic(self.state / "watcher.toml", watcher_config)
-            # Commit source-generation last. Changed B2 Connections invalidate
-            # old B4 config without a second Nextcloud credential.
+            # Commit source-generation last. A changed common Nextcloud source
+            # invalidates old B4 configuration without extra credentials.
             self._atomic(self.state / "source-generation", generation.encode("ascii"))
             return self.configured()
 
@@ -146,7 +146,7 @@ class DailySetup:
     def project_source(self):
         """Fetch only local Project notes into a fresh, disposable mirror.
 
-        The shared B2 Nextcloud/WebDAV account is read-only here. Caller uses
+        The shared Nextcloud/WebDAV account is read-only here. Caller uses
         the validated mirror for run_once and the temporary tree is removed
         even after an API failure. No remote push, upload, DELETE, or MOVE.
         """

@@ -10,6 +10,7 @@ from .admin_dashboard import make_server
 from .snapshot_adapter import Connections, SnapshotAdapter
 from .snapshot_job import SnapshotJob
 from .snapshot_setup import SetupStore
+from .nextcloud_setup import NextcloudSetup
 from .github_daily_job import DailyJob
 from .github_daily_setup import DailySetup
 from .github_daily_runonce import run_once
@@ -49,10 +50,11 @@ def main() -> int:
     # GitHub credentials and a pull-only local Project mirror are configured.
     daily_state = state / "github-daily" if store else None
 
-    daily_setup = DailySetup(daily_state, store) if store is not None else None
+    nextcloud_setup = NextcloudSetup(store) if store is not None else None
+    daily_setup = DailySetup(daily_state, nextcloud_setup) if store is not None else None
 
     def daily_runner():
-        # B4 reuses the already configured B2 Nextcloud account but only
+        # B4 reuses the common Nextcloud account (B2 is optional) but only
         # downloads Project notes to a private disposable local mirror.
         with daily_setup.project_source() as (config, token):
             client = GitHubClient(token=token, timeout_seconds=config.request_timeout_seconds)
@@ -61,7 +63,8 @@ def main() -> int:
 
     daily_context = (DailyJob(daily_state, daily_runner, configured=daily_setup.configured)
                      if daily_setup is not None else nullcontext(None))
-    with make_server(port=args.port, snapshot_setup=store) as server, _job_context(
+    with make_server(port=args.port, snapshot_setup=store,
+                     nextcloud_setup=nextcloud_setup) as server, _job_context(
             state, runner, configured=c is not None,
             connection_generation=store.generation() if store else None) as job, daily_context as daily_job:
         server.snapshot_job = job

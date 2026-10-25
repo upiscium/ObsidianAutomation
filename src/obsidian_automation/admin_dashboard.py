@@ -32,6 +32,7 @@ from .admin_ai_status import load_ai_health
 from .snapshot_job import SnapshotJob, Invalid as SnapshotInvalid
 from .github_daily_job import DailyJob, Invalid as DailyInvalid
 from .github_daily_setup import DailySetup, DailySetupError
+from .nextcloud_setup import NextcloudSetup, NextcloudInUse, validate_nextcloud
 from .unified_workflows import workflow_catalog
 
 HTML = """<!doctype html>
@@ -70,8 +71,23 @@ HTML = """<!doctype html>
       <div id="workflow-catalog" class="cards" aria-live="polite"></div>
     </section>
     <section id="services" class="cards" aria-label="既存systemdサービス一覧" aria-live="polite"></section>
-    <section class="pipeline" aria-label="接続設定">
-      <h2>接続設定（各１アカウント）</h2>
+    <section class="pipeline" aria-label="共通Nextcloud接続">
+      <h2>共通Nextcloud接続（Giteaは不要）</h2>
+      <p id="nextcloud-connection-state">Nextcloudの状態を確認中</p>
+      <form id="nextcloud-connections-form" autocomplete="off">
+        <label>Nextcloud WebDAV URL <input name="webdav_url" type="url" required
+                  placeholder="https://cloud.example/remote.php/dav/files/user/"></label>
+        <label>Vault folder <input name="vault_folder" required placeholder="Vault"></label>
+        <label>Nextcloud user <input name="nextcloud_user" required></label>
+        <label>Nextcloud app password <input name="nextcloud_password" type="password" required></label>
+        <button type="submit">Nextcloud接続を検証して保存</button>
+      </form>
+      <p id="nextcloud-connection-message" role="status"></p>
+      <p>GitHub Daily Preview（B4）は、この設定とGitHubトークンだけで利用できます。</p>
+    </section>
+    <section class="pipeline" aria-label="Vault Snapshot接続設定">
+      <h2>B2 Snapshot用Gitea接続設定</h2>
+      <p>Snapshotを使う場合のみ、同じNextcloudアカウントとprivate Giteaを設定します。</p>
       <p id="connection-state">状態を確認中</p>
       <form id="connections-form" autocomplete="off">
         <label>Nextcloud WebDAV URL <input name="webdav_url" type="url" required placeholder="https://cloud.example/remote.php/dav/files/user/"></label>
@@ -106,7 +122,7 @@ HTML = """<!doctype html>
         <button id="daily-connections-save" type="submit" disabled>GitHub接続を検証して保存</button>
       </form>
       <p id="daily-connection-message" role="status"></p>
-      <p>B2で設定したNextcloudアカウントを共有してProjectノートを読み取ります。新しいNextcloudアカウントは不要です。</p>
+      <p>共通Nextcloudアカウントを使用してProjectノートを読み取ります。Giteaの設定は不要です。</p>
       <p id="daily-state">未設定 / 状態未確認</p>
       <p id="daily-last">最終結果: —</p><p id="daily-due">次回: —</p>
       <label>定期実行 <input id="daily-enabled" type="checkbox" disabled></label>
@@ -190,9 +206,9 @@ button:disabled { opacity:.55; cursor:wait }
 .rowline .value { color:var(--muted); text-align:right }
 .error { color:#cb4545; min-height:1.5em }
 .operation-controls { display:flex; flex-wrap:wrap; align-items:end; gap:12px; margin:12px 0 }
-#connections-form { display:grid; gap:10px; max-width:620px }
-#connections-form label { display:grid; gap:3px }
-#connections-form input { padding:7px; max-width:100%; background:var(--surface); color:var(--ink); border:1px solid var(--border) }
+#connections-form,#nextcloud-connections-form { display:grid; gap:10px; max-width:620px }
+#connections-form label,#nextcloud-connections-form label { display:grid; gap:3px }
+#connections-form input,#nextcloud-connections-form input { padding:7px; max-width:100%; background:var(--surface); color:var(--ink); border:1px solid var(--border) }
 .operation-controls label { display:flex; flex:1 1 170px; flex-direction:column; gap:5px; min-width:0 }
 .operation-controls select { width:100%; min-height:42px; border:1px solid var(--border);
   background:var(--surface); color:var(--ink); border-radius:9px; font:inherit; padding:7px 9px }
@@ -358,6 +374,41 @@ function renderAi(p) {
   }
 }
 let snapshotSettings = null;
+async function nextcloudConnectionRefresh() {
+  try {
+    const response = await fetch("/api/v1/nextcloud/connections", {
+      cache:"no-store",credentials:"same-origin",
+    });
+    if (!response.ok) throw Error("unavailable");
+    const data = await response.json();
+    if (data.version !== 1 || typeof data.configured !== "boolean") throw Error("schema");
+    $("nextcloud-connection-state").textContent = data.configured
+      ? "Nextcloud接続済み（秘密情報は表示されません）" : "未設定";
+  } catch {
+    $("nextcloud-connection-state").textContent = "Nextcloud接続状態を確認できません";
+  }
+}
+$("nextcloud-connections-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const button = form.querySelector("button");
+  button.disabled = true;
+  try {
+    await snapshotPost("/api/v1/nextcloud/connections", Object.fromEntries(new FormData(form)));
+    $("nextcloud-connection-message").textContent =
+      "Nextcloudを検証して保存しました。B4 Previewの定期実行は接続変更時にOffとなります。";
+    form.reset();
+  } catch {
+    $("nextcloud-connection-message").textContent =
+      "保存できませんでした。B2利用中は接続先の変更をB2設定画面で行ってください。";
+  }
+  button.disabled = false;
+  await nextcloudConnectionRefresh();
+  await connectionRefresh();
+  await dailyConnectionRefresh();
+  await dailyRefresh();
+  await snapshotRefresh();
+});
 async function connectionRefresh() {
   try {
     const r = await fetch("/api/v1/snapshot/connections", {cache:"no-store", credentials:"same-origin"});
@@ -379,6 +430,7 @@ $("connections-form").addEventListener("submit", async (event) => {
   } catch { $("connection-message").textContent = "検証または保存に失敗しました。以前の設定は変更されていません。"; }
   button.disabled = false;
   await connectionRefresh();
+  await nextcloudConnectionRefresh();
   await snapshotRefresh();
   await dailyConnectionRefresh();
   await dailyRefresh();
@@ -452,8 +504,8 @@ async function dailyConnectionRefresh() {
     $("daily-connection-state").textContent = data.configured
       ? "GitHub接続済み（秘密情報は非表示、Projectミラーは実行時に読み取り）"
       : data.nextcloud_source === "configured"
-        ? "GitHub未設定（B2のNextcloud接続を再利用）"
-        : "先にNextcloud・Gitea接続設定を保存してください";
+        ? "GitHub未設定（共通Nextcloud接続を再利用）"
+        : "先に共通Nextcloud接続を保存してください";
     $("daily-connections-save").disabled = data.nextcloud_source !== "configured";
   } catch {
     $("daily-connection-state").textContent = "GitHub接続状態を確認できません";
@@ -609,6 +661,7 @@ async function fetchOperatorReadiness() {
 }
 async function refresh() {
   await connectionRefresh();
+  await nextcloudConnectionRefresh();
   await snapshotRefresh();
   await dailyConnectionRefresh();
   await dailyRefresh();
@@ -1067,6 +1120,13 @@ class Handler(BaseHTTPRequestHandler):
         if not self._origin_allowed():
             self._reply(403, b"Forbidden")
             return
+        if self.path == "/api/v1/nextcloud/connections":
+            setup = self.server.nextcloud_setup
+            self._reply(200 if setup else 503,
+                        json.dumps(setup.status() if setup else
+                                   {"error":"nextcloud_setup_disabled"}).encode(),
+                        "application/json")
+            return
         if self.path == "/api/v1/daily/connections":
             setup = self.server.daily_setup
             self._reply(200 if setup else 503,
@@ -1228,7 +1288,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/v1/snapshot/settings", "/api/v1/snapshot/runs",
             "/api/v1/snapshot/connections",
             "/api/v1/daily/settings", "/api/v1/daily/runs",
-            "/api/v1/daily/connections",
+            "/api/v1/daily/connections", "/api/v1/nextcloud/connections",
         ):
             self._reply(405, b"Method not allowed")
             return
@@ -1253,6 +1313,50 @@ class Handler(BaseHTTPRequestHandler):
         if len(tokens) != 1 or not self.server.preview_csrf.consume(tokens[0]):
             self._reply(403, b'{"error":"csrf_rejected"}', "application/json")
             return
+        if self.path == "/api/v1/nextcloud/connections":
+            setup, snapshot, daily = (self.server.nextcloud_setup,
+                                      self.server.snapshot_job,
+                                      self.server.daily_job)
+            if setup is None:
+                self._reply(503, b'{"error":"nextcloud_setup_disabled"}', "application/json")
+                return
+            try:
+                payload = json.loads(self._read_bounded_json())
+                validate_nextcloud(payload)
+                # All B2/B4 mutation routes enter SnapshotJob -> DailyJob ->
+                # DailySetup -> shared source in this order. GET of B4 setup
+                # enters DailySetup -> shared source; never reverse it here.
+                with (snapshot._lock if snapshot is not None else nullcontext()), (
+                    daily._lock if daily is not None else nullcontext()
+                ), (self.server.daily_setup._lock
+                    if self.server.daily_setup is not None else nullcontext()):
+                    if (snapshot is not None and snapshot.db.execute(
+                        "SELECT 1 FROM runs WHERE status IN ('queued','running') LIMIT 1"
+                    ).fetchone()):
+                        self._reply(409, b'{"error":"snapshot_busy"}', "application/json")
+                        return
+                    if (daily is not None and daily.db.execute(
+                        "SELECT 1 FROM runs WHERE status IN ('queued','running') LIMIT 1"
+                    ).fetchone()):
+                        self._reply(409, b'{"error":"daily_busy"}', "application/json")
+                        return
+                    def pause_daily():
+                        if daily is not None:
+                            settings = daily.settings()
+                            daily.update({"enabled": False,
+                                          "interval_seconds": settings["interval_seconds"]})
+                    if not setup.save(payload, before_commit=pause_daily):
+                        self._reply(422, b'{"error":"nextcloud_probe_failed"}', "application/json")
+                        return
+                self._reply(200, json.dumps(setup.status()).encode(), "application/json")
+            except NextcloudInUse:
+                self._reply(409, b'{"error":"nextcloud_managed_by_snapshot"}', "application/json")
+            except (ValueError, TypeError, PreviewRequestRejected):
+                self._reply(400, b'{"error":"invalid_nextcloud_connection"}', "application/json")
+            except Exception:
+                self._reply(503, b'{"error":"nextcloud_unavailable"}', "application/json")
+            return
+
         if self.path == "/api/v1/daily/connections":
             setup, job = self.server.daily_setup, self.server.daily_job
             if setup is None or job is None:
@@ -1362,6 +1466,8 @@ class Handler(BaseHTTPRequestHandler):
                         return
                     try:
                         job.connections_saved(store.generation())
+                        if self.server.nextcloud_setup is not None:
+                            self.server.nextcloud_setup.discard_standalone_if_full()
                         # B4 only depends on the Nextcloud source, not Gitea.
                         if (daily is not None and github_setup is not None
                                 and previous_source != github_setup.source_fingerprint()):
@@ -1471,6 +1577,7 @@ def make_server(
     operator_ui_enabled: bool = False,
     snapshot_job: SnapshotJob | None = None,
     snapshot_setup=None,
+    nextcloud_setup: NextcloudSetup | None = None,
     daily_job: DailyJob | None = None,
     daily_setup: DailySetup | None = None,
 ) -> ThreadingHTTPServer:
@@ -1491,6 +1598,7 @@ def make_server(
     server.operator_ui_enabled = operator_ui_enabled is True
     server.snapshot_job = snapshot_job
     server.snapshot_setup = snapshot_setup
+    server.nextcloud_setup = nextcloud_setup
     server.daily_job = daily_job
     server.daily_setup = daily_setup
     server.daemon_threads = True
