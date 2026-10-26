@@ -55,6 +55,11 @@ def bundle(*events):
     return parse_evidence_bundle(original.canonical_bytes)
 
 
+def _sentences(value):
+    """Preserved typed source diagnostic; no longer shown as Daily filler."""
+    return '\n'.join(phrase for item in value.items for phrase in item['sentences'])
+
+
 def test_zero_one_and_two_repos_with_typed_merge_and_orphan():
     assert digest.build_digest_from_bundle(bundle()).render() == '進展のあったIssue・PRはありません。\n'
     merged = event('pull_request_merged', 17, minute=10)
@@ -66,8 +71,8 @@ def test_zero_one_and_two_repos_with_typed_merge_and_orphan():
     assert len(result.items) == 2
     assert result.unattributed_count == 1
     assert result.render().count('PR #17') == 1
-    assert '当日にPRがマージされました。' in result.render()
-    assert 'GPU検証に関する結果が報告されました。' in result.render()
+    assert '当日にPRがマージされました。' in _sentences(result)
+    assert 'GPU検証に関する結果が報告されました。' in _sentences(result)
     assert 'https://github.com/Example/Beta/issues/5' in result.render()
     assert result.report()['verified_cas_source'] is False
     assert result.report()['model_used'] is False
@@ -86,7 +91,7 @@ def test_commit_only_semantics(subject, visible):
     result = digest.build_digest_from_bundle(bundle(event('pull_request_commit', 31,
                                                       message=subject)))
     assert bool(result.items) is visible
-    assert 'マージされました' not in result.render()
+    assert 'マージされました' not in _sentences(result)
 
 
 def test_material_feat_with_docs_word_is_linked_without_fake_merge():
@@ -96,7 +101,7 @@ def test_material_feat_with_docs_word_is_linked_without_fake_merge():
     assert result.items[0]['status'] == 'updated'
     assert result.items[0]['sentences'] == ['実装コミットが記録されました。']
     assert 'https://github.com/Example/Alpha/pull/83' in result.render()
-    assert '当日にPRがマージされました。' not in result.render()
+    assert '当日にPRがマージされました。' not in _sentences(result)
 
 
 def test_routine_only_pr_creation_stays_excluded():
@@ -150,11 +155,11 @@ def test_bot_and_uncertain_snapshot_are_not_progress():
 def test_planned_is_not_positive_but_actual_failure_is_reported():
     planned = digest.build_digest_from_bundle(bundle(event('issue_comment', 7,
         body='GPU acceptance test planned; no PASS yet.')))
-    assert 'GPU検証に関する結果' not in planned.render()
+    assert 'GPU検証に関する結果' not in _sentences(planned)
     failed = digest.build_digest_from_bundle(bundle(event('issue_comment', 7,
         body='GPU acceptance test failed on the proposed system.')))
-    assert 'GPU検証に関する結果が報告されました。' in failed.render()
-    assert '本番稼働' not in failed.render()
+    assert 'GPU検証に関する結果が報告されました。' in _sentences(failed)
+    assert '本番稼働' not in _sentences(failed)
 
 
 @pytest.mark.parametrize('body', [
@@ -167,14 +172,14 @@ def test_hypothetical_gpu_result_is_only_an_ordinary_source_comment(body):
                                                         body=body)))
     assert len(result.items) == 1
     assert result.items[0]['sentences'] == ['進捗コメントが記録されました。']
-    assert 'GPU検証に関する結果が報告されました。' not in result.render()
+    assert 'GPU検証に関する結果が報告されました。' not in _sentences(result)
 
 
 def test_actual_gpu_pass_remains_reported_not_independently_verified():
     result = digest.build_digest_from_bundle(bundle(event('issue_comment', 72,
         body='GPU acceptance PASS confirmed in a completed test.')))
     assert result.items[0]['sentences'] == ['GPU検証に関する結果が報告されました。']
-    assert '本番稼働' not in result.render()
+    assert '本番稼働' not in _sentences(result)
 
 
 @pytest.mark.parametrize('body', [
@@ -193,7 +198,7 @@ def test_explicit_nonexecution_does_not_become_reported_gpu_result(body):
                                                         body=body)))
     assert len(result.items) == 1
     assert result.items[0]['sentences'] == ['進捗コメントが記録されました。']
-    assert 'GPU検証に関する結果が報告されました。' not in result.render()
+    assert 'GPU検証に関する結果が報告されました。' not in _sentences(result)
     assert 'https://github.com/Example/Alpha/issues/73' in result.render()
 
 
@@ -207,7 +212,7 @@ def test_executed_gpu_result_remains_a_source_report(body):
     assert len(result.items) == 1
     assert result.items[0]['sentences'] == ['GPU検証に関する結果が報告されました。']
     assert 'https://github.com/Example/Alpha/issues/73' in result.render()
-    assert '本番稼働' not in result.render()
+    assert '本番稼働' not in _sentences(result)
 
 
 def test_invalid_cross_day_and_forged_identity_fail_closed():
@@ -515,11 +520,11 @@ def test_private_synthetic_cas_reads_complete_v2_and_v3(isolated_cas, temporal):
     assert result.unattributed_count == 1
     assert len(result.items) == (2 if temporal else 1)
     assert [item['status'] for item in result.items].count('merged') == 1
-    assert '当日にPRがマージされました。' in result.render()
+    assert '当日にPRがマージされました。' in _sentences(result)
     # v2 carries no updated_at attestation, so it cannot support dated claims
     # from mutable comment/review state. The original CAS remains intact.
     assert ('https://github.com/Example/Alpha/issues/9' in result.render()) is temporal
-    assert ('テスト・検証に関する結果が報告されました。' in result.render()) is temporal
+    assert ('テスト・検証に関する結果が報告されました。' in _sentences(result)) is temporal
     assert 'Mutable observation' not in result.render()
     allowed['reader'] = False
     with pytest.raises(digest.DeterministicDigestError):
@@ -546,10 +551,10 @@ def test_courtesy_only_is_not_progress(courtesy):
     substantive = digest.build_digest_from_bundle(bundle(
         event('issue_comment', 11, body='Thanks, the tests passed after the fix.')))
     assert substantive.items
-    assert 'テスト・検証に関する結果が報告されました。' in substantive.render()
+    assert 'テスト・検証に関する結果が報告されました。' in _sentences(substantive)
     positive_thanks = digest.build_digest_from_bundle(bundle(
         event('issue_comment', 11, body='Thank you, the tests passed after the fix.')))
-    assert 'テスト・検証に関する結果が報告されました。' in positive_thanks.render()
+    assert 'テスト・検証に関する結果が報告されました。' in _sentences(positive_thanks)
 
 
 def test_legacy_v2_keeps_immutable_merges_but_not_mutable_results():
@@ -564,9 +569,9 @@ def test_legacy_v2_keeps_immutable_merges_but_not_mutable_results():
     result = digest._build(source_ok.bundle, sha)
     assert result.original_event_count == 3
     assert len(result.items) == 1
-    assert '当日にPRがマージされました。' in result.render()
-    assert 'GPU検証' not in result.render()
-    assert 'レビューで承認されました' not in result.render()
+    assert '当日にPRがマージされました。' in _sentences(result)
+    assert 'GPU検証' not in _sentences(result)
+    assert 'レビューで承認されました' not in _sentences(result)
     assert 'https://github.com/Example/Alpha/issues/12' not in result.render()
 
 
@@ -580,9 +585,9 @@ def test_verified_v3_keeps_day_scoped_reported_result_and_review():
     source_ok = source._verify(raw_index, evidence, raw_receipt, sha)
     result = digest._build(source_ok.bundle, sha)
     assert len(result.items) == 2
-    assert 'GPU検証に関する結果が報告されました。' in result.render()
-    assert 'レビューで承認されました。' in result.render()
-    assert '当日にPRがマージされました。' not in result.render()
+    assert 'GPU検証に関する結果が報告されました。' in _sentences(result)
+    assert 'レビューで承認されました。' in _sentences(result)
+    assert '当日にPRがマージされました。' not in _sentences(result)
 
 
 def test_v3_next_day_edited_comment_text_is_withheld():

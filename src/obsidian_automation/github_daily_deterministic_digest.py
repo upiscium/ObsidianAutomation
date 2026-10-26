@@ -41,6 +41,14 @@ TRANSITIONS = {
 }
 COMMENTS = {'issue_comment', 'pull_request_comment', 'pull_request_review_comment',
             'pull_request_review'}
+# Only entity-level GitHub records are allowed to supply display titles.
+# Commit messages/comments are never accepted as Issue/PR titles.
+TITLE_KINDS = frozenset({
+    'issue_created', 'issue_snapshot', 'issue_closed', 'issue_reopened',
+    'pull_request_created', 'pull_request_snapshot', 'pull_request_closed',
+    'pull_request_reopened', 'pull_request_merged',
+    'pull_request_ready_for_review', 'pull_request_converted_to_draft',
+})
 # Only exact courtesy replies: never suppress an approval or progress sentence
 # merely because it includes a token such as 'thanks' or 'looks good'.
 COURTESY_ONLY = {
@@ -50,7 +58,7 @@ COURTESY_ONLY = {
     'looks good', 'looks good to me', 'sounds good', 'got it',
     '了解', '承知しました', '確認しました', '👍',
 }
-VERSION = 'github-daily-deterministic-digest-v1'
+VERSION = 'github-daily-deterministic-digest-v2'
 
 
 class DeterministicDigestError(ValueError):
@@ -142,25 +150,57 @@ class DeterministicDigest:
     excluded_count: int
 
     def render(self) -> str:
+        """Repo → typed status → linked title; no shallow boilerplate phrases.
+
+        The Writer supplies the enclosing # Project Progress H1. These four
+        headings are intentionally presentation-only, sourced from existing
+        typed event status; original phrases/evidence remain in the JSON
+        receipt for future source-grounded summary evaluation.
+        """
         if not self.items:
             return '進展のあったIssue・PRはありません。\n'
-        lines = []
-        current = None
+        headings = (
+            ('closed_issue', 'Closed Issues'),
+            ('updated_issue', 'Updated Issues'),
+            ('merged_pr', 'Merged PRs'),
+            ('updated_pr', 'Updated PRs'),
+        )
+        grouped: dict[str, dict[str, list[dict]]] = defaultdict(lambda: defaultdict(list))
         for item in self.items:
-            key = item['entity']
-            repo = key['repository']
-            if repo != current:
-                if lines:
-                    lines.append('')
-                lines.append('## ' + _inline(repo, 160))
-                current = repo
-            label = 'PR' if key['entity_type'] == 'pull_request' else 'Issue'
-            number = key['number']
-            url = f"https://github.com/{repo}/{'pull' if label == 'PR' else 'issues'}/{number}"
-            name = f'{label} #{number}'
-            if item['title'] != name:
-                name += ' — ' + _inline(item['title'])
-            lines.append(f"- [{name}]({url}) — {' '.join(item['sentences'])}")
+            entity = item['entity']
+            typ = entity['entity_type']
+            status = item['status']
+            if typ == 'issue':
+                kind = 'closed_issue' if status == 'issue_closed' else 'updated_issue'
+            elif typ == 'pull_request':
+                kind = 'merged_pr' if status == 'merged' else 'updated_pr'
+            else:
+                raise DeterministicDigestError('unexpected Daily entity type')
+            grouped[entity['repository']][kind].append(item)
+
+        lines = []
+        for repository in sorted(grouped):
+            if lines:
+                lines.append('')
+            lines.append('## ' + _inline(repository, 160))
+            for kind, heading in headings:
+                entries = grouped[repository].get(kind, ())
+                if not entries:
+                    continue
+                lines.append('### ' + heading)
+                for item in sorted(entries, key=lambda x: x['entity']['number']):
+                    entity = item['entity']
+                    number = entity['number']
+                    label = 'PR' if entity['entity_type'] == 'pull_request' else 'Issue'
+                    route = 'pull' if label == 'PR' else 'issues'
+                    url = f'https://github.com/{repository}/{route}/{number}'
+                    # This is deliberately a replaceable *presentation slot*:
+                    # later use a grounded summary instead of source title.
+                    # Missing source titles must not be invented from an event
+                    # comment or mistaken commit subject.
+                    title = item['title']
+                    display = _inline(title, 180) if title else 'タイトル未取得'
+                    lines.append(f'- [{label} #{number}]({url}): {display}')
         body = '\n'.join(lines) + '\n'
         if len(body.encode()) > 2 * 1024 * 1024:
             raise DeterministicDigestError('render byte limit exceeded')
@@ -277,12 +317,12 @@ def _build(bundle: EvidenceBundle, source_capture_sha256: str | None) -> Determi
             add('当日にPRがマージされました。', [merges[-1]])
         if not phrases:
             add('更新が記録されました（詳細はGitHub）。', [rows[-1]])
-        label = 'PR' if key.entity_type == 'pull_request' else 'Issue'
-        title = f'{label} #{key.number}'
-        # Even a created-event title can be the current mutable API snapshot.
-        # A v2 receipt does not attest a historical title revision.
-        if title == f'{label} #{key.number}' and commits:
-            title = _text(commits[0][1], 'message').splitlines()[0][:110]
+        # Titles are display labels, not assertions about when a title was
+        # edited. Use only source-bound nontruncated GitHub title envelopes.
+        # A recorded commit subject is NOT necessarily this PR's title.
+        candidates = [_text(row, 'title').strip() for row in rows
+                      if row['kind'] in TITLE_KINDS and row.get('title') is not None]
+        title = next((name for name in reversed(candidates) if name), '')
         items.append({'entity': {'repository': key.repository,
                                  'entity_type': key.entity_type, 'number': key.number},
                       'title': title, 'status': 'merged' if merges else
