@@ -86,6 +86,8 @@ class RepositorySnapshot:
     open_issues: frozenset[int]
     open_prs: frozenset[int]
     observed_at: datetime
+    recent_commit_sha: str | None = None
+    recent_commit_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -239,10 +241,13 @@ class GitHubClient:
         api_base: str = "https://api.github.com",
         token: str | None = None,
         timeout_seconds: int = 15,
+        active_window_days: int = 7,
     ) -> None:
         self.api_base = api_base.rstrip("/")
         self.token = token.strip() if token else None
         self.timeout_seconds = timeout_seconds
+        self.active_window_days = active_window_days
+        self.branch_commit_store: StateStore | None = None
 
     def _urlopen_bytes(
         self,
@@ -377,14 +382,84 @@ class GitHubClient:
         return sha, committed_at
 
     def _latest_push(self, repo_path: str) -> tuple[str | None, datetime | None]:
-        # Status automation only needs the current default-branch head, not
-        # repository-wide activity classification. One commit-list request
-        # replaces multiple activity-type requests and keeps polling bounded.
+        # The stable-state reactivation baseline stays on the default branch.
+        # Normal planning/running additionally checks repository branch HEADs.
         return self._latest_default_branch_commit(repo_path)
+
+    def _recent_commit_across_branches(
+        self,
+        repository: str,
+        *,
+        default_sha: str | None,
+        default_at: datetime | None,
+        observed_at: datetime,
+    ) -> tuple[str | None, datetime | None]:
+        # A recent default-branch head already proves Running. In that common
+        # case avoid enumerating branches, even in repositories with many refs.
+        cutoff = observed_at - timedelta(days=self.active_window_days)
+        if default_at is not None and default_at >= cutoff:
+            return default_sha, default_at
+
+        repo_path = self._repo_path(repository)
+        branches = self._paged(f"/repos/{repo_path}/branches")
+        if len(branches) > 500:
+            raise GitHubProjectWatcherError(
+                f"too many branches to verify safely for {repository}: {len(branches)}"
+            )
+
+        best_sha, best_at = default_sha, default_at
+        seen: set[str] = set()
+        for branch in branches:
+            name = branch.get("name")
+            raw_commit = branch.get("commit")
+            sha = raw_commit.get("sha") if isinstance(raw_commit, dict) else None
+            if not isinstance(name, str) or not name or not isinstance(sha, str) or not sha:
+                raise GitHubProjectWatcherError(
+                    f"invalid branch HEAD payload for {repository}"
+                )
+            if sha in seen:
+                continue
+            seen.add(sha)
+            if sha == default_sha:
+                committed_at = default_at
+            else:
+                committed_at = (
+                    self.branch_commit_store.load_branch_commit_date(repository, sha)
+                    if self.branch_commit_store is not None else None
+                )
+                if committed_at is None:
+                    payload = self._request_json(
+                        f"/repos/{repo_path}/commits/{urllib.parse.quote(sha, safe='')}"
+                    )
+                    if not isinstance(payload, dict) or payload.get("sha") != sha:
+                        raise GitHubProjectWatcherError(
+                            f"invalid branch commit SHA for {repository}"
+                        )
+                    committed_at = self._timestamp_from_commit_payload(payload)
+                    if committed_at is None:
+                        raise GitHubProjectWatcherError(
+                            f"missing branch commit timestamp for {repository}"
+                        )
+                    if self.branch_commit_store is not None:
+                        self.branch_commit_store.save_branch_commit_date(
+                            repository, sha, committed_at
+                        )
+            if committed_at is not None and (
+                best_at is None or (committed_at, sha) > (best_at, best_sha or "")
+            ):
+                best_sha, best_at = sha, committed_at
+        return best_sha, best_at
 
     def snapshot(self, repository: str, *, observed_at: datetime | None = None) -> RepositorySnapshot:
         repo_path = self._repo_path(repository)
+        observed = (observed_at or _utc_now()).astimezone(timezone.utc)
         latest_sha, latest_at = self._latest_push(repo_path)
+        recent_sha, recent_at = self._recent_commit_across_branches(
+            repository,
+            default_sha=latest_sha,
+            default_at=latest_at,
+            observed_at=observed,
+        )
 
         issues = self._paged(f"/repos/{repo_path}/issues?state=open")
         open_issues = frozenset(
@@ -404,7 +479,9 @@ class GitHubClient:
             latest_commit_at=latest_at,
             open_issues=open_issues,
             open_prs=open_prs,
-            observed_at=(observed_at or _utc_now()).astimezone(timezone.utc),
+            observed_at=observed,
+            recent_commit_sha=recent_sha,
+            recent_commit_at=recent_at,
         )
 
 
@@ -427,6 +504,35 @@ class StateStore:
                 pending_reason TEXT
             )
             """
+        )
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS branch_commit_date (
+                repository TEXT NOT NULL,
+                sha TEXT NOT NULL,
+                committed_at TEXT NOT NULL,
+                PRIMARY KEY (repository, sha)
+            )
+            """
+        )
+        self.connection.commit()
+
+    def load_branch_commit_date(self, repository: str, sha: str) -> datetime | None:
+        row = self.connection.execute(
+            "SELECT committed_at FROM branch_commit_date WHERE repository = ? AND sha = ?",
+            (repository, sha),
+        ).fetchone()
+        return _parse_timestamp(str(row[0])) if row else None
+
+    def save_branch_commit_date(
+        self, repository: str, sha: str, committed_at: datetime
+    ) -> None:
+        self.connection.execute(
+            """
+            INSERT INTO branch_commit_date (repository, sha, committed_at)
+            VALUES (?, ?, ?) ON CONFLICT(repository, sha) DO NOTHING
+            """,
+            (repository, sha, _format_timestamp(committed_at)),
         )
         self.connection.commit()
 
@@ -556,7 +662,8 @@ def decide_status(
         return StatusDecision("stable", "no new activity after stable baseline", False)
 
     cutoff = now.astimezone(timezone.utc) - timedelta(days=active_window_days)
-    if snapshot.latest_commit_at is not None and snapshot.latest_commit_at >= cutoff:
+    activity_at = snapshot.recent_commit_at or snapshot.latest_commit_at
+    if activity_at is not None and activity_at >= cutoff:
         status = "running"
         reason = f"latest commit is within {active_window_days} days"
     else:
@@ -581,6 +688,8 @@ def _event_payload(
         "reason": decision.reason,
         "latest_commit_sha": snapshot.latest_commit_sha,
         "latest_commit_at": _format_timestamp(snapshot.latest_commit_at),
+        "recent_commit_sha": snapshot.recent_commit_sha,
+        "recent_commit_at": _format_timestamp(snapshot.recent_commit_at),
         "open_issues": sorted(snapshot.open_issues),
         "open_prs": sorted(snapshot.open_prs),
         "observed_at": _format_timestamp(snapshot.observed_at),
@@ -605,11 +714,15 @@ def run_once(
         api_base=config.github_api_base,
         token=token,
         timeout_seconds=config.request_timeout_seconds,
+        active_window_days=config.active_window_days,
     )
     snapshot_cache: dict[str, RepositorySnapshot] = {}
     errors = 0
 
     with StateStore(config.state_db) as store:
+        if isinstance(api, GitHubClient):
+            api.branch_commit_store = store
+            api.active_window_days = config.active_window_days
         for project in projects:
             try:
                 snapshot = snapshot_cache.get(project.repository)

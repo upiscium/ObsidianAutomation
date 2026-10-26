@@ -7,7 +7,7 @@ from typing import Iterable
 from . import github_project_watcher as watcher
 
 class GitHubClient(watcher.GitHubClient):
-    """Default-branch snapshot client that retains overview rows for reuse."""
+    """GitHub snapshot client that retains overview rows for reuse."""
 
     def __init__(self, *args: object, **kwargs: object) -> None:
         super().__init__(*args, **kwargs)
