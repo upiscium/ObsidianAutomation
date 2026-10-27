@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 import hashlib
 import html
@@ -12,7 +12,10 @@ import re
 from .github_daily_activity import _date_window
 from .github_daily_issue_pr import _event_key, _is_bot, _require_event_time, DailyEntityPreviewError
 from .github_daily_summary import EvidenceBundle
-from .github_daily_verified_source import read_verified_source, VerifiedSourceError
+from .github_daily_verified_source import (
+    read_verified_source, VerifiedSource, VerifiedSourceError,
+    admitted_title_observations,
+)
 
 SHA = re.compile(r'[0-9a-f]{64}\Z')
 CONVENTIONAL = re.compile(r'(feat|fix|test|refactor|perf|docs|chore|style)(?:\([^\r\n)]*\))?!?:', re.I)
@@ -58,7 +61,7 @@ COURTESY_ONLY = {
     'looks good', 'looks good to me', 'sounds good', 'got it',
     '了解', '承知しました', '確認しました', '👍',
 }
-VERSION = 'github-daily-deterministic-digest-v2'
+VERSION = 'github-daily-deterministic-digest-v3'
 
 
 class DeterministicDigestError(ValueError):
@@ -232,7 +235,9 @@ class DeterministicDigest:
         return hashlib.sha256(self.canonical_bytes).hexdigest()
 
 
-def _build(bundle: EvidenceBundle, source_capture_sha256: str | None) -> DeterministicDigest:
+def _build(
+    bundle: EvidenceBundle, source_capture_sha256: str | None,
+) -> DeterministicDigest:
     if type(bundle) is not EvidenceBundle or len(bundle.events) > 50000:
         raise DeterministicDigestError('invalid original evidence count')
     if source_capture_sha256 is not None and (type(source_capture_sha256) is not str
@@ -325,7 +330,10 @@ def _build(bundle: EvidenceBundle, source_capture_sha256: str | None) -> Determi
         title = next((name for name in reversed(candidates) if name), '')
         items.append({'entity': {'repository': key.repository,
                                  'entity_type': key.entity_type, 'number': key.number},
-                      'title': title, 'status': 'merged' if merges else
+                      'title': title,
+                      'title_source': 'source_event_envelope' if title else 'missing',
+                      'title_observed_at_utc': None,
+                      'status': 'merged' if merges else
                       (transitions[-1]['kind'] if transitions else 'updated'),
                       'sentences': phrases, 'evidence_ids': ids,
                       'source_event_count': len(rows)})
@@ -333,15 +341,58 @@ def _build(bundle: EvidenceBundle, source_capture_sha256: str | None) -> Determi
                                tuple(items), len(bundle.events), unattributed, excluded)
 
 
+def _build_admitted_source(source: VerifiedSource) -> DeterministicDigest:
+    """Apply supplemental titles ONLY from the actual admitted CAS source.
+
+    The pure _build(bundle, sha) cannot accept arbitrary mutable title
+    records: they must be obtained through read_verified_source or the
+    nonroot Standard-CAS _verify gate, which mints an admission marker after
+    validating the exact capture-index → route-receipt → Evidence chain.
+    """
+    try:
+        supplement = admitted_title_observations(source)
+    except VerifiedSourceError as exc:
+        raise DeterministicDigestError('title observations not admitted from CAS') from exc
+    digest = _build(source.bundle, source.capture_sha256)
+    if digest.unattributed_count != source.unattributed_count:
+        raise DeterministicDigestError('original source census incomplete')
+    if not supplement:
+        return digest
+    indexed = {}
+    for observation in supplement:
+        key = (observation['repository'], observation['entity_type'],
+               observation['number'])
+        if key in indexed:
+            raise DeterministicDigestError('duplicate admitted title observation')
+        indexed[key] = observation
+    final = []
+    for item in digest.items:
+        key = (item['entity']['repository'], item['entity']['entity_type'],
+               item['entity']['number'])
+        obs = indexed.get(key)
+        if obs is None:
+            final.append(item)
+            continue
+        if item['title']:
+            raise DeterministicDigestError('admitted title contradicts source envelope')
+        final.append({
+            **item, 'title': obs['title'],
+            'title_source': 'collection_observation',
+            'title_observed_at_utc': obs['observed_at_utc'],
+        })
+    # A title record for an excluded/no-progress entity is legitimate
+    # source metadata, not an instruction to show a suppressed entry.
+    return replace(digest, items=tuple(final))
+
+
 def build_digest_from_verified_capture(capture_sha256: str) -> DeterministicDigest:
     try:
         source = read_verified_source(capture_sha256)
     except VerifiedSourceError as exc:
         raise DeterministicDigestError('trusted CAS/C1a source not admitted') from exc
-    digest = _build(source.bundle, capture_sha256)
-    if digest.unattributed_count != source.unattributed_count:
-        raise DeterministicDigestError('original source census incomplete')
-    return digest
+    if source.capture_sha256 != capture_sha256:
+        raise DeterministicDigestError('verified capture changed identity')
+    return _build_admitted_source(source)
 
 
 def build_digest_from_bundle(bundle: EvidenceBundle) -> DeterministicDigest:

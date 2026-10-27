@@ -117,7 +117,7 @@ def test_reopen_after_close_not_false_closed_and_commits_not_false_merges() -> N
     assert result.report()["publication_authorized"] is False
 
 
-def test_digest_receipt_v2_exposes_replaceable_title_slot_and_source_identity() -> None:
+def test_digest_receipt_v3_exposes_replaceable_title_slot_and_source_identity() -> None:
     original = bundle(
         event("pull_request_created", 7, title="Complete SSO", minute=1),
         event("pull_request_merged", 7, minute=2),
@@ -128,7 +128,7 @@ def test_digest_receipt_v2_exposes_replaceable_title_slot_and_source_identity() 
     assert first.render() == second.render()
     assert first.sha256 == second.sha256
     report = first.report()
-    assert report["record_version"] == "github-daily-deterministic-digest-v2"
+    assert report["record_version"] == "github-daily-deterministic-digest-v3"
     assert report["source_evidence_sha256"] == original.sha256
     assert report["rendered_markdown_sha256"] == hashlib.sha256(first.render().encode()).hexdigest()
     assert report["items"][0]["title"] == "Fix check"
