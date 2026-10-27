@@ -74,6 +74,19 @@ class MarkdownFormatTests(unittest.TestCase):
         self.assertEqual(lines, (2, 8))
         self.assertIn(b"<%*\n  \n", desired)
 
+    def test_xmp_and_legacy_preformatted_html_keep_blank_lines(self):
+        for tag in ("xmp", "listing", "noembed", "iframe", "plaintext"):
+            source = ("<" + tag + ">\n  \n").encode()
+            if tag != "plaintext":
+                source += ("</" + tag + ">\n").encode()
+            desired, lines, reason = format_markdown(source)
+            if tag == "plaintext":
+                self.assertIsNone(desired)
+                self.assertEqual(reason, "unterminated-protected-block")
+            else:
+                self.assertEqual(desired, source)
+            self.assertEqual(lines, ())
+
     def test_html_comment_pre_and_script_are_opaque(self):
         raw = (
             b"top\n  \n<!--\n  \n-->\n"
@@ -271,6 +284,28 @@ class PlanTests(unittest.TestCase):
             create_plan(self.vault, max_files=1)
         with self.assertRaisesRegex(ValueError, "max-total-bytes-limit-exceeded"):
             create_plan(self.vault, max_total_bytes=4)
+
+    def test_non_utf8_posix_filename_is_skipped_without_breaking_plan(self):
+        root = self.vault / "98-System"
+        if not hasattr(os, "fsencode"):
+            self.skipTest("POSIX byte paths unavailable")
+        bad = os.fsencode(root) + b"/private-" + bytes([255]) + b".md"
+        descriptor = os.open(bad, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            os.write(descriptor, b"bad\n  \nline\n")
+        finally:
+            os.close(descriptor)
+        safe = self._add("98-System/safe.md", b"line\n  \nline\n")
+        plan = create_plan(self.vault)
+        skipped = [item for item in plan["results"]
+                   if item["reason"] == "invalid-utf8-filename"]
+        self.assertEqual(len(skipped), 1)
+        self.assertEqual(skipped[0]["status"], "skipped")
+        self.assertRegex(skipped[0]["path"], r"^98-System/<invalid-utf8-name-[0-9a-f]{64}>$")
+        self.assertNotIn("private-", json.dumps(plan))
+        self.assertEqual(plan["counts"]["would_change"], 1)
+        self.assertEqual(safe.read_bytes(), b"line\n  \nline\n")
+        self.assertEqual(plan, create_plan(self.vault))
 
     def test_unicode_and_case_collision_fail_closed(self):
         self._add("98-System/Note.md", b"one\n  \ntwo\n")

@@ -37,6 +37,10 @@ automatic scheduler, Gitea publisher or live credential enrollment.
 6. Every PUT, including timeout or 5xx, requires a fresh GET whose
    body exactly matches desired SHA-256. Only then is it `applied` or
    `recovered`; otherwise the effect is `indeterminate`, never success.
+   Receipt files are now created relative to a retained private directory
+   descriptor. The writer checks ancestor permissions and the original
+   directory identity before every remote mutation; if its pathname is
+   replaced mid-preflight, the operation is blocked with no PUT.
 7. Receipts are private and immutable, with operation ID, plan SHA,
    endpoint/account binding SHA, path, before/after SHA, status and timestamp.
    Raw content, URLs, raw ETags, passwords and tokens are not logged.

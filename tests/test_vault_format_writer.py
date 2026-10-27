@@ -348,3 +348,67 @@ def test_invalid_bool_authorization_and_duplicate_selection_are_denied(plan_vaul
         apply_plan(plan, selected_paths=[SOURCE, SOURCE], enabled=True,
                    cas_server_verified=True, receipt_dir=state, transport=dav)
     assert not dav.calls
+
+
+def test_receipt_directory_replaced_during_get_never_allows_put(plan_vault):
+    _, plan, private_root = plan_vault
+    moved_root = private_root.with_name(private_root.name + "-old")
+    dav = SyntheticDav()
+    switched = [False]
+
+    def transport(**kwargs):
+        if kwargs["method"] == "GET" and not switched[0]:
+            private_root.rename(moved_root)
+            private_root.mkdir(mode=0o700)
+            switched[0] = True
+        return dav(**kwargs)
+
+    with pytest.raises(FormatWriteError, match="receipt_root_changed"):
+        apply_plan(
+            plan, selected_paths=[SOURCE], enabled=True,
+            cas_server_verified=True, receipt_dir=private_root,
+            base_url=BASE_URL, username="user", password=CREDENTIAL,
+            transport=transport, operation_id="c" * 32,
+        )
+    assert switched[0]
+    assert dav.files[SOURCE] == RAW
+    assert not dav.puts
+    # The original pinned directory retains the operation marker and
+    # accepted receipt; the replacement cannot receive private receipts.
+    assert (moved_root / ("operation-" + "c" * 32 + ".marker")).is_file()
+    assert len(list(moved_root.glob("*.vault-formatter-receipt.json"))) == 1
+    assert list(private_root.iterdir()) == []
+
+
+def test_untrusted_writable_receipt_parent_is_rejected_without_http(
+        plan_vault, tmp_path):
+    _, plan, _ = plan_vault
+    parent = tmp_path / "mutable-parent"
+    parent.mkdir(mode=0o700)
+    receipt = parent / "receipts"
+    receipt.mkdir(mode=0o700)
+    dav = SyntheticDav()
+    try:
+        parent.chmod(0o777)
+        with pytest.raises(FormatWriteError, match="unsafe_receipt_ancestor"):
+            apply_plan(
+                plan, selected_paths=[SOURCE], enabled=True,
+                cas_server_verified=True, receipt_dir=receipt,
+                base_url=BASE_URL, username="user", password=CREDENTIAL,
+                transport=dav,
+            )
+    finally:
+        parent.chmod(0o700)
+    assert not dav.calls
+    assert dav.files[SOURCE] == RAW
+
+
+def test_private_receipts_use_owned_dir_and_secure_file_modes(plan_vault):
+    _, _, root = plan_vault
+    dav = SyntheticDav()
+    result = attempt(plan_vault, dav)
+    assert result["status"] == "complete"
+    for path in root.iterdir():
+        assert path.is_file() and not path.is_symlink()
+        assert path.stat().st_mode & 0o077 == 0
+    assert not list(root.glob(".formatter-receipt-*.tmp"))

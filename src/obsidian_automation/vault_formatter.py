@@ -28,7 +28,10 @@ DEFAULT_MAX_BYTES = 2 * 1024 * 1024
 DEFAULT_MAX_TOTAL_BYTES = 64 * 1024 * 1024
 _SUPPORTED_SUFFIXES = frozenset({".md", ".markdown"})
 _FENCE_START = re.compile(r"^ {0,3}(?P<mark>\x60{3,}|~{3,})")
-_RAW_OPEN = re.compile(r"<(?P<tag>pre|script|style|textarea|template)(?=[\s>])", re.I)
+_RAW_OPEN = re.compile(
+    r"<(?P<tag>pre|script|style|textarea|template|xmp|iframe|noembed|"
+    r"noframes|plaintext|listing)(?=[\s>])", re.I
+)
 _HARDBREAK_COMMENT = re.compile(r"^\s*>")
 
 
@@ -252,6 +255,20 @@ def _enumerate_system_files(vault: Path, max_files: int) -> list[tuple[str, Path
             visited += 1
             if visited > max_files:
                 raise ValueError("max-files-limit-exceeded")
+            # POSIX may expose names containing arbitrary bytes through
+            # surrogateescape. Never place unpaired surrogate code points
+            # in a UTF-8 JSON plan or echo the raw name to public outputs.
+            try:
+                entry.name.encode("utf-8")
+            except UnicodeEncodeError:
+                fingerprint = _sha256(os.fsencode(entry.name))
+                skipped_name = f"<invalid-utf8-name-{fingerprint}>"
+                results.append((
+                    relative_parent + "/" + skipped_name,
+                    vault / PurePosixPath(relative_parent),
+                    "invalid-utf8-filename",
+                ))
+                continue
             relative = relative_parent + "/" + entry.name
             path = vault / PurePosixPath(relative)
             try:

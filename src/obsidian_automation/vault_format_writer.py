@@ -18,7 +18,6 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import urlsplit
 
-from .artifact_lifecycle import _store_immutable
 from .core_promotion_transport import (
     HTTPResponse, HTTPTransport, _real_http_request,
 )
@@ -133,29 +132,142 @@ def _validated_plan(plan: object) -> tuple[str, dict[str, dict]]:
     return digest, entries
 
 
-def _root(directory: Path) -> Path:
-    """Require existing, caller-owned private state; never follow local symlinks."""
-    path = Path(directory)
-    if not path.is_absolute() or ".." in path.parts:
-        raise FormatWriteError("unsafe_receipt_root")
+class _ReceiptDirectory:
+    """Owned 0700 directory pinned by a nofollow descriptor for the operation.
+
+    Parent folders may be private or root-owned sticky directories such as
+    /tmp. A writable non-sticky ancestor is refused before any WebDAV effect.
+    """
+
+    def __init__(self, directory: Path):
+        path = Path(directory)
+        if not path.is_absolute() or ".." in path.parts or not hasattr(os, "O_DIRECTORY"):
+            raise FormatWriteError("unsafe_receipt_root")
+        self.path = path
+        self.fd = -1
+        fd = -1
+        try:
+            fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            for component in path.parts[1:]:
+                parent = os.fstat(fd)
+                if parent.st_mode & 0o022 and not (
+                    parent.st_uid == 0 and parent.st_mode & stat.S_ISVTX
+                ):
+                    raise FormatWriteError("unsafe_receipt_ancestor")
+                info = os.stat(component, dir_fd=fd, follow_symlinks=False)
+                if stat.S_ISLNK(info.st_mode):
+                    raise FormatWriteError("unsafe_receipt_symlink")
+                if not stat.S_ISDIR(info.st_mode):
+                    raise FormatWriteError("unsafe_receipt_root")
+                child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                dir_fd=fd)
+                os.close(fd)
+                fd = child
+            self.fd = fd
+            fd = -1
+            self.device, self.inode = os.fstat(self.fd).st_dev, os.fstat(self.fd).st_ino
+            self.assert_stable()
+        except FormatWriteError:
+            self.close()
+            raise
+        except OSError:
+            self.close()
+            raise FormatWriteError("unavailable_receipt_root") from None
+        finally:
+            if fd >= 0:
+                os.close(fd)
+
+    def assert_stable(self) -> None:
+        try:
+            expected = os.fstat(self.fd)
+            actual = self.path.lstat()
+        except OSError:
+            raise FormatWriteError("receipt_root_changed") from None
+        if (
+            not stat.S_ISDIR(actual.st_mode)
+            or (actual.st_dev, actual.st_ino) != (self.device, self.inode)
+            or (expected.st_dev, expected.st_ino) != (self.device, self.inode)
+        ):
+            raise FormatWriteError("receipt_root_changed")
+        if (
+            expected.st_uid != os.geteuid()
+            or actual.st_uid != os.geteuid()
+            or (expected.st_mode | actual.st_mode) & 0o077
+        ):
+            raise FormatWriteError("unsafe_receipt_permissions")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+    def close(self) -> None:
+        if self.fd >= 0:
+            os.close(self.fd)
+            self.fd = -1
+
+
+def _root(directory: Path) -> _ReceiptDirectory:
+    return _ReceiptDirectory(directory)
+
+
+def _record_immutable(directory: _ReceiptDirectory, name: str, data: bytes) -> None:
+    """Publish complete immutable receipt relative to pinned fd, never by path."""
+    directory.assert_stable()
+    temporary = ".formatter-receipt-" + uuid.uuid4().hex + ".tmp"
+    fd = -1
     try:
-        for part in reversed((path, *path.parents)):
-            if part.is_symlink():
-                raise FormatWriteError("unsafe_receipt_symlink")
-        info = path.lstat()
+        fd = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
+                     0o600, dir_fd=directory.fd)
+        with os.fdopen(fd, "wb") as handle:
+            fd = -1
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, name, src_dir_fd=directory.fd,
+                    dst_dir_fd=directory.fd, follow_symlinks=False)
+        except FileExistsError:
+            existing_fd = os.open(
+                name, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0),
+                dir_fd=directory.fd,
+            )
+            try:
+                info = os.fstat(existing_fd)
+                if (
+                    not stat.S_ISREG(info.st_mode)
+                    or info.st_uid != os.geteuid()
+                    or info.st_mode & 0o077
+                    or info.st_size > MAX_RECEIPT_BYTES
+                ):
+                    raise FormatWriteError("invalid_existing_receipt")
+                with os.fdopen(os.dup(existing_fd), "rb") as reader:
+                    old = reader.read(MAX_RECEIPT_BYTES + 1)
+                if old != data:
+                    raise FormatWriteError("receipt_collision")
+            finally:
+                os.close(existing_fd)
+        os.fsync(directory.fd)
+    except FormatWriteError:
+        raise
     except OSError:
-        raise FormatWriteError("unavailable_receipt_root") from None
-    if (
-        not stat.S_ISDIR(info.st_mode)
-        or info.st_uid != os.geteuid()
-        or info.st_mode & 0o077
-    ):
-        raise FormatWriteError("unsafe_receipt_permissions")
-    return path
+        raise FormatWriteError("receipt_not_durable") from None
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            os.unlink(temporary, dir_fd=directory.fd)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            # Do not mask a write failure. A private orphaned temp can be
+            # investigated, but no remote effect will be attempted on error.
+            pass
 
 
 def _record(
-    directory: Path,
+    directory: _ReceiptDirectory,
     *,
     operation: str,
     stage: str,
@@ -176,19 +288,16 @@ def _record(
     if len(data) > MAX_RECEIPT_BYTES:
         raise FormatWriteError("receipt_too_large")
     sha = _digest(data)
-    try:
-        _store_immutable(directory / f"{sha}.vault-formatter-receipt.json", data)
-    except Exception:
-        raise FormatWriteError("receipt_not_durable") from None
+    _record_immutable(directory, f"{sha}.vault-formatter-receipt.json", data)
     return sha
 
 
-def _marker(directory: Path, operation: str) -> None:
-    """Reserve operation identity durably *before* any remote effect."""
-    target = directory / f"operation-{operation}.marker"
+def _marker(directory: _ReceiptDirectory, operation: str) -> None:
+    """Bind replay prevention to the same pinned private directory fd."""
+    directory.assert_stable()
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW
     try:
-        fd = os.open(target, flags, 0o600)
+        fd = os.open(f"operation-{operation}.marker", flags, 0o600, dir_fd=directory.fd)
     except FileExistsError:
         raise FormatWriteError("operation_replay_blocked") from None
     except OSError:
@@ -198,11 +307,7 @@ def _marker(directory: Path, operation: str) -> None:
             handle.write(b"vault-format-writer-v1\n")
             handle.flush()
             os.fsync(handle.fileno())
-        parent_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        try:
-            os.fsync(parent_fd)
-        finally:
-            os.close(parent_fd)
+        os.fsync(directory.fd)
     except OSError:
         raise FormatWriteError("operation_reservation_failed") from None
 
@@ -328,103 +433,104 @@ def apply_plan(
         binding_sha = _binding(base_url, username)
     except (WebDAVCreateError, ValueError):
         raise FormatWriteError("invalid_private_connection") from None
-    directory = _root(receipt_dir)
     operation = uuid.uuid4().hex if operation_id is None else operation_id
     if type(operation) is not str or _OPERATION.fullmatch(operation) is None:
         raise FormatWriteError("invalid_operation_id")
-    _marker(directory, operation)
-    _record(directory, operation=operation, stage="accepted", plan_sha=plan_sha,
-            binding_sha=binding_sha, outcomes=[])
+    with _root(receipt_dir) as directory:
+        _marker(directory, operation)
+        _record(directory, operation=operation, stage="accepted", plan_sha=plan_sha,
+                binding_sha=binding_sha, outcomes=[])
 
-    pending: list[_Pending] = []
-    preflight: list[dict] = []
-    for path in selected:
-        item = entries[path]
-        url = build_target_url(base_url, path)
-        response = _observe(transport=transport, url=url, username=username,
-                            password=password, timeout=timeout)
-        before, after = item["before_sha256"], item["after_sha256"]
-        if response is None or response.status != 200:
-            reason = "remote_unavailable" if response is None else "remote_missing_or_rejected"
-            preflight.append(_result(path, before, after, reason))
-            continue
-        observed_sha = _digest(response.body)
-        if observed_sha == after:
-            pending.append(_Pending(path, before, after, None, None, "already_desired"))
-            preflight.append(_result(path, before, after, "already_desired"))
-            continue
-        if observed_sha != before or len(response.body) != item["before_size"]:
-            preflight.append(_result(path, before, after, "source_changed"))
-            continue
-        expected, lines, _ = format_markdown(response.body)
-        if (
-            expected is None
-            or expected == response.body
-            or len(expected) != item["after_size"]
-            or _digest(expected) != after
-            or list(lines) != item["changed_lines"]
-        ):
-            preflight.append(_result(path, before, after, "formatter_policy_mismatch"))
-            continue
-        etag = _strong_etag(response.etag)
-        if etag is None:
-            preflight.append(_result(path, before, after, "weak_or_missing_etag"))
-            continue
-        pending.append(_Pending(path, before, after, etag, expected, "ready"))
-        preflight.append(_result(path, before, after, "ready"))
+        pending: list[_Pending] = []
+        preflight: list[dict] = []
+        for path in selected:
+            item = entries[path]
+            url = build_target_url(base_url, path)
+            response = _observe(transport=transport, url=url, username=username,
+                                password=password, timeout=timeout)
+            before, after = item["before_sha256"], item["after_sha256"]
+            if response is None or response.status != 200:
+                reason = "remote_unavailable" if response is None else "remote_missing_or_rejected"
+                preflight.append(_result(path, before, after, reason))
+                continue
+            observed_sha = _digest(response.body)
+            if observed_sha == after:
+                pending.append(_Pending(path, before, after, None, None, "already_desired"))
+                preflight.append(_result(path, before, after, "already_desired"))
+                continue
+            if observed_sha != before or len(response.body) != item["before_size"]:
+                preflight.append(_result(path, before, after, "source_changed"))
+                continue
+            expected, lines, _ = format_markdown(response.body)
+            if (
+                expected is None
+                or expected == response.body
+                or len(expected) != item["after_size"]
+                or _digest(expected) != after
+                or list(lines) != item["changed_lines"]
+            ):
+                preflight.append(_result(path, before, after, "formatter_policy_mismatch"))
+                continue
+            etag = _strong_etag(response.etag)
+            if etag is None:
+                preflight.append(_result(path, before, after, "weak_or_missing_etag"))
+                continue
+            pending.append(_Pending(path, before, after, etag, expected, "ready"))
+            preflight.append(_result(path, before, after, "ready"))
 
-    if any(item["result"] not in {"already_desired", "ready"} for item in preflight):
-        sha = _record(directory, operation=operation, stage="preflight_blocked",
-                      plan_sha=plan_sha, binding_sha=binding_sha, outcomes=preflight)
-        return {"status": "blocked", "plan_sha256": plan_sha,
-                "operation_id": operation, "receipt_sha256": sha,
-                "outcomes": preflight, "vault_modified": False}
+        if any(item["result"] not in {"already_desired", "ready"} for item in preflight):
+            sha = _record(directory, operation=operation, stage="preflight_blocked",
+                          plan_sha=plan_sha, binding_sha=binding_sha, outcomes=preflight)
+            return {"status": "blocked", "plan_sha256": plan_sha,
+                    "operation_id": operation, "receipt_sha256": sha,
+                    "outcomes": preflight, "vault_modified": False}
 
-    final: list[dict] = []
-    observed_writes = False
-    for item in pending:
-        if item.disposition == "already_desired":
-            final.append(_result(item.path, item.before_sha256, item.after_sha256, "already_desired"))
-            continue
-        url = build_target_url(base_url, item.path)
-        # This durable record exists before any conditional PUT.
-        _record(directory, operation=operation, stage="attempting",
-                plan_sha=plan_sha, binding_sha=binding_sha,
-                outcomes=final + [_result(item.path, item.before_sha256, item.after_sha256, "attempting")])
-        try:
-            put = _request(transport, method="PUT", url=url, username=username, password=password,
-                           headers={"If-Match": item.etag, "Content-Type": "text/markdown; charset=utf-8"},
-                           body=item.desired, timeout=timeout, limit=64 * 1024)
-        except Exception:
-            put = None
-        if put is not None and put.status in {401, 403, 404, 409, 412, 423}:
-            status = "cas_conflict" if put.status in {409, 412, 423} else "write_rejected"
-            final.append(_result(item.path, item.before_sha256, item.after_sha256, status))
-            break  # stop applying further files after a CAS refusal
-        # Any accepted/uncertain PUT requires a fresh canonical GET readback.
-        remote = _observe(transport=transport, url=url, username=username,
-                          password=password, timeout=timeout)
-        if remote is not None and remote.status == 200 and _digest(remote.body) == item.after_sha256:
-            if put is None or put.status in {500, 502, 503, 504}:
-                status = "recovered"
-                observed_writes = True
-            elif put.status in {200, 204}:
-                status = "applied"
-                observed_writes = True
+        final: list[dict] = []
+        observed_writes = False
+        for item in pending:
+            if item.disposition == "already_desired":
+                final.append(_result(item.path, item.before_sha256, item.after_sha256, "already_desired"))
+                continue
+            url = build_target_url(base_url, item.path)
+            # This durable record exists before any conditional PUT.
+            _record(directory, operation=operation, stage="attempting",
+                    plan_sha=plan_sha, binding_sha=binding_sha,
+                    outcomes=final + [_result(item.path, item.before_sha256, item.after_sha256, "attempting")])
+            directory.assert_stable()
+            try:
+                put = _request(transport, method="PUT", url=url, username=username, password=password,
+                               headers={"If-Match": item.etag, "Content-Type": "text/markdown; charset=utf-8"},
+                               body=item.desired, timeout=timeout, limit=64 * 1024)
+            except Exception:
+                put = None
+            if put is not None and put.status in {401, 403, 404, 409, 412, 423}:
+                status = "cas_conflict" if put.status in {409, 412, 423} else "write_rejected"
+                final.append(_result(item.path, item.before_sha256, item.after_sha256, status))
+                break  # stop applying further files after a CAS refusal
+            # Any accepted/uncertain PUT requires a fresh canonical GET readback.
+            remote = _observe(transport=transport, url=url, username=username,
+                              password=password, timeout=timeout)
+            if remote is not None and remote.status == 200 and _digest(remote.body) == item.after_sha256:
+                if put is None or put.status in {500, 502, 503, 504}:
+                    status = "recovered"
+                    observed_writes = True
+                elif put.status in {200, 204}:
+                    status = "applied"
+                    observed_writes = True
+                else:
+                    status = "indeterminate"
             else:
                 status = "indeterminate"
-        else:
-            status = "indeterminate"
-        final.append(_result(item.path, item.before_sha256, item.after_sha256, status))
-        if status == "indeterminate":
-            break  # never issue further remote PUTs after an ambiguous effect
+            final.append(_result(item.path, item.before_sha256, item.after_sha256, status))
+            if status == "indeterminate":
+                break  # never issue further remote PUTs after an ambiguous effect
 
-    statuses = {x["result"] for x in final}
-    outcome = ("indeterminate" if "indeterminate" in statuses else
-               "complete" if statuses <= {"applied", "recovered", "already_desired"} else
-               "partial" if observed_writes else "blocked")
-    sha = _record(directory, operation=operation, stage=outcome, plan_sha=plan_sha,
-                  binding_sha=binding_sha, outcomes=final)
-    modified: bool | None = None if outcome == "indeterminate" else observed_writes
-    return {"status": outcome, "plan_sha256": plan_sha, "operation_id": operation,
-            "receipt_sha256": sha, "outcomes": final, "vault_modified": modified}
+        statuses = {x["result"] for x in final}
+        outcome = ("indeterminate" if "indeterminate" in statuses else
+                   "complete" if statuses <= {"applied", "recovered", "already_desired"} else
+                   "partial" if observed_writes else "blocked")
+        sha = _record(directory, operation=operation, stage=outcome, plan_sha=plan_sha,
+                      binding_sha=binding_sha, outcomes=final)
+        modified: bool | None = None if outcome == "indeterminate" else observed_writes
+        return {"status": outcome, "plan_sha256": plan_sha, "operation_id": operation,
+                "receipt_sha256": sha, "outcomes": final, "vault_modified": modified}
