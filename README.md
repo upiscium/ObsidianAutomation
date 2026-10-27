@@ -60,7 +60,11 @@ immutable, deterministic change plan. The conditional writer and scheduled
 operations are separate, explicitly gated workstreams (#471/#472).
 
 See [Vault Formatter / Phase 1](docs/vault-formatter.md) for setup, usage,
-safety restrictions and tests.
+safety restrictions and tests. Source-only #472 adds a separate Off-by-default
+Formatter Job and status controls to the existing nonroot app, documented in
+[Formatter operations](docs/vault-formatter-operations.md). Ordinary app startup
+never injects a Vault Writer: Auto apply requires independent provider/authority
+acceptance before future source integration and production activation.
 
 ## Public Exporter v0
 

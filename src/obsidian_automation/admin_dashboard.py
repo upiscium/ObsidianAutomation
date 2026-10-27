@@ -34,6 +34,7 @@ from .snapshot_job import SnapshotJob, Invalid as SnapshotInvalid
 from .snapshot_setup import validate_nextcloud, GITEA_FIELDS
 from .github_daily_job import DailyJob, Invalid as DailyInvalid
 from .github_daily_setup import DailySetup, DailySetupError
+from .vault_format_job import FormatterJob, FormatterInvalid
 from .unified_workflows import workflow_catalog
 
 HTML = """<!doctype html>
@@ -134,6 +135,28 @@ HTML = """<!doctype html>
       <button id="daily-refresh" type="button">結果を更新</button>
       <p id="daily-message" role="status"></p>
       <p>GitHub進捗はLLMを使わず決定的に生成します。Writer有効時も前日JSTの既存Daily Noteの該当セクションだけを更新し、結果を検証します。</p>
+    </section>
+    <section id="vault-formatter" class="pipeline" aria-label="Vault Formatter">
+      <h2>Vault Formatter / 98-System</h2>
+      <p id="formatter-state">Formatterの状態を取得中</p>
+      <p id="formatter-capability">Live Vaultへの書戻しは無効です。</p>
+      <p id="formatter-last">最終結果: —</p>
+      <p id="formatter-due">次回: —</p>
+      <label>モード
+        <select id="formatter-mode" disabled>
+          <option value="off">Off</option>
+          <option value="dry-run">Dry-run（読取のみ）</option>
+          <option value="auto-apply" disabled>Auto apply（別途本番承認）</option>
+        </select>
+      </label>
+      <label>定期実行間隔（秒）
+        <input id="formatter-interval" type="number" min="300" max="86400" value="3600" disabled>
+      </label>
+      <button id="formatter-save" type="button" disabled>設定を保存</button>
+      <button id="formatter-run" type="button" disabled>Run Once（Dry-run）</button>
+      <button id="formatter-refresh" type="button">結果を更新</button>
+      <p id="formatter-message" role="status"></p>
+      <p>変更候補と件数だけを表示します。元ファイルや秘密情報は画面に送信しません。</p>
     </section>
     <section id="operation-preview" class="pipeline" aria-label="操作の事前確認">
       <h2>サービス操作のプレビュー</h2>
@@ -424,6 +447,7 @@ $("nextcloud-form").addEventListener("submit", async event => {
   await snapshotRefresh();
   await dailyConnectionRefresh();
   await dailyRefresh();
+  await formatterRefresh();
   await workflowCatalogRefresh();
 });
 async function connectionRefresh() {
@@ -451,6 +475,7 @@ $("connections-form").addEventListener("submit", async (event) => {
   await snapshotRefresh();
   await dailyConnectionRefresh();
   await dailyRefresh();
+  await formatterRefresh();
   await workflowCatalogRefresh();
 });
 async function snapshotRefresh() {
@@ -542,6 +567,7 @@ $("daily-connections-form").addEventListener("submit", async event => {
   }
   await dailyConnectionRefresh();
   await dailyRefresh();
+  await formatterRefresh();
   await workflowCatalogRefresh();
 });
 async function dailyRefresh() {
@@ -598,6 +624,7 @@ $("daily-save").addEventListener("click", async () => {
       "定期実行設定を保存しました。実行モードは起動設定で固定されています。";
   } catch { $("daily-message").textContent = "設定の保存に失敗しました"; }
   await dailyRefresh();
+  await formatterRefresh();
   await workflowCatalogRefresh();
 });
 async function pollDailyResult(runId) {
@@ -652,8 +679,84 @@ $("daily-run").addEventListener("click", async () => {
 });
 $("daily-refresh").addEventListener("click", async () => {
   await dailyRefresh();
+  await formatterRefresh();
   await workflowCatalogRefresh();
 });
+async function formatterRefresh() {
+  try {
+    const response = await fetch("/api/v1/formatter", {
+      cache:"no-store", credentials:"same-origin"
+    });
+    if (!response.ok) throw Error("formatter_unavailable");
+    const data = await response.json();
+    if (data.version !== 1 || data.job !== "vault_formatter"
+        || !data.settings
+        || !["off","dry-run","auto-apply"].includes(data.settings.mode)
+        || typeof data.settings.write_capable !== "boolean")
+      throw Error("formatter_schema");
+    const settings = data.settings;
+    $("formatter-mode").value = settings.mode;
+    $("formatter-mode").querySelector('option[value="auto-apply"]').disabled =
+      !settings.write_capable;
+    $("formatter-interval").value = settings.interval_seconds;
+    $("formatter-state").textContent = settings.configured
+      ? "状態: " + settings.mode + " / 対象: " + settings.scope
+      : "Nextcloud未設定（実行不可）";
+    $("formatter-capability").textContent = settings.write_capable
+      ? "Auto applyは独立承認後のWriterのみです。Run OnceはDry-runです。"
+      : "Live Vault書戻しは無効。Run Onceは常にDry-runです。";
+    const last = data.last_run;
+    $("formatter-last").textContent = last
+      ? "最終結果: " + last.status + " / 対象変更候補 "
+        + (last.would_change ?? "—") + "件 / スキップ "
+        + (last.skipped ?? "—") + "件"
+        + (last.writer_outcome ? " / Writer: " + last.writer_outcome : "")
+        + (last.reason_code ? " / 理由: " + last.reason_code : "")
+      : "最終結果: なし";
+    $("formatter-due").textContent = "次回: " +
+      (settings.next_due ? new Date(settings.next_due * 1000).toLocaleString() : "なし");
+    for (const id of ["formatter-mode","formatter-interval","formatter-save","formatter-run"])
+      $(id).disabled = !settings.configured;
+    if (last && ["queued","running"].includes(last.status))
+      $("formatter-run").disabled = true;
+  } catch {
+    $("formatter-state").textContent = "状態未確認（操作不可）";
+    $("formatter-capability").textContent = "Writerの有効状態を確認できません";
+    $("formatter-last").textContent = "最終結果: —";
+    $("formatter-due").textContent = "次回: —";
+    for (const id of ["formatter-mode","formatter-interval","formatter-save","formatter-run"])
+      $(id).disabled = true;
+  }
+}
+$("formatter-save").addEventListener("click", async () => {
+  $("formatter-save").disabled = true;
+  try {
+    await snapshotPost("/api/v1/formatter/settings", {
+      mode:$("formatter-mode").value,
+      interval_seconds:Number($("formatter-interval").value)
+    });
+    $("formatter-message").textContent = "Formatter設定を保存しました。実行はまだ開始していません。";
+  } catch {
+    $("formatter-message").textContent = "保存できませんでした（設定・権限を確認してください）";
+  }
+  await formatterRefresh();
+});
+$("formatter-run").addEventListener("click", async () => {
+  $("formatter-run").disabled = true;
+  try {
+    const data = await snapshotPost("/api/v1/formatter/runs", {
+      request_id:crypto.randomUUID().replaceAll("-", "")
+    });
+    $("formatter-message").textContent = data.run_id
+      ? "Dry-run受付: " + data.run_id + "。結果を更新して確認してください。"
+      : "実行中または未設定";
+  } catch {
+    $("formatter-message").textContent =
+      "受付は未確認です。二重実行せず、結果を更新して確認してください。";
+  }
+  await formatterRefresh();
+});
+$("formatter-refresh").addEventListener("click", formatterRefresh);
 let previewGeneration = 0;
 let pendingConfirmation = null;
 let latestOperationId = null;
@@ -705,6 +808,7 @@ async function refresh() {
   await snapshotRefresh();
   await dailyConnectionRefresh();
   await dailyRefresh();
+  await formatterRefresh();
   ++previewGeneration; // Invalidate any in-flight operation preview.
   invalidateConfirmation();
   $("preview-check").disabled = true;
@@ -1186,6 +1290,18 @@ class Handler(BaseHTTPRequestHandler):
                         json.dumps(value).encode() if value is not None else b'{"error":"not_found"}',
                         "application/json")
             return
+        if self.path == "/api/v1/formatter" or self.path.startswith("/api/v1/formatter/runs/"):
+            job = getattr(self.server, "formatter_job", None)
+            if job is None:
+                self._reply(503, b'{"error":"formatter_disabled"}', "application/json")
+                return
+            value = (job.status() if self.path == "/api/v1/formatter" else
+                     job.run(self.path[len("/api/v1/formatter/runs/"):]))
+            self._reply(200 if value is not None else 404,
+                        json.dumps(value, sort_keys=True).encode("utf-8")
+                        if value is not None else b'{"error":"not_found"}',
+                        "application/json")
+            return
         if self.path == "/api/v1/workflows":
             value = workflow_catalog(self.server.snapshot_job, self.server.daily_job)
             self._reply(200, json.dumps(value, ensure_ascii=False, sort_keys=True).encode("utf-8"),
@@ -1332,6 +1448,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/v1/nextcloud/connections",
             "/api/v1/daily/settings", "/api/v1/daily/runs",
             "/api/v1/daily/connections",
+            "/api/v1/formatter/settings", "/api/v1/formatter/runs",
         ):
             self._reply(405, b"Method not allowed")
             return
@@ -1360,17 +1477,24 @@ class Handler(BaseHTTPRequestHandler):
             store, snapshot_job, daily_job = (self.server.snapshot_setup,
                                               self.server.snapshot_job,
                                               self.server.daily_job)
+            formatter = getattr(self.server, "formatter_job", None)
             if store is None or snapshot_job is None:
                 self._reply(503, b'{"error":"nextcloud_setup_disabled"}', "application/json")
                 return
             try:
                 payload = validate_nextcloud(json.loads(self._read_bounded_json()))
-                with snapshot_job._lock, (daily_job._lock if daily_job else nullcontext()):
+                with snapshot_job._lock, (daily_job._lock if daily_job else nullcontext()), (
+                        formatter._lock if formatter else nullcontext()):
                     if snapshot_job.db.execute(
                         "SELECT 1 FROM runs WHERE status IN ('queued','running') LIMIT 1"
                     ).fetchone() or (daily_job and daily_job.db.execute(
                         "SELECT 1 FROM runs WHERE status IN ('queued','running') LIMIT 1"
                     ).fetchone()):
+                        self._reply(409, b'{"error":"connection_busy"}', "application/json")
+                        return
+                    if formatter and formatter.db.execute(
+                        "SELECT 1 FROM runs WHERE status IN ('queued','running') LIMIT 1"
+                    ).fetchone():
                         self._reply(409, b'{"error":"connection_busy"}', "application/json")
                         return
                     current = store.load_nextcloud()
@@ -1385,6 +1509,8 @@ class Handler(BaseHTTPRequestHandler):
                             self._reply(422, b'{"error":"nextcloud_connection_probe_failed"}',
                                         "application/json")
                             return
+                        if formatter:
+                            formatter.connections_saved()
                         if daily_job:
                             old_settings = daily_job.settings()
                             daily_job.update({"enabled": False,
@@ -1464,6 +1590,32 @@ class Handler(BaseHTTPRequestHandler):
             self._reply(code, json.dumps(result).encode(), "application/json")
             return
 
+        if self.path in ("/api/v1/formatter/settings", "/api/v1/formatter/runs"):
+            job = getattr(self.server, "formatter_job", None)
+            if job is None:
+                self._reply(503, b'{"error":"formatter_disabled"}', "application/json")
+                return
+            try:
+                payload = json.loads(self._read_bounded_json())
+                if self.path.endswith("/settings"):
+                    result = job.update(payload)
+                    code = 200
+                else:
+                    if type(payload) is not dict or set(payload) != {"request_id"}:
+                        raise FormatterInvalid("invalid_formatter_request")
+                    outcome, receipt = job.submit(payload["request_id"])
+                    result = {"version": 1, "outcome": outcome,
+                              "run_id": receipt["run_id"] if receipt else None}
+                    code = 202 if outcome in ("accepted", "replayed") else 409
+            except (FormatterInvalid, PreviewRequestRejected, ValueError, TypeError):
+                self._reply(400, b'{"error":"invalid_formatter_request"}', "application/json")
+                return
+            except Exception:
+                self._reply(503, b'{"error":"formatter_unavailable"}', "application/json")
+                return
+            self._reply(code, json.dumps(result).encode(), "application/json")
+            return
+
         if self.path in ("/api/v1/snapshot/settings", "/api/v1/snapshot/runs"):
             job = self.server.snapshot_job
             if job is None:
@@ -1502,7 +1654,9 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError("nextcloud_missing")
                     payload = {**nextcloud, **payload}
                 daily = self.server.daily_job
-                with job._lock, (daily._lock if daily is not None else nullcontext()):
+                formatter = getattr(self.server, "formatter_job", None)
+                with job._lock, (daily._lock if daily is not None else nullcontext()), (
+                        formatter._lock if formatter else nullcontext()):
                     if job.db.execute("SELECT 1 FROM runs WHERE status IN ('queued','running') LIMIT 1").fetchone():
                         self._reply(409, b'{"error":"snapshot_busy"}', "application/json")
                         return
@@ -1513,9 +1667,16 @@ class Handler(BaseHTTPRequestHandler):
                     ).fetchone():
                         self._reply(409, b'{"error":"daily_busy"}', "application/json")
                         return
+                    if formatter and formatter.db.execute(
+                        "SELECT 1 FROM runs WHERE status IN ('queued','running') LIMIT 1"
+                    ).fetchone():
+                        self._reply(409, b'{"error":"formatter_busy"}', "application/json")
+                        return
                     github_setup = self.server.daily_setup
                     previous_source = (github_setup.source_fingerprint()
                                        if github_setup is not None else None)
+                    if formatter:
+                        formatter.connections_saved()
                     if not store.save(payload):
                         self._reply(422, b'{"error":"connection_probe_failed"}', "application/json")
                         return
@@ -1652,6 +1813,7 @@ def make_server(
     snapshot_setup=None,
     daily_job: DailyJob | None = None,
     daily_setup: DailySetup | None = None,
+    formatter_job: FormatterJob | None = None,
 ) -> ThreadingHTTPServer:
     if not isinstance(port, int) or not 0 <= port <= 65535:
         raise ValueError("port must be between 0 and 65535")
@@ -1673,6 +1835,7 @@ def make_server(
     server.snapshot_setup = snapshot_setup
     server.daily_job = daily_job
     server.daily_setup = daily_setup
+    server.formatter_job = formatter_job
     server.daemon_threads = True
     return server
 
