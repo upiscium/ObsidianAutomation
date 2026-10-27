@@ -97,6 +97,12 @@ class MarkdownFormatTests(unittest.TestCase):
         source = b"    code\n  \n    code\n"
         self.assertEqual(format_markdown(source)[0], source)
 
+    def test_indented_code_boundary_is_untouched(self):
+        source = b"    code\n  \nplain\n"
+        desired, lines, _ = format_markdown(source)
+        self.assertEqual(desired, source)
+        self.assertEqual(lines, ())
+
     def test_tab_and_four_space_blank_lines_untouched(self):
         source = b"A\n\t\nB\n    \nC\n"
         desired, lines, _ = format_markdown(source)

@@ -86,9 +86,7 @@ def _in_ambiguous_markdown_context(lines: list[str], index: int) -> bool:
     if any(_HARDBREAK_COMMENT.match(line) for line in neighbors):
         return True
     # Empty lines inside indented code blocks should stay byte-for-byte.
-    if len(neighbors) == 2 and all(
-        len(line) - len(line.lstrip(" ")) >= 4 for line in neighbors
-    ):
+    if any(len(line) - len(line.lstrip(" ")) >= 4 for line in neighbors):
         return True
     return False
 
