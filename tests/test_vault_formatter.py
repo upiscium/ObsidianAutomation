@@ -82,10 +82,17 @@ class MarkdownFormatTests(unittest.TestCase):
             desired, lines, reason = format_markdown(source)
             if tag == "plaintext":
                 self.assertIsNone(desired)
-                self.assertEqual(reason, "unterminated-protected-block")
+                self.assertEqual(reason, "unsupported-html-block")
             else:
                 self.assertEqual(desired, source)
             self.assertEqual(lines, ())
+
+    def test_plaintext_end_tag_text_cannot_reenable_formatting(self):
+        source = b"before\n  \n<plaintext>\ninside\n</plaintext>\n  \nafter\n"
+        desired, lines, reason = format_markdown(source)
+        self.assertIsNone(desired)
+        self.assertEqual(lines, ())
+        self.assertEqual(reason, "unsupported-html-block")
 
     def test_html_comment_pre_and_script_are_opaque(self):
         raw = (

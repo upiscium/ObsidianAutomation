@@ -412,3 +412,43 @@ def test_private_receipts_use_owned_dir_and_secure_file_modes(plan_vault):
         assert path.is_file() and not path.is_symlink()
         assert path.stat().st_mode & 0o077 == 0
     assert not list(root.glob(".formatter-receipt-*.tmp"))
+
+
+def test_foreign_owned_nonwritable_ancestor_is_refused_before_http(
+        plan_vault, tmp_path, monkeypatch):
+    # Simulate an otherwise 0755 ancestor owned by a different local UID
+    # through the descriptor metadata, without requiring chown/root in CI.
+    import types
+    from obsidian_automation import vault_format_writer as module
+
+    parent = tmp_path / "foreign-parent"
+    parent.mkdir(mode=0o755)
+    sink = parent / "receipts"
+    sink.mkdir(mode=0o700)
+    actual_fstat = os.fstat
+
+    def descriptor_metadata(fd):
+        info = actual_fstat(fd)
+        try:
+            location = os.readlink(f"/proc/self/fd/{fd}")
+        except OSError:
+            return info
+        if location == str(parent):
+            return types.SimpleNamespace(
+                st_mode=info.st_mode, st_uid=os.geteuid()+1,
+                st_dev=info.st_dev, st_ino=info.st_ino,
+            )
+        return info
+
+    dav = SyntheticDav()
+    with monkeypatch.context() as patch:
+        patch.setattr(module.os, "fstat", descriptor_metadata)
+        with pytest.raises(FormatWriteError, match="unsafe_receipt_ancestor"):
+            apply_plan(
+                plan_vault[1], selected_paths=[SOURCE],
+                enabled=True, cas_server_verified=True, receipt_dir=sink,
+                base_url=BASE_URL, username="user", password=CREDENTIAL,
+                transport=dav,
+            )
+    assert not dav.calls
+    assert list(sink.iterdir()) == []

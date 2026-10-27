@@ -31,7 +31,8 @@ folder. It first obtains a bounded rclone lsjson inventory of eligible 98-System
 Markdown files (file count, individual sizes, total bytes, path constraints).
 It downloads only that exact allowlist into a disposable private mirror,
 with max-size and max-transfer guards, and verifies matching bytes through a
-read-only rclone check --download and a second bounded inventory. Only then
+read-only rclone check --download protected by its OWN max-size and
+max-transfer guards, followed by a second bounded inventory. Only then
 does it call #470 create_plan. An oversized, mutated or unobservable source
 is rejected, never silently truncated or treated as a successful preview.
 The temporary allowlist and mirror are removed on success or failure.

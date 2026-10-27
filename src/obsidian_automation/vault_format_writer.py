@@ -150,6 +150,11 @@ class _ReceiptDirectory:
             fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             for component in path.parts[1:]:
                 parent = os.fstat(fd)
+                # A foreign owner can rename its child entries even if a
+                # directory is 0755, so mode bits alone are insufficient.
+                # Permit only root or the effective writer UID on ancestry.
+                if parent.st_uid not in (0, os.geteuid()):
+                    raise FormatWriteError("unsafe_receipt_ancestor")
                 if parent.st_mode & 0o022 and not (
                     parent.st_uid == 0 and parent.st_mode & stat.S_ISVTX
                 ):

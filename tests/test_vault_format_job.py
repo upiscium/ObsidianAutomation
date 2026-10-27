@@ -267,6 +267,8 @@ def test_formatter_source_no_remote_writer_commands(tmp_path, monkeypatch):
             assert "--transfers" in argv
         if argv[3] == "check":
             assert "--download" in argv
+            assert "--max-size" in argv and "--max-transfer" in argv
+            assert "--cutoff-mode" in argv
         return subprocess.CompletedProcess(argv, 0)
 
     monkeypatch.setattr(capture, "_bounded_listing", fake_list)

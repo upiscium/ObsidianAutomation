@@ -195,6 +195,11 @@ def format_markdown(source: bytes) -> tuple[bytes | None, tuple[int, ...], str]:
 
         match = _RAW_OPEN.search(body)
         if match:
+            # HTML plaintext consumes the rest of the document, including
+            # literal "</plaintext>" text; there is no closing end tag.
+            # Reject the whole input rather than resuming formatting.
+            if match.group("tag").lower() == "plaintext":
+                return None, (), "unsupported-html-block"
             updates.append(line)
             tag = match.group("tag")
             if not re.search(r"</" + re.escape(tag) + r"\s*>", body[match.end() :], re.I):

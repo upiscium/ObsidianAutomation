@@ -159,7 +159,12 @@ def pull_system_markdown(source, target: Path) -> bool:
                     "--max-size", f"{DEFAULT_MAX_BYTES}B",
                     "--max-transfer", f"{DEFAULT_MAX_TOTAL_BYTES}B",
                     "--cutoff-mode", "HARD", "--transfers", "1", *safe],
-            args + ["check", remote, str(target), *files, "--download", *safe],
+            # The verification pass also reads remote bytes. Bound it as
+            # strictly as the original copy if a file grows after listing.
+            args + ["check", remote, str(target), *files, "--download",
+                    "--max-size", f"{DEFAULT_MAX_BYTES}B",
+                    "--max-transfer", f"{DEFAULT_MAX_TOTAL_BYTES}B",
+                    "--cutoff-mode", "HARD", *safe],
         ]
         for command in operations:
             try:

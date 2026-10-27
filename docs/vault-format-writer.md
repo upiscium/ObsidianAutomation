@@ -40,7 +40,10 @@ automatic scheduler, Gitea publisher or live credential enrollment.
    Receipt files are now created relative to a retained private directory
    descriptor. The writer checks ancestor permissions and the original
    directory identity before every remote mutation; if its pathname is
-   replaced mid-preflight, the operation is blocked with no PUT.
+   replaced mid-preflight, the operation is blocked with no PUT. All
+   ancestor directories must be owned by root or the writer identity;
+   a foreign-owned 0755 ancestor is unsafe because its owner can rename
+   child entries without gaining read access to the private leaf.
 7. Receipts are private and immutable, with operation ID, plan SHA,
    endpoint/account binding SHA, path, before/after SHA, status and timestamp.
    Raw content, URLs, raw ETags, passwords and tokens are not logged.
