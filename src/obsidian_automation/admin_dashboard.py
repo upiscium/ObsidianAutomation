@@ -1508,8 +1508,6 @@ class Handler(BaseHTTPRequestHandler):
                             self._reply(422, b'{"error":"nextcloud_connection_probe_failed"}',
                                         "application/json")
                             return
-                        if formatter:
-                            formatter.connections_saved()
                         if daily_job:
                             old_settings = daily_job.settings()
                             daily_job.update({"enabled": False,
@@ -1522,6 +1520,10 @@ class Handler(BaseHTTPRequestHandler):
                             self._reply(503, b'{"error":"nextcloud_connection_unavailable"}',
                                         "application/json")
                             return
+                        # Only the completed provider change invalidates the
+                        # Formatter schedule. A failed save cannot stop it.
+                        if formatter:
+                            formatter.connections_saved()
                         if full:
                             snapshot_job.connections_saved(store.generation())
                 self._reply(200, json.dumps(store.nextcloud_status()).encode(),
@@ -1674,13 +1676,18 @@ class Handler(BaseHTTPRequestHandler):
                     github_setup = self.server.daily_setup
                     previous_source = (github_setup.source_fingerprint()
                                        if github_setup is not None else None)
-                    if formatter:
-                        formatter.connections_saved()
+                    previous_formatter_source = (formatter.source_generation()
+                                                 if formatter is not None else None)
                     if not store.save(payload):
                         self._reply(422, b'{"error":"connection_probe_failed"}', "application/json")
                         return
                     try:
                         job.connections_saved(store.generation())
+                        # B4 and Formatter follow only the canonical Nextcloud
+                        # source, not unrelated Gitea connection changes.
+                        if (formatter is not None and
+                                previous_formatter_source != formatter.source_generation()):
+                            formatter.connections_saved()
                         # B4 only depends on the Nextcloud source, not Gitea.
                         if (daily is not None and github_setup is not None
                                 and previous_source != github_setup.source_fingerprint()):

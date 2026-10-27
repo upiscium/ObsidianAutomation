@@ -27,10 +27,14 @@ diff is sent to the browser.
 ## Read-only remote source capture
 
 The Formatter reuses the shared Nextcloud rclone.conf and configured Vault
-folder. It copies only 98-System Markdown candidates to a disposable local
-private mirror, performs a second rclone check and then invokes #470
-create_plan. A changed connection identity during the fetch invalidates the
-result. Source copies are removed after each attempt.
+folder. It first obtains a bounded rclone lsjson inventory of eligible 98-System
+Markdown files (file count, individual sizes, total bytes, path constraints).
+It downloads only that exact allowlist into a disposable private mirror,
+with max-size and max-transfer guards, and verifies matching bytes through a
+read-only rclone check --download and a second bounded inventory. Only then
+does it call #470 create_plan. An oversized, mutated or unobservable source
+is rejected, never silently truncated or treated as a successful preview.
+The temporary allowlist and mirror are removed on success or failure.
 
 The source path invokes only remote-to-local copy and check; no remote
 rclone sync, push, upload or WebDAV PUT/MOVE/DELETE.
@@ -48,8 +52,10 @@ rclone sync, push, upload or WebDAV PUT/MOVE/DELETE.
 - applied/conflict/indeterminate: only for a separately injected and
   authorized CAS Writer; no such writer is passed by the normal service.
 
-Construction does not begin jobs. A source account change resets only
-the Formatter's mode/schedule to Off. Other app jobs are preserved.
+Construction does not begin jobs. A successfully saved change to the
+Nextcloud source identity resets only the Formatter mode/schedule to Off.
+A failed save or a Gitea-only settings change does not disable Formatter.
+Other app jobs retain their independent operating modes.
 
 ## Production requirements NOT YET MET
 

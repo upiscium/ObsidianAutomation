@@ -246,13 +246,35 @@ def test_formatter_source_no_remote_writer_commands(tmp_path, monkeypatch):
     Source.rclone_config.write_text("synthetic\n")
     destination = tmp_path / "98-System"
     destination.mkdir()
+    from obsidian_automation import vault_format_source as capture
     calls = []
+    inventory_calls = []
+    inventory = json.dumps([{
+        "Path": "sub/startup.md", "Size": len(RAW), "IsDir": False,
+    }]).encode()
+
+    def fake_list(argv, cwd):
+        inventory_calls.append(argv)
+        return inventory
+
     def fake(argv, **kwargs):
         calls.append(argv)
+        assert "--files-from0" in argv
+        selected = Path(argv[argv.index("--files-from0") + 1])
+        assert selected.read_bytes() == b"sub/startup.md\0"
+        if argv[3] == "copy":
+            assert "--max-size" in argv and "--max-transfer" in argv
+            assert "--transfers" in argv
+        if argv[3] == "check":
+            assert "--download" in argv
         return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(capture, "_bounded_listing", fake_list)
     monkeypatch.setattr(subprocess, "run", fake)
     assert pull_system_markdown(Source(), destination) is True
     assert [row[3] for row in calls] == ["copy", "check"]
+    assert len(inventory_calls) == 2
+    assert not list(tmp_path.glob(".formatter-allowlist-*"))
     assert not any(any(k in part for k in ("sync", "PUT", "delete", "upload"))
                    for row in calls for part in row)
 
@@ -432,3 +454,216 @@ def test_fresh_single_app_attaches_formatter_but_does_not_schedule_work(
     assert (state / "vault-formatter/formatter.sqlite3").is_file()
     assert (state / "github-daily/daily.sqlite3").is_file()
     assert (state / "snapshot.sqlite3").is_file()
+
+def test_remote_inventory_rejects_large_and_unsafe_entries():
+    from obsidian_automation.vault_format_source import _manifest
+    from obsidian_automation.vault_formatter import DEFAULT_MAX_BYTES
+
+    def encode(rows):
+        return json.dumps(rows).encode()
+    for rows in (
+        [{"Path": "big.md", "Size": DEFAULT_MAX_BYTES + 1, "IsDir": False}],
+        [{"Path": "unknown.md", "Size": -1, "IsDir": False}],
+        [{"Path": "../escape.md", "Size": 10, "IsDir": False}],
+        [{"Path": ".hidden.md", "Size": 10, "IsDir": False}],
+        [{"Path": "one.md", "Size": 4, "IsDir": False},
+         {"Path": "one.md", "Size": 4, "IsDir": False}],
+        [{"Path": "not-file.md", "Size": 1, "IsDir": True}],
+    ):
+        assert _manifest(encode(rows)) is None
+    assert _manifest(encode([{"Path":"nested/valid.md","Size":20,"IsDir":False}])) == (
+        ("nested/valid.md", 20),
+    )
+
+
+def test_remote_capture_rejects_over_budget_before_any_download(tmp_path, monkeypatch):
+    from obsidian_automation import vault_format_source as capture
+    class Source:
+        rclone_remote = "nextcloud:Vault"
+        rclone_config = tmp_path / "rclone.conf"
+        def validate(self): pass
+    Source.rclone_config.write_text("synthetic\n")
+    dest = tmp_path / "98-System"
+    dest.mkdir()
+    remote = [
+        {"Path":"one.md","Size": 40, "IsDir":False},
+        {"Path":"two.md","Size": 40, "IsDir":False},
+    ]
+    monkeypatch.setattr(capture, "DEFAULT_MAX_TOTAL_BYTES", 50)
+    monkeypatch.setattr(capture, "_bounded_listing", lambda argv, cwd: json.dumps(remote).encode())
+    called = []
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: called.append(a))
+    assert capture.pull_system_markdown(Source(), dest) is False
+    assert called == []
+    assert not list(tmp_path.glob(".formatter-allowlist-*"))
+
+
+def test_remote_capture_rejects_changed_listing_and_cleans_allowlist(
+        tmp_path, monkeypatch):
+    from obsidian_automation import vault_format_source as capture
+    class Source:
+        rclone_remote = "nextcloud:Vault"
+        rclone_config = tmp_path / "rclone.conf"
+        def validate(self): pass
+    Source.rclone_config.write_text("synthetic\n")
+    dest = tmp_path / "98-System"
+    dest.mkdir()
+    calls = [0]
+    def listing(argv, cwd):
+        calls[0] += 1
+        size = 11 if calls[0] == 1 else 12
+        return json.dumps([{"Path":"file.md","Size":size,"IsDir":False}]).encode()
+    monkeypatch.setattr(capture, "_bounded_listing", listing)
+    monkeypatch.setattr(subprocess, "run", lambda argv, **kwargs:
+                        subprocess.CompletedProcess(argv,0))
+    assert capture.pull_system_markdown(Source(), dest) is False
+    assert calls[0] == 2
+    assert not list(tmp_path.glob(".formatter-allowlist-*"))
+
+
+def test_remote_listing_stdout_is_bounded(tmp_path, monkeypatch):
+    import sys
+    from obsidian_automation import vault_format_source as capture
+    small = capture._bounded_listing(
+        [sys.executable, "-c", "import sys; sys.stdout.write('[]')"], tmp_path,
+    )
+    assert small == b"[]"
+    monkeypatch.setattr(capture, "MAX_LIST_OUTPUT", 16)
+    result = capture._bounded_listing(
+        [sys.executable, "-c", "import sys; sys.stdout.write('x' * 200)"],
+        tmp_path,
+    )
+    assert result is None
+
+
+
+def test_formatter_schedule_survives_failed_or_gitea_only_setup_save(tmp_path):
+    import hashlib
+    from obsidian_automation.snapshot_setup import GITEA_FIELDS
+
+    class SharedStore:
+        def __init__(self):
+            self.nextcloud = {
+                "webdav_url": "https://nextcloud.invalid/remote.php/dav/files/u/",
+                "vault_folder": "Vault",
+                "nextcloud_user": "u",
+                "nextcloud_password": "TEST-APP-PASSWORD",
+            }
+            self.fail = False
+
+        def generation(self):
+            return "1" * 64
+
+        def fingerprint(self):
+            data = json.dumps(self.nextcloud, sort_keys=True).encode()
+            return hashlib.sha256(data).hexdigest()
+
+        def load_nextcloud(self):
+            return dict(self.nextcloud)
+
+        def save(self, payload):
+            if self.fail:
+                return False
+            self.nextcloud = {
+                name: payload[name] for name in self.nextcloud
+            }
+            return True
+
+        def status(self):
+            return {"version": 1, "configured": True, "nextcloud":"configured",
+                    "gitea":"read_verified_at_save"}
+
+    store = SharedStore()
+    fmt = FormatterJob(
+        tmp_path/"writer-state", lambda: prepared_plan(tmp_path),
+        configured=lambda: True, source_generation=store.fingerprint
+    )
+    snapshot = SnapshotJob(
+        tmp_path/"snapshot-state", lambda _: ("no_changes","verify",None)
+    )
+    server = make_server(
+        port=0, formatter_job=fmt, snapshot_job=snapshot,
+        snapshot_setup=store, observer=lambda: [], ai_observer=lambda: {},
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        fmt.update({"mode":"dry-run","interval_seconds":3600})
+        origin = f"http://127.0.0.1:{server.server_address[1]}"
+        gitea = {
+            "git_url": "https://gitea.invalid/user/repo.git",
+            "git_user": "synthetic", "git_token": "synthetic-token",
+            "branch": "main",
+        }
+        assert set(gitea) == GITEA_FIELDS
+
+        store.fail = True
+        assert request(server, "POST", "/api/v1/snapshot/connections", gitea,
+                       origin=origin, csrf=token(server))[0] == 422
+        assert fmt.settings()["mode"] == "dry-run"
+        assert fmt.settings()["next_due"] is not None
+
+        store.fail = False
+        assert request(server, "POST", "/api/v1/snapshot/connections", gitea,
+                       origin=origin, csrf=token(server))[0] == 200
+        assert fmt.settings()["mode"] == "dry-run"
+
+        changed = {**store.nextcloud, **gitea,
+                   "nextcloud_password":"CHANGED-SYNTHETIC"}
+        assert request(server, "POST", "/api/v1/snapshot/connections", changed,
+                       origin=origin, csrf=token(server))[0] == 200
+        assert fmt.settings()["mode"] == "off"
+        assert fmt.settings()["next_due"] is None
+    finally:
+        server.shutdown()
+        thread.join(3)
+        server.server_close()
+        snapshot.close()
+        fmt.close()
+
+
+def test_formatter_schedule_survives_failed_nextcloud_only_save(tmp_path):
+    import hashlib
+    class SharedStore:
+        def __init__(self):
+            self.nc = {
+                "webdav_url": "https://nextcloud.invalid/remote.php/dav/files/u/",
+                "vault_folder":"Vault", "nextcloud_user":"u",
+                "nextcloud_password":"FAKE-SECRET",
+            }
+        def fingerprint(self):
+            return hashlib.sha256(json.dumps(self.nc,sort_keys=True).encode()).hexdigest()
+        def load_nextcloud(self):
+            return dict(self.nc)
+        def load(self):
+            return None
+        def nextcloud_probe(self, _):
+            return True
+        def save_nextcloud(self, payload, probed=False):
+            return False
+        def nextcloud_status(self):
+            return {"version":1,"configured":True,"scope":"shared_nextcloud",
+                    "writes_vault":False}
+
+    store=SharedStore()
+    fmt=FormatterJob(tmp_path/"formatter", lambda: prepared_plan(tmp_path),
+                     configured=lambda:True, source_generation=store.fingerprint)
+    b2=SnapshotJob(tmp_path/"snapshot", lambda _:("no_changes","verify",None))
+    server=make_server(port=0, formatter_job=fmt, snapshot_job=b2,
+                       snapshot_setup=store, observer=lambda:[], ai_observer=lambda:{})
+    thread=threading.Thread(target=server.serve_forever,daemon=True)
+    thread.start()
+    try:
+        fmt.update({"mode":"dry-run","interval_seconds":3600})
+        origin=f"http://127.0.0.1:{server.server_address[1]}"
+        payload={**store.nc,"nextcloud_password":"CHANGED-TEST-PASSWORD"}
+        assert request(server,"POST","/api/v1/nextcloud/connections",payload,
+                       origin=origin,csrf=token(server))[0] == 503
+        assert fmt.settings()["mode"] == "dry-run"
+        assert fmt.settings()["next_due"] is not None
+    finally:
+        server.shutdown()
+        thread.join(3)
+        server.server_close()
+        b2.close()
+        fmt.close()
