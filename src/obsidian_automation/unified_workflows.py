@@ -17,10 +17,10 @@ class SnapshotObservation(Protocol):
 # workflows. Their status, credentials and operator authorization cannot be
 # silently reused as proof of integration.
 _PENDING = (
-    ("b1", "AIによる派生ノート生成", "既存AI処理は別管理。新しい共通Jobへの接続は未実施"),
-    ("b3", "ProjectデータをVaultに反映", "既存GitHub同期・Writerは別管理。新しい共通Jobへの接続は未実施"),
+    ("b1", "AIによる派生ノート生成", "共通WebUIからのAI Provider設定・生成・Review操作は未接続。既存処理が存在してもこの画面からは実行できません"),
+    ("b3", "ProjectデータをVaultに反映", "Project同期・Writerは共通WebUI未接続。Vaultへ反映する操作は利用できません"),
     ("b4", "GitHub進捗をDaily Noteに反映", "決定的生成の実装と、共通Job・Writer接続の受入は別"),
-    ("b5", "ChatGPT Exportの取り込み", "既存Importer・Human Reviewと共通WebUIの接続は未実施"),
+    ("b5", "ChatGPT Exportの取り込み", "バックエンドはありますがWebUIからのZIPアップロード・検証・取込は未接続。定期ジョブではなく手動取込の予定です"),
 )
 _RESULT = frozenset({"saved", "no_changes", "failed", "unconfirmed", "queued", "running"})
 
@@ -79,12 +79,13 @@ def _snapshot(job: SnapshotObservation | None) -> dict[str, object]:
 
 
 def _daily(job: SnapshotObservation | None) -> dict[str, object]:
+    unavailable_note = "GitHub Dailyの状態を取得できません。Run Onceは利用できません"
     result = _pending(
         "b4", "GitHub進捗をDaily Noteに反映",
-        "Previewのみ。Daily Noteへの自動反映・Writerは未導入")
+        "GitHub Dailyは共通WebUIに未接続。設定・Run Onceは利用できません")
     if job is None:
         return result
-    result.update(integration="unavailable")
+    result.update(integration="unavailable", note=unavailable_note)
     try:
         observed = job.status()
         if (type(observed) is not dict or observed.get("version") != 1
@@ -98,9 +99,15 @@ def _daily(job: SnapshotObservation | None) -> dict[str, object]:
         result["configuration"] = "configured" if settings["configured"] else "missing"
         result["schedule"] = "on" if settings["configured"] and settings["enabled"] else "off"
         result["control_available"] = settings["configured"]
-        result["note"] = ("Writer有効。Daily Note反映は各Runの検証済み結果で確認"
-                          if observed.get("publication_enabled") is True else
-                          "Previewのみ。Daily Noteへの自動反映・Writerは未導入")
+        result["note"] = (
+            "GitHub Daily PreviewのRun Onceは共通WebUIから利用可能。"
+            if settings["configured"] else
+            "GitHub Daily Previewは設定が必要です。設定完了までRun Onceは実行できません。"
+        ) + (
+            "Writer有効。Daily Note反映は各Runの検証済み結果で確認"
+            if observed.get("publication_enabled") is True else
+            "Writer有効は確認されていません。Preview生成はVaultへの反映ではありません"
+        )
         latest = observed.get("last_run")
         if latest is not None:
             allowed = {"preview_ready", "published", "publish_failed",
@@ -110,7 +117,8 @@ def _daily(job: SnapshotObservation | None) -> dict[str, object]:
                 latest.get("status") in allowed else "unknown")
     except Exception:
         result.update(integration="unavailable", configuration="not_observed",
-                      schedule="not_observed", last_result=None, control_available=False)
+                      schedule="not_observed", last_result=None, control_available=False,
+                      note=unavailable_note)
     return result
 
 

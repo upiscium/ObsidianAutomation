@@ -7,6 +7,8 @@ import threading
 import uuid
 from contextlib import contextmanager
 
+import pytest
+
 from obsidian_automation.admin_dashboard import HTML, JS, make_server
 from obsidian_automation.snapshot_job import SnapshotJob
 from obsidian_automation.github_daily_job import DailyJob
@@ -68,6 +70,8 @@ def test_unattached_product_five_not_legacy_service_five():
     assert entry(catalog, "b5")["schedule"] == "not_applicable"
     assert entry(catalog, "b2")["integration"] == "not_attached"
     assert entry(catalog, "b2")["control_available"] is False
+    assert "未接続" in entry(catalog, "b4")["note"]
+    assert "Run Onceは利用できません" in entry(catalog, "b4")["note"]
     body = json.dumps(catalog)
     assert "obsidian-ai-vault-pull.service" not in body
     assert "obsidian-github-daily-apply.service" not in body
@@ -208,6 +212,7 @@ const assert = require("node:assert/strict");
 const vm = require("node:vm");
 class Element {
   constructor(tag) { this.tag = tag; this.children = []; this.textContent = ""; }
+  set innerHTML(value) { throw new Error("HTML injection is forbidden"); }
   append(...children) {
     this.children.push(...children);
     this.lastElementChild = this.children.at(-1);
@@ -243,6 +248,19 @@ const reply = {
     last_result: null, control_available: id === "b2",
   })),
 };
+function assertCounts(expected) {
+  const summary = nodes["workflow-summary"].textContent;
+  const matches = [...summary.matchAll(/(\d+)(?:\/5)?機能/g)];
+  const counts = matches.map(match => Number(match[1]));
+  assert.deepEqual(counts, expected);
+  assert.equal(counts.reduce((sum, count) => sum + count, 0), 5);
+  assert.match(summary, /WebUI接続済み .*共通Job未接続 .*このサーバーでは未接続 .*状態取得不可 /);
+}
+async function respond(value) {
+  const done = sandbox.begin();
+  waiting.at(-1).resolve({ok: true, json: async () => value});
+  await done;
+}
 async function exercise() {
   // A slow old success must not re-populate cards after new B failed.
   const first = sandbox.begin();
@@ -267,16 +285,72 @@ async function exercise() {
   await third;
   assert.equal(nodes["workflow-catalog"].children.length, 5);
   assert.match(nodes["workflow-summary"].textContent, /5機能/);
+  assertCounts([1, 4, 0, 0]);
+
+  // The actual no-job backend projection includes B2 not_attached, not pending.
+  await respond(unattached);
+  assertCounts([0, 4, 1, 0]);
+  assert.equal(nodes["workflow-catalog"].children.length, 5);
+  assert.ok(nodes["workflow-catalog"].children.every(card =>
+    card.children.every(child => child.tag !== "a")));
+
+  const mixed = JSON.parse(JSON.stringify(reply));
+  ["connected", "pending", "not_attached", "unavailable", "pending"].forEach(
+    (state, i) => { mixed.workflows[i].integration = state; });
+  const injection = '<img src=x onerror="throw 1"><script>throw 2</script>';
+  mixed.workflows[0].label = injection;
+  mixed.workflows[0].note = injection;
+  await respond(mixed);
+  assertCounts([1, 2, 1, 1]);
+  const card = nodes["workflow-catalog"].children[0];
+  assert.equal(card.children[0].textContent, "B1 " + injection);
+  assert.equal(card.children[1].textContent, injection);
+  assert.ok(card.children.every(child => !["img", "script"].includes(child.tag)));
+
+  // Every invalid newest response clears both prior cards and summary counts.
+  const invalid = [null, {...reply, version: 2}, {...reply, authority: "control"},
+    {...reply, workflows: reply.workflows.slice(1)}];
+  for (const [field, value] of [
+    ["id", "b2"], ["id", "b6"], ["integration", "configured"],
+    ["integration", "unexpected"], ["integration", "__proto__"],
+  ]) {
+    const bad = JSON.parse(JSON.stringify(reply));
+    bad.workflows[0][field] = value;
+    invalid.push(bad);
+  }
+  for (const bad of invalid) {
+    await respond(mixed);
+    assertCounts([1, 2, 1, 1]);
+    const old = sandbox.begin();
+    await respond(bad);
+    assert.equal(nodes["workflow-catalog"].children.length, 0);
+    assert.match(nodes["workflow-summary"].textContent, /取得できません/);
+    assert.doesNotMatch(nodes["workflow-summary"].textContent, /\d+機能/);
+    waiting.at(-2).resolve({ok: true, json: async () => reply});
+    await old;
+    assert.equal(nodes["workflow-catalog"].children.length, 0);
+    assert.match(nodes["workflow-summary"].textContent, /取得できません/);
+  }
+  // An invalid old response must not clear a newer valid summary either.
+  const oldInvalid = sandbox.begin();
+  await respond(mixed);
+  waiting.at(-2).resolve({ok: true, json: async () => invalid[0]});
+  await oldInvalid;
+  assertCounts([1, 2, 1, 1]);
   console.log("latest_response_wins=PASS");
+  console.log("exhaustive_counts_validation_and_text_safety=PASS");
 }
 exercise().catch(e => { console.error(e); process.exitCode = 1; });
 """
     result = subprocess.run(
-        [node, "-"], input=prefix + "const source = " + json.dumps(fragment) + ";\n" + suffix,
+        [node, "-"], input=(prefix + "const source = " + json.dumps(fragment) + ";\n"
+                            + "const unattached = " + json.dumps(workflow_catalog(None))
+                            + ";\n" + suffix),
         capture_output=True, text=True, check=False, timeout=12,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "latest_response_wins=PASS" in result.stdout
+    assert "exhaustive_counts_validation_and_text_safety=PASS" in result.stdout
 
 
 
@@ -299,9 +373,12 @@ def test_b4_job_catalog_shows_preview_only_without_claiming_vault_publication(tm
         assert before["configuration"] == "missing"
         assert before["schedule"] == "off"
         assert before["control_available"] is False
+        assert "設定が必要" in before["note"]
+        assert "Run Onceは実行できません" in before["note"]
         available[0] = True
         ready = entry(workflow_catalog(None, job), "b4")
         assert ready["control_available"] and ready["last_result"] is None
+        assert "Run Onceは共通WebUIから利用可能" in ready["note"]
         job.update({"enabled": True, "interval_seconds": 86400})
         assert entry(workflow_catalog(None, job), "b4")["schedule"] == "on"
         kind, receipt = job.submit(uuid.uuid4().hex)
@@ -310,7 +387,7 @@ def test_b4_job_catalog_shows_preview_only_without_claiming_vault_publication(tm
         result = entry(workflow_catalog(None, job), "b4")
         assert result["last_result"] == "preview_ready"
         assert "Preview" in result["note"]
-        assert "未導入" in result["note"]
+        assert "Preview生成はVaultへの反映ではありません" in result["note"]
         payload = json.dumps(workflow_catalog(None, job))
         assert receipt["run_id"] not in payload
         assert "a"*64 not in payload
@@ -336,6 +413,8 @@ def test_b4_catalog_rejects_unknown_status_and_redacts_exceptions():
     item = entry(workflow_catalog(None, Explodes()), "b4")
     assert item["integration"] == "unavailable"
     assert item["last_result"] is None
+    assert item["control_available"] is False
+    assert "Run Onceは利用できません" in item["note"]
     assert "SECRET" not in json.dumps(item)
     item = entry(workflow_catalog(None, Bad()), "b4")
     assert item["integration"] == "connected"
@@ -343,6 +422,61 @@ def test_b4_catalog_rejects_unknown_status_and_redacts_exceptions():
     assert "SECRET" not in json.dumps(item)
     assert 'link.href = "#github-daily"' in JS
     assert "preview_ready:" in JS
+
+
+@pytest.mark.parametrize("observation", [
+    None, [], {"version": 2, "job": "github_daily_preview"},
+    {"version": 1, "job": "other", "settings": {}},
+    {"version": 1, "job": "github_daily_preview", "settings": None},
+    *({"version": 1, "job": "github_daily_preview",
+       "publication_enabled": True, "private": "SECRET", "settings": settings}
+      for settings in ({}, {"configured": "SECRET", "enabled": True},
+                       {"configured": True, "enabled": 1})),
+    # Even a failure after initial validation must discard actionable guidance.
+    {"version": 1, "job": "github_daily_preview", "publication_enabled": True,
+     "settings": {"configured": True, "enabled": True},
+     "last_run": {"status": ["SECRET"]}},
+])
+def test_b4_malformed_observation_never_advertises_actions(observation):
+    class Fake:
+        def status(self):
+            return observation
+
+    item = entry(workflow_catalog(None, Fake()), "b4")
+    assert item["integration"] == "unavailable"
+    assert item["configuration"] == item["schedule"] == "not_observed"
+    assert item["last_result"] is None and item["control_available"] is False
+    assert "状態を取得できません" in item["note"]
+    assert "Run Onceは利用できません" in item["note"]
+    assert "Writer有効" not in item["note"]
+    assert "SECRET" not in json.dumps(item)
+
+
+@pytest.mark.parametrize("configured", [False, True])
+@pytest.mark.parametrize("publication", [None, False, True, 1, "true"])
+def test_b4_guidance_uses_validated_configuration_and_exact_writer_flag(configured, publication):
+    class Fake:
+        def status(self):
+            return {"version": 1, "job": "github_daily_preview",
+                    "settings": {"configured": configured, "enabled": True},
+                    "publication_enabled": publication}
+
+    item = entry(workflow_catalog(None, Fake()), "b4")
+    assert item["integration"] == "connected"
+    assert item["control_available"] is configured
+    assert item["configuration"] == ("configured" if configured else "missing")
+    assert item["schedule"] == ("on" if configured else "off")
+    if configured:
+        assert "Run Onceは共通WebUIから利用可能" in item["note"]
+    else:
+        assert "設定が必要" in item["note"]
+        assert "Run Onceは実行できません" in item["note"]
+    if publication is True:
+        assert "Writer有効。" in item["note"]
+        assert "検証済み結果で確認" in item["note"]
+    else:
+        assert "Writer有効。" not in item["note"]
+        assert "Preview生成はVaultへの反映ではありません" in item["note"]
 
 
 

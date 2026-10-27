@@ -69,6 +69,7 @@ HTML = """<!doctype html>
     <section class="pipeline" aria-label="5つの自動化機能">
       <h2>自動化機能 B1〜B5</h2>
       <p id="workflow-summary">共通WebUIへの接続状態を取得しています…</p>
+      <p class="small">「統合状態」が未接続の機能は、この画面から実行できません。各機能の状態と最後の結果を確認してください。</p>
       <div id="workflow-catalog" class="cards" aria-live="polite"></div>
     </section>
     <section id="services" class="cards" aria-label="既存systemdサービス一覧" aria-live="polite"></section>
@@ -318,19 +319,24 @@ async function workflowCatalogRefresh() {
     const data = await response.json();
     if (generation !== workflowRefreshGeneration) return;
     const ids = ["b1","b2","b3","b4","b5"];
+    const counts = {connected:0, pending:0, not_attached:0, unavailable:0};
     if (data.version !== 1 || data.authority !== "observation_only"
         || !Array.isArray(data.workflows) || data.workflows.length !== 5
         || data.workflows.some((w, i) =>
           w.id !== ids[i] || typeof w.label !== "string"
           || typeof w.note !== "string" || typeof w.control_available !== "boolean"
-          || !Object.hasOwn(workflowLabels, w.integration)
+          || !Object.hasOwn(counts, w.integration)
           || !Object.hasOwn(workflowLabels, w.configuration)
           || !Object.hasOwn(workflowLabels, w.schedule))) {
       throw Error("invalid_workflow_projection");
     }
     $("workflow-catalog").replaceChildren(...data.workflows.map(workflowCard));
+    for (const w of data.workflows) ++counts[w.integration];
     $("workflow-summary").textContent =
-      "5機能の共通WebUI統合状況です。旧systemdサービスの観測とは別に表示します。";
+      "WebUI接続済み " + counts.connected + "/5機能 ・ 共通Job未接続 " + counts.pending +
+      "機能 ・ このサーバーでは未接続 " + counts.not_attached +
+      "機能 ・ 状態取得不可 " + counts.unavailable +
+      "機能。旧systemdの稼働状況とは別に判定します。";
   } catch {
     if (generation !== workflowRefreshGeneration) return;
     $("workflow-catalog").replaceChildren();
