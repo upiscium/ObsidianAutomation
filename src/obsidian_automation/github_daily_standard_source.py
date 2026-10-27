@@ -76,7 +76,9 @@ def read_standard_digest(root: Path, capture_sha: str) -> digest.DeterministicDi
     receipt = _read(paths['receipt'], _file('receipt', receipt_sha),
                     receipt_sha, verified.SIZES['receipt'])
     source = verified._verify(index_data, evidence, receipt, capture_sha)
-    return digest._build(source.bundle, capture_sha)
+    if source.capture_sha256 != capture_sha:
+        raise StandardSourceError('verified capture changed identity')
+    return digest._build_admitted_source(source)
 
 
 def collect_standard_source(root: Path, config, client, target_date) -> str:

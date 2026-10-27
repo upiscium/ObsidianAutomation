@@ -29,6 +29,7 @@ class DailySourceRouteError(ValueError):
 
 
 from . import github_daily_temporal_evidence as temporal
+from . import github_daily_title_observations as title_observations
 
 RECORD_VERSION = 2
 MAX_OBSERVED_ROUTES = 2048
@@ -528,14 +529,20 @@ def parse_verified_routes(
         raw = json.loads(receipt_bytes)
     except (ValueError, TypeError, UnicodeError) as exc:
         raise DailySourceRouteError("invalid source receipt JSON") from exc
+    version = raw.get("record_version") if type(raw) is dict else None
+    temporal_fields = ({"temporal_policy", "temporal_observations"}
+                       if version in (temporal.RECEIPT_VERSION, title_observations.RECEIPT_VERSION)
+                       else set())
+    title_fields = ({"entity_title_observations"}
+                    if version == title_observations.RECEIPT_VERSION else set())
     if (
         not isinstance(raw, dict)
         or set(raw) != ({
             "record_version", "date", "evidence_sha256", "routes",
             "collection_mode", "publication_authorized", "captured_at_utc",
-        } | ({"temporal_policy", "temporal_observations"}
-             if raw.get("record_version") == temporal.RECEIPT_VERSION else set()))
-        or type(raw["record_version"]) is not int or raw["record_version"] not in (RECORD_VERSION, temporal.RECEIPT_VERSION)
+        } | temporal_fields | title_fields)
+        or type(raw["record_version"]) is not int or version not in (
+            RECORD_VERSION, temporal.RECEIPT_VERSION, title_observations.RECEIPT_VERSION)
         or raw["collection_mode"] not in _ALLOWED_COLLECTION_MODES
         or not isinstance(raw["captured_at_utc"], str)
         or raw["publication_authorized"] is not False
@@ -547,7 +554,7 @@ def parse_verified_routes(
         raise DailySourceRouteError("route receipt version/evidence binding mismatch")
     if _json(raw) != receipt_bytes:
         raise DailySourceRouteError("noncanonical source receipt")
-    if raw["record_version"] == temporal.RECEIPT_VERSION:
+    if version in (temporal.RECEIPT_VERSION, title_observations.RECEIPT_VERSION):
         if raw["temporal_policy"] != temporal.POLICY:
             raise DailySourceRouteError("unknown temporal policy")
         try:
@@ -560,6 +567,14 @@ def parse_verified_routes(
             raise DailySourceRouteError("invalid temporal source projection") from None
     elif any("temporal_observation" in e for e in bundle.events):
         raise DailySourceRouteError("legacy receipt cannot attest temporal metadata")
+    if version == title_observations.RECEIPT_VERSION:
+        try:
+            title_observations.validate_records(
+                raw["entity_title_observations"], bundle.events,
+                captured_at_utc=raw["captured_at_utc"],
+            )
+        except title_observations.TitleObservationError:
+            raise DailySourceRouteError("invalid collected title observations") from None
     try:
         observed = activity._timestamp(raw["captured_at_utc"], label="captured_at_utc")
     except activity.GitHubDailyActivityError as exc:
@@ -610,6 +625,79 @@ def parse_verified_routes(
     return tuple(raw["routes"])
 
 
+def _collect_missing_entity_titles(
+    client: watcher.GitHubClient,
+    events: tuple[activity.EvidenceEvent, ...] | list[activity.EvidenceEvent],
+    *, captured_at_utc: str,
+    cached_issues: dict[tuple[str, int], tuple[dict, str]] | None = None,
+) -> list[dict[str, object]]:
+    """Optional source-title enrichment, never a historical title-change event.
+
+    Only called inside the trusted, already pinned v3 Collector. A title API
+    outage is nonfatal, while an identity/route contradiction fails closed.
+    Exactly one authenticated canonical Issue endpoint per missing entity.
+    """
+    rows = [event.to_json() for event in events]
+    try:
+        missing = title_observations.missing_title_keys(rows)
+    except title_observations.TitleObservationError:
+        raise DailySourceRouteError("invalid title observation targets") from None
+    observed = []
+    for key in missing[:title_observations.MAX_OBSERVATIONS]:
+        owner, name = key.repository.split("/")
+        route = (f"/repos/{urllib.parse.quote(owner, safe='')}/"
+                 f"{urllib.parse.quote(name, safe='')}/issues/{key.number}")
+        cached = (cached_issues or {}).get((key.repository, key.number))
+        if cached is not None:
+            issue, observed_at_utc = cached
+        else:
+            try:
+                issue = client._request_json(route)
+            except watcher.GitHubAPIHTTPError as exc:
+                if exc.status in (403, 404, 429) or 500 <= exc.status <= 599:
+                    # Source events are still valid; one missing title must
+                    # not drop a verified Issue/PR or stop the whole Daily.
+                    continue
+                raise
+            observed_at_utc = activity._format_timestamp(_utc_now())
+        if (type(issue) is not dict or
+                _number(issue.get("number"), label="title entity number") != key.number or
+                _number(issue.get("id"), label="title entity ID") < 1):
+            raise DailySourceRouteError("title source entity identity changed")
+        is_pr = issue.get("pull_request") is not None
+        if is_pr:
+            link = issue["pull_request"]
+            if type(link) is not dict:
+                raise DailySourceRouteError("invalid title source PR identity")
+            _require_api_url(link.get("url"), api=client,
+                             route=f"/repos/{owner}/{name}/pulls/{key.number}")
+        if (is_pr != (key.entity_type == "pull_request")
+                or issue.get("html_url") !=
+                f"https://github.com/{key.repository}/"
+                f"{'pull' if is_pr else 'issues'}/{key.number}"):
+            raise DailySourceRouteError("title source public identity mismatch")
+        try:
+            excerpt = activity._bounded_text(issue.get("title"),
+                       limit=title_observations.MAX_TITLE_BYTES,
+                       label="observed GitHub Issue/PR title")
+        except activity.GitHubDailyActivityError:
+            raise DailySourceRouteError("title source text type invalid") from None
+        if excerpt is None or excerpt.truncated or not excerpt.text.strip():
+            continue
+        observed.append({
+            "repository": key.repository, "entity_type": key.entity_type,
+            "number": key.number, "route": route,
+            "observed_at_utc": observed_at_utc,
+            "title": excerpt.text.strip(),
+        })
+    try:
+        title_observations.validate_records(observed, rows,
+            captured_at_utc=captured_at_utc)
+    except title_observations.TitleObservationError:
+        raise DailySourceRouteError("collected title observations not source-bound") from None
+    return observed
+
+
 def collect_fresh_verified_routes(
     config: watcher.WatcherConfig,
     *,
@@ -647,6 +735,10 @@ def collect_fresh_verified_routes(
     records: list[dict[str, object]] = []
     corrected: list[activity.EvidenceEvent] = []
     seen_comment_targets: dict[tuple[str, int], tuple[str, int]] = {}
+    # Existing authoritative Issue/PR classification GETs also expose the
+    # current source title: retain only the in-process bounded response and
+    # its actual observation time to avoid another API roundtrip.
+    issue_title_cache: dict[tuple[str, int], tuple[dict, str]] = {}
     pr_cache: dict[tuple[str, int], dict[str, dict[str, object]]] = {}
     for event in original.events:
         if event.kind not in REQUIRES_WITNESS:
@@ -680,6 +772,7 @@ def collect_fresh_verified_routes(
                 if not isinstance(issue, dict) or _number(issue.get("number"), label="issue number") != number:
                     raise DailySourceRouteError("issue classification source changed")
                 issue_id = _number(issue.get("id"), label="GitHub issue record ID")
+                issue_title_cache[key] = (issue, activity._format_timestamp(_utc_now()))
                 link = issue.get("pull_request")
                 if link is not None:
                     if not isinstance(link, dict):
@@ -775,8 +868,15 @@ def collect_fresh_verified_routes(
         "routes": records,
     }
     if temporal_records is not None:
-        payload.update(record_version=temporal.RECEIPT_VERSION,
-                       temporal_policy=temporal.POLICY, temporal_observations=temporal_records)
+        # Title metadata is collected *after* the event window is fixed.
+        # It is a separate current-label observation, not an event claim.
+        extras = _collect_missing_entity_titles(client, corrected,
+            captured_at_utc=payload["captured_at_utc"],
+            cached_issues=issue_title_cache)
+        payload.update(record_version=title_observations.RECEIPT_VERSION,
+                       temporal_policy=temporal.POLICY,
+                       temporal_observations=temporal_records,
+                       entity_title_observations=extras)
     receipt = temporal.encode_receipt(payload) if temporal_records is not None else _json(payload)
     # Validate our own freshly produced read-only artifact before returning.
     validated = parse_verified_routes(receipt, updated.canonical_bytes)

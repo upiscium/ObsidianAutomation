@@ -5,7 +5,7 @@ ACLs are the local trust anchor. This module never collects from GitHub or publi
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timezone, timedelta
 import hashlib
 import json
@@ -22,6 +22,7 @@ from .github_daily_cas_admission import (
 )
 from .github_daily_summary import EvidenceBundle, parse_evidence_bundle
 from .github_daily_activity import _date_window
+from . import github_daily_title_observations as titles
 
 ROOT = Path('/var/lib/obsidian-github-pipeline/daily-progress/15-VerifiedSource')
 TRUST_ANCHOR = Path('/')  # Only an isolated test fixture may override this.
@@ -46,12 +47,42 @@ class VerifiedSourceError(ValueError):
     """Source provenance or the complete dated event census is unavailable."""
 
 
+# Opaque in-process admission marker minted only by the receipt verifier.
+# A synthetic VerifiedSource or arbitrary SHA cannot authorize title labels.
+_TITLE_OBSERVATION_GATE = object()
+
+
 @dataclass(frozen=True)
 class VerifiedSource:
     capture_sha256: str
     bundle: EvidenceBundle
     witnessed_count: int
     unattributed_count: int
+    title_observations: tuple[dict, ...] = ()
+    _title_gate: object | None = field(default=None, repr=False, compare=False)
+    _title_binding: str | None = field(default=None, repr=False, compare=False)
+
+
+def _title_binding(capture: str, evidence_sha: str, rows: tuple[dict, ...]) -> str:
+    # A mutation detector tied to this already admitted capture and Evidence.
+    # This hash is not authentication; private-CAS admission and the gate are.
+    return _sha(_canonical({
+        'capture_sha256': capture, 'evidence_sha256': evidence_sha,
+        'entity_title_observations': list(rows),
+    }))
+
+
+def admitted_title_observations(source: VerifiedSource) -> tuple[dict, ...]:
+    """Only the exact validated v4 receipt can supply extra current titles."""
+    if type(source) is not VerifiedSource:
+        raise VerifiedSourceError('source is not a verified capture')
+    if source.title_observations:
+        if (source._title_gate is not _TITLE_OBSERVATION_GATE
+                or source._title_binding != _title_binding(
+                    source.capture_sha256, source.bundle.sha256,
+                    source.title_observations)):
+            raise VerifiedSourceError('supplemental titles lack verified source admission')
+    return source.title_observations
 
 
 def _sha(data: bytes) -> str:
@@ -337,7 +368,7 @@ def _verify(index_bytes: bytes, evidence: bytes, receipt_bytes: bytes, digest: s
             or index['route_receipt_sha256'] != _sha(receipt_bytes)
             or type(index['route_count']) is not int or index['route_count'] > 2048
             or type(index['source_receipt_version']) is not int
-            or index['source_receipt_version'] not in (2, 3)
+            or index['source_receipt_version'] not in (2, 3, titles.RECEIPT_VERSION)
             or index['collection_mode'] not in ('scheduled_recent_api_reverified',
                                                 'explicit_historical_reconfirmation')
             or _sha(index_bytes) != digest):
@@ -347,8 +378,11 @@ def _verify(index_bytes: bytes, evidence: bytes, receipt_bytes: bytes, digest: s
     standard = {'record_version', 'date', 'evidence_sha256', 'routes',
                 'collection_mode', 'publication_authorized', 'captured_at_utc'}
     version = index['source_receipt_version']
-    if (set(receipt) != standard | ({'temporal_policy', 'temporal_observations'}
-                                     if version == 3 else set())
+    temporal_fields = ({'temporal_policy', 'temporal_observations'}
+                       if version in (3, titles.RECEIPT_VERSION) else set())
+    label_fields = ({'entity_title_observations'}
+                    if version == titles.RECEIPT_VERSION else set())
+    if (set(receipt) != standard | temporal_fields | label_fields
             or type(receipt['record_version']) is not int
             or receipt['record_version'] != version or receipt['date'] != bundle.date
             or receipt['evidence_sha256'] != bundle.sha256
@@ -365,7 +399,7 @@ def _verify(index_bytes: bytes, evidence: bytes, receipt_bytes: bytes, digest: s
         raise VerifiedSourceError('scheduled capture day invalid')
     if len(bundle.events) > 50000:
         raise VerifiedSourceError('source event count exceeds bound')
-    if version == 3:
+    if version in (3, titles.RECEIPT_VERSION):
         if receipt['temporal_policy'] != TEMPORAL_POLICY:
             raise VerifiedSourceError('temporal policy mismatch')
         originals = _originals_from_v3(receipt['temporal_observations'], bundle,
@@ -433,7 +467,20 @@ def _verify(index_bytes: bytes, evidence: bytes, receipt_bytes: bytes, digest: s
                 or (kind in {'issue_comment', 'pull_request_comment'} and
                     not re.fullmatch(r'[1-9][0-9]{0,18}', row['remote_id']))):
             raise VerifiedSourceError('forged route attribution')
-    return VerifiedSource(digest, bundle, len(routes), orphan)
+    extra_titles = ()
+    if version == titles.RECEIPT_VERSION:
+        try:
+            extra_titles = titles.validate_records(
+                receipt['entity_title_observations'], bundle.events,
+                captured_at_utc=receipt['captured_at_utc'])
+        except titles.TitleObservationError:
+            raise VerifiedSourceError('invalid current-label title evidence') from None
+    return VerifiedSource(
+        digest, bundle, len(routes), orphan, extra_titles,
+        _TITLE_OBSERVATION_GATE if version == titles.RECEIPT_VERSION else None,
+        _title_binding(digest, bundle.sha256, extra_titles)
+        if version == titles.RECEIPT_VERSION else None,
+    )
 
 
 def read_verified_source(capture_sha256: str) -> VerifiedSource:

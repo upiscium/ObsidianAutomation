@@ -40,7 +40,7 @@ def test_fresh_route_to_mainline_source_digest(tmp_path, monkeypatch, v3):
     assert result.report()['model_used'] is False
     assert result.report()['publication_authorized'] is False
     assert 'https://github.com/upiscium/Test/issues/1' in result.render()
-    assert json.loads(source.receipt_bytes)['record_version'] == (3 if v3 else 2)
+    assert json.loads(source.receipt_bytes)['record_version'] == (4 if v3 else 2)
     assert bool('temporal_observation' in admitted.bundle.events[0]) is v3
 
 
@@ -61,7 +61,7 @@ def test_v1_event_json_without_temporal_proof_preserves_legacy_shape():
     assert row.to_json() == raw
 
 
-def test_fake_v3_receipt_cannot_be_accepted_by_legacy_v2_header(tmp_path, monkeypatch):
+def test_fake_v4_receipt_cannot_be_accepted_by_legacy_v2_header(tmp_path, monkeypatch):
     monkeypatch.setattr(route, '_utc_now',
                         lambda: datetime(2026, 10, 6, 1, tzinfo=timezone.utc))
     source = route.collect_fresh_verified_routes(
@@ -73,7 +73,7 @@ def test_fake_v3_receipt_cannot_be_accepted_by_legacy_v2_header(tmp_path, monkey
     assert len(good.bundle.events) == len(source.evidence.events)
     # A different, self-consistent v2 header must not be allowed to attest a
     # v3-projected row; evidence identity is fixed to original source bytes.
-    tampered = source.receipt_bytes.replace(b'"record_version":3', b'"record_version":2')
+    tampered = source.receipt_bytes.replace(b'"record_version":4', b'"record_version":2')
     with pytest.raises(verified.VerifiedSourceError):
         verified._verify(index.canonical_bytes, source.evidence.canonical_bytes,
                          tampered, index.sha256)
