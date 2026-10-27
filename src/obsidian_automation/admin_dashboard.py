@@ -570,6 +570,81 @@ $("daily-connections-form").addEventListener("submit", async event => {
   await formatterRefresh();
   await workflowCatalogRefresh();
 });
+async function formatterRefresh() {
+  try {
+    const response = await fetch("/api/v1/formatter", {
+      cache:"no-store", credentials:"same-origin"
+    });
+    if (!response.ok) throw Error("formatter_unavailable");
+    const data = await response.json();
+    if (data.version !== 1 || data.job !== "vault_formatter"
+        || !data.settings
+        || !["off","dry-run","auto-apply"].includes(data.settings.mode)
+        || typeof data.settings.write_capable !== "boolean")
+      throw Error("formatter_schema");
+    const settings = data.settings;
+    $("formatter-mode").value = settings.mode;
+    $("formatter-mode").querySelector('option[value="auto-apply"]').disabled =
+      !settings.write_capable;
+    $("formatter-interval").value = settings.interval_seconds;
+    $("formatter-state").textContent = settings.configured
+      ? "状態: " + settings.mode + " / 対象: " + settings.scope
+      : "Nextcloud未設定（実行不可）";
+    $("formatter-capability").textContent = settings.write_capable
+      ? "Auto applyは独立承認後のWriterのみです。Run OnceはDry-runです。"
+      : "Live Vault書戻しは無効。Run Onceは常にDry-runです。";
+    const last = data.last_run;
+    $("formatter-last").textContent = last
+      ? "最終結果: " + last.status + " / 対象変更候補 "
+        + (last.would_change ?? "—") + "件 / スキップ "
+        + (last.skipped ?? "—") + "件"
+        + (last.writer_outcome ? " / Writer: " + last.writer_outcome : "")
+        + (last.reason_code ? " / 理由: " + last.reason_code : "")
+      : "最終結果: なし";
+    $("formatter-due").textContent = "次回: " +
+      (settings.next_due ? new Date(settings.next_due * 1000).toLocaleString() : "なし");
+    for (const id of ["formatter-mode","formatter-interval","formatter-save","formatter-run"])
+      $(id).disabled = !settings.configured;
+    if (last && ["queued","running"].includes(last.status))
+      $("formatter-run").disabled = true;
+  } catch {
+    $("formatter-state").textContent = "状態未確認（操作不可）";
+    $("formatter-capability").textContent = "Writerの有効状態を確認できません";
+    $("formatter-last").textContent = "最終結果: —";
+    $("formatter-due").textContent = "次回: —";
+    for (const id of ["formatter-mode","formatter-interval","formatter-save","formatter-run"])
+      $(id).disabled = true;
+  }
+}
+$("formatter-save").addEventListener("click", async () => {
+  $("formatter-save").disabled = true;
+  try {
+    await snapshotPost("/api/v1/formatter/settings", {
+      mode:$("formatter-mode").value,
+      interval_seconds:Number($("formatter-interval").value)
+    });
+    $("formatter-message").textContent = "Formatter設定を保存しました。実行はまだ開始していません。";
+  } catch {
+    $("formatter-message").textContent = "保存できませんでした（設定・権限を確認してください）";
+  }
+  await formatterRefresh();
+});
+$("formatter-run").addEventListener("click", async () => {
+  $("formatter-run").disabled = true;
+  try {
+    const data = await snapshotPost("/api/v1/formatter/runs", {
+      request_id:crypto.randomUUID().replaceAll("-", "")
+    });
+    $("formatter-message").textContent = data.run_id
+      ? "Dry-run受付: " + data.run_id + "。結果を更新して確認してください。"
+      : "実行中または未設定";
+  } catch {
+    $("formatter-message").textContent =
+      "受付は未確認です。二重実行せず、結果を更新して確認してください。";
+  }
+  await formatterRefresh();
+});
+$("formatter-refresh").addEventListener("click", formatterRefresh);
 async function dailyRefresh() {
   try {
     const r = await fetch("/api/v1/daily", {cache:"no-store",credentials:"same-origin"});
@@ -679,84 +754,8 @@ $("daily-run").addEventListener("click", async () => {
 });
 $("daily-refresh").addEventListener("click", async () => {
   await dailyRefresh();
-  await formatterRefresh();
   await workflowCatalogRefresh();
 });
-async function formatterRefresh() {
-  try {
-    const response = await fetch("/api/v1/formatter", {
-      cache:"no-store", credentials:"same-origin"
-    });
-    if (!response.ok) throw Error("formatter_unavailable");
-    const data = await response.json();
-    if (data.version !== 1 || data.job !== "vault_formatter"
-        || !data.settings
-        || !["off","dry-run","auto-apply"].includes(data.settings.mode)
-        || typeof data.settings.write_capable !== "boolean")
-      throw Error("formatter_schema");
-    const settings = data.settings;
-    $("formatter-mode").value = settings.mode;
-    $("formatter-mode").querySelector('option[value="auto-apply"]').disabled =
-      !settings.write_capable;
-    $("formatter-interval").value = settings.interval_seconds;
-    $("formatter-state").textContent = settings.configured
-      ? "状態: " + settings.mode + " / 対象: " + settings.scope
-      : "Nextcloud未設定（実行不可）";
-    $("formatter-capability").textContent = settings.write_capable
-      ? "Auto applyは独立承認後のWriterのみです。Run OnceはDry-runです。"
-      : "Live Vault書戻しは無効。Run Onceは常にDry-runです。";
-    const last = data.last_run;
-    $("formatter-last").textContent = last
-      ? "最終結果: " + last.status + " / 対象変更候補 "
-        + (last.would_change ?? "—") + "件 / スキップ "
-        + (last.skipped ?? "—") + "件"
-        + (last.writer_outcome ? " / Writer: " + last.writer_outcome : "")
-        + (last.reason_code ? " / 理由: " + last.reason_code : "")
-      : "最終結果: なし";
-    $("formatter-due").textContent = "次回: " +
-      (settings.next_due ? new Date(settings.next_due * 1000).toLocaleString() : "なし");
-    for (const id of ["formatter-mode","formatter-interval","formatter-save","formatter-run"])
-      $(id).disabled = !settings.configured;
-    if (last && ["queued","running"].includes(last.status))
-      $("formatter-run").disabled = true;
-  } catch {
-    $("formatter-state").textContent = "状態未確認（操作不可）";
-    $("formatter-capability").textContent = "Writerの有効状態を確認できません";
-    $("formatter-last").textContent = "最終結果: —";
-    $("formatter-due").textContent = "次回: —";
-    for (const id of ["formatter-mode","formatter-interval","formatter-save","formatter-run"])
-      $(id).disabled = true;
-  }
-}
-$("formatter-save").addEventListener("click", async () => {
-  $("formatter-save").disabled = true;
-  try {
-    await snapshotPost("/api/v1/formatter/settings", {
-      mode:$("formatter-mode").value,
-      interval_seconds:Number($("formatter-interval").value)
-    });
-    $("formatter-message").textContent = "Formatter設定を保存しました。実行はまだ開始していません。";
-  } catch {
-    $("formatter-message").textContent = "保存できませんでした（設定・権限を確認してください）";
-  }
-  await formatterRefresh();
-});
-$("formatter-run").addEventListener("click", async () => {
-  $("formatter-run").disabled = true;
-  try {
-    const data = await snapshotPost("/api/v1/formatter/runs", {
-      request_id:crypto.randomUUID().replaceAll("-", "")
-    });
-    $("formatter-message").textContent = data.run_id
-      ? "Dry-run受付: " + data.run_id + "。結果を更新して確認してください。"
-      : "実行中または未設定";
-  } catch {
-    $("formatter-message").textContent =
-      "受付は未確認です。二重実行せず、結果を更新して確認してください。";
-  }
-  await formatterRefresh();
-});
-$("formatter-refresh").addEventListener("click", formatterRefresh);
 let previewGeneration = 0;
 let pendingConfirmation = null;
 let latestOperationId = null;
