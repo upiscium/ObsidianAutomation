@@ -79,12 +79,13 @@ def _snapshot(job: SnapshotObservation | None) -> dict[str, object]:
 
 
 def _daily(job: SnapshotObservation | None) -> dict[str, object]:
+    unavailable_note = "GitHub Dailyの状態を取得できません。Run Onceは利用できません"
     result = _pending(
         "b4", "GitHub進捗をDaily Noteに反映",
-        "GitHub Daily Previewの設定・Run Onceは共通WebUIから利用可能。Writerはこの環境では未導入（別担当）")
+        "GitHub Dailyは共通WebUIに未接続。設定・Run Onceは利用できません")
     if job is None:
         return result
-    result.update(integration="unavailable")
+    result.update(integration="unavailable", note=unavailable_note)
     try:
         observed = job.status()
         if (type(observed) is not dict or observed.get("version") != 1
@@ -98,9 +99,15 @@ def _daily(job: SnapshotObservation | None) -> dict[str, object]:
         result["configuration"] = "configured" if settings["configured"] else "missing"
         result["schedule"] = "on" if settings["configured"] and settings["enabled"] else "off"
         result["control_available"] = settings["configured"]
-        result["note"] = ("Writer有効。Daily Note反映は各Runの検証済み結果で確認"
-                          if observed.get("publication_enabled") is True else
-                          "GitHub Daily Previewの設定・Run Onceは共通WebUIから利用可能。Writerはこの環境では未導入（別担当）")
+        result["note"] = (
+            "GitHub Daily PreviewのRun Onceは共通WebUIから利用可能。"
+            if settings["configured"] else
+            "GitHub Daily Previewは設定が必要です。設定完了までRun Onceは実行できません。"
+        ) + (
+            "Writer有効。Daily Note反映は各Runの検証済み結果で確認"
+            if observed.get("publication_enabled") is True else
+            "Writer有効は確認されていません。Preview生成はVaultへの反映ではありません"
+        )
         latest = observed.get("last_run")
         if latest is not None:
             allowed = {"preview_ready", "published", "publish_failed",
@@ -110,7 +117,8 @@ def _daily(job: SnapshotObservation | None) -> dict[str, object]:
                 latest.get("status") in allowed else "unknown")
     except Exception:
         result.update(integration="unavailable", configuration="not_observed",
-                      schedule="not_observed", last_result=None, control_available=False)
+                      schedule="not_observed", last_result=None, control_available=False,
+                      note=unavailable_note)
     return result
 
 

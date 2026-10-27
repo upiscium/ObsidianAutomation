@@ -319,21 +319,23 @@ async function workflowCatalogRefresh() {
     const data = await response.json();
     if (generation !== workflowRefreshGeneration) return;
     const ids = ["b1","b2","b3","b4","b5"];
+    const counts = {connected:0, pending:0, not_attached:0, unavailable:0};
     if (data.version !== 1 || data.authority !== "observation_only"
         || !Array.isArray(data.workflows) || data.workflows.length !== 5
         || data.workflows.some((w, i) =>
           w.id !== ids[i] || typeof w.label !== "string"
           || typeof w.note !== "string" || typeof w.control_available !== "boolean"
-          || !Object.hasOwn(workflowLabels, w.integration)
+          || !Object.hasOwn(counts, w.integration)
           || !Object.hasOwn(workflowLabels, w.configuration)
           || !Object.hasOwn(workflowLabels, w.schedule))) {
       throw Error("invalid_workflow_projection");
     }
     $("workflow-catalog").replaceChildren(...data.workflows.map(workflowCard));
-    const usable = data.workflows.filter(w => w.integration === "connected").length;
-    const pending = data.workflows.filter(w => w.integration === "pending").length;
+    for (const w of data.workflows) ++counts[w.integration];
     $("workflow-summary").textContent =
-      "WebUI接続済み " + usable + "/5機能 ・ 未統合 " + pending +
+      "WebUI接続済み " + counts.connected + "/5機能 ・ 共通Job未接続 " + counts.pending +
+      "機能 ・ このサーバーでは未接続 " + counts.not_attached +
+      "機能 ・ 状態取得不可 " + counts.unavailable +
       "機能。旧systemdの稼働状況とは別に判定します。";
   } catch {
     if (generation !== workflowRefreshGeneration) return;
