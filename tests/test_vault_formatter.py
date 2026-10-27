@@ -103,6 +103,16 @@ class MarkdownFormatTests(unittest.TestCase):
         self.assertEqual(desired, source)
         self.assertEqual(lines, ())
 
+    def test_markdown_list_blank_line_does_not_change_structure(self):
+        for source in (
+            b"- list item\n  \ncontinuation\n",
+            b"text\n  \n- next item\n",
+            b"1. numbered\n  \nbody\n",
+        ):
+            desired, changed_lines, _ = format_markdown(source)
+            self.assertEqual(desired, source)
+            self.assertEqual(changed_lines, ())
+
     def test_tab_and_four_space_blank_lines_untouched(self):
         source = b"A\n\t\nB\n    \nC\n"
         desired, lines, _ = format_markdown(source)
@@ -201,6 +211,40 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(status["98-System/.hidden"], ("skipped", "hidden-directory"))
         self.assertEqual(status["98-System/fake.md"], ("skipped", "symlink"))
         self.assertEqual(status["98-System/link-dir"], ("skipped", "symlink"))
+
+    def test_intermediate_symlink_is_not_followed_on_read(self):
+        from obsidian_automation.vault_formatter import _snapshot_file
+
+        with tempfile.TemporaryDirectory(prefix="vault-format-outside-") as other:
+            target = Path(other) / "private.md"
+            target.write_bytes(b"Sensitive\n")
+            (self.vault / "98-System/redirect").symlink_to(
+                other, target_is_directory=True
+            )
+            data, reason = _snapshot_file(
+                self.vault, "98-System/redirect/private.md", 1024
+            )
+            self.assertIsNone(data)
+            self.assertEqual(reason, "source-unreadable")
+            scan = create_plan(self.vault)
+            record = next(
+                row for row in scan["results"]
+                if row["path"] == "98-System/redirect"
+            )
+            self.assertEqual(record["reason"], "symlink")
+
+    def test_directory_limit_is_enforced_on_nested_path(self):
+        from obsidian_automation.vault_formatter import _snapshot_file
+        self._add("98-System/regular/info.md", b"valid\n")
+        data, reason = _snapshot_file(
+            self.vault, "98-System/regular/info.md", 1024
+        )
+        self.assertEqual(data, b"valid\n")
+        self.assertIsNone(reason)
+        for candidate in ("98-System/../10-Project/private.md", "10-Project/private.md"):
+            data, reason = _snapshot_file(self.vault, candidate, 1024)
+            self.assertIsNone(data)
+            self.assertEqual(reason, "unsafe-path")
 
     def test_outside_scope_and_invalid_system_root(self):
         self._add("10-Project/private.md", b"secret\n  \nend\n")

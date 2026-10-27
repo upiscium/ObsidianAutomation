@@ -17,7 +17,7 @@ import sys
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Sequence
 
 POLICY_VERSION = "system-blank-lines-v1"
@@ -87,6 +87,10 @@ def _in_ambiguous_markdown_context(lines: list[str], index: int) -> bool:
         return True
     # Empty lines inside indented code blocks should stay byte-for-byte.
     if any(len(line) - len(line.lstrip(" ")) >= 4 for line in neighbors):
+        return True
+    # An indented whitespace-only line within a Markdown list could be
+    # structural. Do not try to prove its semantics with nearest-line logic.
+    if any(re.match(r"^ {0,3}(?:[-+*]|[0-9]{1,9}[.)])\s", line) for line in neighbors):
         return True
     return False
 
@@ -225,43 +229,93 @@ def _entry_collision_key(path: str) -> str:
     return unicodedata.normalize("NFC", path).casefold()
 
 
-def _enumerate_system_files(vault: Path, max_files: int) -> list[tuple[str, Path, str | None]]:
-    system_root = vault / "98-System"
-    if system_root.is_symlink() or not system_root.is_dir():
-        raise ValueError("98-System directory is absent, symlinked or not a directory")
+def _safe_directory_flags() -> int:
+    """Require Linux/POSIX no-follow directory FDs for traversal."""
+    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
+        raise ValueError("no-follow-directory-open-unavailable")
+    return os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
+
+def _enumerate_system_files(vault: Path, max_files: int) -> list[tuple[str, Path, str | None]]:
+    """Enumerate using dirfds, without following replaced intermediate links."""
     results: list[tuple[str, Path, str | None]] = []
     visited = 0
-    pending = [(system_root, "98-System")]
-    while pending:
-        directory, relative_parent = pending.pop()
-        with os.scandir(directory) as scan:
+    dirflags = _safe_directory_flags()
+
+    def walk(fd: int, relative_parent: str, depth: int) -> None:
+        nonlocal visited
+        if depth > 64:
+            raise ValueError("max-depth-limit-exceeded")
+        with os.scandir(fd) as scan:
             entries = sorted(scan, key=lambda e: (e.name.casefold(), e.name))
         for entry in entries:
-            relative = relative_parent + "/" + entry.name
-            path = Path(entry.path)
             visited += 1
             if visited > max_files:
                 raise ValueError("max-files-limit-exceeded")
-            if entry.is_symlink():
+            relative = relative_parent + "/" + entry.name
+            path = vault / PurePosixPath(relative)
+            try:
+                metadata = os.stat(entry.name, dir_fd=fd, follow_symlinks=False)
+            except OSError:
+                results.append((relative, path, "source-unreadable"))
+                continue
+            if stat.S_ISLNK(metadata.st_mode):
                 results.append((relative, path, "symlink"))
-            elif entry.is_dir(follow_symlinks=False):
+            elif stat.S_ISDIR(metadata.st_mode):
                 if entry.name.startswith("."):
                     results.append((relative, path, "hidden-directory"))
                 else:
-                    pending.append((path, relative))
-            elif entry.is_file(follow_symlinks=False):
+                    try:
+                        child_fd = os.open(entry.name, dirflags, dir_fd=fd)
+                    except OSError:
+                        results.append((relative, path, "source-unreadable"))
+                        continue
+                    try:
+                        walk(child_fd, relative, depth + 1)
+                    finally:
+                        os.close(child_fd)
+            elif stat.S_ISREG(metadata.st_mode):
                 results.append((relative, path, None))
             else:
                 results.append((relative, path, "unsupported-file-type"))
+
+    try:
+        root_fd = os.open(vault, dirflags)
+    except OSError as exc:
+        raise ValueError("unsafe-vault-root") from exc
+    try:
+        try:
+            system_fd = os.open("98-System", dirflags, dir_fd=root_fd)
+        except OSError as exc:
+            raise ValueError("98-System directory is absent, symlinked or not a directory") from exc
+        try:
+            walk(system_fd, "98-System", 0)
+        finally:
+            os.close(system_fd)
+    finally:
+        os.close(root_fd)
     return sorted(results, key=lambda r: r[0])
 
 
-def _snapshot_file(path: Path, max_bytes: int) -> tuple[bytes | None, str | None]:
+def _snapshot_file(vault: Path, relative: str, max_bytes: int) -> tuple[bytes | None, str | None]:
+    """Read with O_NOFOLLOW on every component; never open through a symlink."""
+    parts = PurePosixPath(relative).parts
+    if len(parts) < 2 or parts[0] != "98-System" or any(
+        part in ("", ".", "..") for part in parts
+    ):
+        return None, "unsafe-path"
+
     fd = -1
+    parent_fd = -1
     try:
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-        fd = os.open(path, flags)
+        dirflags = _safe_directory_flags()
+        parent_fd = os.open(vault, dirflags)
+        for part in parts[:-1]:
+            child_fd = os.open(part, dirflags, dir_fd=parent_fd)
+            os.close(parent_fd)
+            parent_fd = child_fd
+        fileflags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
+        fd = os.open(parts[-1], fileflags, dir_fd=parent_fd)
         before = os.fstat(fd)
         if not stat.S_ISREG(before.st_mode):
             return None, "unsupported-file-type"
@@ -270,11 +324,16 @@ def _snapshot_file(path: Path, max_bytes: int) -> tuple[bytes | None, str | None
         with os.fdopen(fd, "rb", closefd=True) as handle:
             fd = -1
             data = handle.read(max_bytes + 1)
+            during = os.fstat(handle.fileno())
         if len(data) > max_bytes:
             return None, "file-too-large"
-        after = path.lstat()
+        after = os.stat(parts[-1], dir_fd=parent_fd, follow_symlinks=False)
         signature = lambda st: (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
-        if not stat.S_ISREG(after.st_mode) or signature(before) != signature(after):
+        if (
+            not stat.S_ISREG(after.st_mode)
+            or signature(before) != signature(during)
+            or signature(before) != signature(after)
+        ):
             return None, "source-changed-during-read"
         return data, None
     except OSError:
@@ -282,6 +341,8 @@ def _snapshot_file(path: Path, max_bytes: int) -> tuple[bytes | None, str | None
     finally:
         if fd >= 0:
             os.close(fd)
+        if parent_fd >= 0:
+            os.close(parent_fd)
 
 
 def create_plan(
@@ -307,13 +368,17 @@ def create_plan(
         if collision_counts[_entry_collision_key(rel)] > 1:
             item = FormatResult(rel, "skipped", "path-name-collision")
         elif traversal_reason:
-            item = FormatResult(rel, "skipped", traversal_reason)
+            item = FormatResult(
+                rel,
+                "error" if traversal_reason == "source-unreadable" else "skipped",
+                traversal_reason,
+            )
         elif any(part.startswith(".") for part in Path(rel).parts[1:]):
             item = FormatResult(rel, "skipped", "hidden-path")
         elif path.suffix.lower() not in _SUPPORTED_SUFFIXES:
             item = FormatResult(rel, "skipped", "unsupported-extension")
         else:
-            original, reason = _snapshot_file(path, max_bytes)
+            original, reason = _snapshot_file(vault, rel, max_bytes)
             if original is None:
                 status = "error" if reason in {"source-unreadable", "source-changed-during-read"} else "skipped"
                 item = FormatResult(rel, status, reason or "source-unreadable")
