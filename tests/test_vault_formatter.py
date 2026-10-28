@@ -94,6 +94,32 @@ class MarkdownFormatTests(unittest.TestCase):
         self.assertEqual(lines, ())
         self.assertEqual(reason, "unsupported-html-block")
 
+    def test_html_raw_tags_after_inline_comment_fail_closed(self):
+        # A same-line closed comment may be followed by active HTML that
+        # changes how all subsequent Markdown bytes are interpreted.
+        cases = (
+            b"before\n  \n<!-- note --> <plaintext>\n  \n</plaintext>\n",
+            b"before\n<!-- note --> <pre>\n  \n</pre>\n",
+            b"before\n<!-- note --> <script>\n  \n</script>\n",
+            b"before\n<!-- note --> <xmp>\n  \n</xmp>\n",
+            b"before\n<!-- note --> <PLAiNTeXT>\n  \nend\n",
+            b"before\n<!-- note --> other <!-- b --> <plaintext>\n  \nend\n",
+            b"before\n<!-- unclosed comment\nfinished --> <plaintext>\n  \nend\n",
+        )
+        for source in cases:
+            with self.subTest(source=source):
+                desired, lines, reason = format_markdown(source)
+                self.assertIsNone(desired)
+                self.assertEqual(lines, ())
+                self.assertEqual(reason, "unsupported-html-block")
+
+    def test_closed_comment_with_no_raw_html_keeps_existing_formatting(self):
+        source = b"before\n<!-- note --> normal text\n  \nafter\n"
+        desired, lines, reason = format_markdown(source)
+        self.assertEqual(desired, b"before\n<!-- note --> normal text\n\nafter\n")
+        self.assertEqual(lines, (3,))
+        self.assertEqual(reason, "blank-line-whitespace")
+
     def test_html_comment_pre_and_script_are_opaque(self):
         raw = (
             b"top\n  \n<!--\n  \n-->\n"

@@ -163,6 +163,11 @@ def format_markdown(source: bytes) -> tuple[bytes | None, tuple[int, ...], str]:
             continue
 
         if html_comment:
+            # A multiline HTML comment may close before a raw HTML opening
+            # on the very same line. We do not tokenize mixed HTML here:
+            # reject the file rather than accidentally formatting raw data.
+            if "-->" in body and _RAW_OPEN.search(body.split("-->", 1)[1]):
+                return None, (), "unsupported-html-block"
             updates.append(line)
             if "-->" in body:
                 html_comment = False
@@ -188,6 +193,12 @@ def format_markdown(source: bytes) -> tuple[bytes | None, tuple[int, ...], str]:
             continue
 
         if "<!--" in body:
+            # HTML may resume after a closed same-line comment. In this
+            # minimal formatter we cannot safely parse mixed comments and
+            # raw HTML elements; skipping this file is safer than altering
+            # a preformatted block (especially <plaintext>).
+            if _RAW_OPEN.search(body):
+                return None, (), "unsupported-html-block"
             updates.append(line)
             if "-->" not in body[body.find("<!--") + 4 :]:
                 html_comment = True
