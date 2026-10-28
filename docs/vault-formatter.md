@@ -28,8 +28,15 @@ production systemd unit.
   are retained.
 - YAML frontmatter, fenced code including Dataview/Meta Bind, multiline
   Templater expressions, HTML comments, known raw HTML blocks and ambiguous
-  blockquote/indented code are not changed. Unknown or unterminated blocks can
-  skip a whole file.
+  blockquote/indented code are not changed.
+- **Unrecognized HTML elements are not parsed in Phase 1:** any such opening
+  tag outside protected code/frontmatter causes the *whole file* to be skipped
+  with reason unsupported-html-block. This includes potentially harmless inline
+  tags; preserving embedded HTML meaning takes priority over edit coverage.
+  HTML comment/element/Templater transitions and multiple protected
+  openings on one line are also handled conservatively (the entire file is
+  skipped when the minimal formatter cannot determine which context is active).
+  Unknown or unterminated protected blocks can skip a whole file.
 - Paths with symlinks, hidden directories/files, invalid UTF-8, NUL bytes,
   unsupported line endings, or unsupported types are skipped.
 - If the scope is absent/unsafe, or enumeration exceeds its file/byte budgets,
