@@ -376,8 +376,11 @@ class SyntheticLedger:
                 raise ValueError("admission_unknown")
             entry = self._records[request_id]
             if entry.receipt.state != "completed":
+                completed_at = max(at, entry.receipt.createdAt)
+                if entry.receipt.startedAt is not None:
+                    completed_at = max(completed_at, entry.receipt.startedAt)
                 receipt = replace(entry.receipt, state="completed", outcome="unknown",
-                                  completedAt=max(at, entry.receipt.createdAt),
+                                  completedAt=completed_at,
                                   error=Error("effect_unconfirmed", "lookup"))
                 self._records[request_id] = replace(entry, receipt=receipt)
                 self._revision = uuid4().hex

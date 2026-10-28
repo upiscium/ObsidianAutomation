@@ -179,6 +179,37 @@ class B3Fixture(unittest.TestCase):
         self.assertEqual(restarted.sync_project(request).decision, "replayed")
         self.assertEqual(self.writer.calls, 1)
 
+    def test_interruption_before_start_preserves_receipt_and_ledger(self):
+        self.writer.mode = "interrupt"
+        request = self.request()
+        with self.assertRaises(SyntheticInterruption):
+            self.adapter.sync_project(request)
+        running = self.adapter.lookup(request.requestId).receipt
+        self.assertEqual(running.state, "running")
+        self.assertIsNotNone(running.startedAt)
+        self.assertGreater(running.startedAt, 0)
+
+        # Model a valid running admission whose start occurred after creation;
+        # the ordinary fake writer often gives both timestamps the same value.
+        later_start = running.createdAt + 5.0
+        entry = self.ledger._records[request.requestId]
+        self.ledger._records[request.requestId] = replace(
+            entry, receipt=replace(running, startedAt=later_start))
+        self.assertEqual(self.adapter.lookup(request.requestId).receipt.startedAt,
+                         later_start)
+
+        # A finite nonnegative fault-injection timestamp predating startedAt
+        # must not corrupt the receipt or turn this ledger into an absent one.
+        self.ledger.mark_interrupted(request.requestId, at=0.0)
+        recovered = self.adapter.lookup(request.requestId)
+        self.assertEqual(recovered.receipt.state, "completed")
+        self.assertEqual(recovered.receipt.outcome, "unknown")
+        self.assertGreaterEqual(recovered.receipt.completedAt, later_start)
+        self.assertNotEqual(self.adapter.observe()["integration"], "unavailable")
+        self.assertEqual(self.adapter.sync_project(self.request("e" * 32)).error.code,
+                         "reconciliation_required")
+        self.assertEqual(self.writer.calls, 1)
+
     def test_corrupt_stored_receipts_fail_closed_instead_of_replaying_unknown_enums(self):
         request = self.request()
         self.adapter.sync_project(request)
