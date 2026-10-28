@@ -10,6 +10,7 @@ import argparse
 from contextlib import nullcontext
 import json
 import ipaddress
+import re
 import threading
 import time
 from datetime import datetime, timezone
@@ -36,6 +37,8 @@ from .github_daily_job import DailyJob, Invalid as DailyInvalid
 from .github_daily_setup import DailySetup, DailySetupError
 from .vault_format_job import FormatterJob, FormatterInvalid
 from .unified_workflows import workflow_catalog
+from .webui_control_get import read_control_catalog
+from .webui_control_read import SCHEMA_VERSION as WORKFLOW_CONTROL_SCHEMA
 
 HTML = """<!doctype html>
 <html lang="ja">
@@ -1272,6 +1275,51 @@ class Handler(BaseHTTPRequestHandler):
         if not self._origin_allowed():
             self._reply(403, b"Forbidden")
             return
+        # Versioned observation-only workflow views. Never share the
+        # existing mutable operator/snapshot/daily POST authority here.
+        prefix = "/api/v1/workflow-control"
+        if self.path == prefix or self.path.startswith(prefix + "/"):
+            name = None
+            if self.path != prefix:
+                parts = self.path[len(prefix) + 1:].split("/")
+                if parts[0] not in ("b1", "b2", "b3", "b4", "b5"):
+                    self._reply(404, b"Not found")
+                    return
+                name = parts[0]
+                if len(parts) == 3 and parts[1] == "requests" and re.fullmatch(
+                        r"[0-9a-f]{32}", parts[2]) is not None:
+                    # The unified admission/receipt ledger has not been
+                    # attached. Absence cannot prove an ID was not admitted.
+                    result = {
+                        "schemaVersion": WORKFLOW_CONTROL_SCHEMA,
+                        "workflowId": name, "requestId": parts[2],
+                        "decision": "indeterminate", "receipt": None,
+                        "error": {"code": "admission_unknown", "retry": "lookup"},
+                    }
+                    self._reply(503, json.dumps(result, sort_keys=True).encode("utf-8"),
+                                "application/json; charset=utf-8")
+                    return
+                if len(parts) != 1:
+                    self._reply(404, b"Not found")
+                    return
+            try:
+                catalog = read_control_catalog(
+                    snapshot_job=self.server.snapshot_job,
+                    daily_job=self.server.daily_job,
+                    optional_snapshots=self.server.workflow_control_snapshots,
+                )
+                result = catalog if name is None else next(
+                    w for w in catalog["workflows"] if w["id"] == name)
+                body = json.dumps(result, sort_keys=True, separators=(",", ":"),
+                                  ensure_ascii=False).encode("utf-8")
+            except Exception:
+                # Never echo exceptions, private legacy source, or untrusted
+                # candidate data into an unauthenticated read-only endpoint.
+                self._reply(503, b'{"error":"observation_unavailable"}',
+                            "application/json; charset=utf-8")
+                return
+            self._reply(200, body, "application/json; charset=utf-8")
+            return
         if self.path == "/api/v1/nextcloud/connections":
             store = self.server.snapshot_setup
             self._reply(200 if store else 503, json.dumps(
@@ -1821,6 +1869,7 @@ def make_server(
     preview_observer: Callable[[dict[str, object]], dict[str, object]] = lambda _: unavailable_preview(),
     operator: OperatorHTTPClient | None = None,
     operator_ui_enabled: bool = False,
+    workflow_control_snapshots: dict[str, object] | None = None,
     snapshot_job: SnapshotJob | None = None,
     snapshot_setup=None,
     daily_job: DailyJob | None = None,
@@ -1843,6 +1892,9 @@ def make_server(
     # Operator UI trusts the configured LAN/VPN network perimeter.
     # It remains disabled unless --operator-ui is explicitly selected.
     server.operator_ui_enabled = operator_ui_enabled is True
+    # Explicitly supplied, already-materialized mock/read-only B1/B3/B5
+    # observations. Do not construct adapters, discover sources or run jobs.
+    server.workflow_control_snapshots = workflow_control_snapshots
     server.snapshot_job = snapshot_job
     server.snapshot_setup = snapshot_setup
     server.daily_job = daily_job
