@@ -52,6 +52,16 @@ The development shell provides Python, pytest, Git, Node.js, `obsidian-public-ex
 
 Nix is for development and manual verification only. Production automation is expected to run independently in dedicated Linux containers and does not require Nix.
 
+## Vault Formatter (read-only Phase 1, #470)
+
+The conservative `98-System/` Markdown format planner does not modify the
+canonical Vault. It reports safe whitespace-only-line corrections and an
+immutable, deterministic change plan. The conditional writer and scheduled
+operations are separate, explicitly gated workstreams (#471/#472).
+
+See [Vault Formatter / Phase 1](docs/vault-formatter.md) for setup, usage,
+safety restrictions and tests.
+
 ## Public Exporter v0
 
 The exporter treats the destination repository as two trust domains:
