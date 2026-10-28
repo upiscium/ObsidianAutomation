@@ -32,6 +32,8 @@ _RAW_OPEN = re.compile(
     r"<(?P<tag>pre|script|style|textarea|template|xmp|iframe|noembed|"
     r"noframes|plaintext|listing)(?=[\s>])", re.I
 )
+_HTML_ELEMENT_OPEN = re.compile(r"<[A-Za-z][A-Za-z0-9-]*(?=[\s/>])")
+_CONTEXT_START = re.compile(r"<!--|<%|<[A-Za-z][A-Za-z0-9-]*(?=[\s/>])", re.I)
 _HARDBREAK_COMMENT = re.compile(r"^\s*>")
 
 
@@ -116,7 +118,11 @@ def format_markdown(source: bytes) -> tuple[bytes | None, tuple[int, ...], str]:
     if "\r\n" in text and "\n" in text.replace("\r\n", ""):
         return None, (), "mixed-line-endings"
 
-    if any(ch in text for ch in ("\v", "\f", "\x85", "\u2028", "\u2029")):
+    # str.splitlines also treats ASCII FS/GS/RS and several Unicode
+    # separators as boundaries. None are permitted Markdown line endings.
+    if any(ch in text for ch in (
+        "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"
+    )):
         return None, (), "unsupported-line-separators"
 
     lines = text.splitlines(keepends=True)
@@ -163,18 +169,28 @@ def format_markdown(source: bytes) -> tuple[bytes | None, tuple[int, ...], str]:
             continue
 
         if html_comment:
+            # A multiline HTML comment may close before a raw HTML opening
+            # on the very same line. We do not tokenize mixed HTML here:
+            # reject the file rather than accidentally formatting raw data.
+            if "-->" in body and _CONTEXT_START.search(body.split("-->", 1)[1]):
+                return None, (), "unsupported-html-block"
             updates.append(line)
             if "-->" in body:
                 html_comment = False
             continue
 
         if html_tag:
+            closing = re.search(r"</" + re.escape(html_tag) + r"\s*>", body, re.I)
+            if closing and _CONTEXT_START.search(body[closing.end():]):
+                return None, (), "unsupported-html-block"
             updates.append(line)
-            if re.search(r"</" + re.escape(html_tag) + r"\s*>", body, re.I):
+            if closing:
                 html_tag = None
             continue
 
         if templater:
+            if "%>" in body and _CONTEXT_START.search(body.split("%>", 1)[1]):
+                return None, (), "unsupported-html-block"
             updates.append(line)
             if "%>" in body:
                 templater = False
@@ -188,6 +204,15 @@ def format_markdown(source: bytes) -> tuple[bytes | None, tuple[int, ...], str]:
             continue
 
         if "<!--" in body:
+            # HTML may resume after a closed same-line comment. In this
+            # minimal formatter we cannot safely parse mixed comments and
+            # raw HTML elements; skipping this file is safer than altering
+            # a preformatted block (especially <plaintext>).
+            if (
+                _HTML_ELEMENT_OPEN.search(body)
+                or ("-->" in body and "<%" in body.split("-->", 1)[1])
+            ):
+                return None, (), "unsupported-html-block"
             updates.append(line)
             if "-->" not in body[body.find("<!--") + 4 :]:
                 html_comment = True
@@ -195,6 +220,15 @@ def format_markdown(source: bytes) -> tuple[bytes | None, tuple[int, ...], str]:
 
         match = _RAW_OPEN.search(body)
         if match:
+            # We do not tokenize several HTML elements on a single line.
+            # A second opening before or after this recognized raw tag can
+            # become active after a same-line close, changing how later
+            # whitespace is interpreted. Refuse rather than guess.
+            if (
+                _CONTEXT_START.search(body[:match.start()])
+                or _CONTEXT_START.search(body[match.end():])
+            ):
+                return None, (), "unsupported-html-block"
             # HTML plaintext consumes the rest of the document, including
             # literal "</plaintext>" text; there is no closing end tag.
             # Reject the whole input rather than resuming formatting.
@@ -206,9 +240,18 @@ def format_markdown(source: bytes) -> tuple[bytes | None, tuple[int, ...], str]:
                 html_tag = tag
             continue
 
+        # Unknown HTML is not tokenized in Phase 1. Even ordinary HTML
+        # elements may contain whitespace-sensitive text or nested markup;
+        # skipping the file prevents accidental changes to those regions.
+        if _HTML_ELEMENT_OPEN.search(body):
+            return None, (), "unsupported-html-block"
+
         if "<%" in body:
+            remainder = body[body.find("<%") + 2 :]
+            if "%>" in remainder and _CONTEXT_START.search(remainder.split("%>", 1)[1]):
+                return None, (), "unsupported-html-block"
             updates.append(line)
-            if "%>" not in body[body.find("<%") + 2 :]:
+            if "%>" not in remainder:
                 templater = True
             continue
 

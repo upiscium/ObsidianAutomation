@@ -94,6 +94,102 @@ class MarkdownFormatTests(unittest.TestCase):
         self.assertEqual(lines, ())
         self.assertEqual(reason, "unsupported-html-block")
 
+    def test_html_raw_tags_after_inline_comment_fail_closed(self):
+        # A same-line closed comment may be followed by active HTML that
+        # changes how all subsequent Markdown bytes are interpreted.
+        cases = (
+            b"before\n  \n<!-- note --> <plaintext>\n  \n</plaintext>\n",
+            b"before\n<!-- note --> <pre>\n  \n</pre>\n",
+            b"before\n<!-- note --> <script>\n  \n</script>\n",
+            b"before\n<!-- note --> <xmp>\n  \n</xmp>\n",
+            b"before\n<!-- note --> <PLAiNTeXT>\n  \nend\n",
+            b"before\n<!-- note --> other <!-- b --> <plaintext>\n  \nend\n",
+            b"before\n<!-- unclosed comment\nfinished --> <plaintext>\n  \nend\n",
+        )
+        for source in cases:
+            with self.subTest(source=source):
+                desired, lines, reason = format_markdown(source)
+                self.assertIsNone(desired)
+                self.assertEqual(lines, ())
+                self.assertEqual(reason, "unsupported-html-block")
+
+    def test_closed_comment_with_no_raw_html_keeps_existing_formatting(self):
+        source = b"before\n<!-- note --> normal text\n  \nafter\n"
+        desired, lines, reason = format_markdown(source)
+        self.assertEqual(desired, b"before\n<!-- note --> normal text\n\nafter\n")
+        self.assertEqual(lines, (3,))
+        self.assertEqual(reason, "blank-line-whitespace")
+
+
+    def test_unknown_html_text_containers_are_skipped(self):
+        # Opaque HTML elements are not parsed in the minimal Markdown policy.
+        # Keep their byte-valued text, including whitespace-only lines.
+        for element in ("title", "code", "select", "option", "span", "svg"):
+            source = ("before\n<" + element + ">\n  \n</" + element + ">\n").encode()
+            with self.subTest(element=element):
+                desired, changed, reason = format_markdown(source)
+                self.assertIsNone(desired)
+                self.assertEqual(changed, ())
+                self.assertEqual(reason, "unsupported-html-block")
+
+    def test_unknown_html_after_comment_is_skipped(self):
+        for source in (
+            b"before\n<!-- header --> <title>\n  \n</title>\n",
+            b"before\n<!-- multiline\nend --> <title>\n  \n</title>\n",
+            b"before\n<!-- header --> <svg>\n  \n</svg>\n",
+        ):
+            with self.subTest(source=source):
+                desired, lines, reason = format_markdown(source)
+                self.assertIsNone(desired)
+                self.assertEqual(lines, ())
+                self.assertEqual(reason, "unsupported-html-block")
+
+
+    def test_same_line_html_transition_does_not_expose_new_element(self):
+        cases = (
+            b"<pre></pre><title>\n  \n</title>\n",
+            b"<pre>data</pre><code>\n  \n</code>\n",
+            b"<pre>\n  \n</pre><title>\n  \n</title>\n",
+            b"<style></style><textarea>\n  \n</textarea>\n",
+            b"<pre><title>\n  \n</title></pre>\n",
+            b"<pre></pre><span>\n  \n</span>\n",
+            b"<pre>\n  \n</pre><svg>\n  \n</svg>\n",
+        )
+        for source in cases:
+            with self.subTest(source=source):
+                desired, lines, reason = format_markdown(source)
+                self.assertIsNone(desired)
+                self.assertEqual(lines, ())
+                self.assertEqual(reason, "unsupported-html-block")
+
+    def test_isolated_raw_html_after_own_close_allows_normal_blank_lines(self):
+        source = b"<pre>code</pre>\ntext\n  \nmore\n"
+        desired, lines, reason = format_markdown(source)
+        self.assertEqual(desired, b"<pre>code</pre>\ntext\n\nmore\n")
+        self.assertEqual(lines, (3,))
+        self.assertEqual(reason, "blank-line-whitespace")
+
+    def test_same_line_context_transitions_fail_closed(self):
+        cases = (
+            b"<pre></pre><!-- comment\n  \n-->\n",
+            b"<pre>\n  \n</pre><!-- comment\n  \n-->\n",
+            b"<% code %><title>\n  \n</title>\n",
+            b"<%*\nconst x = 1\n%><title>\n  \n</title>\n",
+            b"<!-- first\n--> <%*\n  \n%>\n",
+        )
+        for source in cases:
+            with self.subTest(source=source):
+                desired, lines, reason = format_markdown(source)
+                self.assertIsNone(desired)
+                self.assertEqual(lines, ())
+                self.assertEqual(reason, "unsupported-html-block")
+
+    def test_templater_with_plain_text_after_close_preserves_ordinary_formatting(self):
+        source = b"<% code %> plain\ntext\n  \nend\n"
+        desired, lines, _ = format_markdown(source)
+        self.assertEqual(desired, b"<% code %> plain\ntext\n\nend\n")
+        self.assertEqual(lines, (3,))
+
     def test_html_comment_pre_and_script_are_opaque(self):
         raw = (
             b"top\n  \n<!--\n  \n-->\n"
@@ -175,6 +271,17 @@ class MarkdownFormatTests(unittest.TestCase):
         self.assertIsNone(desired)
         self.assertEqual(changed, ())
         self.assertEqual(reason, "unsupported-nested-fence")
+
+    def test_all_ascii_record_separators_are_rejected_before_splitlines(self):
+        # Python splitlines treats FS/GS/RS as boundaries, but the only
+        # policy-supported line endings are LF and CRLF.
+        for marker in (0x1C, 0x1D, 0x1E):
+            source = b"not a blank line" + bytes([marker]) + b"  \nnext\n"
+            with self.subTest(marker=marker):
+                desired, changed, reason = format_markdown(source)
+                self.assertIsNone(desired)
+                self.assertEqual(changed, ())
+                self.assertEqual(reason, "unsupported-line-separators")
 
     def test_uncommon_unicode_newline_is_not_rewritten(self):
         desired, changed, reason = format_markdown("first\u2028  \nsecond\n".encode())
