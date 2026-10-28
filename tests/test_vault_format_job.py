@@ -266,13 +266,16 @@ def test_formatter_source_no_remote_writer_commands(tmp_path, monkeypatch):
         assert "--files-from0" not in argv
         selected = Path(argv[argv.index("--files-from-raw") + 1])
         assert selected.read_bytes() == b"sub/startup.md\n"
+        assert "--max-transfer" in argv
+        assert "--max-size" not in argv
+        assert "--cutoff-mode" in argv
         if argv[3] == "copy":
-            assert "--max-size" in argv and "--max-transfer" in argv
             assert "--transfers" in argv
+            path = Path(argv[5]) / "sub/startup.md"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(RAW)
         if argv[3] == "check":
             assert "--download" in argv
-            assert "--max-size" in argv and "--max-transfer" in argv
-            assert "--cutoff-mode" in argv
         return subprocess.CompletedProcess(argv, 0)
 
     monkeypatch.setattr(capture, "_bounded_listing", fake_list)
@@ -310,6 +313,12 @@ def test_remote_capture_raw_allowlist_supports_literal_safe_names(tmp_path, monk
         data = Path(argv[argv.index("--files-from-raw") + 1]).read_bytes()
         assert data == b"".join(name.encode("utf-8") + b"\n" for name in sorted(names))
         assert b"\0" not in data
+        assert "--max-transfer" in argv and "--max-size" not in argv
+        if argv[3] == "copy":
+            for name in names:
+                path = Path(argv[5]) / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"x" * 11)
         calls.append(argv[3])
         return subprocess.CompletedProcess(argv, 0)
 
@@ -317,6 +326,36 @@ def test_remote_capture_raw_allowlist_supports_literal_safe_names(tmp_path, monk
     monkeypatch.setattr(subprocess, "run", fake_run)
     assert capture.pull_system_markdown(Source(), destination) is True
     assert calls == ["copy", "check"]
+    assert not list(tmp_path.glob(".formatter-allowlist-*"))
+
+
+def test_remote_capture_rejects_growth_after_copy_without_download_check(
+        tmp_path, monkeypatch):
+    from obsidian_automation import vault_format_source as capture
+
+    class Source:
+        rclone_remote = "nextcloud:Vault"
+        rclone_config = tmp_path / "rclone.conf"
+
+        def validate(self):
+            pass
+
+    Source.rclone_config.write_text("synthetic fixture only\n")
+    dest = tmp_path / "98-System"
+    dest.mkdir()
+    inventory = json.dumps([
+        {"Path": "changed.md", "Size": 11, "IsDir": False}
+    ]).encode("utf-8")
+    calls = []
+    def fake_run(argv, **kwargs):
+        calls.append(argv[3])
+        if argv[3] == "copy":
+            (Path(argv[5]) / "changed.md").write_bytes(b"x" * 12)
+        return subprocess.CompletedProcess(argv, 0)
+    monkeypatch.setattr(capture, "_bounded_listing", lambda argv, cwd: inventory)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert capture.pull_system_markdown(Source(), dest) is False
+    assert calls == ["copy"]
     assert not list(tmp_path.glob(".formatter-allowlist-*"))
 
 
@@ -609,8 +648,11 @@ def test_remote_capture_rejects_changed_listing_and_cleans_allowlist(
         size = 11 if calls[0] == 1 else 12
         return json.dumps([{"Path":"file.md","Size":size,"IsDir":False}]).encode()
     monkeypatch.setattr(capture, "_bounded_listing", listing)
-    monkeypatch.setattr(subprocess, "run", lambda argv, **kwargs:
-                        subprocess.CompletedProcess(argv,0))
+    def fake_run(argv, **kwargs):
+        if argv[3] == "copy":
+            (Path(argv[5]) / "file.md").write_bytes(b"x" * 11)
+        return subprocess.CompletedProcess(argv, 0)
+    monkeypatch.setattr(subprocess, "run", fake_run)
     assert capture.pull_system_markdown(Source(), dest) is False
     assert calls[0] == 2
     assert not list(tmp_path.glob(".formatter-allowlist-*"))

@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import select
+import stat
 import subprocess
 import tempfile
 import time
@@ -118,6 +119,38 @@ def _manifest(raw: bytes | None) -> tuple[tuple[str, int], ...] | None:
     return tuple(sorted(selected))
 
 
+def _local_capture_matches_inventory(target: Path, initial: tuple[tuple[str, int], ...]) -> bool:
+    """Require exact local file names and source-admitted sizes before check.
+
+    --files-from-raw cannot be combined with --max-size on rclone 1.60.1-DEV.
+    A global hard --max-transfer cap bounds download bytes; this post-copy
+    validation then rejects any file grown or replaced since remote listing.
+    Only a disposable owner-private staging tree is inspected.
+    """
+    expected = dict(initial)
+    seen: set[str] = set()
+    total = 0
+    try:
+        for path in target.rglob("*"):
+            info = path.lstat()
+            if stat.S_ISDIR(info.st_mode):
+                continue
+            if not stat.S_ISREG(info.st_mode):
+                return False
+            rel = path.relative_to(target).as_posix()
+            if (rel not in expected or rel in seen
+                    or info.st_size != expected[rel]
+                    or info.st_size > DEFAULT_MAX_BYTES):
+                return False
+            seen.add(rel)
+            total += info.st_size
+            if len(seen) > DEFAULT_MAX_FILES or total > DEFAULT_MAX_TOTAL_BYTES:
+                return False
+    except (OSError, ValueError):
+        return False
+    return seen == set(expected)
+
+
 def pull_system_markdown(source, target: Path) -> bool:
     """Bound source inventory and transfers; use only remote-to-local effects."""
     source.validate()
@@ -160,17 +193,16 @@ def pull_system_markdown(source, target: Path) -> bool:
         safe = ["--retries", "1", "--low-level-retries", "1", "--checkers", "2"]
         operations = [
             args + ["copy", remote, str(target), *files,
-                    "--max-size", f"{DEFAULT_MAX_BYTES}B",
                     "--max-transfer", f"{DEFAULT_MAX_TOTAL_BYTES}B",
                     "--cutoff-mode", "HARD", "--transfers", "1", *safe],
-            # The verification pass also reads remote bytes. Bound it as
-            # strictly as the original copy if a file grows after listing.
+            # The download-check must also retain the hard total cap.
+            # Per-file size is verified against the pinned inventory before
+            # this phase, since --files-from-raw forbids --max-size.
             args + ["check", remote, str(target), *files, "--download",
-                    "--max-size", f"{DEFAULT_MAX_BYTES}B",
                     "--max-transfer", f"{DEFAULT_MAX_TOTAL_BYTES}B",
                     "--cutoff-mode", "HARD", *safe],
         ]
-        for command in operations:
+        for index, command in enumerate(operations):
             try:
                 result = subprocess.run(
                     command, cwd=target.parent,
@@ -180,6 +212,8 @@ def pull_system_markdown(source, target: Path) -> bool:
             except (OSError, subprocess.TimeoutExpired):
                 return False
             if result.returncode:
+                return False
+            if index == 0 and not _local_capture_matches_inventory(target, initial):
                 return False
         # A changed remote manifest during download is not a verified
         # preview; reject and let the next run build a new fresh plan.

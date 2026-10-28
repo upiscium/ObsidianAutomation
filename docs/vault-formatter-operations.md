@@ -41,6 +41,13 @@ uses newline-delimited --files-from-raw (not unsupported --files-from0).
 The input manifest rejects CR/LF and all control characters in path
 components before constructing this file, while the raw mode preserves
 ordinary spaces, '#', brackets and non-ASCII UTF-8 filenames.
+The installed rclone rejects --files-from-raw combined with --max-size
+because the raw allowlist overrides other name/size filters. The copy and
+download-check retain their independent HARD total-byte transfer caps.
+After the copy (and before download-check), the disposable mirror must
+match the pinned source inventory exactly in filename, file count, file
+type, per-file byte size and total bytes. Any mismatch fails closed; the
+mirror is deleted without changing Nextcloud.
 Only read-only inventory and remote-to-local copy/check are permitted.
 
 The source path invokes only remote-to-local copy and check; no remote
