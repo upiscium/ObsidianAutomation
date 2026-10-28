@@ -33,6 +33,7 @@ _RAW_OPEN = re.compile(
     r"noframes|plaintext|listing)(?=[\s>])", re.I
 )
 _HTML_ELEMENT_OPEN = re.compile(r"<[A-Za-z][A-Za-z0-9-]*(?=[\s/>])")
+_CONTEXT_START = re.compile(r"<!--|<%|<[A-Za-z][A-Za-z0-9-]*(?=[\s/>])", re.I)
 _HARDBREAK_COMMENT = re.compile(r"^\s*>")
 
 
@@ -167,7 +168,7 @@ def format_markdown(source: bytes) -> tuple[bytes | None, tuple[int, ...], str]:
             # A multiline HTML comment may close before a raw HTML opening
             # on the very same line. We do not tokenize mixed HTML here:
             # reject the file rather than accidentally formatting raw data.
-            if "-->" in body and _HTML_ELEMENT_OPEN.search(body.split("-->", 1)[1]):
+            if "-->" in body and _CONTEXT_START.search(body.split("-->", 1)[1]):
                 return None, (), "unsupported-html-block"
             updates.append(line)
             if "-->" in body:
@@ -176,7 +177,7 @@ def format_markdown(source: bytes) -> tuple[bytes | None, tuple[int, ...], str]:
 
         if html_tag:
             closing = re.search(r"</" + re.escape(html_tag) + r"\s*>", body, re.I)
-            if closing and _HTML_ELEMENT_OPEN.search(body[closing.end():]):
+            if closing and _CONTEXT_START.search(body[closing.end():]):
                 return None, (), "unsupported-html-block"
             updates.append(line)
             if closing:
@@ -184,6 +185,8 @@ def format_markdown(source: bytes) -> tuple[bytes | None, tuple[int, ...], str]:
             continue
 
         if templater:
+            if "%>" in body and _CONTEXT_START.search(body.split("%>", 1)[1]):
+                return None, (), "unsupported-html-block"
             updates.append(line)
             if "%>" in body:
                 templater = False
@@ -201,7 +204,10 @@ def format_markdown(source: bytes) -> tuple[bytes | None, tuple[int, ...], str]:
             # minimal formatter we cannot safely parse mixed comments and
             # raw HTML elements; skipping this file is safer than altering
             # a preformatted block (especially <plaintext>).
-            if _HTML_ELEMENT_OPEN.search(body):
+            if (
+                _HTML_ELEMENT_OPEN.search(body)
+                or ("-->" in body and "<%" in body.split("-->", 1)[1])
+            ):
                 return None, (), "unsupported-html-block"
             updates.append(line)
             if "-->" not in body[body.find("<!--") + 4 :]:
@@ -215,8 +221,8 @@ def format_markdown(source: bytes) -> tuple[bytes | None, tuple[int, ...], str]:
             # become active after a same-line close, changing how later
             # whitespace is interpreted. Refuse rather than guess.
             if (
-                _HTML_ELEMENT_OPEN.search(body[:match.start()])
-                or _HTML_ELEMENT_OPEN.search(body[match.end():])
+                _CONTEXT_START.search(body[:match.start()])
+                or _CONTEXT_START.search(body[match.end():])
             ):
                 return None, (), "unsupported-html-block"
             # HTML plaintext consumes the rest of the document, including
@@ -237,8 +243,11 @@ def format_markdown(source: bytes) -> tuple[bytes | None, tuple[int, ...], str]:
             return None, (), "unsupported-html-block"
 
         if "<%" in body:
+            remainder = body[body.find("<%") + 2 :]
+            if "%>" in remainder and _CONTEXT_START.search(remainder.split("%>", 1)[1]):
+                return None, (), "unsupported-html-block"
             updates.append(line)
-            if "%>" not in body[body.find("<%") + 2 :]:
+            if "%>" not in remainder:
                 templater = True
             continue
 

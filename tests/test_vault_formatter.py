@@ -169,6 +169,27 @@ class MarkdownFormatTests(unittest.TestCase):
         self.assertEqual(lines, (3,))
         self.assertEqual(reason, "blank-line-whitespace")
 
+    def test_same_line_context_transitions_fail_closed(self):
+        cases = (
+            b"<pre></pre><!-- comment\n  \n-->\n",
+            b"<pre>\n  \n</pre><!-- comment\n  \n-->\n",
+            b"<% code %><title>\n  \n</title>\n",
+            b"<%*\nconst x = 1\n%><title>\n  \n</title>\n",
+            b"<!-- first\n--> <%*\n  \n%>\n",
+        )
+        for source in cases:
+            with self.subTest(source=source):
+                desired, lines, reason = format_markdown(source)
+                self.assertIsNone(desired)
+                self.assertEqual(lines, ())
+                self.assertEqual(reason, "unsupported-html-block")
+
+    def test_templater_with_plain_text_after_close_preserves_ordinary_formatting(self):
+        source = b"<% code %> plain\ntext\n  \nend\n"
+        desired, lines, _ = format_markdown(source)
+        self.assertEqual(desired, b"<% code %> plain\ntext\n\nend\n")
+        self.assertEqual(lines, (3,))
+
     def test_html_comment_pre_and_script_are_opaque(self):
         raw = (
             b"top\n  \n<!--\n  \n-->\n"
