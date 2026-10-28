@@ -444,8 +444,17 @@ $("nextcloud-form").addEventListener("submit", async event => {
     await snapshotPost("/api/v1/nextcloud/connections", Object.fromEntries(new FormData(form)));
     $("nextcloud-message").textContent = "Nextcloud接続を検証して保存しました。GiteaなしでGitHub Dailyを設定できます。";
     form.reset();
-  } catch {
-    $("nextcloud-message").textContent = "Nextcloud接続を保存できませんでした。定期実行の状態を確認してください。";
+  } catch (error) {
+    // Display only the server's HTTP status category. Never echo response
+    // bodies or credentials from the submitted Nextcloud form.
+    const messages = {
+      400:"入力形式を確認してください（400）。WebDAV URLは専用ユーザーの /remote.php/dav/files/USER/ で末尾 / が必要です。",
+      403:"操作が拒否されました（403）。管理ページを開き直してください。",
+      422:"Nextcloud WebDAVの接続検証に失敗しました（422）。専用ユーザーのApp Password、共有Vault名、共有の受け入れ状態を確認してください。",
+      503:"Nextcloud設定の保存処理で内部エラーが発生しました（503）。管理者がアプリログを確認してください。"
+    };
+    $("nextcloud-message").textContent = messages[error.status]
+      || "Nextcloud接続の通信に失敗しました。管理ページから再試行してください。";
   }
   submit.disabled = false;
   await nextcloudRefresh();
@@ -519,7 +528,11 @@ async function snapshotPost(path, body) {
   const token = await newCsrfToken();
   const response = await fetch(path, {method:"POST", cache:"no-store", credentials:"same-origin",
     headers:{"Content-Type":"application/json", "X-Obsidian-CSRF":token}, body:JSON.stringify(body)});
-  if (!response.ok) throw Error("request_failed");
+  if (!response.ok) {
+    const error = new Error("request_failed");
+    error.status = response.status;
+    throw error;
+  }
   return response.json();
 }
 $("snapshot-save").addEventListener("click", async () => {
