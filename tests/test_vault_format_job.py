@@ -852,3 +852,44 @@ def test_formatter_schedule_survives_failed_nextcloud_only_save(tmp_path):
         server.server_close()
         b2.close()
         fmt.close()
+
+
+@pytest.mark.skipif(shutil.which("rclone") is None, reason="rclone not installed")
+def test_real_local_rclone_growth_is_rejected_by_hard_transfer_cap(tmp_path, monkeypatch):
+    # Simulate remote growth after the admitted inventory, with real rclone.
+    # The only source is a disposable local backend; no Nextcloud credentials.
+    from obsidian_automation import vault_format_source as capture
+
+    class Source:
+        rclone_config = tmp_path / "local.conf"
+        rclone_remote = "nextcloud:" + str(tmp_path / "synthetic-source")
+
+        def validate(self):
+            pass
+
+    Source.rclone_config.write_text("[nextcloud]\ntype = local\n")
+    source_dir = tmp_path / "synthetic-source/98-System"
+    source_dir.mkdir(parents=True)
+    (source_dir / "grown.md").write_bytes(b"x" * (8 * 1024 * 1024))
+    # Source grew from 1024 bytes to 8 MiB after the inventory preflight.
+    inventory = json.dumps([
+        {"Path": "grown.md", "Size": 1024, "IsDir": False}
+    ]).encode("utf-8")
+    monkeypatch.setattr(capture, "_bounded_listing", lambda argv, cwd: inventory)
+    actual_run = subprocess.run
+    copy_calls = []
+
+    def record_real_rclone(argv, **kwargs):
+        copy_calls.append(argv)
+        return actual_run(argv, **kwargs)
+
+    monkeypatch.setattr(capture.subprocess, "run", record_real_rclone)
+    dest = tmp_path / "mirror/98-System"
+    dest.mkdir(parents=True)
+    assert capture.pull_system_markdown(Source(), dest) is False
+    assert len(copy_calls) == 1  # Stops on copy; no check or format plan.
+    assert copy_calls[0][3] == "copy"
+    assert copy_calls[0][copy_calls[0].index("--max-transfer") + 1] == "1025B"
+    assert "--cutoff-mode" in copy_calls[0]
+    assert not (dest / "grown.md").exists()
+    assert not list((tmp_path / "mirror").glob(".formatter-allowlist-*"))
