@@ -230,13 +230,21 @@ class ComposerTests(unittest.TestCase):
             (("observedAt",), 101), (("lastAttemptAt",), 101),
             (("execution", "startedAt"), 19), (("execution", "startedAt"), 101),
             (("execution", "requestId"), "c" * 32),
-            (("lastVerifiedOutcome", "completedAt"), 21),
+            (("lastVerifiedOutcome", "completedAt"), 101),
         ]
         for path, bad in cases:
             changed = with_verified(attempted(state="running"))
             target = changed if len(path) == 1 else changed[path[0]]
             target[path[-1]] = bad
             self.assert_rejected(changed)
+        # A prior verified attempt can complete after the latest was admitted
+        # while that newer attempt is still running. Time is not identity.
+        overlapping = with_verified(attempted(state="running"), at=21)
+        projected = self.slot(overlapping)
+        self.assertEqual(projected["integration"], "pending")
+        self.assertEqual(projected["lastAttempt"]["state"], "running")
+        self.assertIsNone(projected["lastVerifiedOutcome"])
+
         for at in (19, 101):
             changed = attempted()
             changed["lastAttempt"]["completedAt"] = at
@@ -245,6 +253,27 @@ class ComposerTests(unittest.TestCase):
         self.assert_rejected(changed)  # same completion time but different effect
         changed["lastVerifiedOutcome"]["effect"] = copy.deepcopy(changed["lastAttempt"]["effect"])
         self.assertIsNone(self.slot(changed)["lastAttempt"])
+
+    def test_verified_history_time_is_not_an_attempt_identity(self):
+        # A prior verified attempt may complete after the newest admission,
+        # or share the newest completion timestamp. Neither supplies a
+        # request ID for the historical entry in the v1 wire DTO.
+        for historical_completed in (35, 40):
+            with self.subTest(historical_completed=historical_completed):
+                current = with_verified(
+                    attempted(outcome="unknown"), at=historical_completed)
+                self.assertEqual(current["lastAttempt"]["completedAt"], 40)
+                self.assertEqual(current["lastAttemptAt"], 20)
+                projected = self.slot(current)
+                self.assertEqual(projected["integration"], "pending")
+                self.assertEqual(projected["lastAttempt"]["outcome"], "unknown")
+                self.assertEqual(projected["lastAttemptAt"], 20)
+                self.assertIsNone(projected["lastVerifiedOutcome"])
+
+        # When the newest attempt itself has a verified effect, any supplied
+        # historical verified record must describe that newest result.
+        inconsistent = with_verified(attempted(outcome="success"), at=40)
+        self.assert_rejected(inconsistent)
 
     def test_unknown_enums_and_reason_types(self):
         for path in (("configuration", "state"), ("configuration", "reason"),

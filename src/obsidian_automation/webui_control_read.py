@@ -193,11 +193,16 @@ def _history(value: dict, index: int) -> bool:
             return False
         if verified["status"] == "success" and verified["effect"]["state"] != "verified":
             return False
-        same = last["state"] == "completed" and verified["completedAt"] == last["completedAt"]
-        if same:
-            if verified["status"] != last["outcome"] or verified["effect"] != effect:
-                return False
-        elif verified["completedAt"] > created:
+        # A completion timestamp is not an attempt ID. An older verified
+        # attempt may complete after a newer admission or share its completion
+        # time. Only a completed newest attempt with a known effect must be
+        # reflected by an accompanying latest-verified result.
+        newest_verified = (last["state"] == "completed"
+                           and last["outcome"] in ("success", "failure")
+                           and effect["state"] in ("verified", "none"))
+        if newest_verified and (verified["status"] != last["outcome"]
+                                or verified["completedAt"] != last["completedAt"]
+                                or verified["effect"] != effect):
             return False
     if value["adapterMode"] == "read_only":
         return (effect["state"] != "verified" and last["outcome"] != "success"
