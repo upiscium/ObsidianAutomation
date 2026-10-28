@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'">
+  <meta name="referrer" content="no-referrer">
+  <title>Obsidian Service Status Manager · Mock preview</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="model.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <div><p class="eyebrow">OBSIDIAN AUTOMATION / DESIGN PREVIEW</p>
+      <h1>Obsidian Service Status Manager</h1></div>
+    <button id="menu-toggle" type="button" aria-label="Open navigation menu" aria-expanded="false" aria-controls="navigation">☰ <span>Menu</span></button>
+    <nav id="navigation" aria-label="Main navigation" hidden>
+      <a href="#overview">Overview</a>
+      <a href="#connections">Connections</a>
+      <a href="#legend">Status guide</a>
+    </nav>
+  </header>
+  <main id="main" tabindex="-1">
+    <aside class="notice" aria-label="Prototype safety boundary">
+      <strong>Offline mock · nothing is connected</strong>
+      <p>All service data and interactions are synthetic. No commands, credentials, ZIP contents or settings are sent or saved. Do not enter real secrets.</p>
+    </aside>
+    <section class="preview-tools" aria-label="Mock scenarios">
+      <label for="scenario">Preview state</label>
+      <select id="scenario">
+        <option value="catalog">Current catalog shape (mock)</option>
+        <option value="control-v1">#480 v1 read-only DTO (synthetic)</option>
+        <option value="demonstration">Illustrative states (mock)</option>
+        <option value="loading">Loading</option>
+        <option value="unavailable">Unavailable</option>
+        <option value="stale">Stale observation</option>
+      </select>
+      <button id="reset-demo" type="button">Reset mock</button>
+    </section>
+    <p id="app-status" role="status" aria-live="polite"></p>
+    <section id="overview-view" aria-labelledby="overview-title">
+      <div class="section-heading"><div><p class="eyebrow">YOUR AUTOMATIONS</p><h2 id="overview-title" tabindex="-1">Service overview</h2></div><a href="#connections">Connection settings</a></div>
+      <div id="service-grid" class="service-grid"></div>
+    </section>
+    <section id="detail-view" aria-labelledby="detail-title" hidden>
+      <a href="#overview">← All services</a>
+      <p class="eyebrow" id="detail-id"></p>
+      <h2 id="detail-title" tabindex="-1">Service name</h2>
+      <div id="detail-content" class="panel"></div>
+      <p id="command-message" role="status" aria-live="polite"></p>
+    </section>
+    <section id="connections-view" aria-labelledby="connections-title" hidden>
+      <a href="#overview">← All services</a>
+      <h2 id="connections-title" tabindex="-1">Connections</h2>
+      <p>Use dummy values only. Validation checks local field format, not connectivity or authorization. Each service needs only its own dependencies.</p>
+      <form id="connections-form" novalidate autocomplete="off" aria-describedby="connection-help">
+        <p id="connection-help">Passwords and tokens are write-only: never prefilled, echoed or persisted. Blank means no replacement. Mock validation clears secret fields.</p>
+        <fieldset><legend>Nextcloud · shared account / WebDAV</legend>
+          <label for="nextcloud-account">Account <input id="nextcloud-account" name="nextcloud_account" autocomplete="off"></label>
+          <label for="webdav-url">WebDAV URL <input id="webdav-url" name="webdav_url" type="url" placeholder="https://cloud.example/remote.php/dav/files/user/"></label>
+          <label for="nextcloud-password">App password (replacement only) <input id="nextcloud-password" name="nextcloud_password" type="password" autocomplete="new-password" spellcheck="false"></label>
+        </fieldset>
+        <fieldset><legend>Gitea · Snapshot destination</legend>
+          <label for="gitea-account">Account <input id="gitea-account" name="gitea_account" autocomplete="off"></label>
+          <label for="gitea-repo">Repository HTTPS URL <input id="gitea-repo" name="gitea_repo" type="url" placeholder="https://git.example/account/vault.git"></label>
+          <label for="gitea-branch">Branch <input id="gitea-branch" name="gitea_branch" placeholder="main"></label>
+          <label for="gitea-token">Token (replacement only) <input id="gitea-token" name="gitea_token" type="password" autocomplete="new-password" spellcheck="false"></label>
+        </fieldset>
+        <fieldset><legend>GitHub · Project sync / Daily progress</legend>
+          <label for="github-token">Token (replacement only) <input id="github-token" name="github_token" type="password" autocomplete="new-password" spellcheck="false"></label>
+        </fieldset>
+        <details><summary>Optional AI Provider &amp; Vault mappings</summary>
+          <fieldset><legend>AI Provider · B1 only (presentation placeholder)</legend>
+            <label for="ai-endpoint">Provider HTTPS URL <input id="ai-endpoint" name="ai_endpoint" type="url" placeholder="https://ai.example/v1"></label>
+            <label for="ai-token">API key (replacement only) <input id="ai-token" name="ai_token" type="password" autocomplete="new-password" spellcheck="false"></label>
+          </fieldset>
+          <fieldset><legend>Vault · logical mapping (presentation placeholder)</legend>
+            <label for="vault-root">Vault root <input id="vault-root" name="vault_root" placeholder="Vault"></label>
+            <label for="vault-folder">Target folder <input id="vault-folder" name="vault_folder" placeholder="Projects"></label>
+          </fieldset>
+        </details>
+        <div class="actions"><button type="submit">Validate mock fields</button><button type="button" disabled aria-describedby="save-reason">Save unavailable</button></div>
+        <p id="save-reason">Saving requires the reviewed connection API; this preview never reports “saved” or “connected”.</p>
+        <p id="connection-message" role="status" aria-live="polite">Not validated · no connection attempted.</p>
+      </form>
+    </section>
+    <section id="legend" class="legend" aria-labelledby="legend-title">
+      <h2 id="legend-title" tabindex="-1">Status guide</h2>
+      <p><span class="badge success">✓ Succeeded</span> verified outcome · <span class="badge failure">! Failed</span> confirmed failure · <span class="badge unknown">? Unknown</span> no verified outcome.</p>
+      <p>Running / Queued / Idle describe execution, not success. Enabled / Disabled describe scheduling, not service health. Stopped is not inferred from an idle process. B5 is manual only.</p>
+      <p>Connected means an adapter observation, not permission to run, a working credential, or proof of a Vault change. Global health remains unknown without independent evidence.</p>
+    </section>
+    <noscript><p class="notice">JavaScript is required for this offline mock. No service status has been loaded and no action is available.</p></noscript>
+  </main>
+  <footer>Design v1 · #481 · legacy catalog compatibility + webui-workflow-control/v1 synthetic read-only projection · live integration pending</footer>
+</body>
+</html>
