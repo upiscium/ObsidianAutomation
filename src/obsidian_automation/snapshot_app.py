@@ -15,6 +15,8 @@ from .github_daily_setup import DailySetup
 from .github_daily_runonce import run_once
 from .github_daily_deterministic_writer import publish_verified_daily
 from .github_project_watcher import GitHubClient
+from .vault_format_job import FormatterJob
+from .vault_format_source import FormatterSource
 
 
 def main() -> int:
@@ -77,6 +79,17 @@ def main() -> int:
             preview_receipt, cas_root=daily_state / "cas", shared=store,
         )
 
+    # B2/B4 and Formatter share one timer thread. No Writer is injected:
+    # Source-side deployment is always read-only, irrespective of UI state.
+    formatter_state = state / "vault-formatter" if store else None
+    formatter_source = FormatterSource(formatter_state, store) if store else None
+    formatter_context = (
+        FormatterJob(formatter_state, formatter_source,
+                     configured=formatter_source.configured,
+                     source_generation=formatter_source.generation)
+        if formatter_source is not None else nullcontext(None)
+    )
+
     # The single in-app scheduler ticks B4. Publication requires explicit
     # --daily-publish regardless of whether --bind exposes a private LAN UI.
     daily_context = (
@@ -87,11 +100,13 @@ def main() -> int:
     with make_server(port=args.port, bind_address=args.bind,
                      snapshot_setup=store) as server, _job_context(
             state, runner, configured=c is not None,
-            connection_generation=store.generation() if store else None) as job, daily_context as daily_job:
+            connection_generation=store.generation() if store else None) as job, daily_context as daily_job, formatter_context as formatter_job:
         server.snapshot_job = job
         server.daily_job = daily_job
         server.daily_setup = daily_setup
-        job.start_scheduler(tick_hooks=(daily_job.tick,) if daily_job else ())
+        server.formatter_job = formatter_job
+        hooks = tuple(item.tick for item in (daily_job, formatter_job) if item is not None)
+        job.start_scheduler(tick_hooks=hooks)
         server.serve_forever(poll_interval=0.25)
     return 0
 

@@ -1,0 +1,243 @@
+"""Bounded read-only 98-System source capture using shared Nextcloud account.
+
+A bounded remote inventory pins every eligible filename before downloading.
+Every transfer is capped, and a byte comparison checks the captured files.
+No remote mutation or credential export is performed.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from pathlib import Path, PurePosixPath
+import select
+import subprocess
+import tempfile
+import time
+from typing import Callable
+
+from .vault_formatter import (
+    DEFAULT_MAX_BYTES, DEFAULT_MAX_FILES, DEFAULT_MAX_TOTAL_BYTES, create_plan,
+)
+
+MAX_LIST_OUTPUT = 8 * 1024 * 1024
+MAX_REMOTE_TIMEOUT = 120
+
+
+class FormatterSourceError(ValueError):
+    pass
+
+
+def _bounded_listing(argv: list[str], cwd: Path) -> bytes | None:
+    """Stream JSON inventory without unbounded PIPE memory or runtime."""
+    process = None
+    try:
+        process = subprocess.Popen(
+            argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        if process.stdout is None:
+            return None
+        limit = time.monotonic() + MAX_REMOTE_TIMEOUT
+        data = bytearray()
+        while True:
+            remaining = limit - time.monotonic()
+            if remaining <= 0:
+                return None
+            ready, _, _ = select.select([process.stdout], [], [], remaining)
+            if not ready:
+                return None
+            chunk = os.read(
+                process.stdout.fileno(), min(65536, MAX_LIST_OUTPUT + 1 - len(data))
+            )
+            if not chunk:
+                break
+            data.extend(chunk)
+            if len(data) > MAX_LIST_OUTPUT:
+                return None
+        if process.wait(timeout=max(0, limit - time.monotonic())) != 0:
+            return None
+        return bytes(data)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+    finally:
+        if process is not None:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=2)
+            if process.stdout is not None:
+                process.stdout.close()
+
+
+def _manifest(raw: bytes | None) -> tuple[tuple[str, int], ...] | None:
+    """Admit exactly the safe, size-known remote Markdown files."""
+    if raw is None or len(raw) > MAX_LIST_OUTPUT:
+        return None
+    try:
+        rows = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeError):
+        return None
+    if type(rows) is not list or len(rows) > DEFAULT_MAX_FILES:
+        return None
+    selected: list[tuple[str, int]] = []
+    names = set()
+    total = 0
+    for row in rows:
+        if type(row) is not dict or row.get("IsDir") is not False:
+            return None
+        path, size = row.get("Path"), row.get("Size")
+        if type(path) is not str or type(size) is not int:
+            return None
+        try:
+            raw_path = path.encode("utf-8")
+            parsed = PurePosixPath(path)
+        except (UnicodeError, ValueError, TypeError):
+            return None
+        if (
+            not raw_path or len(raw_path) > 1024
+            or parsed.as_posix() != path or parsed.is_absolute()
+            or len(parsed.parts) > 64
+            or path.startswith(("/", "\\"))
+            or "\\" in path
+            or any(part in ("", ".", "..") or part.startswith(".")
+                   for part in path.split("/"))
+            or any(ord(char) < 32 or ord(char) == 127 for char in path)
+            or parsed.suffix.lower() not in {".md", ".markdown"}
+            or path in names or size < 0 or size > DEFAULT_MAX_BYTES
+        ):
+            return None
+        total += size
+        if total > DEFAULT_MAX_TOTAL_BYTES:
+            return None
+        names.add(path)
+        selected.append((path, size))
+    return tuple(sorted(selected))
+
+
+def pull_system_markdown(source, target: Path) -> bool:
+    """Bound source inventory and transfers; use only remote-to-local effects."""
+    source.validate()
+    if target.is_symlink() or not target.is_dir():
+        return False
+    remote = source.rclone_remote + "/98-System"
+    filters = ["--include", "*.md", "--include", "*.markdown"]
+    args = ["rclone", "--config", str(source.rclone_config)]
+    listing_args = (
+        args + ["lsjson", remote, "--recursive", "--files-only",
+                "--no-modtime", "--no-mimetype", *filters]
+    )
+    initial = _manifest(_bounded_listing(listing_args, target.parent))
+    if initial is None:
+        return False
+    if not initial:
+        # Empty source is a valid no-change plan. No download or upload.
+        return True
+
+    # NUL-separated fixed list excludes concurrently added files; rclone
+    # --max-transfer and --max-size separately cap untrusted source growth.
+    listing_bytes = b"".join(path.encode("utf-8") + b"\0" for path, _ in initial)
+    if len(listing_bytes) > MAX_LIST_OUTPUT:
+        return False
+    list_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            prefix=".formatter-allowlist-", dir=target.parent,
+            mode="wb", delete=False,
+        ) as handle:
+            list_path = handle.name
+            handle.write(listing_bytes)
+            handle.flush()
+            os.fsync(handle.fileno())
+        files = ["--files-from0", list_path]
+        safe = ["--retries", "1", "--low-level-retries", "1", "--checkers", "2"]
+        operations = [
+            args + ["copy", remote, str(target), *files,
+                    "--max-size", f"{DEFAULT_MAX_BYTES}B",
+                    "--max-transfer", f"{DEFAULT_MAX_TOTAL_BYTES}B",
+                    "--cutoff-mode", "HARD", "--transfers", "1", *safe],
+            # The verification pass also reads remote bytes. Bound it as
+            # strictly as the original copy if a file grows after listing.
+            args + ["check", remote, str(target), *files, "--download",
+                    "--max-size", f"{DEFAULT_MAX_BYTES}B",
+                    "--max-transfer", f"{DEFAULT_MAX_TOTAL_BYTES}B",
+                    "--cutoff-mode", "HARD", *safe],
+        ]
+        for command in operations:
+            try:
+                result = subprocess.run(
+                    command, cwd=target.parent,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=MAX_REMOTE_TIMEOUT, check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                return False
+            if result.returncode:
+                return False
+        # A changed remote manifest during download is not a verified
+        # preview; reject and let the next run build a new fresh plan.
+        final = _manifest(_bounded_listing(listing_args, target.parent))
+        return final == initial
+    except OSError:
+        return False
+    finally:
+        if list_path is not None:
+            try:
+                os.unlink(list_path)
+            except FileNotFoundError:
+                pass
+
+
+class FormatterSource:
+    """Independent source reader, sharing B2/B4 Nextcloud credentials only."""
+
+    def __init__(self, state: Path, shared, *, copier: Callable = pull_system_markdown):
+        self.state = state
+        self.shared = shared
+        self.copier = copier
+
+    def _shared(self):
+        source_loader = getattr(self.shared, "source_connections", None)
+        settings_loader = getattr(self.shared, "load_nextcloud", None)
+        if not callable(source_loader) or not callable(settings_loader):
+            raise FormatterSourceError("formatter_source_unavailable")
+        source = source_loader()
+        details = settings_loader()
+        if source is None or type(details) is not dict:
+            raise FormatterSourceError("formatter_source_unavailable")
+        source.validate()
+        required = ("webdav_url", "vault_folder", "nextcloud_user", "nextcloud_password")
+        if any(type(details.get(key)) is not str or not details[key] for key in required):
+            raise FormatterSourceError("formatter_source_unavailable")
+        encoded = json.dumps(
+            {key: details[key] for key in required},
+            sort_keys=True, ensure_ascii=False, separators=(",", ":"),
+        ).encode("utf-8")
+        generation = hashlib.sha256(encoded).hexdigest()
+        return source, generation
+
+    def generation(self) -> str | None:
+        try:
+            return self._shared()[1]
+        except (FormatterSourceError, OSError, ValueError):
+            return None
+
+    def configured(self) -> bool:
+        return self.generation() is not None
+
+    def __call__(self) -> dict:
+        source, generation = self._shared()
+        with tempfile.TemporaryDirectory(prefix=".formatter-mirror-", dir=self.state) as directory:
+            root = Path(directory)
+            target = root / "98-System"
+            target.mkdir(mode=0o700)
+            if not self.copier(source, target):
+                raise FormatterSourceError("formatter_source_pull_failed")
+            # The source identity must not have changed while scanning.
+            plan = create_plan(root)
+            if generation != self.generation():
+                raise FormatterSourceError("formatter_source_changed")
+            return plan
