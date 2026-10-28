@@ -101,7 +101,8 @@
       label.htmlFor = "mock-zip"; label.append(input); content.append(label);
       const button = mockButton("Simulate ZIP Import", s, "import"); button.disabled = true;
       input.addEventListener("change", () => {
-        // Do not read, display or retain private file contents or names.
+        // Read the local filename only for its .zip suffix. Never display, upload,
+        // retain it or inspect file contents.
         selectedFile = !!input.files && input.files.length === 1 && /\.zip$/i.test(input.files[0].name);
         button.disabled = !selectedFile || state.phase !== "ready";
         $("command-message").textContent = selectedFile ? "ZIP selected locally. Contents are not inspected; this is not ZIP validation." : "Choose one dummy .zip file. No file was uploaded.";

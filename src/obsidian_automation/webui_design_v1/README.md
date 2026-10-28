@@ -1,9 +1,11 @@
 # Isolated design preview — #481
 
-Run `OA298-W1-UI481-20261028-R1`, pinned HEAD
-`f691fa79400ce06e41ffa4376a7a08837620e02c`, branch
-`task/oa298-ui-481-20261027`. Source-only; **not registered,
-mounted, published or connected**. The uploaded `Page 1.zip` was not available
+Implementation run `OA298-W1-UI481-20261028-R1` was originally based on
+`f691fa79400ce06e41ffa4376a7a08837620e02c` on branch
+`task/oa298-ui-481-20261027`. That hash is the **historical development base**,
+not the current commit. Consult [Draft PR #488](https://github.com/upiscium/ObsidianAutomation/pull/488)
+for the current published source revision. Source-only; **not registered,
+mounted, merged or connected**. The uploaded `Page 1.zip` was not available
 here. Layout follows the textual interpretation in #481 / the execution packet.
 
 ## Preview
@@ -32,9 +34,10 @@ All interactions are inert:
   schedule setter or outgoing dashboard control links. Even connected observations
   and eligible action guidance never enable a control. `simulate` explicitly
   refuses read-only projections. No admission or receipt parser is implemented.
-- B5 is manual ZIP Import, no schedule toggle or Next run. File selection checks
-  the suffix only; contents and filenames are not read/displayed/uploaded or
-  persisted. No claim of ZIP validation, admission or actual import is made.
+- B5 is manual ZIP Import, no schedule toggle or Next run. File selection reads
+  the local filename **only** to check the `.zip` suffix. Neither the filename
+  nor file contents are displayed, uploaded or persisted; the contents are never
+  read or inspected. No claim of ZIP validation, admission or actual import is made.
 - B2/B4 expose **navigation links only** to the existing root dashboard anchors
   `/#snapshot-controls` and `/#github-daily`. They leave this preview, do not
   submit an action and do not imply control availability. With `file:` preview
