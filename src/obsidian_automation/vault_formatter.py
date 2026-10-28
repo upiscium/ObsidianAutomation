@@ -175,8 +175,11 @@ def format_markdown(source: bytes) -> tuple[bytes | None, tuple[int, ...], str]:
             continue
 
         if html_tag:
+            closing = re.search(r"</" + re.escape(html_tag) + r"\s*>", body, re.I)
+            if closing and _HTML_ELEMENT_OPEN.search(body[closing.end():]):
+                return None, (), "unsupported-html-block"
             updates.append(line)
-            if re.search(r"</" + re.escape(html_tag) + r"\s*>", body, re.I):
+            if closing:
                 html_tag = None
             continue
 
@@ -207,6 +210,15 @@ def format_markdown(source: bytes) -> tuple[bytes | None, tuple[int, ...], str]:
 
         match = _RAW_OPEN.search(body)
         if match:
+            # We do not tokenize several HTML elements on a single line.
+            # A second opening before or after this recognized raw tag can
+            # become active after a same-line close, changing how later
+            # whitespace is interpreted. Refuse rather than guess.
+            if (
+                _HTML_ELEMENT_OPEN.search(body[:match.start()])
+                or _HTML_ELEMENT_OPEN.search(body[match.end():])
+            ):
+                return None, (), "unsupported-html-block"
             # HTML plaintext consumes the rest of the document, including
             # literal "</plaintext>" text; there is no closing end tag.
             # Reject the whole input rather than resuming formatting.

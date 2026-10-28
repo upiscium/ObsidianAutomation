@@ -144,6 +144,31 @@ class MarkdownFormatTests(unittest.TestCase):
                 self.assertEqual(lines, ())
                 self.assertEqual(reason, "unsupported-html-block")
 
+
+    def test_same_line_html_transition_does_not_expose_new_element(self):
+        cases = (
+            b"<pre></pre><title>\n  \n</title>\n",
+            b"<pre>data</pre><code>\n  \n</code>\n",
+            b"<pre>\n  \n</pre><title>\n  \n</title>\n",
+            b"<style></style><textarea>\n  \n</textarea>\n",
+            b"<pre><title>\n  \n</title></pre>\n",
+            b"<pre></pre><span>\n  \n</span>\n",
+            b"<pre>\n  \n</pre><svg>\n  \n</svg>\n",
+        )
+        for source in cases:
+            with self.subTest(source=source):
+                desired, lines, reason = format_markdown(source)
+                self.assertIsNone(desired)
+                self.assertEqual(lines, ())
+                self.assertEqual(reason, "unsupported-html-block")
+
+    def test_isolated_raw_html_after_own_close_allows_normal_blank_lines(self):
+        source = b"<pre>code</pre>\ntext\n  \nmore\n"
+        desired, lines, reason = format_markdown(source)
+        self.assertEqual(desired, b"<pre>code</pre>\ntext\n\nmore\n")
+        self.assertEqual(lines, (3,))
+        self.assertEqual(reason, "blank-line-whitespace")
+
     def test_html_comment_pre_and_script_are_opaque(self):
         raw = (
             b"top\n  \n<!--\n  \n-->\n"
