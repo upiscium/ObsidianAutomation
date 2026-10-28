@@ -36,6 +36,12 @@ max-transfer guards, followed by a second bounded inventory. Only then
 does it call #470 create_plan. An oversized, mutated or unobservable source
 is rejected, never silently truncated or treated as a successful preview.
 The temporary allowlist and mirror are removed on success or failure.
+For compatibility with Debian rclone 1.60.1-DEV, the fixed file allowlist
+uses newline-delimited --files-from-raw (not unsupported --files-from0).
+The input manifest rejects CR/LF and all control characters in path
+components before constructing this file, while the raw mode preserves
+ordinary spaces, '#', brackets and non-ASCII UTF-8 filenames.
+Only read-only inventory and remote-to-local copy/check are permitted.
 
 The source path invokes only remote-to-local copy and check; no remote
 rclone sync, push, upload or WebDAV PUT/MOVE/DELETE.

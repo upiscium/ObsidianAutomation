@@ -137,9 +137,13 @@ def pull_system_markdown(source, target: Path) -> bool:
         # Empty source is a valid no-change plan. No download or upload.
         return True
 
-    # NUL-separated fixed list excludes concurrently added files; rclone
-    # --max-transfer and --max-size separately cap untrusted source growth.
-    listing_bytes = b"".join(path.encode("utf-8") + b"\0" for path, _ in initial)
+    # A literal newline-separated allowlist is supported by installed
+    # Debian rclone 1.60.1-DEV, unlike --files-from0. _manifest rejects
+    # CR/LF/control characters in every path, and --files-from-raw preserves
+    # spaces, leading '#', glob metacharacters and UTF-8 path bytes.
+    # The fixed list excludes concurrently added files. Transfer limits
+    # independently cap untrusted remote file growth during copy/check.
+    listing_bytes = b"".join(path.encode("utf-8") + b"\n" for path, _ in initial)
     if len(listing_bytes) > MAX_LIST_OUTPUT:
         return False
     list_path: str | None = None
@@ -152,7 +156,7 @@ def pull_system_markdown(source, target: Path) -> bool:
             handle.write(listing_bytes)
             handle.flush()
             os.fsync(handle.fileno())
-        files = ["--files-from0", list_path]
+        files = ["--files-from-raw", list_path]
         safe = ["--retries", "1", "--low-level-retries", "1", "--checkers", "2"]
         operations = [
             args + ["copy", remote, str(target), *files,

@@ -4,6 +4,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import threading
@@ -259,9 +260,12 @@ def test_formatter_source_no_remote_writer_commands(tmp_path, monkeypatch):
 
     def fake(argv, **kwargs):
         calls.append(argv)
-        assert "--files-from0" in argv
-        selected = Path(argv[argv.index("--files-from0") + 1])
-        assert selected.read_bytes() == b"sub/startup.md\0"
+        # Production Debian rclone 1.60.1-DEV supports --files-from-raw,
+        # but rejects --files-from0. Validated paths cannot include CR/LF.
+        assert "--files-from-raw" in argv
+        assert "--files-from0" not in argv
+        selected = Path(argv[argv.index("--files-from-raw") + 1])
+        assert selected.read_bytes() == b"sub/startup.md\n"
         if argv[3] == "copy":
             assert "--max-size" in argv and "--max-transfer" in argv
             assert "--transfers" in argv
@@ -279,6 +283,95 @@ def test_formatter_source_no_remote_writer_commands(tmp_path, monkeypatch):
     assert not list(tmp_path.glob(".formatter-allowlist-*"))
     assert not any(any(k in part for k in ("sync", "PUT", "delete", "upload"))
                    for row in calls for part in row)
+
+
+def test_remote_capture_raw_allowlist_supports_literal_safe_names(tmp_path, monkeypatch):
+    from obsidian_automation import vault_format_source as capture
+
+    class Source:
+        rclone_remote = "nextcloud:Vault"
+        rclone_config = tmp_path / "rclone.conf"
+
+        def validate(self):
+            pass
+
+    Source.rclone_config.write_text("synthetic fixture only\n")
+    destination = tmp_path / "98-System"
+    destination.mkdir()
+    names = ("folder/space name.md", "folder/#literal.md",
+             "folder/[brackets].md", "folder/日本語.md")
+    inventory = json.dumps([
+        {"Path": name, "Size": 11, "IsDir": False} for name in names
+    ]).encode("utf-8")
+    calls = []
+    def fake_run(argv, **kwargs):
+        assert "--files-from-raw" in argv
+        assert "--files-from0" not in argv
+        data = Path(argv[argv.index("--files-from-raw") + 1]).read_bytes()
+        assert data == b"".join(name.encode("utf-8") + b"\n" for name in sorted(names))
+        assert b"\0" not in data
+        calls.append(argv[3])
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(capture, "_bounded_listing", lambda argv, cwd: inventory)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert capture.pull_system_markdown(Source(), destination) is True
+    assert calls == ["copy", "check"]
+    assert not list(tmp_path.glob(".formatter-allowlist-*"))
+
+
+def test_remote_capture_rejects_newline_filename_before_rclone(tmp_path, monkeypatch):
+    from obsidian_automation import vault_format_source as capture
+
+    class Source:
+        rclone_remote = "nextcloud:Vault"
+        rclone_config = tmp_path / "rclone.conf"
+
+        def validate(self):
+            pass
+
+    Source.rclone_config.write_text("synthetic fixture only\n")
+    destination = tmp_path / "98-System"
+    destination.mkdir()
+    inventory = json.dumps([
+        {"Path": "folder/bad\nname.md", "Size": 1, "IsDir": False}
+    ]).encode("utf-8")
+    invoked = []
+    monkeypatch.setattr(capture, "_bounded_listing", lambda argv, cwd: inventory)
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: invoked.append(args))
+    assert capture.pull_system_markdown(Source(), destination) is False
+    assert invoked == []
+    assert not list(tmp_path.glob(".formatter-allowlist-*"))
+
+
+@pytest.mark.skipif(shutil.which("rclone") is None, reason="rclone not installed")
+def test_real_local_rclone_capture_with_literal_raw_allowlist(tmp_path):
+    # Executes the real provider-independent local backend only when
+    # rclone is present. No Nextcloud credentials, network, or Vault writes.
+    class Source:
+        rclone_config = tmp_path / "local.conf"
+        rclone_remote = "nextcloud:" + str(tmp_path / "synthetic-source")
+
+        def validate(self):
+            pass
+
+    Source.rclone_config.write_text("[nextcloud]\ntype = local\n")
+    src = tmp_path / "synthetic-source/98-System"
+    src.mkdir(parents=True)
+    names = ("one.md", "nested/space name.md", "nested/#literal.md",
+             "nested/[brackets].md", "nested/日本語.md")
+    for name in names:
+        path = src / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"synthetic test bytes\n")
+    (src / "unlisted.txt").write_bytes(b"not Markdown\n")
+    dest = tmp_path / "mirror/98-System"
+    dest.mkdir(parents=True)
+    assert pull_system_markdown(Source(), dest)
+    for name in names:
+        assert (dest / name).read_bytes() == b"synthetic test bytes\n"
+    assert not (dest / "unlisted.txt").exists()
+    assert not list((tmp_path / "mirror").glob(".formatter-allowlist-*"))
 
 
 @contextmanager
