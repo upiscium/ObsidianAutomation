@@ -170,63 +170,82 @@ def pull_system_markdown(source, target: Path) -> bool:
         # Empty source is a valid no-change plan. No download or upload.
         return True
 
-    # A literal newline-separated allowlist is supported by installed
-    # Debian rclone 1.60.1-DEV, unlike --files-from0. _manifest rejects
-    # CR/LF/control characters in every path, and --files-from-raw preserves
-    # spaces, leading '#', glob metacharacters and UTF-8 path bytes.
-    # The fixed list excludes concurrently added files. Transfer limits
-    # independently cap untrusted remote file growth during copy/check.
-    listing_bytes = b"".join(path.encode("utf-8") + b"\n" for path, _ in initial)
-    if len(listing_bytes) > MAX_LIST_OUTPUT:
-        return False
-    list_path: str | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            prefix=".formatter-allowlist-", dir=target.parent,
-            mode="wb", delete=False,
-        ) as handle:
-            list_path = handle.name
-            handle.write(listing_bytes)
-            handle.flush()
-            os.fsync(handle.fileno())
-        files = ["--files-from-raw", list_path]
-        safe = ["--retries", "1", "--low-level-retries", "1", "--checkers", "2"]
-        operations = [
-            args + ["copy", remote, str(target), *files,
-                    "--max-transfer", f"{DEFAULT_MAX_TOTAL_BYTES}B",
-                    "--cutoff-mode", "HARD", "--transfers", "1", *safe],
-            # The download-check must also retain the hard total cap.
-            # Per-file size is verified against the pinned inventory before
-            # this phase, since --files-from-raw forbids --max-size.
-            args + ["check", remote, str(target), *files, "--download",
-                    "--max-transfer", f"{DEFAULT_MAX_TOTAL_BYTES}B",
-                    "--cutoff-mode", "HARD", *safe],
-        ]
-        for index, command in enumerate(operations):
-            try:
-                result = subprocess.run(
-                    command, cwd=target.parent,
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    timeout=MAX_REMOTE_TIMEOUT, check=False,
-                )
-            except (OSError, subprocess.TimeoutExpired):
-                return False
-            if result.returncode:
-                return False
-            if index == 0 and not _local_capture_matches_inventory(target, initial):
-                return False
-        # A changed remote manifest during download is not a verified
-        # preview; reject and let the next run build a new fresh plan.
-        final = _manifest(_bounded_listing(listing_args, target.parent))
-        return final == initial
-    except OSError:
-        return False
-    finally:
-        if list_path is not None:
-            try:
-                os.unlink(list_path)
-            except FileNotFoundError:
-                pass
+    # The literal newline-separated allowlist is supported by Debian rclone
+    # 1.60.1-DEV. _manifest forbids CR/LF/control-character injection; raw
+    # selection preserves spaces, '#', brackets and UTF-8 filenames.
+    #
+    # rclone rejects --files-from-raw combined with --max-size. Partition the
+    # fixed inventory into size-budgeted batches and cap *each* copy before
+    # remote growth can consume the full 64-MiB budget. The download-check
+    # counts both remote and local reads on this rclone version, so it needs
+    # 2*expected_bytes+1. Any byte/filename difference fails closed.
+    batches: list[tuple[tuple[tuple[str, int], ...], int]] = []
+    pending: list[tuple[str, int]] = []
+    expected_bytes = 0
+    for item in initial:
+        if pending and expected_bytes + item[1] > DEFAULT_MAX_BYTES:
+            batches.append((tuple(pending), expected_bytes))
+            pending = []
+            expected_bytes = 0
+        pending.append(item)
+        expected_bytes += item[1]
+    if pending:
+        batches.append((tuple(pending), expected_bytes))
+
+    safe = ["--retries", "1", "--low-level-retries", "1", "--checkers", "2"]
+    copied: list[tuple[str, int]] = []
+    for selected, batch_bytes in batches:
+        listing_bytes = b"".join(
+            path.encode("utf-8") + b"\n" for path, _ in selected
+        )
+        if len(listing_bytes) > MAX_LIST_OUTPUT:
+            return False
+        list_path: str | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                prefix=".formatter-allowlist-", dir=target.parent,
+                mode="wb", delete=False,
+            ) as handle:
+                list_path = handle.name
+                handle.write(listing_bytes)
+                handle.flush()
+                os.fsync(handle.fileno())
+            files = ["--files-from-raw", list_path]
+            operations = [
+                args + ["copy", remote, str(target), *files,
+                        "--max-transfer", f"{batch_bytes + 1}B",
+                        "--cutoff-mode", "HARD", "--transfers", "1", *safe],
+                args + ["check", remote, str(target), *files, "--download",
+                        "--max-transfer", f"{2 * batch_bytes + 1}B",
+                        "--cutoff-mode", "HARD", *safe],
+            ]
+            for index, command in enumerate(operations):
+                try:
+                    result = subprocess.run(
+                        command, cwd=target.parent,
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        timeout=MAX_REMOTE_TIMEOUT, check=False,
+                    )
+                except (OSError, subprocess.TimeoutExpired):
+                    return False
+                if result.returncode:
+                    return False
+                if index == 0:
+                    copied.extend(selected)
+                    if not _local_capture_matches_inventory(target, tuple(copied)):
+                        return False
+        except OSError:
+            return False
+        finally:
+            if list_path is not None:
+                try:
+                    os.unlink(list_path)
+                except FileNotFoundError:
+                    pass
+
+    # A changed remote manifest during download is not a verified preview.
+    final = _manifest(_bounded_listing(listing_args, target.parent))
+    return final == initial
 
 
 class FormatterSource:

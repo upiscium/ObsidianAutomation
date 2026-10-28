@@ -359,6 +359,54 @@ def test_remote_capture_rejects_growth_after_copy_without_download_check(
     assert not list(tmp_path.glob(".formatter-allowlist-*"))
 
 
+def test_remote_capture_uses_size_bounded_copy_and_check_batches(
+        tmp_path, monkeypatch):
+    from obsidian_automation import vault_format_source as capture
+
+    class Source:
+        rclone_remote = "nextcloud:Vault"
+        rclone_config = tmp_path / "rclone.conf"
+
+        def validate(self):
+            pass
+
+    Source.rclone_config.write_text("synthetic fixture only\n")
+    dest = tmp_path / "98-System"
+    dest.mkdir()
+    names = ("one.md", "two.md")
+    inventory = json.dumps([
+        {"Path": name, "Size": 14, "IsDir": False} for name in names
+    ]).encode("utf-8")
+    monkeypatch.setattr(capture, "DEFAULT_MAX_BYTES", 20)
+    monkeypatch.setattr(capture, "DEFAULT_MAX_TOTAL_BYTES", 50)
+    inventory_calls = []
+    def listing(argv, cwd):
+        inventory_calls.append(argv)
+        return inventory
+    calls = []
+    def fake_run(argv, **kwargs):
+        assert "--files-from-raw" in argv
+        assert "--max-size" not in argv
+        selected = Path(argv[argv.index("--files-from-raw") + 1]).read_text().splitlines()
+        assert len(selected) == 1  # 14+14 > the 20-byte batch limit
+        cap = argv[argv.index("--max-transfer") + 1]
+        expected = "15B" if argv[3] == "copy" else "29B"
+        assert cap == expected
+        if argv[3] == "copy":
+            (Path(argv[5]) / selected[0]).write_bytes(b"x" * 14)
+        calls.append((argv[3], selected[0]))
+        return subprocess.CompletedProcess(argv, 0)
+    monkeypatch.setattr(capture, "_bounded_listing", listing)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert capture.pull_system_markdown(Source(), dest) is True
+    assert calls == [
+        ("copy", "one.md"), ("check", "one.md"),
+        ("copy", "two.md"), ("check", "two.md"),
+    ]
+    assert len(inventory_calls) == 2
+    assert not list(tmp_path.glob(".formatter-allowlist-*"))
+
+
 def test_remote_capture_rejects_newline_filename_before_rclone(tmp_path, monkeypatch):
     from obsidian_automation import vault_format_source as capture
 
