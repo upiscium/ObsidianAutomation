@@ -74,14 +74,20 @@ def _settings(raw: object, identifier: str) -> tuple[str, dict]:
     low = 60 if identifier == "b2" else 3600
     if (type(configured) is not bool or type(enabled) is not bool
             or type(interval) is not int or not low <= interval <= 86400
-            or (enabled and not configured)
             or (due is not None and not _time(due))
             or (not enabled and due is not None)):
         raise ValueError("invalid_legacy_schedule")
-    schedule = {"state": "enabled" if enabled else "disabled",
-                "intervalSeconds": interval,
-                "nextDueAt": due if enabled else None,
-                "reason": "due_unavailable" if enabled and due is None else None}
+    if enabled and not configured:
+        # The persisted enabled flag can outlive valid connections (both B2
+        # and dynamically configured B4). It is a real observation, but NOT
+        # an effective or runnable schedule; never announce an enabled timer.
+        schedule = {"state": "unknown", "intervalSeconds": None,
+                    "nextDueAt": None, "reason": "configuration_missing"}
+    else:
+        schedule = {"state": "enabled" if enabled else "disabled",
+                    "intervalSeconds": interval,
+                    "nextDueAt": due if enabled else None,
+                    "reason": "due_unavailable" if enabled and due is None else None}
     return ("configured" if configured else "missing"), schedule
 
 

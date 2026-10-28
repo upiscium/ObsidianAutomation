@@ -97,6 +97,29 @@ def test_missing_configuration_disabled_schedule_and_unknown_due():
     assert pair["b4"]["schedule"]["reason"] == "due_unavailable"
 
 
+@pytest.mark.parametrize("identity", ("b2", "b4"))
+@pytest.mark.parametrize("due", (None, 350.0))
+def test_persisted_enabled_schedule_with_missing_configuration_is_not_an_observation_failure(
+        identity, due):
+    # Snapshot.update permits enabled while not configured; Daily checks
+    # configuration dynamically, after an enabled schedule may be persisted.
+    snap = snapshot(configured=False, enabled=True, due=due) if identity == "b2" else None
+    day = daily(configured=False, enabled=True, due=due) if identity == "b4" else None
+    pair = project_legacy_read(snap, day, AT)
+    item = pair[identity]
+    assert item["integration"] == "pending"
+    assert item["adapterMode"] == "read_only"
+    assert item["configuration"] == {"state": "missing", "reason": "configuration_missing"}
+    assert item["schedule"] == {"state": "unknown", "intervalSeconds": None,
+                                 "nextDueAt": None, "reason": "configuration_missing"}
+    assert item["availableActions"] == []
+    assert item["actionReasons"] == {"run_once": "read_only",
+                                     "set_schedule": "read_only"}
+    # The strict v1 composer must preserve this fail-closed observation.
+    projected = compose_read_catalog({identity: item}, AT)["workflows"]
+    assert projected[1 if identity == "b2" else 3] == item
+
+
 @pytest.mark.parametrize("bad", [
     lambda s: s.update(version=True),
     lambda s: s.update(job="other"),
@@ -107,7 +130,6 @@ def test_missing_configuration_disabled_schedule_and_unknown_due():
     lambda s: s["settings"].update(next_due=1),
     lambda s: s["settings"].update(gitea_write="/private/secret"),
     lambda s: s["settings"].update(source_name="local-vault"),
-    lambda s: s["settings"].update(enabled=True, configured=False),
     lambda s: s["settings"].update(enabled=True, next_due=float("inf")),
 ])
 def test_malformed_snapshot_fails_closed_independent_of_daily(bad):
@@ -126,7 +148,6 @@ def test_malformed_snapshot_fails_closed_independent_of_daily(bad):
     lambda s: s.update(publication_enabled=1),
     lambda s: s.update(path="/private"),
     lambda s: s["settings"].update(interval_seconds=3599),
-    lambda s: s["settings"].update(enabled=True, configured=False),
     lambda s: s["settings"].update(next_due=-1),
     lambda s: s["settings"].update(next_due="http://secret/"),
 ])
