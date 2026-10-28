@@ -272,6 +272,17 @@ class MarkdownFormatTests(unittest.TestCase):
         self.assertEqual(changed, ())
         self.assertEqual(reason, "unsupported-nested-fence")
 
+    def test_all_ascii_record_separators_are_rejected_before_splitlines(self):
+        # Python splitlines treats FS/GS/RS as boundaries, but the only
+        # policy-supported line endings are LF and CRLF.
+        for marker in (0x1C, 0x1D, 0x1E):
+            source = b"not a blank line" + bytes([marker]) + b"  \nnext\n"
+            with self.subTest(marker=marker):
+                desired, changed, reason = format_markdown(source)
+                self.assertIsNone(desired)
+                self.assertEqual(changed, ())
+                self.assertEqual(reason, "unsupported-line-separators")
+
     def test_uncommon_unicode_newline_is_not_rewritten(self):
         desired, changed, reason = format_markdown("first\u2028  \nsecond\n".encode())
         self.assertIsNone(desired)

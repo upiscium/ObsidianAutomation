@@ -118,7 +118,11 @@ def format_markdown(source: bytes) -> tuple[bytes | None, tuple[int, ...], str]:
     if "\r\n" in text and "\n" in text.replace("\r\n", ""):
         return None, (), "mixed-line-endings"
 
-    if any(ch in text for ch in ("\v", "\f", "\x85", "\u2028", "\u2029")):
+    # str.splitlines also treats ASCII FS/GS/RS and several Unicode
+    # separators as boundaries. None are permitted Markdown line endings.
+    if any(ch in text for ch in (
+        "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"
+    )):
         return None, (), "unsupported-line-separators"
 
     lines = text.splitlines(keepends=True)
