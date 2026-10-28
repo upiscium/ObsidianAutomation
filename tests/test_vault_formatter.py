@@ -120,6 +120,30 @@ class MarkdownFormatTests(unittest.TestCase):
         self.assertEqual(lines, (3,))
         self.assertEqual(reason, "blank-line-whitespace")
 
+
+    def test_unknown_html_text_containers_are_skipped(self):
+        # Opaque HTML elements are not parsed in the minimal Markdown policy.
+        # Keep their byte-valued text, including whitespace-only lines.
+        for element in ("title", "code", "select", "option", "span", "svg"):
+            source = ("before\n<" + element + ">\n  \n</" + element + ">\n").encode()
+            with self.subTest(element=element):
+                desired, changed, reason = format_markdown(source)
+                self.assertIsNone(desired)
+                self.assertEqual(changed, ())
+                self.assertEqual(reason, "unsupported-html-block")
+
+    def test_unknown_html_after_comment_is_skipped(self):
+        for source in (
+            b"before\n<!-- header --> <title>\n  \n</title>\n",
+            b"before\n<!-- multiline\nend --> <title>\n  \n</title>\n",
+            b"before\n<!-- header --> <svg>\n  \n</svg>\n",
+        ):
+            with self.subTest(source=source):
+                desired, lines, reason = format_markdown(source)
+                self.assertIsNone(desired)
+                self.assertEqual(lines, ())
+                self.assertEqual(reason, "unsupported-html-block")
+
     def test_html_comment_pre_and_script_are_opaque(self):
         raw = (
             b"top\n  \n<!--\n  \n-->\n"
