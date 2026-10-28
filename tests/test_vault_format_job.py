@@ -4,6 +4,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import threading
@@ -259,16 +260,22 @@ def test_formatter_source_no_remote_writer_commands(tmp_path, monkeypatch):
 
     def fake(argv, **kwargs):
         calls.append(argv)
-        assert "--files-from0" in argv
-        selected = Path(argv[argv.index("--files-from0") + 1])
-        assert selected.read_bytes() == b"sub/startup.md\0"
+        # Production Debian rclone 1.60.1-DEV supports --files-from-raw,
+        # but rejects --files-from0. Validated paths cannot include CR/LF.
+        assert "--files-from-raw" in argv
+        assert "--files-from0" not in argv
+        selected = Path(argv[argv.index("--files-from-raw") + 1])
+        assert selected.read_bytes() == b"sub/startup.md\n"
+        assert "--max-transfer" in argv
+        assert "--max-size" not in argv
+        assert "--cutoff-mode" in argv
         if argv[3] == "copy":
-            assert "--max-size" in argv and "--max-transfer" in argv
             assert "--transfers" in argv
+            path = Path(argv[5]) / "sub/startup.md"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(RAW)
         if argv[3] == "check":
             assert "--download" in argv
-            assert "--max-size" in argv and "--max-transfer" in argv
-            assert "--cutoff-mode" in argv
         return subprocess.CompletedProcess(argv, 0)
 
     monkeypatch.setattr(capture, "_bounded_listing", fake_list)
@@ -279,6 +286,179 @@ def test_formatter_source_no_remote_writer_commands(tmp_path, monkeypatch):
     assert not list(tmp_path.glob(".formatter-allowlist-*"))
     assert not any(any(k in part for k in ("sync", "PUT", "delete", "upload"))
                    for row in calls for part in row)
+
+
+def test_remote_capture_raw_allowlist_supports_literal_safe_names(tmp_path, monkeypatch):
+    from obsidian_automation import vault_format_source as capture
+
+    class Source:
+        rclone_remote = "nextcloud:Vault"
+        rclone_config = tmp_path / "rclone.conf"
+
+        def validate(self):
+            pass
+
+    Source.rclone_config.write_text("synthetic fixture only\n")
+    destination = tmp_path / "98-System"
+    destination.mkdir()
+    names = ("folder/space name.md", "folder/#literal.md",
+             "folder/[brackets].md", "folder/日本語.md")
+    inventory = json.dumps([
+        {"Path": name, "Size": 11, "IsDir": False} for name in names
+    ]).encode("utf-8")
+    calls = []
+    def fake_run(argv, **kwargs):
+        assert "--files-from-raw" in argv
+        assert "--files-from0" not in argv
+        data = Path(argv[argv.index("--files-from-raw") + 1]).read_bytes()
+        assert data == b"".join(name.encode("utf-8") + b"\n" for name in sorted(names))
+        assert b"\0" not in data
+        assert "--max-transfer" in argv and "--max-size" not in argv
+        if argv[3] == "copy":
+            for name in names:
+                path = Path(argv[5]) / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"x" * 11)
+        calls.append(argv[3])
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(capture, "_bounded_listing", lambda argv, cwd: inventory)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert capture.pull_system_markdown(Source(), destination) is True
+    assert calls == ["copy", "check"]
+    assert not list(tmp_path.glob(".formatter-allowlist-*"))
+
+
+def test_remote_capture_rejects_growth_after_copy_without_download_check(
+        tmp_path, monkeypatch):
+    from obsidian_automation import vault_format_source as capture
+
+    class Source:
+        rclone_remote = "nextcloud:Vault"
+        rclone_config = tmp_path / "rclone.conf"
+
+        def validate(self):
+            pass
+
+    Source.rclone_config.write_text("synthetic fixture only\n")
+    dest = tmp_path / "98-System"
+    dest.mkdir()
+    inventory = json.dumps([
+        {"Path": "changed.md", "Size": 11, "IsDir": False}
+    ]).encode("utf-8")
+    calls = []
+    def fake_run(argv, **kwargs):
+        calls.append(argv[3])
+        if argv[3] == "copy":
+            (Path(argv[5]) / "changed.md").write_bytes(b"x" * 12)
+        return subprocess.CompletedProcess(argv, 0)
+    monkeypatch.setattr(capture, "_bounded_listing", lambda argv, cwd: inventory)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert capture.pull_system_markdown(Source(), dest) is False
+    assert calls == ["copy"]
+    assert not list(tmp_path.glob(".formatter-allowlist-*"))
+
+
+def test_remote_capture_uses_size_bounded_copy_and_check_batches(
+        tmp_path, monkeypatch):
+    from obsidian_automation import vault_format_source as capture
+
+    class Source:
+        rclone_remote = "nextcloud:Vault"
+        rclone_config = tmp_path / "rclone.conf"
+
+        def validate(self):
+            pass
+
+    Source.rclone_config.write_text("synthetic fixture only\n")
+    dest = tmp_path / "98-System"
+    dest.mkdir()
+    names = ("one.md", "two.md")
+    inventory = json.dumps([
+        {"Path": name, "Size": 14, "IsDir": False} for name in names
+    ]).encode("utf-8")
+    monkeypatch.setattr(capture, "DEFAULT_MAX_BYTES", 20)
+    monkeypatch.setattr(capture, "DEFAULT_MAX_TOTAL_BYTES", 50)
+    inventory_calls = []
+    def listing(argv, cwd):
+        inventory_calls.append(argv)
+        return inventory
+    calls = []
+    def fake_run(argv, **kwargs):
+        assert "--files-from-raw" in argv
+        assert "--max-size" not in argv
+        selected = Path(argv[argv.index("--files-from-raw") + 1]).read_text().splitlines()
+        assert len(selected) == 1  # 14+14 > the 20-byte batch limit
+        cap = argv[argv.index("--max-transfer") + 1]
+        expected = "15B" if argv[3] == "copy" else "29B"
+        assert cap == expected
+        if argv[3] == "copy":
+            (Path(argv[5]) / selected[0]).write_bytes(b"x" * 14)
+        calls.append((argv[3], selected[0]))
+        return subprocess.CompletedProcess(argv, 0)
+    monkeypatch.setattr(capture, "_bounded_listing", listing)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert capture.pull_system_markdown(Source(), dest) is True
+    assert calls == [
+        ("copy", "one.md"), ("check", "one.md"),
+        ("copy", "two.md"), ("check", "two.md"),
+    ]
+    assert len(inventory_calls) == 2
+    assert not list(tmp_path.glob(".formatter-allowlist-*"))
+
+
+def test_remote_capture_rejects_newline_filename_before_rclone(tmp_path, monkeypatch):
+    from obsidian_automation import vault_format_source as capture
+
+    class Source:
+        rclone_remote = "nextcloud:Vault"
+        rclone_config = tmp_path / "rclone.conf"
+
+        def validate(self):
+            pass
+
+    Source.rclone_config.write_text("synthetic fixture only\n")
+    destination = tmp_path / "98-System"
+    destination.mkdir()
+    inventory = json.dumps([
+        {"Path": "folder/bad\nname.md", "Size": 1, "IsDir": False}
+    ]).encode("utf-8")
+    invoked = []
+    monkeypatch.setattr(capture, "_bounded_listing", lambda argv, cwd: inventory)
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: invoked.append(args))
+    assert capture.pull_system_markdown(Source(), destination) is False
+    assert invoked == []
+    assert not list(tmp_path.glob(".formatter-allowlist-*"))
+
+
+@pytest.mark.skipif(shutil.which("rclone") is None, reason="rclone not installed")
+def test_real_local_rclone_capture_with_literal_raw_allowlist(tmp_path):
+    # Executes the real provider-independent local backend only when
+    # rclone is present. No Nextcloud credentials, network, or Vault writes.
+    class Source:
+        rclone_config = tmp_path / "local.conf"
+        rclone_remote = "nextcloud:" + str(tmp_path / "synthetic-source")
+
+        def validate(self):
+            pass
+
+    Source.rclone_config.write_text("[nextcloud]\ntype = local\n")
+    src = tmp_path / "synthetic-source/98-System"
+    src.mkdir(parents=True)
+    names = ("one.md", "nested/space name.md", "nested/#literal.md",
+             "nested/[brackets].md", "nested/日本語.md")
+    for name in names:
+        path = src / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"synthetic test bytes\n")
+    (src / "unlisted.txt").write_bytes(b"not Markdown\n")
+    dest = tmp_path / "mirror/98-System"
+    dest.mkdir(parents=True)
+    assert pull_system_markdown(Source(), dest)
+    for name in names:
+        assert (dest / name).read_bytes() == b"synthetic test bytes\n"
+    assert not (dest / "unlisted.txt").exists()
+    assert not list((tmp_path / "mirror").glob(".formatter-allowlist-*"))
 
 
 @contextmanager
@@ -516,8 +696,11 @@ def test_remote_capture_rejects_changed_listing_and_cleans_allowlist(
         size = 11 if calls[0] == 1 else 12
         return json.dumps([{"Path":"file.md","Size":size,"IsDir":False}]).encode()
     monkeypatch.setattr(capture, "_bounded_listing", listing)
-    monkeypatch.setattr(subprocess, "run", lambda argv, **kwargs:
-                        subprocess.CompletedProcess(argv,0))
+    def fake_run(argv, **kwargs):
+        if argv[3] == "copy":
+            (Path(argv[5]) / "file.md").write_bytes(b"x" * 11)
+        return subprocess.CompletedProcess(argv, 0)
+    monkeypatch.setattr(subprocess, "run", fake_run)
     assert capture.pull_system_markdown(Source(), dest) is False
     assert calls[0] == 2
     assert not list(tmp_path.glob(".formatter-allowlist-*"))
@@ -669,3 +852,44 @@ def test_formatter_schedule_survives_failed_nextcloud_only_save(tmp_path):
         server.server_close()
         b2.close()
         fmt.close()
+
+
+@pytest.mark.skipif(shutil.which("rclone") is None, reason="rclone not installed")
+def test_real_local_rclone_growth_is_rejected_by_hard_transfer_cap(tmp_path, monkeypatch):
+    # Simulate remote growth after the admitted inventory, with real rclone.
+    # The only source is a disposable local backend; no Nextcloud credentials.
+    from obsidian_automation import vault_format_source as capture
+
+    class Source:
+        rclone_config = tmp_path / "local.conf"
+        rclone_remote = "nextcloud:" + str(tmp_path / "synthetic-source")
+
+        def validate(self):
+            pass
+
+    Source.rclone_config.write_text("[nextcloud]\ntype = local\n")
+    source_dir = tmp_path / "synthetic-source/98-System"
+    source_dir.mkdir(parents=True)
+    (source_dir / "grown.md").write_bytes(b"x" * (8 * 1024 * 1024))
+    # Source grew from 1024 bytes to 8 MiB after the inventory preflight.
+    inventory = json.dumps([
+        {"Path": "grown.md", "Size": 1024, "IsDir": False}
+    ]).encode("utf-8")
+    monkeypatch.setattr(capture, "_bounded_listing", lambda argv, cwd: inventory)
+    actual_run = subprocess.run
+    copy_calls = []
+
+    def record_real_rclone(argv, **kwargs):
+        copy_calls.append(argv)
+        return actual_run(argv, **kwargs)
+
+    monkeypatch.setattr(capture.subprocess, "run", record_real_rclone)
+    dest = tmp_path / "mirror/98-System"
+    dest.mkdir(parents=True)
+    assert capture.pull_system_markdown(Source(), dest) is False
+    assert len(copy_calls) == 1  # Stops on copy; no check or format plan.
+    assert copy_calls[0][3] == "copy"
+    assert copy_calls[0][copy_calls[0].index("--max-transfer") + 1] == "1025B"
+    assert "--cutoff-mode" in copy_calls[0]
+    assert not (dest / "grown.md").exists()
+    assert not list((tmp_path / "mirror").glob(".formatter-allowlist-*"))

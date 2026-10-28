@@ -29,13 +29,29 @@ diff is sent to the browser.
 The Formatter reuses the shared Nextcloud rclone.conf and configured Vault
 folder. It first obtains a bounded rclone lsjson inventory of eligible 98-System
 Markdown files (file count, individual sizes, total bytes, path constraints).
-It downloads only that exact allowlist into a disposable private mirror,
-with max-size and max-transfer guards, and verifies matching bytes through a
-read-only rclone check --download protected by its OWN max-size and
-max-transfer guards, followed by a second bounded inventory. Only then
-does it call #470 create_plan. An oversized, mutated or unobservable source
-is rejected, never silently truncated or treated as a successful preview.
+It downloads only that exact allowlist into a disposable private mirror.
+Each selected batch has at most the 2-MiB per-file byte budget in expected
+total source bytes. The copy uses HARD max-transfer=expected_bytes+1, while
+a read-only rclone check --download uses HARD max-transfer=2*expected_bytes+1
+(both remote and local streams count on the target rclone version). Local
+files are checked after each batch against the pinned inventory. A final
+bounded remote inventory follows. Only then does it call #470 create_plan.
+An oversized, mutated or unobservable source is rejected, never silently
+truncated or treated as a successful preview.
 The temporary allowlist and mirror are removed on success or failure.
+For compatibility with Debian rclone 1.60.1-DEV, the fixed file allowlist
+uses newline-delimited --files-from-raw (not unsupported --files-from0).
+The input manifest rejects CR/LF and all control characters in path
+components before constructing this file, while the raw mode preserves
+ordinary spaces, '#', brackets and non-ASCII UTF-8 filenames.
+The installed rclone rejects --files-from-raw combined with --max-size
+because the raw allowlist overrides other filters. Partitioning keeps a
+single changed remote file from consuming the entire 64-MiB job budget
+before rejection. Before its verification pass, each completed batch must
+match the pinned source inventory exactly in filename, file count, file
+type, per-file byte size and total bytes. Any mismatch fails closed; the
+mirror is deleted without changing Nextcloud.
+Only read-only inventory and remote-to-local copy/check are permitted.
 
 The source path invokes only remote-to-local copy and check; no remote
 rclone sync, push, upload or WebDAV PUT/MOVE/DELETE.
