@@ -457,8 +457,13 @@ class ContractExamples(unittest.TestCase):
         source = (ROOT / "src/obsidian_automation/admin_dashboard.py").read_text(encoding="utf-8")
         strings = {node.value for node in ast.walk(ast.parse(source))
                    if isinstance(node, ast.Constant) and type(node.value) is str}
-        self.assertFalse(any("/api/" in value and ("workflow-control" in value or
-                             re.search(r"/(?:b5|upload|archives?)(?:/|$)", value))
+        # A read-only v1 Catalog GET may now be registered; the upload and
+        # import/staging POST transports still have no live endpoint.
+        self.assertIn("/api/v1/workflow-control", strings)
+        self.assertFalse(any("/api/" in value
+                             and (re.search(r"/(?:b5|upload|archives?)(?:/|$)", value)
+                                  or ("workflow-control" in value
+                                      and value != "/api/v1/workflow-control"))
                              for value in strings))
         for requirement in ("not selected or accepted by this correction", "lookup-only",
                             "Lookup/GET never repairs, publishes, initializes",
@@ -476,7 +481,14 @@ class ContractExamples(unittest.TestCase):
             for suffix in ("", "/settings", "/runs", "/runs/", "/connections"):
                 self.assertIn(f"/api/v1/{product}{suffix}", strings)
         self.assertIn("/api/v1/workflows", strings)
-        self.assertNotIn("/api/v1/workflow-control", strings)
+        # Registration is GET/HEAD only. The existing write allowlist must
+        # never grant the new observation endpoint command authority.
+        self.assertIn("/api/v1/workflow-control", strings)
+        post = next(node for node in ast.walk(tree)
+                    if isinstance(node, ast.FunctionDef) and node.name == "do_POST")
+        post_strings = {node.value for node in ast.walk(post)
+                        if isinstance(node, ast.Constant) and type(node.value) is str}
+        self.assertFalse(any("workflow-control" in value for value in post_strings))
 
     def test_legacy_interval_bounds_match_inspected_ast(self):
         for filename, lower in (("snapshot_job.py", 60), ("github_daily_job.py", 3600)):
