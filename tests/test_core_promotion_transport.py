@@ -300,6 +300,70 @@ def test_concurrent_update_is_rejected_by_if_match_and_checkpoint_stays_base(tmp
     assert load_checkpoint(checkpoint).last_observed_core_commit == plan.base_commit
 
 
+def test_318_conditional_update_412_preserves_concurrent_bytes_and_never_deletes(
+    tmp_path: Path,
+) -> None:
+    repo, config, plan, checkpoint, receipts = _fixture(tmp_path)
+    dav = FakeDAV(_base_remote(plan, repo))
+    target = next(change.path for change in plan.changes if change.action == "update")
+    concurrent_bytes = b"human edit after preflight\n\x00\xfe"
+    dav.concurrent_before_mutation[target] = concurrent_bytes
+    expected_hash = hashlib.sha256(concurrent_bytes).hexdigest()
+
+    with pytest.raises(PromotionTransportConflict):
+        execute_promotion(
+            plan=plan, core_repository=repo, config_path=config,
+            base_url="https://nextcloud.example/vault",
+            username="promoter", password="secret",
+            checkpoint_path=checkpoint, receipt_directory=receipts,
+            transport=dav,
+        )
+
+    assert hashlib.sha256(dav.files[target]).hexdigest() == expected_hash
+    assert dav.files[target] == concurrent_bytes
+    put_positions = [i for i, (method, path, _, _) in enumerate(dav.mutations)
+                     if method == "PUT" and path == target]
+    assert len(put_positions) == 1
+    rejected_pos = put_positions[0]
+    assert rejected_pos == len(dav.mutations) - 1, (
+        "no operation may run after the rejected If-Match PUT"
+    )
+    _method, _path, headers, _body = dav.mutations[rejected_pos]
+    assert headers["If-Match"].startswith('"')
+    assert not any(method == "DELETE" for method, _, _, _ in dav.mutations[rejected_pos:])
+    assert load_checkpoint(checkpoint).last_observed_core_commit == plan.base_commit
+
+
+def test_318_conditional_create_412_preserves_racer_and_never_deletes(
+    tmp_path: Path,
+) -> None:
+    repo, config, plan, checkpoint, receipts = _fixture(tmp_path)
+    dav = FakeDAV(_base_remote(plan, repo))
+    target = next(change.path for change in plan.changes if change.action == "create")
+    concurrent_bytes = b"racer created canonical file\n"
+    dav.concurrent_before_mutation[target] = concurrent_bytes
+
+    with pytest.raises(PromotionTransportConflict):
+        execute_promotion(
+            plan=plan, core_repository=repo, config_path=config,
+            base_url="https://nextcloud.example/vault",
+            username="promoter", password="secret",
+            checkpoint_path=checkpoint, receipt_directory=receipts,
+            transport=dav,
+        )
+
+    assert dav.files[target] == concurrent_bytes
+    assert hashlib.sha256(dav.files[target]).hexdigest() == hashlib.sha256(concurrent_bytes).hexdigest()
+    positions = [i for i, (method, path, _, _) in enumerate(dav.mutations)
+                 if method == "PUT" and path == target]
+    assert len(positions) == 1
+    rejected_pos = positions[0]
+    assert rejected_pos == len(dav.mutations) - 1
+    assert dav.mutations[rejected_pos][2]["If-None-Match"] == "*"
+    assert not any(method == "DELETE" for method, _, _, _ in dav.mutations[rejected_pos:])
+    assert load_checkpoint(checkpoint).last_observed_core_commit == plan.base_commit
+
+
 def test_update_requires_strong_etag_before_any_mutation(tmp_path: Path) -> None:
     repo, config, plan, checkpoint, receipts = _fixture(tmp_path)
     dav = FakeDAV(_base_remote(plan, repo))
