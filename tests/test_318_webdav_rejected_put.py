@@ -7,6 +7,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import secrets
 import socket
 import threading
 
@@ -104,11 +105,33 @@ def _synthetic_dav(state: _DAVState):
 
 
 def _create(base_url: str, target: str, content: bytes):
+    # Synthetic-only credentials are generated per call, not kept in the
+    # repository or reused against any actual Nextcloud endpoint.
     return conditional_create(
         base_url=base_url, target_path=target, content=content,
-        username="fixture", password="fixture-only",
+        username="fixture-" + secrets.token_hex(6),
+        password=secrets.token_urlsafe(24),
         timeout=2.0, allow_http=True,
     )
+
+
+def test_318_fixture_generates_distinct_credentials_per_request(monkeypatch):
+    """The synthetic WebDAV fixture must not embed a reusable password."""
+    observed: list[tuple[str, str]] = []
+
+    def record_request(**kwargs):
+        observed.append((kwargs["username"], kwargs["password"]))
+        return object()
+
+    monkeypatch.setitem(_create.__globals__, "conditional_create", record_request)
+    _create("http://127.0.0.1:1/vault", "11-Knowledge/a.md", b"a")
+    _create("http://127.0.0.1:1/vault", "11-Knowledge/b.md", b"b")
+
+    assert len(observed) == 2
+    assert all(user.startswith("fixture-") and len(user) >= 16
+               and len(password) >= 24 for user, password in observed)
+    assert observed[0] != observed[1]
+    assert observed[0][1] != observed[1][1]
 
 
 @pytest.mark.parametrize("response", [412, 401, 403, 503],
