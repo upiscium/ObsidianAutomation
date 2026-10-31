@@ -30,6 +30,7 @@ const flush = async () => { for (let i = 0; i < 20; ++i) await Promise.resolve()
 function browser() {
   const nodes = {};
   for (const match of html.matchAll(/<([a-z0-9-]+)\b[^>]*\bid="([^"]+)"[^>]*>/g)) nodes[match[2]] = new Element(match[1]);
+  nodes["ai-health-status"].textContent = html.match(/<p id="ai-health-status"[^>]*>([^<]+)<\/p>/)[1];
   const requests = [], timers = new Map(); let nextTimer = 0;
   const forbidden = () => { throw Error("Unexpected side effect"); };
   const context = vm.createContext({
@@ -50,7 +51,14 @@ function browser() {
   return {nodes, requests, timers, payload, context,
     text: () => Object.values(nodes).map(n => n.textContent).join(" "),
     refresh: () => nodes["refresh-observation"].fire("click"),
+    aiRead: () => nodes["ai-health-refresh"].fire("click"),
     good(index, p = payload()) { requests[index].resolve({status: 200, json: async () => p}); },
+    aiGood(index, p = aiPayload()) {
+      // Native response.json creates objects in the renderer's realm. Recreate
+      // that boundary, rather than passing host-realm prototypes into the VM.
+      const decoded = vm.runInContext("JSON.parse(" + JSON.stringify(JSON.stringify(p)) + ")", context);
+      requests[index].resolve({status: 200, json: async () => decoded});
+    },
     timeout() { for (const [id, fn] of [...timers]) { timers.delete(id); fn(); } }
   };
 }
@@ -59,6 +67,25 @@ function unavailable(b) {
   assert.doesNotMatch(b.nodes["live-services"].textContent, /succeeded|Historical.*success|Connected adapter/);
   assert.equal(b.nodes["live-services"].children.length, 5);
   assert.doesNotMatch(b.text(), /PRIVATE|undefined|Error:|schemaVersion/);
+}
+// Controlled synthetic status fixture, never a real producer/provider read.
+function aiPayload() {
+  return {version: 1, authority: "observation_only", ai_pipeline: {
+    freshness: "fresh", health: "ok", review_count: 17, operational_failures: 23,
+    pending_retry_failures: 31, deterministic_rejections: 47,
+    backpressure: true, review_reminder_due: false
+  }};
+}
+function aiText(b) {
+  return b.nodes["ai-health-status"].textContent + " " + b.nodes["ai-health-details"].textContent;
+}
+function aiEmpty(b, expected = "AI producer observation unavailable") {
+  assert.equal(b.nodes["ai-health-status"].textContent, expected);
+  assert.equal(b.nodes["ai-health-details"].children.length, 0);
+  assert.doesNotMatch(aiText(b), /PRIVATE|undefined|Error:|review_count|17|23|31|47/);
+}
+function controlText(b) {
+  return ["live-status", "live-summary", "live-services"].map(id => b.nodes[id].textContent).join(" ");
 }
 let count = 0;
 async function test(name, fn) { await fn(); ++count; console.log("PASS " + name); }
@@ -157,6 +184,195 @@ async function test(name, fn) { await fn(); ++count; console.log("PASS " + name)
     assert.match(b.nodes["live-status"].textContent, /outside display range/);
     assert.doesNotMatch(b.text(), /PRIVATE|undefined|Error:/);
     assert.doesNotMatch(b.nodes["live-services"].children[1].textContent, /succeeded|snapshot_ref|Historical.*success/);
+  });
+  await test("AI advisory accessible and manual only, fixed same-origin credential-free GET", async () => {
+    assert.match(html, /<section aria-labelledby="ai-health-heading">/);
+    assert.match(html, /<button id="ai-health-refresh" type="button">Read AI pipeline status<\/button>/);
+    assert.match(html, /id="ai-health-status" role="status" aria-live="polite"/);
+    assert.match(html, /<dl id="ai-health-details"><\/dl>/);
+    assert.ok(html.indexOf('id="live-summary"') < html.indexOf('id="ai-health-heading"'));
+    assert.ok(html.indexOf('id="ai-health-details"') < html.indexOf('id="live-services"'));
+    assert.match(html, /not confirmation of provider readiness, note generation, Review approval, or Vault effect/);
+    assert.doesNotMatch(html, /<(?:form|input)\b/i);
+    const b = browser(); assert.match(aiText(b), /^Not requested/);
+    assert.equal(b.requests.length, 1); b.good(0); await flush();
+    assert.equal(b.requests.length, 1); assert.equal(b.timers.size, 0);
+    assert.match(aiText(b), /^Not requested/);
+    const before = controlText(b); const done = b.aiRead();
+    assert.equal(b.requests.length, 2); assert.equal(controlText(b), before);
+    const r = b.requests[1]; assert.equal(r.url, "/api/v1/status");
+    for (const [key, value] of Object.entries({method: "GET", mode: "same-origin", credentials: "omit", cache: "no-store", redirect: "error"})) assert.equal(r.options[key], value);
+    assert.equal(r.options.headers.Accept, "application/json");
+    assert.deepEqual(Object.keys(r.options.headers), ["Accept"]);
+    assert.equal(r.options.body, undefined); assert.ok(r.options.signal instanceof AbortSignal);
+    assert.equal(r.options.signal.aborted, false); assert.equal(b.timers.size, 1);
+    b.aiGood(1); await done; assert.equal(b.timers.size, 0);
+    await flush(); assert.equal(b.requests.length, 2);
+    assert.equal(controlText(b), before);
+  });
+  await test("AI fresh producer enums, safe counts and booleans never mean workflow success", async () => {
+    for (const health of ["ok", "warning", "critical"]) {
+      const b = browser(); b.good(0); await flush(); const before = controlText(b);
+      b.aiRead(); const p = aiPayload(); p.ai_pipeline.health = health;
+      b.aiGood(1, p); await flush();
+      assert.match(aiText(b), new RegExp("fresh · producer health: " + health));
+      assert.match(aiText(b), /not workflow success or connected B1 evidence/);
+      const rows = b.nodes["ai-health-details"].children;
+      assert.deepEqual(rows.map(row => row.children[1].textContent), ["17", "23", "31", "47", "Active", "Not due"]);
+      assert.match(aiText(b), /Awaiting human review \(not approval\)/);
+      assert.match(aiText(b), /pending retry \(budget unconfirmed\)/);
+      assert.match(aiText(b), /Validation rejections \(not an outage\)/);
+      assert.equal(controlText(b), before);
+      b.aiRead(); p.ai_pipeline.review_count = 0;
+      p.ai_pipeline.deterministic_rejections = Number.MAX_SAFE_INTEGER;
+      p.ai_pipeline.backpressure = false; p.ai_pipeline.review_reminder_due = true;
+      b.aiGood(2, p); await flush();
+      assert.deepEqual(b.nodes["ai-health-details"].children.map(row => row.children[1].textContent),
+        ["0", "23", "31", String(Number.MAX_SAFE_INTEGER), "Not active", "Due"]);
+    }
+  });
+  await test("AI subset ignores all free text, service details, incidents and HTML", async () => {
+    const b = browser(); b.good(0); await flush(); b.aiRead(); const p = aiPayload();
+    p.generated_at = "PRIVATE time"; p.services = [{service: "PRIVATE service"}];
+    p.actions = {trigger: true}; p.error = "PRIVATE error";
+    Object.assign(p.ai_pipeline, {generated_at: "PRIVATE timestamp", age_seconds: "PRIVATE age",
+      source_path: "/PRIVATE/path", provider: "PRIVATE provider", url: "https://PRIVATE.invalid",
+      incidents: [{code: "PRIVATE incident"}], extra: '<img src="PRIVATE" onerror="PRIVATE">'});
+    b.aiGood(1, p); await flush();
+    assert.match(aiText(b), /producer health: ok/); assert.doesNotMatch(b.text(), /PRIVATE|<img|generated_at|observation_only/);
+    assert.equal(b.nodes["ai-health-details"].children.length, 6);
+  });
+  await test("AI malformed envelopes, objects, enums, unsafe integers and flags fail closed", async () => {
+    const mutations = [
+      () => null, () => [], () => "PRIVATE", p => ({...p, version: "1"}), p => ({...p, version: 2}),
+      p => ({...p, authority: "PRIVATE"}), p => { delete p.version; return p; },
+      p => { delete p.ai_pipeline; return p; },
+      ...[null, [], "PRIVATE"].map(value => p => ({...p, ai_pipeline: value})),
+      ...[undefined, "PRIVATE", "__proto__", "toString"].map(value => p => { p.ai_pipeline.freshness = value; return p; }),
+      ...[undefined, "unknown", "PRIVATE", "__proto__", "toString"].map(value => p => { p.ai_pipeline.health = value; return p; })
+    ];
+    for (const key of ["review_count", "operational_failures", "pending_retry_failures", "deterministic_rejections"]) {
+      for (const value of [undefined, null, true, "17", -1, 0.5, Number.MAX_SAFE_INTEGER + 1, Infinity, NaN, {}]) {
+        mutations.push(p => { p.ai_pipeline[key] = value; return p; });
+      }
+    }
+    for (const key of ["backpressure", "review_reminder_due"]) {
+      for (const value of [undefined, null, 0, 1, "false", {}]) mutations.push(p => { p.ai_pipeline[key] = value; return p; });
+    }
+    for (const mutate of mutations) {
+      const b = browser(); b.good(0); await flush(); b.aiRead(); b.aiGood(1); await flush();
+      b.aiRead(); assert.equal(b.nodes["ai-health-details"].children.length, 0);
+      b.aiGood(2, mutate(aiPayload())); await flush(); aiEmpty(b); assert.equal(b.timers.size, 0);
+    }
+    // Use the renderer realm so these fail for custom prototypes, not merely
+    // a host-realm prototype mismatch. Also test nonfinite decoded numbers
+    // directly: JSON.stringify in aiGood would otherwise turn them into null.
+    for (const expression of ["Object.create(p)", "({...p, ai_pipeline: Object.create(p.ai_pipeline)})",
+      "({...p, ai_pipeline: {...p.ai_pipeline, review_count: Infinity}})",
+      "({...p, ai_pipeline: {...p.ai_pipeline, review_count: NaN}})"]) {
+      const b = browser(); b.good(0); await flush(); b.aiRead();
+      const p = vm.runInContext("((p) => " + expression + ")(" + JSON.stringify(aiPayload()) + ")", b.context);
+      b.good(1, p); await flush(); aiEmpty(b);
+    }
+  });
+  await test("AI stale invalid unavailable never display supplied historical counts or text", async () => {
+    for (const freshness of ["stale", "invalid", "unavailable"]) {
+      const b = browser(); b.good(0); await flush(); b.aiRead(); b.aiGood(1); await flush();
+      b.aiRead(); const p = aiPayload(); Object.assign(p.ai_pipeline, {freshness,
+        health: "PRIVATE", generated_at: "PRIVATE", incidents: [{code: "PRIVATE"}]});
+      b.aiGood(2, p); await flush();
+      aiEmpty(b, "AI producer observation " + freshness + (freshness === "unavailable" ? "" : " · no current counters."));
+      b.aiRead(); b.aiGood(3, {version: 1, authority: "observation_only", ai_pipeline: {freshness}});
+      await flush(); assert.equal(b.nodes["ai-health-details"].children.length, 0);
+    }
+  });
+  await test("AI fetch HTTP and JSON failures do not erase the valid control catalog", async () => {
+    for (const failure of ["fetch", "json", 302, 403, 503]) {
+      const b = browser(); b.good(0); await flush(); const before = controlText(b);
+      b.aiRead(); b.aiGood(1); await flush(); b.aiRead();
+      if (failure === "fetch") b.requests[2].reject(Error("PRIVATE transport"));
+      else if (failure === "json") b.requests[2].resolve({status: 200, json: async () => { throw Error("PRIVATE JSON"); }});
+      else b.requests[2].resolve({status: failure, json() { throw Error("PRIVATE must not decode HTTP error"); }});
+      await flush(); aiEmpty(b); assert.equal(controlText(b), before); assert.equal(b.timers.size, 0);
+      assert.equal(b.requests.length, 3); // No redirect-follow, fallback, retry or POST.
+    }
+  });
+  await test("AI 10-second deadline aborts fetch and handles either late outcome", async () => {
+    for (const late of ["success", "failure"]) {
+      const b = browser(); b.good(0); await flush(); b.aiRead(); b.timeout(); await flush(); aiEmpty(b);
+      assert.equal(b.requests[1].options.signal.aborted, true);
+      if (late === "success") b.aiGood(1); else b.requests[1].reject(Error("PRIVATE late fetch"));
+      await flush(); aiEmpty(b); assert.equal(b.timers.size, 0);
+    }
+  });
+  await test("AI same deadline includes delayed JSON and handles late resolve or reject", async () => {
+    for (const late of ["success", "failure"]) {
+      const b = browser(); b.good(0); await flush(); b.aiRead(); const body = deferred();
+      b.requests[1].resolve({status: 200, json: () => body.promise}); await flush();
+      assert.equal(b.timers.size, 1); b.timeout(); await flush(); aiEmpty(b);
+      assert.equal(b.requests[1].options.signal.aborted, true);
+      if (late === "success") body.resolve(vm.runInContext("(" + JSON.stringify(aiPayload()) + ")", b.context));
+      else body.reject(Error("PRIVATE late body"));
+      await flush(); aiEmpty(b); assert.equal(b.timers.size, 0);
+    }
+  });
+  await test("AI older success failure or timeout cannot replace newest success", async () => {
+    for (const old of ["success", "failure", "timeout"]) {
+      const b = browser(); b.good(0); await flush(); b.aiRead();
+      const oldTimer = [...b.timers.values()][0]; b.aiRead();
+      assert.equal(b.requests[1].options.signal.aborted, true);
+      const p = aiPayload(); p.ai_pipeline.review_count = 59; p.ai_pipeline.health = "warning";
+      b.aiGood(2, p); await flush(); const before = aiText(b);
+      if (old === "success") b.aiGood(1);
+      else if (old === "failure") b.requests[1].reject(Error("PRIVATE old"));
+      else { oldTimer(); b.requests[1].reject(Error("PRIVATE timed out")); }
+      await flush(); assert.equal(aiText(b), before); assert.match(before, /warning/);
+      assert.equal(b.nodes["ai-health-details"].children[0].children[1].textContent, "59");
+      assert.equal(b.timers.size, 0);
+    }
+  });
+  await test("AI older success or rejection cannot resurrect results after newest failure", async () => {
+    for (const old of ["success", "failure"]) {
+      const b = browser(); b.good(0); await flush(); b.aiRead(); b.aiRead();
+      b.requests[2].reject(Error("PRIVATE newest")); await flush(); aiEmpty(b);
+      if (old === "success") b.aiGood(1); else b.requests[1].reject(Error("PRIVATE older"));
+      await flush(); aiEmpty(b); assert.equal(b.timers.size, 0);
+    }
+  });
+  await test("AI new click clears counts and old delayed JSON cannot finish newer pending read", async () => {
+    for (const old of ["success", "failure"]) {
+      const b = browser(); b.good(0); await flush(); b.aiRead(); b.aiGood(1); await flush();
+      b.aiRead(); assert.equal(b.nodes["ai-health-details"].children.length, 0);
+      const body = deferred(); b.requests[2].resolve({status: 200, json: () => body.promise}); await flush();
+      b.aiRead(); const pending = aiText(b); assert.match(pending, /^Reading AI producer/);
+      if (old === "success") body.resolve(vm.runInContext("(" + JSON.stringify(aiPayload()) + ")", b.context));
+      else body.reject(Error("PRIVATE old JSON"));
+      await flush(); assert.equal(aiText(b), pending);
+      b.aiGood(3); await flush(); assert.match(aiText(b), /producer health: ok/);
+      assert.equal(b.timers.size, 0);
+    }
+  });
+  await test("control catalog failure and refresh never erase independent AI advisory", async () => {
+    const b = browser(); b.aiRead(); b.aiGood(1); await flush(); const before = aiText(b);
+    b.requests[0].reject(Error("PRIVATE catalog")); await flush(); unavailable(b);
+    assert.equal(aiText(b), before); b.refresh(); assert.equal(aiText(b), before);
+    b.good(2); await flush(); assert.equal(aiText(b), before);
+    b.refresh(); b.timeout(); await flush(); unavailable(b); assert.equal(aiText(b), before);
+    b.good(3); await flush(); assert.equal(aiText(b), before); assert.equal(b.requests.length, 4);
+  });
+  await test("AI HTTP provenance does not convert mock sources or pending B1 to connected", async () => {
+    for (const mock of [true, false]) {
+      const b = browser(); const p = b.payload();
+      if (mock) p.workflows.forEach(w => { w.adapterMode = "mock"; });
+      b.good(0, p); await flush(); const before = controlText(b);
+      assert.match(b.nodes["live-services"].children[0].textContent, /Pending integration/);
+      b.aiRead(); b.aiGood(1); await flush(); assert.equal(controlText(b), before);
+      assert.match(aiText(b), /producer health: ok.*not workflow success or connected B1 evidence/);
+      if (mock) assert.match(b.nodes["live-services"].textContent, /Mock adapter observation · not production evidence/);
+      else assert.match(b.nodes["live-services"].textContent, /HTTP-derived read-only observation/);
+      assert.equal(b.context.ObsidianDesign.fromControlCatalog(p, "same-origin-http")[0].synthetic, mock);
+      assert.equal(b.nodes["live-services"].all().some(n => ["button", "form", "input"].includes(n.tagName)), false);
+    }
   });
   if (process.argv.includes("--catalog-stdin")) {
     await test("actual loopback GET catalog passes strict model and live DOM with truthful absence", async () => {

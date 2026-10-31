@@ -96,6 +96,87 @@
       clearTimeout(timer);
     }
   }
+  // Separate producer advisory: never feed status into the v1 control reader,
+  // integration summary, workflow cards or action state.
+  const aiStatus = document.getElementById("ai-health-status");
+  const aiDetails = document.getElementById("ai-health-details");
+  const aiCounters = [
+    ["review_count", "Awaiting human review (not approval)"],
+    ["operational_failures", "Operational failures"],
+    ["pending_retry_failures", "Failed attempts pending retry (budget unconfirmed)"],
+    ["deterministic_rejections", "Validation rejections (not an outage)"]
+  ];
+  let aiGeneration = 0;
+  let aiActive = null;
+  function plainObject(value) {
+    return value !== null && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype;
+  }
+  function aiObservation(payload) {
+    if (!plainObject(payload) || payload.version !== 1 || payload.authority !== "observation_only" ||
+        !plainObject(payload.ai_pipeline)) return null;
+    const p = payload.ai_pipeline;
+    if (!["fresh", "stale", "invalid", "unavailable"].includes(p.freshness)) return null;
+    if (p.freshness !== "fresh") return {freshness: p.freshness};
+    if (!["ok", "warning", "critical"].includes(p.health) ||
+        !aiCounters.every(([key]) => Number.isSafeInteger(p[key]) && p[key] >= 0) ||
+        typeof p.backpressure !== "boolean" || typeof p.review_reminder_due !== "boolean") return null;
+    // Construct only the displayed subset. Ignore services, incidents, paths,
+    // generated_at, providers and every other source field, including free text.
+    const safe = {freshness: "fresh", health: p.health,
+      backpressure: p.backpressure, review_reminder_due: p.review_reminder_due};
+    for (const [key] of aiCounters) safe[key] = p[key];
+    return safe;
+  }
+  function renderAi(p) {
+    aiDetails.replaceChildren();
+    if (!p) {
+      aiStatus.textContent = "AI producer observation unavailable";
+    } else if (p.freshness === "stale") {
+      aiStatus.textContent = "AI producer observation stale · no current counters.";
+    } else if (p.freshness === "invalid") {
+      aiStatus.textContent = "AI producer observation invalid · no current counters.";
+    } else if (p.freshness === "unavailable") {
+      aiStatus.textContent = "AI producer observation unavailable";
+    } else {
+      aiStatus.textContent = "AI producer observation · fresh · producer health: " + p.health +
+        " · not workflow success or connected B1 evidence.";
+      for (const [key, label] of aiCounters) fact(aiDetails, label, p[key]);
+      fact(aiDetails, "Producer backpressure", p.backpressure ? "Active" : "Not active");
+      fact(aiDetails, "Producer review reminder", p.review_reminder_due ? "Due" : "Not due");
+    }
+  }
+  async function refreshAi() {
+    const token = ++aiGeneration;
+    aiDetails.replaceChildren();
+    aiStatus.textContent = "Reading AI producer observation · previous results cleared.";
+    if (aiActive) aiActive.abort();
+    const controller = new AbortController();
+    aiActive = controller;
+    let timer;
+    try {
+      // One deadline includes JSON decoding; racing also bounds transports
+      // ignoring abort. Every late outcome remains handled and token-guarded.
+      const deadline = new Promise((_, reject) => {
+        timer = setTimeout(() => { controller.abort(); reject(new Error("AI observation timeout")); }, 10000);
+      });
+      const observation = (async () => {
+        const response = await fetch("/api/v1/status", {
+          method: "GET", mode: "same-origin", credentials: "omit", cache: "no-store",
+          redirect: "error", headers: {Accept: "application/json"}, signal: controller.signal
+        });
+        if (response.status !== 200) throw new Error("AI observation unavailable");
+        return response.json();
+      })();
+      const payload = await Promise.race([observation, deadline]);
+      if (token === aiGeneration) renderAi(aiObservation(payload));
+    } catch {
+      if (token === aiGeneration) renderAi(null);
+    } finally {
+      clearTimeout(timer);
+      if (token === aiGeneration) aiActive = null;
+    }
+  }
+  document.getElementById("ai-health-refresh").addEventListener("click", refreshAi);
   document.getElementById("refresh-observation").addEventListener("click", refresh);
   refresh();
 })();

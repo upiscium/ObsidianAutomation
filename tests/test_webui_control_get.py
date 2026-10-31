@@ -129,7 +129,7 @@ def test_w4a_actual_http_catalog_through_live_async_dom():
                             input=body.decode(), text=True, capture_output=True,
                             timeout=20, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "webui_live_v1: 13 checks passed" in result.stdout
+    assert "webui_live_v1: 26 checks passed" in result.stdout
 
 
 def snapshot():

@@ -24,9 +24,18 @@
     <div class="actions"><button id="refresh-observation" type="button">Refresh observation</button></div>
     <p id="live-status" role="status" aria-live="polite">Observation unavailable · JavaScript is required to read current status.</p>
     <p id="live-summary" class="hint">No current observation.</p>
+    <section aria-labelledby="ai-health-heading">
+      <h2 id="ai-health-heading">AI Pre-review pipeline health</h2>
+      <p>Separate from B1 workflow-control; not confirmation of provider readiness, note generation, Review approval, or Vault effect.</p>
+      <p class="hint">Independent producer advisory from same-origin GET /api/v1/status, not a connected B1 adapter.
+        Freshness follows the backend's 15-minute policy, not independent source verification by this page.</p>
+      <button id="ai-health-refresh" type="button">Read AI pipeline status</button>
+      <p id="ai-health-status" role="status" aria-live="polite">Not requested · AI producer observation is manual only.</p>
+      <dl id="ai-health-details"></dl>
+    </section>
     <section id="live-services" class="service-grid" aria-label="B1–B5 read-only observations" aria-busy="false"></section>
     <noscript><p>No observation was fetched. The existing dashboard remains available through the link above.</p></noscript>
   </main>
-  <footer>No polling. Reads occur only on view load and explicit refresh. Observation and available actions are not admission authority.</footer>
+  <footer>No polling. Workflow catalog reads occur on view load and explicit refresh; AI health reads only on its separate button click. Observation and available actions are not admission authority.</footer>
 </body>
 </html>
