@@ -35,7 +35,7 @@ class WebUIDesignTests(unittest.TestCase):
         self.assertFalse(any(tag in {"form", "input", "select", "iframe"}
                              for tag, _ in template.tags))
         buttons = [attrs["id"] for tag, attrs in template.tags if tag == "button"]
-        self.assertEqual(buttons, ["refresh-observation"])
+        self.assertEqual(buttons, ["refresh-observation", "ai-health-refresh"])
         for tag, attrs in template.tags:
             self.assertFalse(any(name.startswith("on") for name in attrs))
             if tag == "script" or (tag == "link" and attrs.get("rel") == "stylesheet"):
@@ -56,7 +56,7 @@ class WebUIDesignTests(unittest.TestCase):
         result = subprocess.run([runtime, str(ROOT / "tests/webui_live_v1.test.cjs")],
                                 text=True, capture_output=True, timeout=20, check=False)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("webui_live_v1: 12 checks passed", result.stdout)
+        self.assertIn("webui_live_v1: 25 checks passed", result.stdout)
 
     def test_template_assets_and_accessible_write_only_inputs(self):
         template = Template()
