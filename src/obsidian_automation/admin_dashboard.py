@@ -15,6 +15,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from importlib.resources import files
 from typing import Callable, Sequence
 
 from .admin_broker_socket import capabilities_from_socket, _unavailable_capabilities
@@ -72,6 +73,7 @@ HTML = """<!doctype html>
     </section>
     <section class="pipeline" aria-label="5つの自動化機能">
       <h2>自動化機能 B1〜B5</h2>
+      <p><a href="/workflow-control">B1–B5 read-only live observations</a>（操作・設定変更なし）</p>
       <p id="workflow-summary">共通WebUIへの接続状態を取得しています…</p>
       <p class="small">「統合状態」が未接続の機能は、この画面から実行できません。各機能の状態と最後の結果を確認してください。</p>
       <div id="workflow-catalog" class="cards" aria-live="polite"></div>
@@ -1205,6 +1207,16 @@ class _CapabilitiesSingleFlight:
         return result
 
 
+# Exact request targets and resource names only. No URL decoding, directory
+# traversal, generic static handler, demo entrypoint, or runtime initialization.
+WORKFLOW_UI_ASSETS = {
+    "/workflow-control": ("live.html", "text/html; charset=utf-8"),
+    "/static/workflow-control/model.js": ("model.js", "text/javascript; charset=utf-8"),
+    "/static/workflow-control/live.js": ("live.js", "text/javascript; charset=utf-8"),
+    "/static/workflow-control/styles.css": ("styles.css", "text/css; charset=utf-8"),
+}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "ObsidianStatus/0.1"
     sys_version = ""
@@ -1274,6 +1286,21 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if not self._origin_allowed():
             self._reply(403, b"Forbidden")
+            return
+        if self.path in WORKFLOW_UI_ASSETS:
+            # BaseHTTPRequestHandler collapses leading // before dispatch.
+            # For this fixed allowlist, reject that alias rather than serve it.
+            if self.requestline.split()[1] != self.path:
+                self._reply(404, b"Not found")
+                return
+            name, mime = WORKFLOW_UI_ASSETS[self.path]
+            try:
+                body = files("obsidian_automation").joinpath(
+                    "webui_design_v1", name).read_bytes()
+            except (OSError, ModuleNotFoundError):
+                self._reply(404, b"Not found")
+                return
+            self._reply(200, body, mime)
             return
         # Versioned observation-only workflow views. Never share the
         # existing mutable operator/snapshot/daily POST authority here.

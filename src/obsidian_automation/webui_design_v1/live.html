@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'">
+  <title>B1–B5 · Read-only live observations</title>
+  <link rel="stylesheet" href="/static/workflow-control/styles.css">
+  <script src="/static/workflow-control/model.js" defer></script>
+  <script src="/static/workflow-control/live.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#observations">Skip to observations</a>
+  <header class="site-header">
+    <div><p class="eyebrow">OBSIDIAN AUTOMATION · LIVE READ-ONLY</p>
+      <h1>B1–B5 observations</h1>
+      <p><a href="/">Return to existing dashboard</a></p>
+    </div>
+  </header>
+  <main id="observations">
+    <p class="notice">Same-origin HTTP observation, not action authority. No commands, credentials, uploads or settings here.
+      Pending / Not attached means the source owner is not connected. Scheduler status alone is not a verified product outcome.
+      This is separate from the offline synthetic design demo.</p>
+    <div class="actions"><button id="refresh-observation" type="button">Refresh observation</button></div>
+    <p id="live-status" role="status" aria-live="polite">Observation unavailable · JavaScript is required to read current status.</p>
+    <p id="live-summary" class="hint">No current observation.</p>
+    <section id="live-services" class="service-grid" aria-label="B1–B5 read-only observations" aria-busy="false"></section>
+    <noscript><p>No observation was fetched. The existing dashboard remains available through the link above.</p></noscript>
+  </main>
+  <footer>No polling. Reads occur only on view load and explicit refresh. Observation and available actions are not admission authority.</footer>
+</body>
+</html>
