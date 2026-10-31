@@ -6,6 +6,7 @@ lookup and no background execution until the containing app explicitly ticks.
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import stat
 import re
@@ -13,6 +14,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from collections import Counter
 from pathlib import Path
 from typing import Callable
 
@@ -22,6 +24,28 @@ from .vault_format_writer import _validated_plan, FormatWriteError
 _ID = re.compile(r"[a-f0-9]{32}\Z")
 _TERMINAL = {"would_change", "no_changes", "applied", "conflict", "failed",
              "indeterminate", "unconfirmed"}
+
+# Static non-sensitive policy reasons. Do not publish an arbitrary reason or
+# any filename, user note, or private metadata from the source plan.
+_SAFE_SKIP_REASONS = frozenset({
+    "binary-content", "file-too-large", "hidden-directory", "hidden-path",
+    "invalid-utf8", "invalid-utf8-filename", "mixed-line-endings",
+    "path-name-collision", "symlink", "unsafe-path", "unsupported-extension",
+    "unsupported-file-type", "unsupported-html-block", "unsupported-line-endings",
+    "unsupported-line-separators", "unsupported-nested-fence",
+    "unterminated-frontmatter", "unterminated-protected-block",
+})
+
+
+def _skip_reason_counts(entries: dict[str, dict]) -> dict[str, int]:
+    """Count fixed policy reasons; fold anything unknown into an opaque bucket."""
+    counts: Counter[str] = Counter()
+    for row in entries.values():
+        if row["status"] == "skipped":
+            raw = row.get("reason")
+            code = raw if type(raw) is str and raw in _SAFE_SKIP_REASONS else "unclassified"
+            counts[code] += 1
+    return dict(sorted(counts.items()))
 
 
 class FormatterInvalid(ValueError):
@@ -91,11 +115,14 @@ class FormatterJob:
                 "status TEXT NOT NULL, created REAL NOT NULL, completed REAL, "
                 "policy_version TEXT, scope TEXT, plan_sha256 TEXT, "
                 "would_change INTEGER, skipped INTEGER, errors INTEGER, "
-                "writer_outcome TEXT, reason_code TEXT)"
+                "writer_outcome TEXT, reason_code TEXT, skip_reasons_json TEXT)"
             )
             existing_columns = {row[1] for row in self.db.execute("PRAGMA table_info(runs)")}
             if "reason_code" not in existing_columns:
                 self.db.execute("ALTER TABLE runs ADD COLUMN reason_code TEXT")
+            if "skip_reasons_json" not in existing_columns:
+                # NULL for legacy/pending/failed runs: never imply zero skipped.
+                self.db.execute("ALTER TABLE runs ADD COLUMN skip_reasons_json TEXT")
             self.db.execute(
                 "UPDATE runs SET status='unconfirmed',completed=? "
                 "WHERE status IN ('queued','running')", (self.clock(),)
@@ -208,15 +235,31 @@ class FormatterJob:
         with self._lock:
             row = self.db.execute(
                 "SELECT run_id,request_id,trigger,run_mode,status,created,completed,"
-                "policy_version,scope,plan_sha256,would_change,skipped,errors,writer_outcome,reason_code "
-                "FROM runs WHERE run_id=?", (run_id,)
+                "policy_version,scope,plan_sha256,would_change,skipped,errors,writer_outcome,"
+                "reason_code,skip_reasons_json FROM runs WHERE run_id=?", (run_id,)
             ).fetchone()
-            return dict(zip(
+            if row is None:
+                return None
+            values = dict(zip(
                 ("run_id", "request_id", "trigger", "run_mode", "status",
                  "created", "completed", "policy_version", "scope", "plan_sha256",
-                 "would_change", "skipped", "errors", "writer_outcome", "reason_code"),
+                 "would_change", "skipped", "errors", "writer_outcome",
+                 "reason_code", "skip_reasons_json"),
                 row,
-            )) if row else None
+            ))
+            raw = values.pop("skip_reasons_json")
+            try:
+                reasons = json.loads(raw) if raw is not None else None
+            except (TypeError, ValueError):
+                reasons = None
+            if (type(reasons) is not dict or any(
+                key not in _SAFE_SKIP_REASONS | {"unclassified"}
+                or type(count) is not int or count <= 0
+                for key, count in reasons.items()
+            ) or sum(reasons.values()) != values["skipped"]):
+                reasons = None
+            values["skip_reasons"] = reasons
+            return values
 
     def status(self) -> dict:
         with self._lock:
@@ -302,10 +345,16 @@ class FormatterJob:
             skipped = sum(row["status"] == "skipped" for row in entries.values())
             if changed != counts.get("would_change", 0) or skipped != counts.get("skipped", 0):
                 raise FormatterInvalid("formatter_count_mismatch")
+            breakdown = _skip_reason_counts(entries)
+            if sum(breakdown.values()) != skipped:
+                raise FormatterInvalid("formatter_reason_count_mismatch")
             fields = {
                 "policy_version": POLICY_VERSION, "scope": SCOPE,
                 "plan_sha256": digest, "would_change": changed,
                 "skipped": skipped, "errors": 0,
+                "skip_reasons_json": json.dumps(
+                    breakdown, sort_keys=True, separators=(",", ":")
+                ),
             }
             status = "would_change" if changed else "no_changes"
             if mode == "auto-apply" and changed:
@@ -355,12 +404,13 @@ class FormatterJob:
             with self.db:
                 self.db.execute(
                     "UPDATE runs SET status=?,completed=?,policy_version=?,scope=?,"
-                    "plan_sha256=?,would_change=?,skipped=?,errors=?,writer_outcome=?,reason_code=? "
-                    "WHERE run_id=?",
+                    "plan_sha256=?,would_change=?,skipped=?,errors=?,writer_outcome=?,reason_code=?,"
+                    "skip_reasons_json=? WHERE run_id=?",
                     (status, self.clock(), fields.get("policy_version"),
                      fields.get("scope"), fields.get("plan_sha256"),
                      fields.get("would_change"), fields.get("skipped"),
-                     fields.get("errors"), writer_outcome, reason_code, run_id),
+                     fields.get("errors"), writer_outcome, reason_code,
+                     fields.get("skip_reasons_json"), run_id),
                 )
 
     def tick(self) -> bool:

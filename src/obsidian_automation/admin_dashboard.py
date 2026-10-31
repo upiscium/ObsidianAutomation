@@ -147,6 +147,7 @@ HTML = """<!doctype html>
       <p id="formatter-state">Formatterの状態を取得中</p>
       <p id="formatter-capability">Live Vaultへの書戻しは無効です。</p>
       <p id="formatter-last">最終結果: —</p>
+      <p id="formatter-skip-reasons" aria-live="polite">スキップ内訳: —</p>
       <p id="formatter-due">次回: —</p>
       <label>モード
         <select id="formatter-mode" disabled>
@@ -612,6 +613,25 @@ async function formatterRefresh() {
         + (last.writer_outcome ? " / Writer: " + last.writer_outcome : "")
         + (last.reason_code ? " / 理由: " + last.reason_code : "")
       : "最終結果: なし";
+    const skipBreakdown = last?.skip_reasons;
+    if (last && ["queued","running"].includes(last.status)) {
+      $("formatter-skip-reasons").textContent = "スキップ内訳: 実行中";
+    } else if (last && skipBreakdown && typeof skipBreakdown === "object"
+               && !Array.isArray(skipBreakdown)) {
+      const safeReasons = Object.entries(skipBreakdown).filter(([reason, count]) =>
+        /^[a-z][a-z0-9-]{1,63}$/.test(reason)
+        && Number.isSafeInteger(count) && count > 0);
+      $("formatter-skip-reasons").textContent = "スキップ内訳: " +
+        (safeReasons.length
+          ? safeReasons.sort(([a],[b]) => a.localeCompare(b))
+            .map(([reason,count]) => reason + " " + count + "件").join(" / ")
+          : "なし");
+    } else if (last && last.skipped > 0) {
+      $("formatter-skip-reasons").textContent = "スキップ内訳: 旧記録では未取得";
+    } else {
+      $("formatter-skip-reasons").textContent = last
+        ? "スキップ内訳: 未取得" : "スキップ内訳: —";
+    }
     $("formatter-due").textContent = "次回: " +
       (settings.next_due ? new Date(settings.next_due * 1000).toLocaleString() : "なし");
     for (const id of ["formatter-mode","formatter-interval","formatter-save","formatter-run"])
@@ -622,6 +642,7 @@ async function formatterRefresh() {
     $("formatter-state").textContent = "状態未確認（操作不可）";
     $("formatter-capability").textContent = "Writerの有効状態を確認できません";
     $("formatter-last").textContent = "最終結果: —";
+    $("formatter-skip-reasons").textContent = "スキップ内訳: —";
     $("formatter-due").textContent = "次回: —";
     for (const id of ["formatter-mode","formatter-interval","formatter-save","formatter-run"])
       $(id).disabled = true;
