@@ -40,6 +40,7 @@ from .vault_format_job import FormatterJob, FormatterInvalid
 from .unified_workflows import workflow_catalog
 from .webui_control_get import read_control_catalog
 from .webui_control_read import SCHEMA_VERSION as WORKFLOW_CONTROL_SCHEMA
+from .webui_optional_read import materialize_optional_read_ports, validate_optional_read_ports
 
 HTML = """<!doctype html>
 <html lang="ja">
@@ -1330,10 +1331,15 @@ class Handler(BaseHTTPRequestHandler):
                     self._reply(404, b"Not found")
                     return
             try:
+                optional_snapshots = self.server.workflow_control_snapshots
+                if (self.command == "GET" and
+                        self.server.workflow_control_read_ports is not None):
+                    optional_snapshots = materialize_optional_read_ports(
+                        self.server.workflow_control_read_ports)
                 catalog = read_control_catalog(
                     snapshot_job=self.server.snapshot_job,
                     daily_job=self.server.daily_job,
-                    optional_snapshots=self.server.workflow_control_snapshots,
+                    optional_snapshots=optional_snapshots,
                 )
                 result = catalog if name is None else next(
                     w for w in catalog["workflows"] if w["id"] == name)
@@ -1897,12 +1903,19 @@ def make_server(
     operator: OperatorHTTPClient | None = None,
     operator_ui_enabled: bool = False,
     workflow_control_snapshots: dict[str, object] | None = None,
+    workflow_control_read_ports: dict[str, object] | None = None,
     snapshot_job: SnapshotJob | None = None,
     snapshot_setup=None,
     daily_job: DailyJob | None = None,
     daily_setup: DailySetup | None = None,
     formatter_job: FormatterJob | None = None,
 ) -> ThreadingHTTPServer:
+    # Reject ambiguous injection and invalid ports BEFORE opening a listener.
+    # Empty explicitly supplied maps count as supplied; None retains defaults.
+    if workflow_control_snapshots is not None and workflow_control_read_ports is not None:
+        raise ValueError("conflicting_workflow_control_sources")
+    read_ports = (None if workflow_control_read_ports is None else
+                  validate_optional_read_ports(workflow_control_read_ports))
     if not isinstance(port, int) or not 0 <= port <= 65535:
         raise ValueError("port must be between 0 and 65535")
     bind_address = validate_bind_address(bind_address)
@@ -1922,6 +1935,9 @@ def make_server(
     # Explicitly supplied, already-materialized mock/read-only B1/B3/B5
     # observations. Do not construct adapters, discover sources or run jobs.
     server.workflow_control_snapshots = workflow_control_snapshots
+    # Constructor validation/copy only. Observe exclusively on versioned GETs;
+    # no discovery, CLI binding, HEAD observation or connection promotion.
+    server.workflow_control_read_ports = read_ports
     server.snapshot_job = snapshot_job
     server.snapshot_setup = snapshot_setup
     server.daily_job = daily_job
