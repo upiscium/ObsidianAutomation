@@ -69,26 +69,32 @@ The canonical Project statuses are:
 
 For a non-terminal, non-stopped Project:
 
-- latest default-branch commit within the configured 7-day window -> `running`
-- no recent default-branch commit within the configured 7-day window -> `planning`
+- a commit on **any repository branch** within the configured 7-day window -> `running`
+- no recent branch commit within the configured 7-day window -> `planning`
 
-Feature-branch-only pushes do not change Project status. The watcher deliberately uses the
-current default-branch head so one commit-list request replaces multiple repository
-activity-type requests.
+The default branch HEAD is checked first. If it is already recent, no branch enumeration
+is necessary. Otherwise the watcher lists repository branches and checks their HEAD
+commit timestamps (committer date, author date fallback). Branch metadata is cached by
+repository/commit SHA in the existing SQLite state DB: unchanged branch heads do not
+trigger repeated commit-detail requests. It does not treat PR comment updates or
+GitHub Issue activity as commits. PRs from external forks and commits no longer reachable
+from a branch are not part of this repository-branch rule.
 
-Open Issues and Pull Requests do not override the Commit rule during normal `planning` / `running` operation.
-
-For a single-page repository snapshot, GitHub reads are serialized and bounded to three
-REST requests:
+The standard snapshot reads are:
 
 ```text
 GET /repos/<owner>/<repo>/commits?per_page=1
-GET /repos/<owner>/<repo>/issues?state=open&per_page=100&page=1
-GET /repos/<owner>/<repo>/pulls?state=open&per_page=100&page=1
+[when default HEAD is stale: GET /repos/<owner>/<repo>/branches?per_page=100&page=N]
+[for uncached branch HEADs only: GET /repos/<owner>/<repo>/commits/<SHA>]
+GET /repos/<owner>/<repo>/issues?state=open&per_page=100&page=N
+GET /repos/<owner>/<repo>/pulls?state=open&per_page=100&page=N
 ```
 
-Issue/PR pagination can add requests only when a repository has more than 100 matching
-open items. Requests remain serial to avoid increasing secondary-rate-limit pressure.
+The first scan after this update can have many commit-detail reads on a repository with
+many branches. Later scans reuse cached timestamps. Branch enumeration and reads are
+serialized, errors fail closed, and more than 500 branches triggers an explicit error
+instead of a silent incorrect `planning` decision. Periodic systemd sync interval is
+10 minutes. Open Issues/PRs never override the `planning/running` commit rule.
 
 ### stopped
 
