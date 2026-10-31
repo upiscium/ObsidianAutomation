@@ -16,6 +16,117 @@ from obsidian_automation.webui_control_get import read_control_catalog
 _ID = "a" * 32
 
 
+def test_w4a_fixed_assets_headers_and_head_have_no_job_reads_or_effects():
+    from pathlib import Path
+    assets = Path(__file__).resolve().parents[1] / "src/obsidian_automation/webui_design_v1"
+    routes = {
+        "/workflow-control": ("live.html", "text/html"),
+        "/static/workflow-control/model.js": ("model.js", "text/javascript"),
+        "/static/workflow-control/live.js": ("live.js", "text/javascript"),
+        "/static/workflow-control/styles.css": ("styles.css", "text/css"),
+    }
+    b2, b4 = ReadOnlyJob(snapshot()), ReadOnlyJob(daily())
+    with serving(b2, b4) as server:
+        for route, (name, mime) in routes.items():
+            for method in ("GET", "HEAD"):
+                code, headers, body = request(server, route, method)
+                assert code == 200
+                assert body == ((assets / name).read_bytes() if method == "GET" else b"")
+                assert int(headers["Content-Length"]) == (assets / name).stat().st_size
+                assert headers["Content-Type"] == mime + "; charset=utf-8"
+                assert headers["Cache-Control"] == "no-store"
+                assert headers["X-Content-Type-Options"] == "nosniff"
+                assert headers["X-Frame-Options"] == "DENY"
+                assert headers["Referrer-Policy"] == "no-referrer"
+                assert "connect-src 'self'" in headers["Content-Security-Policy"]
+                assert "frame-ancestors 'none'" in headers["Content-Security-Policy"]
+                assert "form-action 'none'" in headers["Content-Security-Policy"]
+                assert "*" not in headers["Content-Security-Policy"]
+                assert "Access-Control-Allow-Origin" not in headers
+            assert request(server, route, host="example.invalid")[0] == 403
+            assert request(server, route, origin="https://example.invalid")[0] == 403
+            assert request(server, route, "HEAD", host="example.invalid")[0] == 403
+            port = server.server_address[1]
+            assert request(server, route, origin=f"http://127.0.0.1:{port}")[0] == 200
+        assert b2.reads == b4.reads == b2.effects == b4.effects == 0
+        assert b'href="/workflow-control"' in request(server, "/")[2]
+
+
+def test_w4a_static_requests_never_access_runtime_or_mutation_ports():
+    class ForbiddenPort:
+        def __getattr__(self, name):
+            raise AssertionError("runtime port accessed")
+    with serving() as server:
+        for name in ("snapshot_job", "daily_job", "formatter_job", "snapshot_setup",
+                     "daily_setup", "operator", "preview_csrf", "status_singleflight",
+                     "capabilities_singleflight"):
+            setattr(server, name, ForbiddenPort())
+        for path in ("/workflow-control", "/static/workflow-control/live.js",
+                     "/static/workflow-control/model.js", "/static/workflow-control/styles.css"):
+            for method in ("GET", "HEAD"):
+                assert request(server, path, method)[0] == 200
+            for method in ("POST", "PUT", "PATCH", "DELETE", "OPTIONS"):
+                code, _, body = request(server, path, method)
+                assert code == 405 and body == b"Method not allowed"
+
+
+@pytest.mark.parametrize("path", [
+    "//workflow-control", "///workflow-control", "//static/workflow-control/model.js",
+    "/workflow-control/", "/workflow-control?x=1", "/workflow-control/live.html",
+    "/static/workflow-control/", "/static/workflow-control/index.html",
+    "/static/workflow-control/app.js", "/static/workflow-control/live.html",
+    "/static/workflow-control/missing.js", "/static/workflow-control/model.js?x=1",
+    "/static/workflow-control/../model.js", "/static/workflow-control/%2e%2e/model.js",
+    "/static/workflow-control/%2fetc%2fpasswd", "/static/workflow-control//model.js",
+    "/static/workflow-control/model.js/extra", "/static/workflow-control/MODEL.js",
+    "/static/workflow-control/..%5cmodel.js", "/static/workflow-control/model.js%00",
+])
+def test_w4a_no_generic_static_or_demo_exposure(path):
+    with serving() as server:
+        for method in ("GET", "HEAD"):
+            code, headers, body = request(server, path, method)
+            assert code == 404
+            assert body == (b"Not found" if method == "GET" else b"")
+            assert headers["Cache-Control"] == "no-store"
+
+
+def test_w4a_missing_packaged_resource_is_fixed_404(monkeypatch):
+    def missing(*_args):
+        raise FileNotFoundError("PRIVATE filesystem location")
+    monkeypatch.setattr("obsidian_automation.admin_dashboard.files", missing)
+    with serving() as server:
+        assert request(server, "/workflow-control")[::2] == (404, b"Not found")
+
+
+def test_w4a_existing_default_routes_still_disabled_without_attachment():
+    with serving() as server:
+        for route in ("/", "/static/style.css", "/static/app.js", "/api/v1/workflows",
+                      "/api/v1/operator-ready", "/api/v1/operation-capabilities"):
+            assert request(server, route)[0] == 200
+        for route in ("/api/v1/snapshot", "/api/v1/daily", "/api/v1/formatter",
+                      "/api/v1/nextcloud/connections", "/api/v1/snapshot/connections",
+                      "/api/v1/daily/connections"):
+            assert request(server, route)[0] == 503
+
+
+def test_w4a_actual_http_catalog_through_live_async_dom():
+    from pathlib import Path
+    import shutil
+    import subprocess
+    runtime = shutil.which("node") or shutil.which("bun")
+    if runtime is None:
+        pytest.skip("Node/Bun unavailable; no dependency downloads")
+    script = Path(__file__).with_name("webui_live_v1.test.cjs")
+    with serving() as server:
+        code, _, body = request(server)
+        assert code == 200
+    result = subprocess.run([runtime, str(script), "--catalog-stdin"],
+                            input=body.decode(), text=True, capture_output=True,
+                            timeout=20, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "webui_live_v1: 13 checks passed" in result.stdout
+
+
 def snapshot():
     return {"version": 1, "job": "vault_snapshot",
             "settings": {"version": 1, "configured": True, "enabled": True,

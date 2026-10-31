@@ -1,4 +1,4 @@
-/* Offline presentation only: legacy catalog compatibility + strict #480 read DTO. */
+/* Read-only presentation: legacy compatibility + strict #480 read DTO. No I/O. */
 (function (root) {
   "use strict";
   const SERVICES = Object.freeze([
@@ -177,7 +177,9 @@
    * Labels, revisions, handles and action guidance are validated, never forwarded.
    * Accepts parsed DTO objects only, not raw JSON or runtime ports.
    */
-  function fromControlCatalog(payload) {
+  function fromControlCatalog(payload, provenance = "offline-synthetic") {
+    // Trusted caller context, never inferred from server fields/adapter mode.
+    choice(provenance, ["offline-synthetic", "same-origin-http"]);
     fields(payload, ["schemaVersion", "authority", "observedAt", "workflows"]);
     valid(payload.schemaVersion === CONTROL_VERSION && payload.authority === "observation_only"); timestamp(payload.observedAt);
     valid(Array.isArray(payload.workflows) && payload.workflows.length === 5);
@@ -185,7 +187,8 @@
       const w = payload.workflows[index]; validateWorkflow(w, service.id, payload.observedAt);
       // Unavailable evidence cannot make stale success look current.
       const unavailable = w.integration === "unavailable";
-      return {...blank(service), controlProjection: true, readOnly: true, synthetic: true,
+      return {...blank(service), controlProjection: true, readOnly: true, provenance,
+        synthetic: provenance === "offline-synthetic" || w.adapterMode === "mock",
         observedAt: w.observedAt, adapterMode: w.adapterMode, integration: w.integration,
         configuration: unavailable ? "not_observed" : w.configuration.state,
         configurationReason: unavailable ? "observation_unavailable" : w.configuration.reason,
@@ -235,14 +238,27 @@
     return {schemaVersion: CONTROL_VERSION, authority: "observation_only", observedAt, workflows};
   }
   // In-memory request-generation guard; no transport, clocks, storage or runtime dependencies.
-  function controlReader() {
+  function controlReader(provenance = "offline-synthetic") {
+    choice(provenance, ["offline-synthetic", "same-origin-http"]);
     let generation = 0;
+    let newestObservation = null;
     let state = {phase: "unavailable", services: SERVICES.map(blank)};
     return Object.freeze({
       begin() { ++generation; state = {phase: "loading", services: SERVICES.map(blank)}; return generation; },
       settle(token, payload) {
         if (token !== generation || state.phase !== "loading") return false;
-        try { state = {phase: "ready", services: fromControlCatalog(payload)}; }
+        try {
+          const services = fromControlCatalog(payload, provenance);
+          // Even a newer request must not roll an already observed catalog or
+          // individual workflow back to an older snapshot. Retain this high
+          // water mark across errors; never retain its healthy presentation.
+          if (newestObservation !== null) {
+            valid(payload.observedAt >= newestObservation.observedAt);
+            services.forEach((s, i) => valid(s.observedAt >= newestObservation.times[i]));
+          }
+          newestObservation = {observedAt: payload.observedAt, times: services.map(s => s.observedAt)};
+          state = {phase: "ready", observedAt: payload.observedAt, services};
+        }
         catch { state = {phase: "unavailable", services: SERVICES.map(blank)}; }
         return true;
       },
