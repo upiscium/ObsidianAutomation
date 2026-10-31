@@ -6,12 +6,17 @@ from copy import deepcopy
 import http.client
 import json
 import threading
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
 from obsidian_automation.admin_dashboard import make_server
 from obsidian_automation.webui_control_read import compose_read_catalog
 from obsidian_automation.webui_control_get import read_control_catalog
+from obsidian_automation.webui_b1_adapter import B1ReadAdapter, LedgerState, PreparedBinding
+from obsidian_automation.webui_b3_adapter import B3FakeAdapter, Binding, SyntheticLedger, SyntheticWriter
+from obsidian_automation import webui_b5_ports as b5
 
 _ID = "a" * 32
 
@@ -174,11 +179,12 @@ class ReadOnlyJob:
 
 
 @contextmanager
-def serving(snapshot_job=None, daily_job=None, sources=None):
+def serving(snapshot_job=None, daily_job=None, sources=None, *, ports=None, formatter_job=None):
     server = make_server(
         port=0, observer=lambda: [], ai_observer=lambda: {},
         snapshot_job=snapshot_job, daily_job=daily_job,
         workflow_control_snapshots=sources,
+        workflow_control_read_ports=ports, formatter_job=formatter_job,
     )
     thread = threading.Thread(
         target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
@@ -425,3 +431,175 @@ def test_read_catalog_is_not_a_constructor_and_opaque_source_hooks_not_called():
     assert result["workflows"][2]["integration"] == "unavailable"
     assert result["workflows"][1]["integration"] == "not_attached"
     assert result["workflows"][4]["schedule"]["state"] == "not_applicable"
+
+
+def optional_ports():
+    binding = Binding("b" * 32, "c" * 32, "PRIVATE_PROJECT", "PRIVATE_VAULT_PATH")
+    writer = SyntheticWriter(binding)
+    ledger = SyntheticLedger.fresh_fixture(binding, writer)
+    return {"b1": B1ReadAdapter(None, clock=lambda: 10),
+            "b3": B3FakeAdapter(ledger, read_only=True, observed_at=10),
+            "b5": b5.ReadPort(None, observed_at=10)}, ledger, writer
+
+
+def test_explicit_ports_are_lazy_copied_and_refreshed_for_list_and_all_details(monkeypatch):
+    ports, ledger, writer = optional_ports()
+    attached = dict(ports)
+    calls = []
+    forbidden = Mock(side_effect=AssertionError("effect or lookup forbidden"))
+    for key, port in attached.items():
+        original = port.observe
+
+        def observe(key=key, original=original):
+            calls.append(key)
+            return original()
+
+        monkeypatch.setattr(port, "observe", observe)
+        for name in ("lookup", "generate", "sync_project", "stage_archive", "import_inventory",
+                     "set_schedule", "submit", "tick", "transact", "lookup_staging", "detail"):
+            monkeypatch.setattr(port, name, forbidden, raising=False)
+    monkeypatch.setattr(writer, "_apply", forbidden)
+    with serving(ports=ports) as server:
+        assert calls == []  # Constructor never materializes.
+        ports.clear()  # Caller mutation cannot detach the validated copy.
+        first = json.loads(request(server)[2])["workflows"]
+        assert calls == ["b1", "b3", "b5"]
+        assert first[2]["adapterMode"] == "mock" and "mock" in first[2]["label"]
+        assert first[2]["integration"] == "pending"
+        ledger.lose_history()  # Explicit fixture fault, never GET recovery.
+        for identifier in ("b1", "b2", "b3", "b4", "b5"):
+            code, _, raw = request(server, f"/api/v1/workflow-control/{identifier}")
+            assert code == 200
+            value = json.loads(raw)
+            assert value["id"] == identifier and value["availableActions"] == []
+            assert value["lastVerifiedOutcome"] is None
+            if identifier == "b3":
+                assert value["integration"] == "unavailable"
+            if identifier == "b5":
+                assert value["schedule"]["reason"] == "manual_only"
+            assert "PRIVATE_" not in raw.decode()
+        latest = json.loads(request(server)[2])["workflows"]
+        # Refresh observes the fixture fault, not a cached pending/mock snapshot.
+        assert latest[2]["integration"] == "unavailable"
+        assert calls == ["b1", "b3", "b5"] * 7
+        assert request(server, "/api/v1/workflow-control/b3/requests/" + _ID)[0] == 503
+        assert calls == ["b1", "b3", "b5"] * 7
+    assert writer.calls == 0 and ledger._records == {}
+    forbidden.assert_not_called()
+
+
+def test_outer_time_is_sampled_after_optional_and_legacy_reads_on_every_get(monkeypatch):
+    events = []
+    now = [10]
+
+    class Ledger:
+        def read(self):
+            events.append("b1")
+            now[0] += 1
+            return LedgerState("4" * 32, PreparedBinding("1" * 32, "2" * 32, "3" * 32))
+
+        def transact(self, *_):
+            pytest.fail("GET transaction")
+
+    def outer_clock():
+        events.append("outer")
+        return now[0]
+
+    class Legacy(ReadOnlyJob):
+        def status(self):
+            events.append("legacy")
+            now[0] += 1
+            return super().status()
+
+    # B1 samples its own clock before its read. This remains source provenance,
+    # not the outer request timestamp, and is preserved by the composer.
+    port = B1ReadAdapter(Ledger(), clock=lambda: now[0])
+    # Replace this module's clock dependency, not the process-wide time module
+    # (HTTP Date headers also use time.time).
+    monkeypatch.setattr("obsidian_automation.webui_control_get.time", SimpleNamespace(time=outer_clock))
+    with serving(Legacy(snapshot()), ports={"b1": port}) as server:
+        first = json.loads(request(server)[2])
+        second = json.loads(request(server)[2])
+    assert events == ["b1", "legacy", "outer"] * 2
+    assert first["observedAt"] == 12 and second["observedAt"] == 14
+    assert first["workflows"][0]["observedAt"] == 10
+    assert second["workflows"][0]["observedAt"] == 12
+    assert second["workflows"][0]["integration"] == "pending"
+
+
+@pytest.mark.parametrize("malformed", [False, True])
+def test_optional_http_failure_or_malformed_dto_isolated_and_secret_redacted(monkeypatch, malformed):
+    ports, _, _ = optional_ports()
+
+    def observe():
+        if malformed:
+            return {"secret": "PRIVATE_TOKEN", "path": "/private/vault"}
+        raise RuntimeError("PRIVATE_TOKEN credentials /private/vault")
+
+    monkeypatch.setattr(ports["b1"], "observe", observe)
+    with serving(ReadOnlyJob(snapshot()), ReadOnlyJob(daily()), ports=ports) as server:
+        code, _, raw = request(server)
+        assert code == 200
+        values = json.loads(raw)["workflows"]
+        assert [w["integration"] for w in values] == [
+            "unavailable", "pending", "pending", "pending", "pending"]
+        assert values[2]["adapterMode"] == "mock" and "mock" in values[2]["label"]
+        assert values[0]["execution"]["state"] == "unknown"
+        assert all(w["availableActions"] == [] for w in values)
+        assert "PRIVATE_TOKEN" not in raw.decode() and "/private/vault" not in raw.decode()
+
+
+def test_invalid_injection_and_conflicting_sources_fail_before_server_bind(monkeypatch):
+    constructor = Mock(side_effect=AssertionError("server must not be constructed"))
+    monkeypatch.setattr("obsidian_automation.admin_dashboard.BoundedDashboardServer", constructor)
+
+    class Trap:
+        def __getattr__(self, _name):
+            pytest.fail("invalid object method lookup")
+
+    for ports in ({"b1": Trap()}, {"b2": Trap()}, [], {"b5": Trap()}):
+        with pytest.raises(TypeError, match="^invalid_workflow_control_read_ports$"):
+            make_server(port=0, workflow_control_read_ports=ports)
+    for snapshots, ports in (({}, {}), ({"b3": valid_b3_mock()}, {}), ({}, optional_ports()[0])):
+        with pytest.raises(ValueError, match="^conflicting_workflow_control_sources$"):
+            make_server(port=0, workflow_control_snapshots=snapshots, workflow_control_read_ports=ports)
+    constructor.assert_not_called()
+
+
+def test_optional_ports_not_observed_for_static_head_other_get_post_or_rejected_requests(monkeypatch):
+    ports, _, writer = optional_ports()
+    observe = Mock(side_effect=AssertionError("optional observation forbidden on this route"))
+    for port in ports.values():
+        monkeypatch.setattr(port, "observe", observe)
+    snap, daily_job = ReadOnlyJob(snapshot()), ReadOnlyJob(daily())
+    formatter = ReadOnlyJob({"synthetic": "formatter unchanged"})
+    with serving(snap, daily_job, ports=ports, formatter_job=formatter) as server:
+        for route in ("/workflow-control", "/static/workflow-control/live.js",
+                      "/static/workflow-control/model.js", "/static/workflow-control/styles.css",
+                      "/", "/static/style.css", "/static/app.js"):
+            for method in ("GET", "HEAD"):
+                assert request(server, route, method)[0] == 200
+        for route, expected in (("/api/v1/snapshot", snapshot()), ("/api/v1/daily", daily()),
+                                ("/api/v1/formatter", formatter.result)):
+            code, _, raw = request(server, route)
+            assert code == 200 and json.loads(raw) == expected
+        assert json.loads(request(server, "/api/v1/workflows")[2])["version"] == 1
+        for route in ("/api/v1/workflow-control", "/api/v1/workflow-control/b3"):
+            assert request(server, route, "HEAD")[0] == 200
+            assert request(server, route, host="example.invalid")[0] == 403
+            assert request(server, route, origin="https://example.invalid")[0] == 403
+            for method in ("POST", "PUT", "PATCH", "DELETE", "OPTIONS"):
+                assert request(server, route, method)[::2] == (405, b"Method not allowed")
+        for route in ("/api/v1/workflow-control/b3/syncs", "/api/v1/workflow-control/b5/imports",
+                      "/api/v1/workflow-control/b1/generations", "/api/v1/workflow-control/b5/uploads"):
+            assert request(server, route, "POST")[0] == 405
+            assert request(server, route)[0] == 404
+        # Existing mutation guards still reject before any legacy job effect.
+        for route in ("/api/v1/snapshot/runs", "/api/v1/daily/runs", "/api/v1/formatter/runs"):
+            assert request(server, route, "POST")[0] == 403
+            origin = f"http://127.0.0.1:{server.server_address[1]}"
+            assert request(server, route, "POST", origin=origin)[0] == 403
+        assert request(server, "/api/v1/workflow-control/b6")[0] == 404
+        assert request(server, "/api/v1/workflow-control/b3/requests/" + _ID)[0] == 503
+    observe.assert_not_called()
+    assert snap.effects == daily_job.effects == formatter.effects == writer.calls == 0
