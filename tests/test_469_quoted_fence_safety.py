@@ -150,9 +150,9 @@ def test_quote_fence_inside_active_templater_preserves_old_skip_policy():
     assert format_markdown(raw) == (None, (), "unsupported-nested-fence")
 
 
-def test_policy_version_is_bumped_for_new_quoted_fence_admission():
+def test_policy_version_tracks_all_quoted_fence_and_semantic_guards():
     from obsidian_automation.vault_formatter import POLICY_VERSION
-    assert POLICY_VERSION == "system-blank-lines-v2"
+    assert POLICY_VERSION == "system-blank-lines-v3"
 
 def test_invalid_quoted_backtick_info_cannot_hide_raw_html_container():
     marker=chr(96)*3

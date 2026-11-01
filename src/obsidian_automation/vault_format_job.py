@@ -31,7 +31,8 @@ _SAFE_SKIP_REASONS = frozenset({
     "binary-content", "file-too-large", "hidden-directory", "hidden-path",
     "invalid-utf8", "invalid-utf8-filename", "mixed-line-endings",
     "path-name-collision", "symlink", "unsafe-path", "unsupported-extension",
-    "unsupported-file-type", "unsupported-html-block", "unsupported-line-endings",
+    "unsupported-file-type", "unsupported-fence-syntax",
+    "unsupported-html-block", "unsupported-line-endings",
     "unsupported-line-separators", "unsupported-nested-fence",
     "unterminated-frontmatter", "unterminated-protected-block",
 })
