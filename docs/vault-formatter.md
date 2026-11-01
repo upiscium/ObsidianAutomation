@@ -26,6 +26,22 @@ production systemd unit.
   Non-empty lines retain all spaces, including Markdown hard breaks.
 - Source BOM, existing LF/CRLF convention, final newline and all other bytes
   are retained.
+- Nearest nonblank neighbor **risk flags** are computed once per nonblank
+  line in linear time. This also avoids repeated inspection of a distant
+  nonblank line with an extremely long indentation prefix. Long runs of
+  empty/space-only lines must not cause quadratic rescanning, while the
+  ambiguous-neighbor decisions remain unchanged.
+- Until container-aware Markdown parsing is implemented, files containing
+  both list markers (including empty items with no trailing space) and any
+  fence-looking delimiter run are skipped entirely
+  with reason unsupported-fence-syntax. This deliberately includes fences
+  outside a list in the same document: a nested list fence closer must not
+  be misclassified as a top-level opener and expose following raw HTML.
+- Ordinary fenced code closing markers accept only contiguous matching
+  delimiters with an optional ASCII-space or tab suffix, as required by
+  CommonMark. Embedded markers, trailing text, or 4+ spaces of indentation
+  are not accepted as a close. The fence state must never remain open after
+  a valid tab-suffixed close, or later HTML could be exposed to formatting.
 - YAML frontmatter, fenced code including Dataview/Meta Bind, multiline
   Templater expressions, HTML comments, known raw HTML blocks and ambiguous
   blockquote/indented code are not changed.
@@ -60,6 +76,28 @@ production systemd unit.
   their quoted attributes can extend across a standalone-looking close.
   This is a conservative coverage improvement, not an unrestricted
   CommonMark parser.
+- Policy v3 adds deliberately broad, fail-closed *document-level* checks for
+  two pre-existing source-integrity hazards. If any Templater opener occurs
+  in a document with an ordinary Markdown code fence, YAML frontmatter,
+  HTML comment, or indented-code region, the entire file is skipped. The
+  minimal formatter does not try to reconcile Templater and Markdown state.
+  Files containing namespace-qualified HTML-like tokens (including Unicode
+  combining marks, punctuation, and harmless examples inside code fences)
+  are also skipped. A linear token scan checks for colons; this is a
+  reject-only sentinel, not an XML parser.
+  All such skips return the fixed unsupported-html-block reason. This
+  intentionally reduces coverage, including otherwise safe whitespace
+  changes, rather than risking a source-integrity error. A standalone
+  Templater command without an opaque context remains eligible.
+  HTML-comment endings mixed with fence-looking markers are also skipped.
+  A backtick-fence opening line with a backtick in its info string is
+  rejected as unsupported-fence-syntax (even inside another protected
+  region); otherwise an invalid Markdown opener could hide active raw HTML
+  or Templater contexts and cause unsafe whitespace changes.
+  Ordinary fenced-code closure requires contiguous matching markers
+  followed only by ASCII spaces or tabs; mixed marker text cannot
+  prematurely expose code contents. A v2 plan cannot be reused with a v3
+  formatter or Writer.
 - **Unrecognized HTML elements are not parsed in Phase 1:** any such opening
   tag outside protected code/frontmatter causes the *whole file* to be skipped
   with reason unsupported-html-block. This includes potentially harmless inline

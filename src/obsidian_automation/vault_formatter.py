@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Sequence
 
-POLICY_VERSION = "system-blank-lines-v2"
+POLICY_VERSION = "system-blank-lines-v3"
 PLAN_VERSION = 1
 SCOPE = "98-System/**"
 DEFAULT_MAX_FILES = 10000
@@ -40,7 +40,17 @@ _CONTEXT_START = re.compile(r"<!--|<%|<[A-Za-z][A-Za-z0-9-]*(?=[\s/>]|$)", re.I)
 # Deliberately detecting unsupported quote-like forms only adds skips; it
 # must never accidentally turn an earlier v1 rejection into an unsafe edit.
 _QUOTED_FENCE_MARKER = re.compile(r"^\s*(?:>\s*)+[\x60~]{3}")
+# Match one angle-tag-like token. Do NOT put colon-accepting repetitions on
+# both sides of a colon separator: that can cause quadratic backtracking.
+# The entire lexer is reject-only and ignores arbitrary name restrictions.
+_TAG_LIKE_TOKEN = re.compile(r"<[^<>\s/]+")
 _HARDBREAK_COMMENT = re.compile(r"^\s*>")
+# A list item can contain a nested fenced block whose closing delimiter has
+# 0-3 spaces and is otherwise indistinguishable from a top-level opener to
+# this minimal parser. Reject mixed list + fence documents until a
+# container-aware Markdown parser proves the boundary.
+_LIST_MARKER = re.compile(r"^[ \t]*(?:>[ \t]*)*(?:[-+*]|[0-9]{1,9}[.)])(?:[ \t]+|$)")
+_FENCE_LIKE = re.compile(r"(?:\x60{3,}|~{3,})")
 
 
 def _raw_html_opener_end(body: str, start: int) -> int | None:
@@ -114,21 +124,122 @@ def _nearest_nonblank(lines: list[str], index: int, direction: int) -> str | Non
     return None
 
 
-def _in_ambiguous_markdown_context(lines: list[str], index: int) -> bool:
-    """Avoid blank lines that may be structural parts of nested code/quotes."""
-    previous = _nearest_nonblank(lines, index, -1)
-    following = _nearest_nonblank(lines, index, +1)
-    neighbors = [line for line in (previous, following) if line is not None]
-    if any(_HARDBREAK_COMMENT.match(line) for line in neighbors):
+def _ambiguous_nonblank_neighbor(body: str) -> bool:
+    """Classify a single nonblank body once; costs O(len(body))."""
+    if _HARDBREAK_COMMENT.match(body):
         return True
-    # Empty lines inside indented code blocks should stay byte-for-byte.
-    if any(len(line) - len(line.lstrip(" ")) >= 4 for line in neighbors):
+    if len(body) - len(body.lstrip(" ")) >= 4:
         return True
-    # An indented whitespace-only line within a Markdown list could be
-    # structural. Do not try to prove its semantics with nearest-line logic.
-    if any(re.match(r"^ {0,3}(?:[-+*]|[0-9]{1,9}[.)])\s", line) for line in neighbors):
+    if re.match(r"^ {0,3}(?:[-+*]|[0-9]{1,9}[.)])\s", body):
         return True
     return False
+
+
+def _nearest_nonblank_risks(bodies: list[str]) -> tuple[list[bool | None], list[bool | None]]:
+    """Precompute neighbor risk flags in O(total input bytes + line count).
+
+    Caching neighbor *strings* is not sufficient: classifying a very long
+    leading-space prefix for each adjacent blank line is still quadratic.
+    """
+    risks: list[bool | None] = [
+        _ambiguous_nonblank_neighbor(body) if body.strip() else None
+        for body in bodies
+    ]
+    previous: list[bool | None] = []
+    nearest: bool | None = None
+    for risk in risks:
+        previous.append(nearest)
+        if risk is not None:
+            nearest = risk
+    following: list[bool | None] = [None] * len(bodies)
+    nearest = None
+    for index in range(len(risks) - 1, -1, -1):
+        following[index] = nearest
+        if risks[index] is not None:
+            nearest = risks[index]
+    return previous, following
+
+
+def _ambiguous_markdown_neighbors(previous: str | None, following: str | None) -> bool:
+    """Avoid blank lines that may be structural parts of nested code/quotes."""
+    return any(_ambiguous_nonblank_neighbor(line) for line in (previous, following)
+               if line is not None)
+
+
+def _in_ambiguous_markdown_context(lines: list[str], index: int) -> bool:
+    """Retain the standalone check for caller/test compatibility."""
+    return _ambiguous_markdown_neighbors(
+        _nearest_nonblank(lines, index, -1),
+        _nearest_nonblank(lines, index, +1),
+    )
+
+
+def _ordinary_fence_closes(body: str, char: str, minimum: int) -> bool:
+    """Require contiguous fence markers with a spaces/tabs-only suffix.
+
+    CommonMark accepts both spaces and tabs after a closing code fence. A
+    missed valid close desynchronizes protected regions. Never allocate
+    char * minimum on each scanned line.
+    """
+    indent = len(body) - len(body.lstrip(" "))
+    if indent > 3:
+        return False
+    stripped = body[indent:]
+    if not stripped or stripped[0] != char:
+        return False
+    run = len(stripped) - len(stripped.lstrip(char))
+    return run >= minimum and stripped[run:].strip(" \t") == ""
+
+
+def _has_invalid_backtick_fence_opener(bodies: list[str]) -> bool:
+    """A backtick fence info string containing backticks is not a fence.
+
+    The minimal parser would otherwise mistake it for protected code and
+    could hide HTML/Templater state until a false closing fence. Reject the
+    entire file before planning edits, even if the candidate occurs inside
+    another protected region: this is a deliberate fail-closed rule.
+    """
+    for body in bodies:
+        marker = _FENCE_START.match(body)
+        if (marker is not None
+                and marker.group("mark")[0] == chr(96)
+                and chr(96) in body[marker.end():]):
+            return True
+    return False
+
+
+def _has_namespaced_tag_like(bodies: list[str]) -> bool:
+    """Conservatively recognize qualified markup in linear input size."""
+    return any(
+        ":" in item.group(0)
+        for body in bodies
+        for item in _TAG_LIKE_TOKEN.finditer(body)
+    )
+
+
+def _templater_with_opaque_context(bodies: list[str]) -> bool:
+    """Refuse mixed source grammars rather than reconstruct their state.
+
+    The ordinary Markdown parser and Templater are not the same lexer; a
+    Templater command that starts inside (or outlives) a fence/frontmatter
+    or HTML comment may contain literal whitespace after Markdown unblocks.
+    """
+    if not any("<%" in body for body in bodies):
+        return False
+    return (
+        (bool(bodies) and bodies[0].strip(" ") == "---")
+        or any(_FENCE_START.match(body) for body in bodies)
+        or any("<!--" in body or "-->" in body for body in bodies)
+        or any(re.match(r"^(?: {4,}| {0,3}\t)", body) for body in bodies)
+    )
+
+
+def _mixed_comment_close_and_fence(bodies: list[str]) -> bool:
+    """Do not infer a fence after an HTML comment closes on the same line."""
+    return any(
+        "-->" in body and re.search(r"[\x60~]{3,}", body.split("-->", 1)[1])
+        for body in bodies
+    )
 
 
 def format_markdown(source: bytes) -> tuple[bytes | None, tuple[int, ...], str]:
@@ -179,6 +290,24 @@ def format_markdown(source: bytes) -> tuple[bytes | None, tuple[int, ...], str]:
     if (any(_RAW_OPEN.search(body) for body in bodies)
             and any("<%" in body for body in bodies)):
         return None, (), "unsupported-html-block"
+    if _has_invalid_backtick_fence_opener(bodies):
+        return None, (), "unsupported-fence-syntax"
+    # Otherwise a list-contained fence closer can become a phantom
+    # top-level opener, concealing following raw HTML and corrupting
+    # whitespace. Broad whole-file refusal deliberately over-skips lists
+    # and unrelated fences rather than guessing list/container scope.
+    if (any(_LIST_MARKER.match(body) for body in bodies)
+            and any(_FENCE_LIKE.search(body) for body in bodies)):
+        return None, (), "unsupported-fence-syntax"
+    # Refuse ambiguous mixed grammars before any desired-byte production.
+    # Broad document-level refusal sacrifices edit coverage, but eliminates
+    # disagreement between multiple partial source-language state machines.
+    if _templater_with_opaque_context(bodies):
+        return None, (), "unsupported-html-block"
+    if _mixed_comment_close_and_fence(bodies):
+        return None, (), "unsupported-html-block"
+    if _has_namespaced_tag_like(bodies):
+        return None, (), "unsupported-html-block"
     if any(re.match(r"^\s*<(?:div|details|summary|table|ul|ol|li)(?=[\s>])", body, re.I) for body in bodies):
         return None, (), "unsupported-html-block"
     frontmatter = bodies[0].strip(" ") == "---"
@@ -191,6 +320,7 @@ def format_markdown(source: bytes) -> tuple[bytes | None, tuple[int, ...], str]:
     templater = False
     updates: list[str] = []
     modified: list[int] = []
+    previous_risk, following_risk = _nearest_nonblank_risks(bodies)
 
     for index, line in enumerate(lines):
         body, ending = _split_line(line)
@@ -211,14 +341,7 @@ def format_markdown(source: bytes) -> tuple[bytes | None, tuple[int, ...], str]:
 
         if fence_char:
             updates.append(line)
-            stripped = body.lstrip(" ")
-            marker = fence_char * fence_length
-            if (
-                len(body) - len(stripped) <= 3
-                and stripped.startswith(marker)
-                and stripped[len(marker) :].strip(fence_char + " ") == ""
-                and stripped[0] == fence_char
-            ):
+            if _ordinary_fence_closes(body, fence_char, fence_length):
                 fence_char = ""
                 fence_length = 0
             continue
@@ -403,7 +526,7 @@ def format_markdown(source: bytes) -> tuple[bytes | None, tuple[int, ...], str]:
         if (
             1 <= len(body) <= 3
             and body.strip(" ") == ""
-            and not _in_ambiguous_markdown_context(lines, index)
+            and not (previous_risk[index] or following_risk[index])
         ):
             updates.append(ending)
             modified.append(index + 1)
