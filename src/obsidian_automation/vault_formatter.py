@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Sequence
 
-POLICY_VERSION = "system-blank-lines-v1"
+POLICY_VERSION = "system-blank-lines-v2"
 PLAN_VERSION = 1
 SCOPE = "98-System/**"
 DEFAULT_MAX_FILES = 10000
@@ -30,12 +30,43 @@ _SUPPORTED_SUFFIXES = frozenset({".md", ".markdown"})
 _FENCE_START = re.compile(r"^ {0,3}(?P<mark>\x60{3,}|~{3,})")
 _RAW_OPEN = re.compile(
     r"<(?P<tag>pre|script|style|textarea|template|xmp|iframe|noembed|"
-    r"noframes|plaintext|listing)(?=[\s>])", re.I
+    r"noframes|plaintext|listing)(?=[\s>]|$)", re.I
 )
-_HTML_ELEMENT_OPEN = re.compile(r"<[A-Za-z][A-Za-z0-9-]*(?=[\s/>])")
-_CONTEXT_START = re.compile(r"<!--|<%|<[A-Za-z][A-Za-z0-9-]*(?=[\s/>])", re.I)
+_HTML_ELEMENT_OPEN = re.compile(r"<[A-Za-z][A-Za-z0-9-]*(?=[\s/>]|$)")
+_CONTEXT_START = re.compile(r"<!--|<%|<[A-Za-z][A-Za-z0-9-]*(?=[\s/>]|$)", re.I)
+# This detector must be a superset of BOTH the v1 global skip grammar
+# (arbitrary indentation/tabs, contiguous quote markers) AND the v2 parser's
+# admitted grammar (spaced multi-level quote prefixes such as "> > ~~~").
+# Deliberately detecting unsupported quote-like forms only adds skips; it
+# must never accidentally turn an earlier v1 rejection into an unsafe edit.
+_QUOTED_FENCE_MARKER = re.compile(r"^\s*(?:>\s*)+[\x60~]{3}")
 _HARDBREAK_COMMENT = re.compile(r"^\s*>")
 
+
+def _raw_html_opener_end(body: str, start: int) -> int | None:
+    """Locate an actual HTML opening-tag terminator outside quoted attrs.
+
+    A > inside an attribute string cannot establish the end of the opener.
+    This is a conservative lexical guard, not a full HTML parser.
+    """
+    quote: str | None = None
+    for index in range(start, len(body)):
+        char = body[index]
+        if quote is not None:
+            if char == quote:
+                quote = None
+        elif char in ("'", '"'):
+            quote = char
+        elif char == ">":
+            return index
+        elif char == "<":
+            return None
+    return None
+
+
+def _raw_html_tag_is_closed_on_line(body: str, start: int) -> bool:
+    """A readable predicate for synthetic compatibility fixtures."""
+    return _raw_html_opener_end(body, start) is not None
 
 @dataclass(frozen=True)
 class FormatResult:
@@ -130,15 +161,31 @@ def format_markdown(source: bytes) -> tuple[bytes | None, tuple[int, ...], str]:
         return source, (), "no-safe-changes"
 
     bodies = [_split_line(line)[0] for line in lines]
-    # Nested block quote fences and multiline raw HTML are not parsed in the
-    # minimal formatter; reject rather than guessing their Markdown semantics.
-    if any(re.match(r"^\s*>+\s*[\x60~]{3}", body) for body in bodies):
+    # Templater and HTML are separate source languages: Markdown fences,
+    # comments, or YAML boundaries do not reliably terminate their spans.
+    # A source-language construct anywhere in a document with a quoted
+    # fence may remain active across Markdown/HTML/YAML boundaries. Rather
+    # than reimplementing the HTML or Templater lexers, reject *any* literal
+    # less-than sign in a quote-fence-bearing document. This also protects
+    # multiline HTML openers, CDATA and future template syntax variations.
+    # Over-skipping innocuous comparisons is deliberate and safer than
+    # modifying text under unknown active source contexts.
+    if (any(_QUOTED_FENCE_MARKER.match(body) for body in bodies)
+            and any("<" in body for body in bodies)):
         return None, (), "unsupported-nested-fence"
+    # Templater and raw HTML can have overlapping, independently scoped
+    # source spans. Until their exact nesting is proven, refuse documents
+    # containing both regardless of which appears first.
+    if (any(_RAW_OPEN.search(body) for body in bodies)
+            and any("<%" in body for body in bodies)):
+        return None, (), "unsupported-html-block"
     if any(re.match(r"^\s*<(?:div|details|summary|table|ul|ol|li)(?=[\s>])", body, re.I) for body in bodies):
         return None, (), "unsupported-html-block"
     frontmatter = bodies[0].strip(" ") == "---"
     fence_char = ""
     fence_length = 0
+    # Quote handling shares this state machine with all protected constructs.
+    quote_fence: tuple[int, str, int] | None = None
     html_tag: str | None = None
     html_comment = False
     templater = False
@@ -147,6 +194,14 @@ def format_markdown(source: bytes) -> tuple[bytes | None, tuple[int, ...], str]:
 
     for index, line in enumerate(lines):
         body, ending = _split_line(line)
+        # The old v1 policy rejected quote-fence-like markers anywhere in the
+        # file. In v2, admit them *only* when the quote-fence parser is the
+        # active authority. A different protected context (ordinary fence,
+        # frontmatter, HTML or Templater) cannot safely prove that a source
+        # template starting inside it ends before that context ends.
+        if ((frontmatter or fence_char or html_comment or html_tag or templater)
+                and _QUOTED_FENCE_MARKER.match(body)):
+            return None, (), "unsupported-nested-fence"
         # Frontmatter is protected in its entirety, including YAML block scalars.
         if frontmatter:
             updates.append(line)
@@ -168,7 +223,35 @@ def format_markdown(source: bytes) -> tuple[bytes | None, tuple[int, ...], str]:
                 fence_length = 0
             continue
 
+        if quote_fence is not None:
+            # Quote markers, depth and fence closure must be explicit on
+            # every protected line; never infer lazy continuation.
+            quoted = re.match(r"^ {0,3}(?P<prefix>(?:> ?)+)(?P<content>.*)$", body)
+            if quoted is None:
+                return None, (), "unsupported-nested-fence"
+            depth, char, minimum = quote_fence
+            if quoted.group("prefix").count(">") != depth:
+                return None, (), "unsupported-nested-fence"
+            content = quoted.group("content")
+            # Source templates are processed independently of Markdown. An
+            # opening Templater/HTML context inside a fenced quote may close
+            # *after* that fence, so protecting only the quoted lines would
+            # expose later whitespace inside a still-active source context.
+            # Never infer a cross-boundary context: skip the whole file.
+            if _CONTEXT_START.search(content):
+                return None, (), "unsupported-nested-fence"
+            closing = re.match(r"^ {0,3}(?P<mark>\x60{3,}|~{3,})[ ]*$", content)
+            updates.append(line)
+            if (closing and closing.group("mark")[0] == char
+                    and len(closing.group("mark")) >= minimum):
+                quote_fence = None
+            continue
+
         if html_comment:
+            # Raw markup inside a comment could remain active after that
+            # comment closes if its boundaries are not tokenized together.
+            if _RAW_OPEN.search(body):
+                return None, (), "unsupported-html-block"
             # A multiline HTML comment may close before a raw HTML opening
             # on the very same line. We do not tokenize mixed HTML here:
             # reject the file rather than accidentally formatting raw data.
@@ -180,9 +263,23 @@ def format_markdown(source: bytes) -> tuple[bytes | None, tuple[int, ...], str]:
             continue
 
         if html_tag:
-            closing = re.search(r"</" + re.escape(html_tag) + r"\s*>", body, re.I)
-            if closing and _CONTEXT_START.search(body[closing.end():]):
+            # Comment delimiters inside an opaque raw element may extend
+            # beyond </tag>. Keep those independent contexts fail-closed.
+            # Nested opening tags can carry multiline quoted attributes
+            # with standalone-looking </tag> lines. Without an HTML
+            # tokenizer, treat any nested element opener as unsafe.
+            if "<!--" in body or _HTML_ELEMENT_OPEN.search(body):
                 return None, (), "unsupported-html-block"
+            closing = re.search(r"</" + re.escape(html_tag) + r"\s*>", body, re.I)
+            if closing:
+                # An apparent closing tag inside a nested quoted attribute
+                # cannot end the raw element. Without an HTML tokenizer,
+                # accept only a dedicated closing-tag line; otherwise skip.
+                standalone = re.fullmatch(
+                    r"[ ]{0,3}</" + re.escape(html_tag) + r"\s*>[ ]*", body, re.I
+                )
+                if standalone is None:
+                    return None, (), "unsupported-html-block"
             updates.append(line)
             if closing:
                 html_tag = None
@@ -203,6 +300,44 @@ def format_markdown(source: bytes) -> tuple[bytes | None, tuple[int, ...], str]:
             fence_char, fence_length = marker[0], len(marker)
             continue
 
+        # Open a quoted fence only when no HTML, frontmatter, Templater
+        # or normal fenced-code context is active. This never bypasses
+        # their safety transitions or permits rewriting their contents.
+        quoted = re.match(r"^ {0,3}(?P<prefix>(?:> ?)+)(?P<content>.*)$", body)
+        if quoted:
+            opening = _FENCE_START.match(quoted.group("content"))
+            if opening:
+                # Count spaces after the final quote delimiter, including
+                # the optional space consumed by the quote-prefix matcher.
+                # Four or more spaces are outside the admissible fence
+                # grammar even if the subsequent content looks like a fence.
+                quote_prefix = quoted.group("prefix")
+                total_indent = (1 if quote_prefix.endswith(" ") else 0) + (
+                    len(quoted.group("content")) - len(quoted.group("content").lstrip(" "))
+                )
+                if total_indent > 3:
+                    return None, (), "unsupported-nested-fence"
+                mark = opening.group("mark")
+                # CommonMark backtick-fence info strings must not contain
+                # any backtick. Otherwise HTML/Templater after this line
+                # may be interpreted incorrectly as protected code.
+                info = quoted.group("content")[opening.end():]
+                if (_CONTEXT_START.search(info)
+                        or mark != mark[0] * len(mark)
+                        or (mark[0] == chr(96) and chr(96) in info)):
+                    return None, (), "unsupported-nested-fence"
+                quote_fence = (quoted.group("prefix").count(">"), mark[0], len(mark))
+                updates.append(line)
+                continue
+
+        # The conservative marker detector deliberately accepts more forms
+        # than the quoted-fence parser. Any unmatched legacy quote-like
+        # marker remains a whole-file skip, never ordinary editable text.
+        # In particular, tabs, over-indentation and > + excessive spacing
+        # were rejected in v1 and must not regress to a safe edit in v2.
+        if _QUOTED_FENCE_MARKER.match(body):
+            return None, (), "unsupported-nested-fence"
+
         if "<!--" in body:
             # HTML may resume after a closed same-line comment. In this
             # minimal formatter we cannot safely parse mixed comments and
@@ -219,6 +354,12 @@ def format_markdown(source: bytes) -> tuple[bytes | None, tuple[int, ...], str]:
             continue
 
         match = _RAW_OPEN.search(body)
+        raw_tag_end = _raw_html_opener_end(body, match.end()) if match else None
+        # A split opener may conceal a Templater span surviving the later
+        # raw-tag close. Require the actual > on this line, not inside an
+        # incomplete or quoted HTML attribute. Otherwise skip the whole file.
+        if match and raw_tag_end is None:
+            return None, (), "unsupported-html-block"
         if match:
             # We do not tokenize several HTML elements on a single line.
             # A second opening before or after this recognized raw tag can
@@ -236,7 +377,9 @@ def format_markdown(source: bytes) -> tuple[bytes | None, tuple[int, ...], str]:
                 return None, (), "unsupported-html-block"
             updates.append(line)
             tag = match.group("tag")
-            if not re.search(r"</" + re.escape(tag) + r"\s*>", body[match.end() :], re.I):
+            # A quoted attribute may literally contain </pre>. It is not
+            # a closing tag. Search only after the real opener terminator.
+            if not re.search(r"</" + re.escape(tag) + r"\s*>", body[raw_tag_end + 1 :], re.I):
                 html_tag = tag
             continue
 
@@ -269,6 +412,8 @@ def format_markdown(source: bytes) -> tuple[bytes | None, tuple[int, ...], str]:
 
     if frontmatter:
         return None, (), "unterminated-frontmatter"
+    if quote_fence is not None:
+        return None, (), "unsupported-nested-fence"
     if fence_char or html_tag or html_comment or templater:
         return None, (), "unterminated-protected-block"
 
