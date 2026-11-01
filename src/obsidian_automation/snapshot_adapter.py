@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .vault_snapshot import build_manifest, load_config, snapshot_vault
+from .vault_snapshot import _is_repository_owned, build_manifest, load_config, snapshot_vault
 
 
 # Retry only a read-only Nextcloud pull into the disposable local mirror.
@@ -148,11 +148,14 @@ def _write_rclone_receipt(directory: Path, attempts: list[dict[str, int | str | 
                 pass
 
 
-def _head_tree_paths(work: Path, env: dict[str, str]) -> set[str] | None:
-    """Read the committed HEAD tree, not the working tree or Git's ignore view."""
+def _head_tree_paths(work: Path, env: dict[str, str],
+                     revision: str = "HEAD") -> set[str] | None:
+    """Read a committed tree, never a mutable working tree or ignore view."""
+    if revision != "HEAD" and not re.fullmatch(r"[a-f0-9]{40}", revision):
+        return None
     try:
         result = subprocess.run(
-            ["git", "-C", str(work), "ls-tree", "-r", "-z", "--name-only", "HEAD"],
+            ["git", "-C", str(work), "ls-tree", "-r", "-z", "--name-only", revision],
             cwd=work, env=env, capture_output=True, timeout=120, check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -275,6 +278,25 @@ class SnapshotAdapter:
         tree_paths = _head_tree_paths(work, env)
         if tree_paths is None or not manifest.keys() <= tree_paths:
             return "failed", "snapshot", None
+        # Fail closed on managed deletions: a temporarily incomplete WebDAV
+        # listing may pass sync/check yet omit existing canonical notes.
+        # Compare immutable Git trees, not working directories or rclone's
+        # possibly inconsistent listing. Intentional Vault deletes require a
+        # separate explicitly approved workflow; there is no bypass here.
+        if baseline is not None:
+            previous_paths = _head_tree_paths(work, env, baseline)
+            if previous_paths is None:
+                return "failed", "snapshot", None
+            try:
+                policy = load_config(c.policy)
+                managed_deletions = {
+                    path for path in previous_paths - tree_paths
+                    if not _is_repository_owned(path, policy)
+                }
+            except Exception:
+                return "failed", "snapshot", None
+            if managed_deletions:
+                return "failed", "snapshot", None
         expected = result.commit_sha if result.changed else baseline
         if result.changed and (not expected or not re.fullmatch(r"[a-f0-9]{40}", expected)):
             return "failed", "snapshot", None

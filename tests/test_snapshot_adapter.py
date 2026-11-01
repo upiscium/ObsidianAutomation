@@ -400,3 +400,152 @@ def test_sync_budget_enforced_across_multiple_successful_phases(
     ]
     assert not (adapter.config.state / "runs" / run_id / "cache.git").exists()
     assert git("--git-dir", remote, "rev-parse", "refs/heads/main", cwd=tmp_path) == baseline
+
+
+
+@pytest.mark.parametrize("canonical_has_note", [True, False],
+                         ids=["incomplete-webdav-view", "intentional-vault-deletion"])
+def test_managed_delete_guard_blocks_incomplete_remote_view(
+    tmp_path, monkeypatch, canonical_has_note,
+):
+    """A success reported by rclone cannot authorize deleting tracked notes.
+
+    The synthetic WebDAV view can omit an existing canonical note. Even if
+    rclone sync/sync/check all succeed against the *same* incomplete view,
+    the local commit must never be pushed. A legitimate Vault deletion also
+    remains blocked until an explicit future deletion-approval mechanism.
+    """
+    adapter, canonical, remote, _ = fixture(tmp_path, monkeypatch)
+    seed = tmp_path / "seed"
+    (seed / "extra.md").write_text("canonical note: keep in the backup\n")
+    git("add", "extra.md", cwd=seed)
+    git("commit", "-m", "add tracked canonical note", cwd=seed)
+    baseline = git("rev-parse", "HEAD", cwd=seed)
+    git("push", remote.as_uri(), "HEAD:refs/heads/main", cwd=seed)
+    if canonical_has_note:
+        (canonical / "extra.md").write_text("canonical note: keep in the backup\n")
+        # A synthetic transient WebDAV listing that drops exactly one file.
+        remote_view = tmp_path / "incomplete-webdav-view"
+        remote_view.mkdir()
+        (remote_view / "note.md").write_text("old")
+        monkeypatch.setenv("FAKE_VAULT", str(remote_view))
+    else:
+        # The same guard also refuses a real deletion without separate approval.
+        assert not (canonical / "extra.md").exists()
+    run_id = ("a" if canonical_has_note else "b") * 32
+
+    assert adapter(run_id) == ("failed", "snapshot", None)
+    assert git("--git-dir", remote, "rev-parse", "refs/heads/main", cwd=tmp_path) == baseline
+    assert git("--git-dir", remote, "show", "refs/heads/main:extra.md",
+               cwd=tmp_path) == "canonical note: keep in the backup"
+    work = adapter.config.state / "runs" / run_id / "work"
+    assert work.is_dir()
+    assert git("rev-parse", "HEAD", cwd=work) != baseline
+    missing = subprocess.run(
+        ["git", "-C", str(work), "cat-file", "-e", "HEAD:extra.md"],
+        capture_output=True, timeout=10,
+    )
+    assert missing.returncode != 0  # local-only deletion never reached remote
+    assert git("status", "--porcelain", cwd=work) == ""
+    if canonical_has_note:
+        assert (canonical / "extra.md").is_file()
+    else:
+        assert not (canonical / "extra.md").exists()
+    # The source view appears consistent, so this exercises the Git guard,
+    # not a generic rclone retry, check failure or empty-manifest rejection.
+    receipt = _sync_receipt(adapter, run_id)
+    assert [(item["phase"], item["reason"]) for item in receipt["attempts"]] == [
+        ("sync_initial", "ok"), ("sync_settled", "ok"), ("check", "ok"),
+    ]
+
+
+def test_managed_delete_guard_preserves_repo_owned_and_allows_updates(
+    tmp_path, monkeypatch,
+):
+    adapter, canonical, remote, _ = fixture(tmp_path, monkeypatch)
+    seed = tmp_path / "seed"
+    (seed / ".gitea" / "workflows").mkdir(parents=True)
+    (seed / ".gitea" / "workflows" / "backup.yml").write_text("name: CI\n")
+    (seed / ".gitignore").write_text("data.json\n")
+    git("add", ".gitea/workflows/backup.yml", ".gitignore", cwd=seed)
+    git("commit", "-m", "repository-owned CI and ignore", cwd=seed)
+    baseline = git("rev-parse", "HEAD", cwd=seed)
+    git("push", remote.as_uri(), "HEAD:refs/heads/main", cwd=seed)
+    adapter.config.policy.write_text(
+        "version = 1\nsettle_seconds = 0\nstability_attempts = 1\n"
+        "exclude = []\nrepository_owned = ['.gitea/**', '.gitignore']\n"
+    )
+    (canonical / "note.md").write_text("updated canonical note")
+    run_id = "c" * 32
+
+    status, stage, saved = adapter(run_id)
+    assert (status, stage) == ("saved", "verify")
+    assert saved != baseline
+    assert git("--git-dir", remote, "rev-parse", "refs/heads/main", cwd=tmp_path) == saved
+    assert git("--git-dir", remote, "show", "refs/heads/main:note.md",
+               cwd=tmp_path) == "updated canonical note"
+    assert git("--git-dir", remote, "show", "refs/heads/main:.gitignore",
+               cwd=tmp_path) == "data.json"
+    assert git("--git-dir", remote, "show", "refs/heads/main:.gitea/workflows/backup.yml",
+               cwd=tmp_path) == "name: CI"
+    assert (canonical / "note.md").read_text() == "updated canonical note"
+
+
+def test_managed_delete_guard_allows_initial_empty_repository(
+    tmp_path, monkeypatch,
+):
+    from dataclasses import replace
+
+    adapter, canonical, _, _ = fixture(tmp_path, monkeypatch)
+    empty = tmp_path / "empty.git"
+    git("init", "--bare", empty, cwd=tmp_path)
+    adapter.config = replace(adapter.config, git_remote=empty.as_uri())
+    run_id = "d" * 32
+
+    status, stage, saved = adapter(run_id)
+    assert (status, stage) == ("saved", "verify")
+    assert saved is not None
+    assert git("--git-dir", empty, "rev-parse", "refs/heads/main", cwd=tmp_path) == saved
+    assert git("--git-dir", empty, "show", "refs/heads/main:note.md",
+               cwd=tmp_path) == "old"
+
+
+def test_managed_delete_guard_fails_closed_if_baseline_tree_unavailable(
+    tmp_path, monkeypatch,
+):
+    adapter, canonical, remote, baseline = fixture(tmp_path, monkeypatch)
+    (canonical / "note.md").write_text("updated, but baseline cannot be inspected")
+    import obsidian_automation.snapshot_adapter as module
+    original = module._head_tree_paths
+
+    def fail_baseline_tree(work, env, revision="HEAD"):
+        if revision != "HEAD":
+            return None
+        return original(work, env, revision)
+
+    monkeypatch.setattr(module, "_head_tree_paths", fail_baseline_tree)
+    run_id = "e" * 32
+    assert adapter(run_id) == ("failed", "snapshot", None)
+    assert git("--git-dir", remote, "rev-parse", "refs/heads/main", cwd=tmp_path) == baseline
+    assert git("--git-dir", remote, "show", "refs/heads/main:note.md",
+               cwd=tmp_path) == "old"
+
+
+def test_managed_delete_guard_does_not_exempt_similar_prefixes(
+    tmp_path, monkeypatch,
+):
+    adapter, canonical, remote, _ = fixture(tmp_path, monkeypatch)
+    seed = tmp_path / "seed"
+    (seed / ".gitea-not-protected").mkdir()
+    (seed / ".gitea-not-protected" / "note.md").write_text("managed note")
+    git("add", ".gitea-not-protected/note.md", cwd=seed)
+    git("commit", "-m", "managed lookalike path", cwd=seed)
+    baseline = git("rev-parse", "HEAD", cwd=seed)
+    git("push", remote.as_uri(), "HEAD:refs/heads/main", cwd=seed)
+    adapter.config.policy.write_text(
+        "version = 1\nsettle_seconds = 0\nstability_attempts = 1\n"
+        "exclude = []\nrepository_owned = ['.gitea/**', '.gitignore']\n"
+    )
+
+    assert adapter("f" * 32) == ("failed", "snapshot", None)
+    assert git("--git-dir", remote, "rev-parse", "refs/heads/main", cwd=tmp_path) == baseline
