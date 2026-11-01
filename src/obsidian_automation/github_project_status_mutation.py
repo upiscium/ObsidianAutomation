@@ -202,12 +202,35 @@ def parse_watcher_proposal(data: bytes) -> ProjectStatusProposal:
         "reason",
         "repository",
     }
-    if set(value) != required:
-        missing = sorted(required - set(value))
-        unknown = sorted(set(value) - required)
+    # #465 watcher observations carry recent branch-HEAD provenance in exactly
+    # two additional fields. Validate the pair, but do not widen the canonical
+    # proposal sent to existing production Writer/Compactor: effect authority
+    # remains the original, strictly validated status-change schema. The full
+    # branch evidence is retained in the observation log and local SHA cache.
+    optional_observation = {"recent_commit_sha", "recent_commit_at"}
+    supplied = set(value)
+    if supplied not in (required, required | optional_observation):
+        expected = required | (optional_observation if supplied & optional_observation else set())
+        missing = sorted(expected - supplied)
+        unknown = sorted(supplied - expected)
         raise ProjectStatusMutationError(
             f"proposal properties do not match watcher contract; missing={missing}, unknown={unknown}"
         )
+    if supplied & optional_observation:
+        recent_sha = value["recent_commit_sha"]
+        recent_at = _parse_timestamp(
+            value["recent_commit_at"], label="recent_commit_at", allow_none=True
+        )
+        if recent_sha is not None and (
+            type(recent_sha) is not str or _SHA_RE.fullmatch(recent_sha) is None
+        ):
+            raise ProjectStatusMutationError(
+                "recent_commit_sha must be null or a lowercase Git digest"
+            )
+        if (recent_sha is None) != (recent_at is None):
+            raise ProjectStatusMutationError(
+                "recent_commit_sha and recent_commit_at must both be null or both present"
+            )
     if value["event"] != "project-status-observation":
         raise ProjectStatusMutationError("event must be project-status-observation")
     if value["change"] is not True or value["pending"] is not True:
