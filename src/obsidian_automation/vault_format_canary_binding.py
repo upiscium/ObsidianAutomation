@@ -143,17 +143,27 @@ class BoundedCanaryWriter:
         self._transport = transport
 
     def __call__(self, plan: dict) -> dict:
-        # No credential read, network, or private receipt effect until the
-        # immutable plan and approved single target have been admitted.
+        # Take an independent JSON snapshot before grant admission. The caller
+        # retains a mutable Plan dict and may mutate it (even while a trusted
+        # verifier runs). Never pass that mutable reference to the CAS Writer.
+        # A racing mutation must either yield a valid approved snapshot or
+        # fail closed; the snapshot cannot be changed after admission.
         grant = self._grant
-        plan_sha, entries = _validated_plan(plan)
+        try:
+            frozen_plan = json.loads(json.dumps(
+                plan, ensure_ascii=False, sort_keys=True,
+                separators=(",", ":"), allow_nan=False,
+            ))
+        except (TypeError, ValueError, UnicodeError, RuntimeError, RecursionError, OverflowError):
+            raise FormatWriteError("canary_plan_snapshot_invalid") from None
+        plan_sha, entries = _validated_plan(frozen_plan)
         if plan_sha != grant.plan_sha256:
             raise FormatWriteError("canary_plan_mismatch")
         item = entries.get(grant.target_path)
         if (item is None or item.get("status") != "would_change"
                 or item.get("before_sha256") != grant.before_sha256
                 or item.get("after_sha256") != grant.after_sha256
-                or plan.get("counts", {}).get("error", 0) != 0):
+                or frozen_plan.get("counts", {}).get("error", 0) != 0):
             raise FormatWriteError("canary_target_mismatch")
 
         # Hold the shared SetupStore's in-process RLock across proof checking
@@ -229,7 +239,7 @@ class BoundedCanaryWriter:
                 return delegate(**kwargs)
 
             return apply_plan(
-                plan,
+                frozen_plan,
                 selected_paths=(grant.target_path,),
                 enabled=True,
                 cas_server_verified=True,

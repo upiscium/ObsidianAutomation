@@ -334,6 +334,56 @@ def test_ambiguous_account_root_spelling_is_rejected_before_network(setup, name,
     assert not dav.calls
 
 
+def test_mutating_caller_plan_during_proof_cannot_replace_approved_bytes(setup):
+    vault, plan, _, _, grant = setup
+    other_before = b"# Synthetic\nUNAPPROVED ALTERED\n  \nafter\n"
+    (vault / TARGET).write_bytes(other_before)
+    replacement = create_plan(vault)
+    assert replacement["plan_sha256"] != grant.plan_sha256
+    dav = FakeDAV(body=other_before)
+
+    def swap_plan_after_admission(*_):
+        # Simulates a racing caller retaining its mutable Plan reference.
+        plan.clear()
+        plan.update(replacement)
+        return True
+
+    result = make(setup, dav=dav, proof_verifier=swap_plan_after_admission)(plan)
+    assert plan["plan_sha256"] == replacement["plan_sha256"]
+    assert result["status"] == "blocked"
+    assert result["outcomes"][0]["result"] == "source_changed"
+    assert result["outcomes"][0]["after_sha256"] == grant.after_sha256
+    assert not dav.puts
+    assert dav.body == other_before
+
+
+def test_nested_mutation_of_callers_plan_cannot_affect_frozen_write(setup):
+    _, plan, _, _, grant = setup
+    dav = FakeDAV()
+
+    def mutate_nested_entry(*_):
+        item = next(item for item in plan["results"] if item["path"] == TARGET)
+        item["after_sha256"] = "0" * 64
+        item["changed_lines"] = [999]
+        return True
+
+    result = make(setup, dav=dav, proof_verifier=mutate_nested_entry)(plan)
+    assert result["status"] == "complete"
+    assert result["outcomes"][0]["result"] == "applied"
+    assert result["outcomes"][0]["after_sha256"] == grant.after_sha256
+    assert len(dav.puts) == 1
+    assert dav.body == DESIRED
+
+
+def test_non_json_plan_snapshot_fails_before_credentials_or_network(setup):
+    _, plan, shared, _, _ = setup
+    plan["non_json_value"] = object()
+    dav = FakeDAV()
+    with pytest.raises(FormatWriteError, match="canary_plan_snapshot_invalid"):
+        make(setup, dav=dav)(plan)
+    assert shared.loads == 0 and not dav.calls
+
+
 def test_proof_verifier_cannot_rotate_connection_before_first_get(setup):
     _, plan, shared, _, _ = setup
     dav = FakeDAV()

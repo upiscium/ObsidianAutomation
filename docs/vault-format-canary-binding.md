@@ -34,8 +34,11 @@ disabled and Formatter stays at 24-hour Dry-run.
 ## Source-only one-operation boundary
 
 1. Validate the grant's exact path, hash, operation ID and receipt root.
-2. Before reading credentials, require an unmodified v3 Plan with the
-   exact approved `would_change` path and original/desired SHA values.
+2. Before reading credentials, detach the incoming mutable Plan as a
+   JSON-only snapshot; reject malformed snapshots. Verify that snapshot's
+   exact v3 digest, approved `would_change` path, and original/desired SHA
+   values. Pass only the frozen snapshot to the guarded Writer. Mutating
+   the caller's Plan later cannot substitute different write contents.
 3. **Acquire the same in-process SetupStore RLock** used for credential
    updates. Refuse an unavailable lock. Keep this lock across the
    entire Writer invocation, including the conditional PUT and GET
