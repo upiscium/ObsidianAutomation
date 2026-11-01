@@ -5,9 +5,11 @@ No arbitrary command, URL, Vault path or credential comes from an HTTP request.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,8 +18,24 @@ from urllib.parse import urlsplit
 from .vault_snapshot import build_manifest, load_config, snapshot_vault
 
 
-# Bound remote Vault transfer/check independently of short Git operations.
+# Retry only a read-only Nextcloud pull into the disposable local mirror.
+# Never retry an uncertain Git effect. Enforce both per-call and total budgets.
 _RCLONE_IO_TIMEOUT_SECONDS = 600
+_RCLONE_TOTAL_BUDGET_SECONDS = 900
+_RCLONE_MAX_ATTEMPTS = 3
+_RCLONE_RETRY_DELAYS_SECONDS = (2, 4)
+# Installed rclone v1.60 documents code 1=usage, 2=unclassified;
+# current rclone docs reverse 1/2. Do not falsely infer a reason from either.
+# Both receive only the bounded, pre-Git mirror-stage retry policy.
+_RCLONE_RETRYABLE = frozenset({
+    "code_1_ambiguous", "code_2_ambiguous", "file_missing", "temporary_error",
+})
+_RCLONE_EXIT_REASONS = {
+    1: "code_1_ambiguous", 2: "code_2_ambiguous", 3: "directory_missing",
+    4: "file_missing", 5: "temporary_error", 6: "nonretryable_error",
+    7: "fatal_error", 8: "transfer_limit", 9: "no_transfer",
+    10: "duration_limit",
+}
 
 
 @dataclass(frozen=True)
@@ -68,14 +86,66 @@ def git_environment(local_fixture: bool, credentials: Path | None = None,
     return env
 
 
-def _command(args: list[str], *, cwd: Path, env: dict[str, str], timeout: int = 120) -> tuple[bool, str]:
+def _command(args: list[str], *, cwd: Path, env: dict[str, str], timeout: float = 120,
+             diagnostics: dict[str, int | str] | None = None) -> tuple[bool, str]:
+    # Git needs stdout for SHA verification. The rclone path deliberately
+    # discards both streams, which can contain private paths or credentials.
+    streams = ({"capture_output": True} if diagnostics is None
+               else {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL})
     try:
-        result = subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True,
-                                timeout=timeout, check=False)
-    except (OSError, subprocess.TimeoutExpired):
+        result = subprocess.run(args, cwd=cwd, env=env, text=True, timeout=timeout,
+                                check=False, **streams)
+    except subprocess.TimeoutExpired:
+        if diagnostics is not None:
+            diagnostics["reason"] = "timeout"
         return False, ""
-    # Only stdout for ref lookups; stderr can contain secrets and private paths.
+    except OSError:
+        if diagnostics is not None:
+            diagnostics["reason"] = "spawn_error"
+        return False, ""
+    if diagnostics is not None:
+        code = result.returncode
+        diagnostics["exit_code"] = code
+        diagnostics["reason"] = (
+            "ok" if code == 0 else _RCLONE_EXIT_REASONS.get(code, "unknown_exit")
+        )
+        return code == 0, ""
+    # Only stdout for Git ref lookups; stderr can include secrets or paths.
     return result.returncode == 0, result.stdout.strip()
+
+
+def _write_rclone_receipt(directory: Path, attempts: list[dict[str, int | str | None]]) -> bool:
+    # Atomic, private, fixed-schema, bounded run-local diagnostics; never
+    # record subprocess stdout/stderr, source paths, endpoints or credentials.
+    if len(attempts) > 9:
+        return False
+    payload = json.dumps({"version": 1, "attempts": attempts},
+                         separators=(",", ":"), sort_keys=True).encode("ascii")
+    if len(payload) > 2048:
+        return False
+    temp: str | None = None
+    try:
+        fd, temp = tempfile.mkstemp(prefix=".rclone-receipt-", dir=directory)
+        with os.fdopen(fd, "wb") as file:
+            file.write(payload)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temp, directory / "rclone-receipt.json")
+        temp = None
+        dirfd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(dirfd)
+        finally:
+            os.close(dirfd)
+        return True
+    except OSError:
+        return False
+    finally:
+        if temp is not None:
+            try:
+                os.unlink(temp)
+            except OSError:
+                pass
 
 
 def _head_tree_paths(work: Path, env: dict[str, str]) -> set[str] | None:
@@ -114,16 +184,51 @@ class SnapshotAdapter:
         env = git_environment(c.allow_local_fixture, c.git_credentials,
                               c.state / "git-askpass" if c.git_credentials else None)
         rclone = ["rclone", "--config", str(c.rclone_config)]
-        for action in ("sync", "sync", "check"):
-            args = rclone + [action, c.rclone_remote, str(mirror), "--retries", "1", "--low-level-retries", "1"]
-            if action == "sync":
-                args += ["--delete-after"]  # only the new isolated local mirror
-            ok, _ = _command(args, cwd=directory, env=env,
-                             timeout=_RCLONE_IO_TIMEOUT_SECONDS)
-            if not ok:
-                return "failed", "sync", None
-            if action == "sync" and self.settle_seconds:
-                time.sleep(self.settle_seconds)
+        # Disable nested high-level retries so application-level retries have
+        # one auditable bound. A low-level HTTP retry remains allowed.
+        attempts: list[dict[str, int | str | None]] = []
+        sync_started = time.monotonic()
+        converged = False
+        for cycle in range(1, _RCLONE_MAX_ATTEMPTS + 1):
+            # Repeat the WHOLE sync/sync/check cycle after a transient
+            # failure. Retrying only 'check' cannot recover newly created
+            # source files that were not present during the earlier sync.
+            for phase, action in (("sync_initial", "sync"),
+                                  ("sync_settled", "sync"),
+                                  ("check", "check")):
+                remaining = _RCLONE_TOTAL_BUDGET_SECONDS - (time.monotonic() - sync_started)
+                if remaining <= 0:
+                    attempts.append({"phase": phase, "attempt": cycle,
+                                     "reason": "budget_exhausted", "exit_code": None})
+                    _write_rclone_receipt(directory, attempts)
+                    return "failed", "sync", None
+                args = rclone + [action, c.rclone_remote, str(mirror),
+                                 "--retries", "1", "--low-level-retries", "2"]
+                if action == "sync":
+                    args += ["--delete-after"]  # only disposable local mirror
+                detail: dict[str, int | str] = {}
+                ok, _ = _command(args, cwd=directory, env=env,
+                                 timeout=min(_RCLONE_IO_TIMEOUT_SECONDS, remaining),
+                                 diagnostics=detail)
+                reason = "ok" if ok else str(detail.get("reason", "unknown_exit"))
+                code = detail.get("exit_code")
+                attempts.append({"phase": phase, "attempt": cycle, "reason": reason,
+                                 "exit_code": code if type(code) is int else None})
+                if not _write_rclone_receipt(directory, attempts):
+                    return "failed", "sync", None
+                if not ok:
+                    if reason not in _RCLONE_RETRYABLE:
+                        return "failed", "sync", None
+                    break
+                if action == "sync" and self.settle_seconds:
+                    time.sleep(self.settle_seconds)
+            else:
+                converged = True
+                break
+            if cycle < _RCLONE_MAX_ATTEMPTS:
+                time.sleep(_RCLONE_RETRY_DELAYS_SECONDS[cycle - 1])
+        if not converged:
+            return "failed", "sync", None
         try:
             manifest = build_manifest(mirror, load_config(c.policy))
         except Exception:
