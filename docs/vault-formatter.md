@@ -29,6 +29,37 @@ production systemd unit.
 - YAML frontmatter, fenced code including Dataview/Meta Bind, multiline
   Templater expressions, HTML comments, known raw HTML blocks and ambiguous
   blockquote/indented code are not changed.
+- Quoted fenced code (policy v2) is protected only when both delimiters and
+  every intervening line carry explicit quote markers of the same depth.
+  Indeterminate or unclosed quoted fences are skipped, as are quoted-fence
+  markers inside another protected construct (frontmatter, ordinary fenced
+  code, HTML, or Templater). Template/HTML opening syntax inside a quoted
+  fence or its info string also causes a whole-file skip: Templater/HTML
+  source spans are independent of Markdown fence boundaries and could
+  otherwise alter content outside the fence. A quoted-fence document
+  containing any literal less-than sign anywhere is likewise skipped
+  (including comparisons and otherwise harmless code): Templater/HTML
+  source-language spans may cross Markdown, YAML and HTML protection
+  boundaries, and split/unknown markup cannot be parsed reliably here. The
+  protective marker detector deliberately recognizes both v1's legacy
+  rejection patterns (including indentation/tabs) and v2's spaced nested
+  quote prefixes; only the narrower, explicitly depth-matched grammar
+  can be admitted for transformation.
+  Incomplete raw HTML opening tags, including partial attributes or a
+  greater-than sign inside an unclosed quoted attribute, are rejected as
+  unsupported HTML rather than treated as bounded raw-tag contexts.
+  A literal closing-tag string inside an HTML attribute is not treated as
+  the end of that element. Documents combining Templater commands with raw
+  HTML are conservatively skipped, as are HTML comments that open inside
+  raw elements (or raw markup inside an active comment). Independent
+  source-language spans must not expose trailing string/comment bytes.
+  Inside an active raw element, a closing tag is admitted only on its
+  own line: text resembling an end tag inside nested attributes is not
+  sufficient evidence to resume normal Markdown formatting.
+  Nested opening elements within a raw HTML block are also skipped:
+  their quoted attributes can extend across a standalone-looking close.
+  This is a conservative coverage improvement, not an unrestricted
+  CommonMark parser.
 - **Unrecognized HTML elements are not parsed in Phase 1:** any such opening
   tag outside protected code/frontmatter causes the *whole file* to be skipped
   with reason unsupported-html-block. This includes potentially harmless inline
