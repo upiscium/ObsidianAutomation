@@ -513,7 +513,11 @@ def test_real_b4_browser_javascript_polls_until_terminal_and_refreshes_catalog()
 
     start = JS.index("async function dailyRefresh()")
     end = JS.index("let previewGeneration", start)
-    fragment = JS[start:end]
+    id_start = JS.index("function newWorkflowRequestId() {")
+    id_end = JS.index("\n}", id_start) + 2
+    # Include the real shared helper; a private-LAN HTTP context does not
+    # expose crypto.randomUUID(), but does provide crypto.getRandomValues().
+    fragment = JS[id_start:id_end] + "\n" + JS[start:end]
     script = r"""
 "use strict";
 const assert = require("node:assert/strict");
@@ -539,10 +543,14 @@ let postCount = 0;
 const sandbox = {
   $: id => nodes[id],
   setTimeout: callback => callback(),
-  crypto: {randomUUID: () => "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"},
+  crypto: {getRandomValues: bytes => {
+    for (let i = 0; i < bytes.length; ++i) bytes[i] = 0xbb;
+    return bytes;
+  }},
   snapshotPost: async (path, data) => {
     assert.equal(path, "/api/v1/daily/runs");
     assert.match(data.request_id, /^[a-f0-9]{32}$/);
+    assert.equal(data.request_id, "b".repeat(32));
     ++postCount; runStatus = "queued";
     return {run_id: runId};
   },
