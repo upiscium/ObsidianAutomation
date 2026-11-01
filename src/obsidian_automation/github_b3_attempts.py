@@ -271,8 +271,10 @@ class B3AttemptJournal:
                                 continue
                             if index[4] != 0:
                                 raise InvalidAttempt("invalid_runs_constraints")
+                            # SELECT projects one 'name' column, so [0]
+                            # is the indexed column name (not PRAGMA seqno).
                             unique_keys.add(tuple(
-                                row[0] for row in self.db.execute(
+                                name for (name,) in self.db.execute(
                                     "SELECT name FROM pragma_index_info(?) "
                                     "ORDER BY seqno", (index[1],),
                                 )
@@ -281,6 +283,20 @@ class B3AttemptJournal:
                             ("run_id",), ("request_id",), ("retry_of",),
                         }:
                             raise InvalidAttempt("invalid_runs_constraints")
+                        # Never make an old admission appear to finish before
+                        # it was created or before its effect had begun.
+                        regressed = self.db.execute(
+                            "SELECT 1 FROM runs WHERE state IN ('queued','running') "
+                            "AND (created > ? OR completed IS NOT NULL "
+                            "OR terminal_code IS NOT NULL "
+                            "OR (state='queued' AND started IS NOT NULL) "
+                            "OR (state='running' AND "
+                            "(started IS NULL OR started < created OR started > ?))) "
+                            "LIMIT 1",
+                            (recovered_at, recovered_at),
+                        ).fetchone()
+                        if regressed is not None:
+                            raise InvalidAttempt("clock_regression")
                     with self.db:
                         self.db.execute(
                             "CREATE TABLE IF NOT EXISTS runs ("

@@ -562,3 +562,35 @@ def test_invalid_clock_before_first_bootstrap_leaves_no_partial_db(tmp_path):
     assert not (root / "b3-attempts.initialized").exists()
     with B3AttemptJournal(root, clock=Clock(), initialize=True) as journal:
         assert journal.snapshot()["last_attempt"] is None
+
+
+@pytest.mark.parametrize("was_started", (False, True))
+def test_restart_clock_regression_refuses_invalid_completion_timestamp(
+    tmp_path, was_started,
+):
+    # Recovery must not claim a completion before admission or effect start.
+    clock = Clock(1000.0)
+    with _journal(tmp_path, clock=clock) as journal:
+        _, entry = journal.admit(REQUEST, BINDING, REV1)
+        if was_started:
+            journal.start(entry["run_id"])
+    clock.value = 999.0
+    with pytest.raises(InvalidAttempt, match="clock_regression"):
+        _journal(tmp_path, clock=clock, initialize=False)
+
+    # Once the clock has recovered, the *same* historical attempt remains.
+    clock.value = 1001.0
+    with _journal(tmp_path, clock=clock, initialize=False) as journal:
+        outcome = journal.lookup(entry["run_id"])
+        assert outcome["completed_at"] == 1001.0
+        if was_started:
+            assert outcome["state"] == "unconfirmed"
+            assert outcome["terminal_code"] == "interrupted_unknown"
+            with pytest.raises(Busy, match="unconfirmed_effect"):
+                journal.admit(NEXT, BINDING, REV2)
+        else:
+            assert outcome["state"] == "completed"
+            assert outcome["terminal_code"] == "abandoned_before_start"
+            result, another = journal.admit(NEXT, BINDING, REV2)
+            assert result == "accepted"
+            assert another["run_id"] != entry["run_id"]
