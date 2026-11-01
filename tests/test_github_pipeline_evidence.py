@@ -209,3 +209,26 @@ def test_invalid_producer_invariants_fail_closed_in_attested_projection(kind, ra
     assert result[kind]["last_outcome"] is None
     assert result["overall_health"] == "unknown"
     assert result["last_verified_pipeline_success"] is None
+
+
+@pytest.mark.parametrize("project_path", (
+    "10-Project/Status.md",
+    "10-Project/team/Status.md",
+))
+def test_status_receipt_accepts_project_path_allowed_by_status_producer(project_path):
+    raw = _mutate(_status(), project_path=project_path)
+    result = parse_producer_receipt(raw, kind="status", now=NOW)
+    assert result.kind == "status"
+    assert result.outcome == "applied"
+    assert result.changed is True
+
+
+@pytest.mark.parametrize("project_path", (
+    "10-Project/Status.md",
+    "10-Project/team/Status.md",
+))
+def test_overview_receipt_rejects_status_md_as_project_note(project_path):
+    # Keep status_path consistent so rejection is specifically for the Project note.
+    raw = _mutate(_overview(), project_path=project_path, status_path=project_path)
+    with pytest.raises(InvalidEvidence):
+        parse_producer_receipt(raw, kind="overview", now=NOW)

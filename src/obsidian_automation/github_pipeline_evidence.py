@@ -87,7 +87,7 @@ def _safe_path(value: object, *, status_note: bool = False) -> bool:
     return (len(pieces) >= 2 and pieces[0] == "10-Project"
             and all(p not in ("", ".", "..") for p in pieces)
             and (pieces[-1] == "Status.md" if status_note
-                 else pieces[-1].endswith(".md") and pieces[-1] != "Status.md"))
+                 else pieces[-1].endswith(".md")))
 
 
 def _datetime(value: object) -> datetime:
@@ -139,7 +139,8 @@ def parse_producer_receipt(
                 or row["desired_status"] not in _TARGETS
                 or row["expected_status"] == row["desired_status"]):
             raise InvalidEvidence("invalid_receipt")
-    elif (not _safe_path(row["status_path"], status_note=True)
+    elif (row["project_path"].rsplit("/", 1)[-1] == "Status.md"
+          or not _safe_path(row["status_path"], status_note=True)
           or row["status_path"] != row["project_path"].rsplit("/", 1)[0] + "/Status.md"
           or (row["before_content_sha256"] is not None
               and not _sha(row["before_content_sha256"]))):

@@ -260,3 +260,14 @@ def test_scandir_stops_after_limit_plus_one(tmp_path, monkeypatch):
     assert output["status"]["evidence_state"] == "capacity_exceeded"
     assert output["overview"]["evidence_state"] == "capacity_exceeded"
     assert scanner.reads == 4
+
+
+def test_status_md_project_receipt_from_status_producer_is_not_false_invalid(tmp_path):
+    root = _dir(tmp_path)
+    raw = json.loads(_status())
+    raw["project_path"] = "10-Project/team/Status.md"
+    _put(root, payload=json.dumps(raw).encode("utf-8"))
+    result = _read(root)
+    assert result["status"]["evidence_state"] == "producer_readback"
+    assert result["status"]["last_outcome"] == "applied"
+    assert result["last_verified_pipeline_success"] is None
