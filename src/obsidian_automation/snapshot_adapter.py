@@ -16,6 +16,10 @@ from urllib.parse import urlsplit
 from .vault_snapshot import build_manifest, load_config, snapshot_vault
 
 
+# Bound remote Vault transfer/check independently of short Git operations.
+_RCLONE_IO_TIMEOUT_SECONDS = 600
+
+
 @dataclass(frozen=True)
 class Connections:
     state: Path
@@ -114,7 +118,8 @@ class SnapshotAdapter:
             args = rclone + [action, c.rclone_remote, str(mirror), "--retries", "1", "--low-level-retries", "1"]
             if action == "sync":
                 args += ["--delete-after"]  # only the new isolated local mirror
-            ok, _ = _command(args, cwd=directory, env=env)
+            ok, _ = _command(args, cwd=directory, env=env,
+                             timeout=_RCLONE_IO_TIMEOUT_SECONDS)
             if not ok:
                 return "failed", "sync", None
             if action == "sync" and self.settle_seconds:
