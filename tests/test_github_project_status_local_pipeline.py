@@ -271,3 +271,72 @@ def test_worker_rejects_non_content_addressed_request_name(tmp_path: Path) -> No
 
     assert rc == 1
     assert "filename does not match" in stderr.getvalue()
+
+
+def test_actual_recent_branch_observation_survives_queue_into_legacy_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Watcher -> typed Queue -> old canonical Worker, fake effect only."""
+    from obsidian_automation.github_project_watcher import (
+        ProjectBinding, RepositorySnapshot, StatusDecision, _event_payload,
+    )
+
+    request_dir, result_dir, state_root, password_file = _prepare_worker_dirs(tmp_path)
+    snapshot = RepositorySnapshot(
+        repository="upiscium/Terreate",
+        latest_commit_sha="a" * 40,
+        latest_commit_at=datetime(2026, 10, 1, tzinfo=timezone.utc),
+        open_issues=frozenset(),
+        open_prs=frozenset(),
+        observed_at=datetime(2026, 11, 1, tzinfo=timezone.utc),
+        recent_commit_sha="b" * 40,
+        recent_commit_at=datetime(2026, 10, 31, tzinfo=timezone.utc),
+    )
+    project = ProjectBinding(
+        "10-Project/Terreate/Terreate.md", "upiscium/Terreate", "planning",
+    )
+    observation = _event_payload(
+        project, snapshot,
+        StatusDecision("running", "latest commit is within 7 days", True),
+    )
+    assert set(observation).issuperset({"recent_commit_sha", "recent_commit_at"})
+    _enqueue_output_line(
+        json.dumps(observation), request_dir=request_dir, stdout=io.StringIO(),
+    )
+    files = list(request_dir.glob("*.github-status.json"))
+    assert len(files) == 1
+    proposed = parse_watcher_proposal(files[0].read_bytes())
+    assert proposed.expected_status == "planning"
+    assert proposed.desired_status == "running"
+    assert proposed.latest_commit_sha == "a" * 40
+    assert "recent_commit_sha" not in json.loads(proposed.canonical_bytes)
+
+    effects = []
+
+    def fake_effect(value, **_kwargs):
+        effects.append(value.sha256)
+        return ProjectStatusTransportResult(
+            proposal_sha256=value.sha256,
+            project_path=value.project_path,
+            repository=value.repository,
+            expected_status=value.expected_status,
+            desired_status=value.desired_status,
+            outcome="applied",
+            before_content_sha256="c" * 64,
+            after_content_sha256="d" * 64,
+            completed_at="2026-11-01T00:00:00Z",
+        )
+
+    monkeypatch.setattr(worker, "apply_project_status", fake_effect)
+    rc = worker.run_worker(
+        request_dir=request_dir,
+        result_dir=result_dir,
+        state_root=state_root,
+        base_url="https://nextcloud.invalid/dav",
+        username="synthetic",
+        password_file=password_file,
+        stdout=io.StringIO(),
+    )
+    assert rc == 0
+    assert effects == [proposed.sha256]
+    assert (result_dir / f"{proposed.sha256}.github-status.transport-result.json").exists()

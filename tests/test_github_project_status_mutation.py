@@ -360,3 +360,45 @@ def test_transport_result_persistence_is_bound_to_proposal_hash(tmp_path: Path) 
     assert payload["stage"] == "github_project_status_transport"
     assert payload["proposal_sha256"] == proposal.sha256
     assert payload["outcome"] == "already_desired"
+
+
+def test_recent_branch_provenance_accepts_exact_pair_but_keeps_legacy_canonical() -> None:
+    # Provenance is observation-only: authority remains the existing exact
+    # content-addressed status proposal understood by deployed old Workers.
+    prior = parse_watcher_proposal(_event())
+    recent = parse_watcher_proposal(_event(
+        recent_commit_sha="b" * 40,
+        recent_commit_at="2026-10-30T11:30:00Z",
+    ))
+    assert recent.canonical_bytes == prior.canonical_bytes
+    assert recent.sha256 == prior.sha256
+    assert json.loads(recent.canonical_bytes)["event"] == "project-status-observation"
+    assert "recent_commit_sha" not in json.loads(recent.canonical_bytes)
+    assert "recent_commit_at" not in json.loads(recent.canonical_bytes)
+
+
+@pytest.mark.parametrize("delta", [
+    {"recent_commit_sha": "b" * 40},
+    {"recent_commit_at": "2026-10-30T11:30:00Z"},
+    {"recent_commit_sha": "b" * 39, "recent_commit_at": "2026-10-30T11:30:00Z"},
+    {"recent_commit_sha": ["b"] * 40, "recent_commit_at": "2026-10-30T11:30:00Z"},
+    {"recent_commit_sha": "b" * 40, "recent_commit_at": "invalid"},
+    {"recent_commit_sha": "b" * 40, "recent_commit_at": "2026-10-30T11:30:00"},
+    {"recent_commit_sha": None, "recent_commit_at": "2026-10-30T11:30:00Z"},
+    {"recent_commit_sha": "b" * 40, "recent_commit_at": None},
+    {"recent_commit_sha": "b" * 40, "recent_commit_at": "2026-10-30T11:30:00Z", "extra_authority": True},
+])
+def test_recent_provenance_rejects_partial_invalid_or_unrelated_extensions(
+    delta: dict[str, object],
+) -> None:
+    with pytest.raises(ProjectStatusMutationError):
+        parse_watcher_proposal(_event(**delta))
+
+
+def test_recent_provenance_can_be_explicit_null_pair_for_no_head() -> None:
+    prior = parse_watcher_proposal(_event())
+    observed = parse_watcher_proposal(_event(
+        recent_commit_sha=None,
+        recent_commit_at=None,
+    ))
+    assert observed.sha256 == prior.sha256

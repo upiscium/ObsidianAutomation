@@ -157,3 +157,85 @@ def test_two_watched_projects_cannot_target_same_status_note(tmp_path: Path) -> 
 
     assert rc == 1
     assert "multiple watched Projects target the same Status.md" in stderr.getvalue()
+
+
+class _RecentFeatureRuntimeClient(_RuntimeClient):
+    def _request_json(self, path: str) -> object:
+        if path.endswith("/commits?per_page=1"):
+            self.paths.append(path)
+            return [{
+                "sha": "a" * 40,
+                "commit": {"committer": {"date": "2026-10-01T00:00:00Z"}},
+            }]
+        if path.endswith("/branches?per_page=100&page=1"):
+            self.paths.append(path)
+            return [
+                {"name": "main", "commit": {"sha": "a" * 40}},
+                {"name": "feature", "commit": {"sha": "b" * 40}},
+            ]
+        if path.endswith("/commits/" + "b" * 40):
+            self.paths.append(path)
+            return {
+                "sha": "b" * 40,
+                "commit": {"committer": {"date": "2026-10-31T00:00:00Z"}},
+            }
+        return super()._request_json(path)
+
+
+def test_recent_feature_branch_flows_through_strict_queue_and_legacy_proposal(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """A full synthetic Watcher -> Queue -> old Worker proposal contract."""
+    from datetime import datetime, timezone
+    from obsidian_automation.github_project_status_mutation import parse_watcher_proposal
+
+    monkeypatch.setattr(
+        watcher, "_utc_now", lambda: datetime(2026, 11, 1, tzinfo=timezone.utc)
+    )
+    vault = tmp_path / "vault"
+    _write_project(vault, "10-Project/Test/Test.md")
+    request_dir = tmp_path / "requests"
+    request_dir.mkdir()
+    config = watcher.WatcherConfig(
+        vault_root=vault, state_db=tmp_path / "state.sqlite3"
+    )
+
+    outputs = []
+    for run in (1, 2):
+        client = _RecentFeatureRuntimeClient()
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        rc = run_and_enqueue(
+            config, request_dir=request_dir,
+            client=client, stdout=stdout, stderr=stderr,
+        )
+        assert rc == 0, stderr.getvalue()
+        assert "project-status-enqueue-error" not in stderr.getvalue()
+        events = [json.loads(s) for s in stdout.getvalue().splitlines()]
+        observation = next(
+            event for event in events if event.get("event") == "project-status-observation"
+        )
+        assert observation["current_status"] == "planning"
+        assert observation["proposed_status"] == "running"
+        assert observation["latest_commit_sha"] == "a" * 40
+        assert observation["recent_commit_sha"] == "b" * 40
+        status = next(
+            event for event in events if event.get("event") == "project-status-enqueued"
+        )
+        assert status["queue_result"] == ("queued" if run == 1 else "already_queued")
+        assert sum("/issues?state=open" in path for path in client.paths) == 1
+        assert sum("/pulls?state=open" in path for path in client.paths) == 1
+        assert any(
+            path.endswith("/commits/" + "b" * 40) for path in client.paths
+        ) == (run == 1)
+        outputs.append(status)
+
+    requests = list(request_dir.glob("*.github-status.json"))
+    assert len(requests) == 1
+    proposal = parse_watcher_proposal(requests[0].read_bytes())
+    assert proposal.expected_status == "planning"
+    assert proposal.desired_status == "running"
+    assert proposal.latest_commit_sha == "a" * 40
+    assert "recent_commit_sha" not in json.loads(proposal.canonical_bytes)
+    assert outputs[0]["proposal_sha256"] == outputs[1]["proposal_sha256"]
+    assert len(list(request_dir.glob("*.github-overview.json"))) == 1
