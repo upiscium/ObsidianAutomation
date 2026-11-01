@@ -177,3 +177,29 @@ def test_managed_ignored_new_file_cannot_be_reported_backed_up(tmp_path, monkeyp
     assert adapter(("5" if change_tracked else "4") * 32) == ("failed", "snapshot", None)
     assert git("--git-dir", remote, "rev-parse", "refs/heads/main", cwd=tmp_path) == baseline
     assert {file.name: file.read_bytes() for file in source.iterdir()} == source_before
+
+
+def test_rclone_only_uses_longer_bounded_timeout(tmp_path, monkeypatch):
+    adapter, _, remote, baseline = fixture(tmp_path, monkeypatch)
+    import obsidian_automation.snapshot_adapter as module
+
+    real_command = module._command
+    observed = []
+
+    def capture(args, **kwargs):
+        if args[0] == "rclone":
+            observed.append((args[3], kwargs.get("timeout")))
+        else:
+            # Git operations retain the independent, unchanged default.
+            assert kwargs.get("timeout", 120) == 120
+        return real_command(args, **kwargs)
+
+    monkeypatch.setattr(module, "_command", capture)
+    assert adapter("9" * 32) == ("no_changes", "verify", baseline)
+    assert observed == [
+        ("sync", module._RCLONE_IO_TIMEOUT_SECONDS),
+        ("sync", module._RCLONE_IO_TIMEOUT_SECONDS),
+        ("check", module._RCLONE_IO_TIMEOUT_SECONDS),
+    ]
+    assert module._RCLONE_IO_TIMEOUT_SECONDS == 600
+    assert git("--git-dir", remote, "rev-parse", "refs/heads/main", cwd=tmp_path) == baseline
