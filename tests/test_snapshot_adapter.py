@@ -549,3 +549,51 @@ def test_managed_delete_guard_does_not_exempt_similar_prefixes(
 
     assert adapter("f" * 32) == ("failed", "snapshot", None)
     assert git("--git-dir", remote, "rev-parse", "refs/heads/main", cwd=tmp_path) == baseline
+
+
+
+def test_managed_delete_guard_accepts_valid_empty_baseline_commit(
+    tmp_path, monkeypatch,
+):
+    """A valid empty Git commit does not mean the baseline tree is unreadable."""
+    from dataclasses import replace
+    from obsidian_automation.snapshot_adapter import _head_tree_paths, git_environment
+
+    adapter, source, _, _ = fixture(tmp_path, monkeypatch)
+    remote = tmp_path / "empty-baseline.git"
+    git("init", "--bare", remote, cwd=tmp_path)
+    seed = tmp_path / "empty-baseline-seed"
+    seed.mkdir()
+    git("init", seed, cwd=tmp_path)
+    git("config", "user.name", "Tester", cwd=seed)
+    git("config", "user.email", "test@local.invalid", cwd=seed)
+    git("commit", "--allow-empty", "-m", "valid empty tree baseline", cwd=seed)
+    baseline = git("rev-parse", "HEAD", cwd=seed)
+    git("push", remote.as_uri(), "HEAD:refs/heads/main", cwd=seed)
+    adapter.config = replace(adapter.config, git_remote=remote.as_uri())
+    result = adapter("0" * 32)
+
+    assert result[:2] == ("saved", "verify")
+    assert result[2] != baseline
+    assert git("--git-dir", remote, "rev-parse", "refs/heads/main", cwd=tmp_path) == result[2]
+    work = adapter.config.state / "runs" / ("0" * 32) / "work"
+    assert _head_tree_paths(work, git_environment(True), baseline) == set()
+    assert git("--git-dir", remote, "show", "refs/heads/main:note.md", cwd=tmp_path) == "old"
+
+
+def test_head_tree_paths_rejects_truncated_nonempty_stdout(
+    tmp_path, monkeypatch,
+):
+    import obsidian_automation.snapshot_adapter as module
+
+    work = tmp_path / "work"
+    work.mkdir()
+    actual_run = module.subprocess.run
+
+    def malformed_ls_tree(argv, **kwargs):
+        if argv[:3] == ["git", "-C", str(work)] and "ls-tree" in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout=b"note.md")
+        return actual_run(argv, **kwargs)
+
+    monkeypatch.setattr(module.subprocess, "run", malformed_ls_tree)
+    assert module._head_tree_paths(work, module.git_environment(True)) is None

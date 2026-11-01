@@ -160,7 +160,14 @@ def _head_tree_paths(work: Path, env: dict[str, str],
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
-    if result.returncode != 0 or not result.stdout.endswith(b"\0"):
+    if result.returncode != 0:
+        return None
+    # A valid Git commit can have an empty tree. git ls-tree -z then
+    # succeeds with zero stdout bytes, not a trailing NUL. Keep malformed
+    # nonempty records fail-closed, including truncated NUL termination.
+    if result.stdout == b"":
+        return set()
+    if not result.stdout.endswith(b"\0"):
         return None
     return {os.fsdecode(path) for path in result.stdout[:-1].split(b"\0")}
 
