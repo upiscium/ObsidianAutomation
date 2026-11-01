@@ -206,3 +206,59 @@ def test_status_javascript_renders_distinct_incident_and_retry_metrics() -> None
     assert 'retry_exhausted_generations' in JS
     assert 'blocked_generations' in JS
     assert 'innerHTML' not in JS
+
+
+
+def test_workflow_run_ids_do_not_require_secure_context_uuid() -> None:
+    # Loginless private-LAN WebUI is served via plain HTTP. Web Crypto's
+    # randomUUID is secure-context-only; getRandomValues is not.
+    assert JS.count("newWorkflowRequestId()") == 4
+    for workflow in ("snapshot", "daily", "formatter"):
+        assert f'snapshotPost("/api/v1/{workflow}/runs"' in JS
+    assert 'request_id:crypto.randomUUID().replaceAll("-", "")' not in JS
+    assert "crypto.getRandomValues(new Uint8Array(16))" in JS
+    # Keep operator-operation UUID semantics and its existing guard unchanged.
+    assert 'request_id:crypto.randomUUID(),' in JS
+    assert 'if (!globalThis.crypto || !crypto.randomUUID)' in JS
+
+
+def test_workflow_run_ids_with_insecure_http_crypto_without_random_uuid() -> None:
+    import shutil
+    import subprocess
+    import json
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node runtime unavailable")
+
+    # Execute only the production helper in an isolated JS context where the
+    # secure-context-only randomUUID member is unavailable.
+    start = JS.index("function newWorkflowRequestId() {")
+    end = JS.index("\n}", start) + 2
+    helper = JS[start:end]
+    script = """
+const vm = require("node:vm");
+const assert = require("node:assert/strict");
+const helper = JSON.parse(process.argv[1]);
+const make = (seed) => ({
+  crypto: {getRandomValues(bytes) {
+    for (let i = 0; i < bytes.length; i++) bytes[i] = (seed + i) & 255;
+    return bytes;
+  }},
+  Uint8Array, Array,
+});
+const context = make(0);
+const result = vm.runInNewContext(helper + "\\nnewWorkflowRequestId()", context);
+assert.match(result, /^[0-9a-f]{32}$/);
+assert.equal(result, "000102030405060708090a0b0c0d0e0f");
+const next = vm.runInNewContext(helper + "\\nnewWorkflowRequestId()", make(1));
+assert.notEqual(result, next);
+assert.throws(() => vm.runInNewContext(helper + "\\nnewWorkflowRequestId()", {
+  crypto: {}, Uint8Array, Array,
+}), /secure_random_unavailable/);
+"""
+    result = subprocess.run(
+        [node, "-e", script, json.dumps(helper)],
+        capture_output=True, text=True, timeout=15, check=False,
+    )
+    assert result.returncode == 0, result.stderr
