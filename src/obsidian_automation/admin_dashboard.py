@@ -522,6 +522,15 @@ async function snapshotRefresh() {
     await workflowCatalogRefresh();
   }
 }
+// The default private-LAN HTTP UI is not a secure context, so
+// crypto.randomUUID() is unavailable. getRandomValues remains available
+// and supplies a collision-resistant 128-bit, 32-hex Job request ID.
+function newWorkflowRequestId() {
+  if (!globalThis.crypto || typeof crypto.getRandomValues !== "function")
+    throw Error("secure_random_unavailable");
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("");
+}
 async function snapshotPost(path, body) {
   const token = await newCsrfToken();
   const response = await fetch(path, {method:"POST", cache:"no-store", credentials:"same-origin",
@@ -543,7 +552,7 @@ $("snapshot-save").addEventListener("click", async () => {
 $("snapshot-run").addEventListener("click", async () => {
   $("snapshot-run").disabled = true;
   try {
-    const result = await snapshotPost("/api/v1/snapshot/runs", {request_id:crypto.randomUUID().replaceAll("-", "")});
+    const result = await snapshotPost("/api/v1/snapshot/runs", {request_id:newWorkflowRequestId()});
     $("snapshot-message").textContent = result.run_id
       ? "受付: " + result.run_id + "（結果は未確認。更新して確認）" : "実行中または未設定";
   } catch { $("snapshot-message").textContent = "受付不明。二重実行せず管理者に確認してください"; }
@@ -666,7 +675,7 @@ $("formatter-run").addEventListener("click", async () => {
   $("formatter-run").disabled = true;
   try {
     const data = await snapshotPost("/api/v1/formatter/runs", {
-      request_id:crypto.randomUUID().replaceAll("-", "")
+      request_id:newWorkflowRequestId()
     });
     $("formatter-message").textContent = data.run_id
       ? "Dry-run受付: " + data.run_id + "。結果を更新して確認してください。"
@@ -768,7 +777,7 @@ $("daily-run").addEventListener("click", async () => {
   let runId = null;
   try {
     const data = await snapshotPost("/api/v1/daily/runs", {
-      request_id:crypto.randomUUID().replaceAll("-", "")});
+      request_id:newWorkflowRequestId()});
     runId = data.run_id;
     $("daily-message").textContent = runId
       ? "受付: " + runId + "（GitHub進捗を処理中）" : "実行中または未設定";
