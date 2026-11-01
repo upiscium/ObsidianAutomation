@@ -40,7 +40,14 @@ import os, shutil, sys
 from pathlib import Path
 action, remote, mirror = sys.argv[3:6]
 if os.environ.get('FAIL_RCLONE') == action:
-    sys.exit(1)
+    print('SECRET_TOKEN_CANARY private-vault/secret-note', file=sys.stderr)
+    sys.exit(int(os.environ.get('FAIL_RCLONE_CODE', '1')))
+if action == 'sync' and os.environ.get('TRANSIENT_SYNC_MARKER'):
+    marker = Path(os.environ['TRANSIENT_SYNC_MARKER'])
+    if not marker.exists():
+        marker.touch()
+        print('SECRET_TOKEN_CANARY private-vault/secret-note', file=sys.stderr)
+        sys.exit(5)
 if action == 'sync' and os.environ.get('FAIL_SECOND_SYNC'):
     marker = Path(os.environ['FAIL_SECOND_SYNC'])
     if marker.exists():
@@ -50,12 +57,21 @@ source = Path(os.environ['FAKE_VAULT'])
 if action == 'sync':
     shutil.copytree(source, mirror, dirs_exist_ok=True)
 elif action == 'check':
+    if os.environ.get('SOURCE_CHURN_ONCE_MARKER'):
+        marker = Path(os.environ['SOURCE_CHURN_ONCE_MARKER'])
+        if not marker.exists():
+            marker.touch()
+            (source / 'note.md').write_text('source updated during check')
+            (source / 'new-note.md').write_text('new during check')
     if sorted((x.name, x.read_bytes()) for x in source.iterdir()) != sorted((x.name, x.read_bytes()) for x in Path(mirror).iterdir()):
         sys.exit(1)
 """)
     stub.chmod(0o700)
     monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ["PATH"])
     monkeypatch.setenv("FAKE_VAULT", str(source))
+    # Keep synthetic fail/retry fixtures fast; production uses 2/4s delays.
+    import obsidian_automation.snapshot_adapter as module
+    monkeypatch.setattr(module, "_RCLONE_RETRY_DELAYS_SECONDS", (0, 0))
     c = Connections(tmp_path / "state", "nextcloud:Vault", remote.as_uri(), "main", policy, config, True)
     return SnapshotAdapter(c), source, remote, baseline
 
@@ -203,3 +219,381 @@ def test_rclone_only_uses_longer_bounded_timeout(tmp_path, monkeypatch):
     ]
     assert module._RCLONE_IO_TIMEOUT_SECONDS == 600
     assert git("--git-dir", remote, "rev-parse", "refs/heads/main", cwd=tmp_path) == baseline
+
+
+
+def _sync_receipt(adapter: SnapshotAdapter, run_id: str) -> dict:
+    import json
+    root = adapter.config.state / "runs" / run_id
+    receipt = root / "rclone-receipt.json"
+    assert receipt.is_file()
+    assert receipt.stat().st_mode & 0o777 == 0o600
+    payload = receipt.read_text()
+    assert "SECRET_TOKEN_CANARY" not in payload
+    assert "private-vault" not in payload
+    assert "nextcloud:" not in payload
+    assert str(root) not in payload
+    data = json.loads(payload)
+    assert set(data) == {"version", "attempts"} and data["version"] == 1
+    assert 1 <= len(data["attempts"]) <= 9
+    assert all(set(item) == {"phase", "attempt", "reason", "exit_code"}
+               for item in data["attempts"])
+    return data
+
+
+def test_transient_rclone_error_retries_from_first_sync_and_saves(tmp_path, monkeypatch):
+    adapter, source, remote, baseline = fixture(tmp_path, monkeypatch)
+    marker = tmp_path / "temporary-http-error"
+    monkeypatch.setenv("TRANSIENT_SYNC_MARKER", str(marker))
+    source_before = (source / "note.md").read_bytes()
+    run_id = "6" * 32
+
+    assert adapter(run_id) == ("no_changes", "verify", baseline)
+    receipt = _sync_receipt(adapter, run_id)
+    assert [(r["phase"], r["attempt"], r["reason"]) for r in receipt["attempts"]] == [
+        ("sync_initial", 1, "temporary_error"),
+        ("sync_initial", 2, "ok"),
+        ("sync_settled", 2, "ok"),
+        ("check", 2, "ok"),
+    ]
+    assert receipt["attempts"][0]["exit_code"] == 5
+    assert marker.is_file()
+    assert (source / "note.md").read_bytes() == source_before
+    assert git("--git-dir", remote, "rev-parse", "refs/heads/main", cwd=tmp_path) == baseline
+
+
+def test_source_churn_during_check_restarts_entire_sync_cycle(tmp_path, monkeypatch):
+    adapter, source, remote, baseline = fixture(tmp_path, monkeypatch)
+    marker = tmp_path / "source-moved-during-check"
+    monkeypatch.setenv("SOURCE_CHURN_ONCE_MARKER", str(marker))
+    run_id = "7" * 32
+
+    status, stage, commit = adapter(run_id)
+    assert (status, stage) == ("saved", "verify")
+    assert commit != baseline and marker.is_file()
+    assert git("--git-dir", remote, "rev-parse", "refs/heads/main", cwd=tmp_path) == commit
+    assert git("--git-dir", remote, "show", "refs/heads/main:new-note.md",
+               cwd=tmp_path) == "new during check"
+    receipt = _sync_receipt(adapter, run_id)
+    attempts = receipt["attempts"]
+    assert [(x["phase"], x["attempt"], x["reason"]) for x in attempts] == [
+        ("sync_initial", 1, "ok"), ("sync_settled", 1, "ok"),
+        ("check", 1, "code_1_ambiguous"), ("sync_initial", 2, "ok"),
+        ("sync_settled", 2, "ok"), ("check", 2, "ok"),
+    ]
+
+
+def test_fatal_rclone_exit_is_not_retried_or_pushed(tmp_path, monkeypatch):
+    adapter, source, remote, baseline = fixture(tmp_path, monkeypatch)
+    monkeypatch.setenv("FAIL_RCLONE", "sync")
+    monkeypatch.setenv("FAIL_RCLONE_CODE", "7")
+    run_id = "a" * 32
+    assert adapter(run_id) == ("failed", "sync", None)
+    receipt = _sync_receipt(adapter, run_id)
+    assert receipt["attempts"] == [
+        {"phase": "sync_initial", "attempt": 1, "reason": "fatal_error", "exit_code": 7}
+    ]
+    assert not (adapter.config.state / "runs" / run_id / "cache.git").exists()
+    assert git("--git-dir", remote, "rev-parse", "refs/heads/main", cwd=tmp_path) == baseline
+
+
+@pytest.mark.parametrize("exit_code", [1, 2])
+def test_bounded_ambiguous_rclone_errors_fail_without_git(tmp_path, monkeypatch, exit_code):
+    adapter, source, remote, baseline = fixture(tmp_path, monkeypatch)
+    monkeypatch.setenv("FAIL_RCLONE", "sync")
+    monkeypatch.setenv("FAIL_RCLONE_CODE", str(exit_code))
+    run_id = "b" * 32
+    assert adapter(run_id) == ("failed", "sync", None)
+    receipt = _sync_receipt(adapter, run_id)
+    assert [x["attempt"] for x in receipt["attempts"]] == [1, 2, 3]
+    assert all(x["reason"] == f"code_{exit_code}_ambiguous" and x["exit_code"] == exit_code
+               for x in receipt["attempts"])
+    assert not (adapter.config.state / "runs" / run_id / "cache.git").exists()
+    assert git("--git-dir", remote, "rev-parse", "refs/heads/main", cwd=tmp_path) == baseline
+
+
+def test_timeout_and_exhausted_budget_fail_closed(tmp_path, monkeypatch):
+    adapter, source, remote, baseline = fixture(tmp_path, monkeypatch)
+    import obsidian_automation.snapshot_adapter as module
+    original = module.subprocess.run
+
+    def expire_only_rclone(args, **kwargs):
+        if args[0] == "rclone":
+            raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(module.subprocess, "run", expire_only_rclone)
+    run_id = "c" * 32
+    assert adapter(run_id) == ("failed", "sync", None)
+    assert _sync_receipt(adapter, run_id)["attempts"] == [
+        {"phase": "sync_initial", "attempt": 1, "reason": "timeout", "exit_code": None}
+    ]
+    monkeypatch.setattr(module, "_RCLONE_TOTAL_BUDGET_SECONDS", 0)
+    run_id = "d" * 32
+    assert adapter(run_id) == ("failed", "sync", None)
+    assert _sync_receipt(adapter, run_id)["attempts"] == [
+        {"phase": "sync_initial", "attempt": 1, "reason": "budget_exhausted", "exit_code": None}
+    ]
+    assert git("--git-dir", remote, "rev-parse", "refs/heads/main", cwd=tmp_path) == baseline
+
+
+def test_rclone_retries_never_expand_git_operation_budget(tmp_path, monkeypatch):
+    adapter, source, remote, baseline = fixture(tmp_path, monkeypatch)
+    import obsidian_automation.snapshot_adapter as module
+    original = module._command
+    git_timeouts = []
+    rclone_timeouts = []
+
+    def capture(args, **kwargs):
+        if args[0] == "git":
+            assert kwargs.get("diagnostics") is None
+            git_timeouts.append(kwargs.get("timeout", 120))
+        elif args[0] == "rclone":
+            assert kwargs.get("diagnostics") is not None
+            rclone_timeouts.append(kwargs.get("timeout"))
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(module, "_command", capture)
+    assert adapter("e" * 32) == ("no_changes", "verify", baseline)
+    assert len(rclone_timeouts) == 3
+    assert all(0 < timeout <= 600 for timeout in rclone_timeouts)
+    assert git_timeouts and all(timeout == 120 for timeout in git_timeouts)
+    assert module._RCLONE_MAX_ATTEMPTS == 3
+    assert module._RCLONE_TOTAL_BUDGET_SECONDS == 900
+
+
+
+def test_sync_budget_enforced_across_multiple_successful_phases(
+    tmp_path, monkeypatch,
+):
+    """Even successfully completed transfers cannot exceed the total budget.
+
+    Advance a synthetic clock with each rclone command. Once the global
+    transfer/check budget is exhausted, the adapter must stop before the
+    next phase and before any Git fetch, commit, or push.
+    """
+    adapter, _, remote, baseline = fixture(tmp_path, monkeypatch)
+    import obsidian_automation.snapshot_adapter as module
+
+    elapsed = [0.0]
+    transfer_timeouts = []
+
+    def fake_command(args, **kwargs):
+        assert args[0] == "rclone", "Git must not run after exhausted budget"
+        transfer_timeouts.append(kwargs["timeout"])
+        detail = kwargs["diagnostics"]
+        detail["exit_code"] = 0
+        detail["reason"] = "ok"
+        elapsed[0] += kwargs["timeout"]
+        return True, ""
+
+    monkeypatch.setattr(module.time, "monotonic", lambda: elapsed[0])
+    monkeypatch.setattr(module, "_command", fake_command)
+    run_id = "f" * 32
+    assert adapter(run_id) == ("failed", "sync", None)
+    assert transfer_timeouts == [600, 300]
+    assert elapsed[0] == 900
+    assert _sync_receipt(adapter, run_id)["attempts"] == [
+        {"phase": "sync_initial", "attempt": 1, "reason": "ok", "exit_code": 0},
+        {"phase": "sync_settled", "attempt": 1, "reason": "ok", "exit_code": 0},
+        {"phase": "check", "attempt": 1, "reason": "budget_exhausted", "exit_code": None},
+    ]
+    assert not (adapter.config.state / "runs" / run_id / "cache.git").exists()
+    assert git("--git-dir", remote, "rev-parse", "refs/heads/main", cwd=tmp_path) == baseline
+
+
+
+@pytest.mark.parametrize("canonical_has_note", [True, False],
+                         ids=["incomplete-webdav-view", "intentional-vault-deletion"])
+def test_managed_delete_guard_blocks_incomplete_remote_view(
+    tmp_path, monkeypatch, canonical_has_note,
+):
+    """A success reported by rclone cannot authorize deleting tracked notes.
+
+    The synthetic WebDAV view can omit an existing canonical note. Even if
+    rclone sync/sync/check all succeed against the *same* incomplete view,
+    the local commit must never be pushed. A legitimate Vault deletion also
+    remains blocked until an explicit future deletion-approval mechanism.
+    """
+    adapter, canonical, remote, _ = fixture(tmp_path, monkeypatch)
+    seed = tmp_path / "seed"
+    (seed / "extra.md").write_text("canonical note: keep in the backup\n")
+    git("add", "extra.md", cwd=seed)
+    git("commit", "-m", "add tracked canonical note", cwd=seed)
+    baseline = git("rev-parse", "HEAD", cwd=seed)
+    git("push", remote.as_uri(), "HEAD:refs/heads/main", cwd=seed)
+    if canonical_has_note:
+        (canonical / "extra.md").write_text("canonical note: keep in the backup\n")
+        # A synthetic transient WebDAV listing that drops exactly one file.
+        remote_view = tmp_path / "incomplete-webdav-view"
+        remote_view.mkdir()
+        (remote_view / "note.md").write_text("old")
+        monkeypatch.setenv("FAKE_VAULT", str(remote_view))
+    else:
+        # The same guard also refuses a real deletion without separate approval.
+        assert not (canonical / "extra.md").exists()
+    run_id = ("a" if canonical_has_note else "b") * 32
+
+    assert adapter(run_id) == ("failed", "snapshot", None)
+    assert git("--git-dir", remote, "rev-parse", "refs/heads/main", cwd=tmp_path) == baseline
+    assert git("--git-dir", remote, "show", "refs/heads/main:extra.md",
+               cwd=tmp_path) == "canonical note: keep in the backup"
+    work = adapter.config.state / "runs" / run_id / "work"
+    assert work.is_dir()
+    assert git("rev-parse", "HEAD", cwd=work) != baseline
+    missing = subprocess.run(
+        ["git", "-C", str(work), "cat-file", "-e", "HEAD:extra.md"],
+        capture_output=True, timeout=10,
+    )
+    assert missing.returncode != 0  # local-only deletion never reached remote
+    assert git("status", "--porcelain", cwd=work) == ""
+    if canonical_has_note:
+        assert (canonical / "extra.md").is_file()
+    else:
+        assert not (canonical / "extra.md").exists()
+    # The source view appears consistent, so this exercises the Git guard,
+    # not a generic rclone retry, check failure or empty-manifest rejection.
+    receipt = _sync_receipt(adapter, run_id)
+    assert [(item["phase"], item["reason"]) for item in receipt["attempts"]] == [
+        ("sync_initial", "ok"), ("sync_settled", "ok"), ("check", "ok"),
+    ]
+
+
+def test_managed_delete_guard_preserves_repo_owned_and_allows_updates(
+    tmp_path, monkeypatch,
+):
+    adapter, canonical, remote, _ = fixture(tmp_path, monkeypatch)
+    seed = tmp_path / "seed"
+    (seed / ".gitea" / "workflows").mkdir(parents=True)
+    (seed / ".gitea" / "workflows" / "backup.yml").write_text("name: CI\n")
+    (seed / ".gitignore").write_text("data.json\n")
+    git("add", ".gitea/workflows/backup.yml", ".gitignore", cwd=seed)
+    git("commit", "-m", "repository-owned CI and ignore", cwd=seed)
+    baseline = git("rev-parse", "HEAD", cwd=seed)
+    git("push", remote.as_uri(), "HEAD:refs/heads/main", cwd=seed)
+    adapter.config.policy.write_text(
+        "version = 1\nsettle_seconds = 0\nstability_attempts = 1\n"
+        "exclude = []\nrepository_owned = ['.gitea/**', '.gitignore']\n"
+    )
+    (canonical / "note.md").write_text("updated canonical note")
+    run_id = "c" * 32
+
+    status, stage, saved = adapter(run_id)
+    assert (status, stage) == ("saved", "verify")
+    assert saved != baseline
+    assert git("--git-dir", remote, "rev-parse", "refs/heads/main", cwd=tmp_path) == saved
+    assert git("--git-dir", remote, "show", "refs/heads/main:note.md",
+               cwd=tmp_path) == "updated canonical note"
+    assert git("--git-dir", remote, "show", "refs/heads/main:.gitignore",
+               cwd=tmp_path) == "data.json"
+    assert git("--git-dir", remote, "show", "refs/heads/main:.gitea/workflows/backup.yml",
+               cwd=tmp_path) == "name: CI"
+    assert (canonical / "note.md").read_text() == "updated canonical note"
+
+
+def test_managed_delete_guard_allows_initial_empty_repository(
+    tmp_path, monkeypatch,
+):
+    from dataclasses import replace
+
+    adapter, canonical, _, _ = fixture(tmp_path, monkeypatch)
+    empty = tmp_path / "empty.git"
+    git("init", "--bare", empty, cwd=tmp_path)
+    adapter.config = replace(adapter.config, git_remote=empty.as_uri())
+    run_id = "d" * 32
+
+    status, stage, saved = adapter(run_id)
+    assert (status, stage) == ("saved", "verify")
+    assert saved is not None
+    assert git("--git-dir", empty, "rev-parse", "refs/heads/main", cwd=tmp_path) == saved
+    assert git("--git-dir", empty, "show", "refs/heads/main:note.md",
+               cwd=tmp_path) == "old"
+
+
+def test_managed_delete_guard_fails_closed_if_baseline_tree_unavailable(
+    tmp_path, monkeypatch,
+):
+    adapter, canonical, remote, baseline = fixture(tmp_path, monkeypatch)
+    (canonical / "note.md").write_text("updated, but baseline cannot be inspected")
+    import obsidian_automation.snapshot_adapter as module
+    original = module._head_tree_paths
+
+    def fail_baseline_tree(work, env, revision="HEAD"):
+        if revision != "HEAD":
+            return None
+        return original(work, env, revision)
+
+    monkeypatch.setattr(module, "_head_tree_paths", fail_baseline_tree)
+    run_id = "e" * 32
+    assert adapter(run_id) == ("failed", "snapshot", None)
+    assert git("--git-dir", remote, "rev-parse", "refs/heads/main", cwd=tmp_path) == baseline
+    assert git("--git-dir", remote, "show", "refs/heads/main:note.md",
+               cwd=tmp_path) == "old"
+
+
+def test_managed_delete_guard_does_not_exempt_similar_prefixes(
+    tmp_path, monkeypatch,
+):
+    adapter, canonical, remote, _ = fixture(tmp_path, monkeypatch)
+    seed = tmp_path / "seed"
+    (seed / ".gitea-not-protected").mkdir()
+    (seed / ".gitea-not-protected" / "note.md").write_text("managed note")
+    git("add", ".gitea-not-protected/note.md", cwd=seed)
+    git("commit", "-m", "managed lookalike path", cwd=seed)
+    baseline = git("rev-parse", "HEAD", cwd=seed)
+    git("push", remote.as_uri(), "HEAD:refs/heads/main", cwd=seed)
+    adapter.config.policy.write_text(
+        "version = 1\nsettle_seconds = 0\nstability_attempts = 1\n"
+        "exclude = []\nrepository_owned = ['.gitea/**', '.gitignore']\n"
+    )
+
+    assert adapter("f" * 32) == ("failed", "snapshot", None)
+    assert git("--git-dir", remote, "rev-parse", "refs/heads/main", cwd=tmp_path) == baseline
+
+
+
+def test_managed_delete_guard_accepts_valid_empty_baseline_commit(
+    tmp_path, monkeypatch,
+):
+    """A valid empty Git commit does not mean the baseline tree is unreadable."""
+    from dataclasses import replace
+    from obsidian_automation.snapshot_adapter import _head_tree_paths, git_environment
+
+    adapter, source, _, _ = fixture(tmp_path, monkeypatch)
+    remote = tmp_path / "empty-baseline.git"
+    git("init", "--bare", remote, cwd=tmp_path)
+    seed = tmp_path / "empty-baseline-seed"
+    seed.mkdir()
+    git("init", seed, cwd=tmp_path)
+    git("config", "user.name", "Tester", cwd=seed)
+    git("config", "user.email", "test@local.invalid", cwd=seed)
+    git("commit", "--allow-empty", "-m", "valid empty tree baseline", cwd=seed)
+    baseline = git("rev-parse", "HEAD", cwd=seed)
+    git("push", remote.as_uri(), "HEAD:refs/heads/main", cwd=seed)
+    adapter.config = replace(adapter.config, git_remote=remote.as_uri())
+    result = adapter("0" * 32)
+
+    assert result[:2] == ("saved", "verify")
+    assert result[2] != baseline
+    assert git("--git-dir", remote, "rev-parse", "refs/heads/main", cwd=tmp_path) == result[2]
+    work = adapter.config.state / "runs" / ("0" * 32) / "work"
+    assert _head_tree_paths(work, git_environment(True), baseline) == set()
+    assert git("--git-dir", remote, "show", "refs/heads/main:note.md", cwd=tmp_path) == "old"
+
+
+def test_head_tree_paths_rejects_truncated_nonempty_stdout(
+    tmp_path, monkeypatch,
+):
+    import obsidian_automation.snapshot_adapter as module
+
+    work = tmp_path / "work"
+    work.mkdir()
+    actual_run = module.subprocess.run
+
+    def malformed_ls_tree(argv, **kwargs):
+        if argv[:3] == ["git", "-C", str(work)] and "ls-tree" in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout=b"note.md")
+        return actual_run(argv, **kwargs)
+
+    monkeypatch.setattr(module.subprocess, "run", malformed_ls_tree)
+    assert module._head_tree_paths(work, module.git_environment(True)) is None
