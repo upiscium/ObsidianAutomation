@@ -78,7 +78,12 @@ commit timestamps (committer date, author date fallback). Branch metadata is cac
 repository/commit SHA in the existing SQLite state DB: unchanged branch heads do not
 trigger repeated commit-detail requests. It does not treat PR comment updates or
 GitHub Issue activity as commits. PRs from external forks and commits no longer reachable
-from a branch are not part of this repository-branch rule.
+from a branch are not part of this repository-branch rule. Branch pagination is
+limited to six pages: at most 500 branch rows, plus the necessary empty
+sixth-page probe if exactly 500 are present. A malformed/non-object branch
+row, oversized API page, or any further branch fails closed before fetching
+commit details or proposing a Project status. Issue/PR pagination retains its
+existing separate compatibility behavior.
 
 The standard snapshot reads are:
 
@@ -272,7 +277,7 @@ systemctl daemon-reload
 systemctl enable --now obsidian-github-sync.timer
 ```
 
-The watcher service has `Requires=` and `After=` dependencies on `obsidian-github-sync-vault-pull.service`. Every 5-minute watcher cycle therefore refreshes the Project mirror first; a failed mirror refresh prevents that watcher run from using stale/incomplete input.
+The watcher service has `Requires=` and `After=` dependencies on `obsidian-github-sync-vault-pull.service`. Every 10-minute watcher cycle therefore refreshes the Project mirror first; a failed mirror refresh prevents that watcher run from using stale/incomplete input.
 
 The watcher itself sees `/srv/obsidian-github-sync/vault` as read-only and only writes its local SQLite state below `/var/lib/obsidian-github-sync`.
 

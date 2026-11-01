@@ -196,3 +196,89 @@ def test_malformed_branch_snapshot_fails_closed() -> None:
     from pytest import raises
     with raises(GitHubProjectWatcherError, match="invalid branch HEAD"):
         client.snapshot("upiscium/Test", observed_at=datetime(2026, 10, 26, tzinfo=timezone.utc))
+
+
+class _PagedBranchBoundsClient(GitHubClient):
+    """Synthetic GitHub endpoint with controllable branch API pages, no network."""
+
+    def __init__(self, pages: dict[int, object]) -> None:
+        super().__init__()
+        self.pages = pages
+        self.paths: list[str] = []
+
+    def _request_json(self, path: str) -> object:
+        self.paths.append(path)
+        prefix = "/repos/upiscium/Test"
+        if path == prefix + "/commits?per_page=1":
+            return [{"sha": "old-main", "commit": {
+                "committer": {"date": "2026-06-02T00:00:00Z"}}}]
+        if path.startswith(prefix + "/branches?per_page=100&page="):
+            return self.pages.get(int(path.rsplit("=", 1)[1]), [])
+        if path in (prefix + "/issues?state=open&per_page=100&page=1",
+                    prefix + "/pulls?state=open&per_page=100&page=1"):
+            return []
+        raise AssertionError(f"Unexpected GitHub request: {path}")
+
+    def scan(self):
+        return self.snapshot(
+            "upiscium/Test", observed_at=datetime(2026, 11, 1, tzinfo=timezone.utc)
+        )
+
+    def branch_reads(self) -> int:
+        return sum("/branches?" in path for path in self.paths)
+
+
+def _same_default_branch_page(size: int, page: int) -> list[dict]:
+    return [
+        {"name": f"branch-{page}-{index}", "commit": {"sha": "old-main"}}
+        for index in range(size)
+    ]
+
+
+def test_branch_listing_rejects_nonobject_entries_instead_of_silently_dropping() -> None:
+    from pytest import raises
+
+    for invalid in (None, "PRIVATE", [], 7):
+        client = _PagedBranchBoundsClient({
+            1: [_same_default_branch_page(1, 1)[0], invalid]
+        })
+        with raises(GitHubProjectWatcherError, match="invalid branch"):
+            client.scan()
+        assert client.branch_reads() == 1
+        assert not any("/issues?" in path or "/pulls?" in path for path in client.paths)
+
+
+def test_branch_listing_rejects_oversized_page_without_successful_status() -> None:
+    from pytest import raises
+
+    client = _PagedBranchBoundsClient({1: _same_default_branch_page(101, 1)})
+    with raises(GitHubProjectWatcherError, match="invalid branch"):
+        client.scan()
+    assert client.branch_reads() == 1
+    assert not any("/commits/old-main" in path for path in client.paths)
+
+
+def test_branch_listing_caps_requests_for_unbounded_full_pages() -> None:
+    from pytest import raises
+
+    # A broken or adversarial API returning a full page forever cannot make
+    # the watcher request unbounded pages before checking its 500-branch cap.
+    client = _PagedBranchBoundsClient({
+        i: _same_default_branch_page(100, i) for i in range(1, 10)
+    })
+    with raises(GitHubProjectWatcherError, match="too many branches"):
+        client.scan()
+    assert client.branch_reads() == 6
+    assert not any("/issues?" in path or "/pulls?" in path for path in client.paths)
+
+
+def test_branch_listing_accepts_exactly_500_with_empty_sixth_page() -> None:
+    client = _PagedBranchBoundsClient({
+        **{i: _same_default_branch_page(100, i) for i in range(1, 6)},
+        6: [],
+    })
+    snapshot = client.scan()
+    assert client.branch_reads() == 6
+    assert snapshot.recent_commit_sha == "old-main"
+    assert snapshot.recent_commit_at == snapshot.latest_commit_at
+    assert not any("/commits/old-main" in path for path in client.paths)

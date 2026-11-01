@@ -333,6 +333,38 @@ class GitHubClient:
                 return rows
             page += 1
 
+    def _bounded_branch_heads(self, repo_path: str) -> list[dict[str, object]]:
+        """Strict branch-only pagination, capped before commit detail lookups.
+
+        GitHub serves at most 100 branch rows per page. A sixth (empty)
+        page is required to establish that 500 rows is the complete list.
+        Do not use the generic _paged helper: it deliberately drops
+        non-dictionary Issue/PR entries for legacy compatibility, while a
+        missing branch row can falsely turn a running Project into planning.
+        """
+        path = f"/repos/{repo_path}/branches"
+        branches: list[dict[str, object]] = []
+        for page in range(1, 7):
+            rows = self._request_json(f"{path}?per_page=100&page={page}")
+            if (
+                type(rows) is not list
+                or len(rows) > 100
+                or any(type(row) is not dict for row in rows)
+            ):
+                raise GitHubProjectWatcherError(
+                    f"invalid branch page for {repo_path}"
+                )
+            if len(branches) + len(rows) > 500:
+                raise GitHubProjectWatcherError(
+                    f"too many branches to verify safely for {repo_path}"
+                )
+            branches.extend(rows)
+            if len(rows) < 100:
+                return branches
+        raise GitHubProjectWatcherError(
+            f"too many branches to verify safely for {repo_path}"
+        )
+
     @staticmethod
     def _timestamp_from_commit_payload(value: object) -> datetime | None:
         if not isinstance(value, dict):
@@ -401,11 +433,7 @@ class GitHubClient:
             return default_sha, default_at
 
         repo_path = self._repo_path(repository)
-        branches = self._paged(f"/repos/{repo_path}/branches")
-        if len(branches) > 500:
-            raise GitHubProjectWatcherError(
-                f"too many branches to verify safely for {repository}: {len(branches)}"
-            )
+        branches = self._bounded_branch_heads(repo_path)
 
         best_sha, best_at = default_sha, default_at
         seen: set[str] = set()
