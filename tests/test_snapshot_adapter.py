@@ -360,3 +360,43 @@ def test_rclone_retries_never_expand_git_operation_budget(tmp_path, monkeypatch)
     assert git_timeouts and all(timeout == 120 for timeout in git_timeouts)
     assert module._RCLONE_MAX_ATTEMPTS == 3
     assert module._RCLONE_TOTAL_BUDGET_SECONDS == 900
+
+
+
+def test_sync_budget_enforced_across_multiple_successful_phases(
+    tmp_path, monkeypatch,
+):
+    """Even successfully completed transfers cannot exceed the total budget.
+
+    Advance a synthetic clock with each rclone command. Once the global
+    transfer/check budget is exhausted, the adapter must stop before the
+    next phase and before any Git fetch, commit, or push.
+    """
+    adapter, _, remote, baseline = fixture(tmp_path, monkeypatch)
+    import obsidian_automation.snapshot_adapter as module
+
+    elapsed = [0.0]
+    transfer_timeouts = []
+
+    def fake_command(args, **kwargs):
+        assert args[0] == "rclone", "Git must not run after exhausted budget"
+        transfer_timeouts.append(kwargs["timeout"])
+        detail = kwargs["diagnostics"]
+        detail["exit_code"] = 0
+        detail["reason"] = "ok"
+        elapsed[0] += kwargs["timeout"]
+        return True, ""
+
+    monkeypatch.setattr(module.time, "monotonic", lambda: elapsed[0])
+    monkeypatch.setattr(module, "_command", fake_command)
+    run_id = "f" * 32
+    assert adapter(run_id) == ("failed", "sync", None)
+    assert transfer_timeouts == [600, 300]
+    assert elapsed[0] == 900
+    assert _sync_receipt(adapter, run_id)["attempts"] == [
+        {"phase": "sync_initial", "attempt": 1, "reason": "ok", "exit_code": 0},
+        {"phase": "sync_settled", "attempt": 1, "reason": "ok", "exit_code": 0},
+        {"phase": "check", "attempt": 1, "reason": "budget_exhausted", "exit_code": None},
+    ]
+    assert not (adapter.config.state / "runs" / run_id / "cache.git").exists()
+    assert git("--git-dir", remote, "rev-parse", "refs/heads/main", cwd=tmp_path) == baseline
