@@ -594,3 +594,245 @@ def test_restart_clock_regression_refuses_invalid_completion_timestamp(
             result, another = journal.admit(NEXT, BINDING, REV2)
             assert result == "accepted"
             assert another["run_id"] != entry["run_id"]
+
+
+
+# Writer subeffect proof stays in the SAME private SQLite database as the
+# existing admission ledger. No new database, service user or public route.
+_PROOF_HASHES = {
+    "status_proposal_sha256": "a" * 64,
+    "status_after_sha256": "b" * 64,
+    "overview_proposal_sha256": "c" * 64,
+    "overview_after_sha256": "d" * 64,
+}
+
+
+def test_writer_readback_is_atomic_durable_and_not_pipeline_success(tmp_path):
+    clock = Clock(1000.0)
+    with _journal(tmp_path, clock=clock) as j:
+        _, item = j.admit(REQUEST, BINDING, REV1)
+        run_id = item["run_id"]
+        j.start(run_id)
+        clock.advance(5)
+        final = j.record_writer_readback(
+            run_id, **_PROOF_HASHES, observed_at=1004.0,
+        )
+        assert final["state"] == "completed"
+        assert final["terminal_code"] == "writer_readback_observed"
+        assert j.record_writer_readback(
+            run_id, **_PROOF_HASHES, observed_at=1004.0,
+        ) == final
+        assert j.writer_proof(run_id) == {
+            **_PROOF_HASHES, "observed_at": 1004.0,
+        }
+        assert j.snapshot()["last_writer_readback"] == final
+        assert j.snapshot()["last_verified_pipeline_success"] is None
+        assert j.snapshot()["overall_health"] == "unknown"
+        assert "status_after_sha256" not in json.dumps(j.snapshot())
+        with pytest.raises(InvalidAttempt, match="writer_receipt_conflict"):
+            j.record_writer_readback(
+                run_id, **(_PROOF_HASHES | {"status_after_sha256": "e" * 64}),
+                observed_at=1004.0,
+            )
+        with pytest.raises(InvalidAttempt, match="invalid_terminal_code"):
+            j.finish(run_id, terminal_code="writer_readback_observed")
+        decision, next_run = j.admit(NEXT, BINDING, REV1)
+        assert decision == "accepted"
+        assert next_run["state"] == "queued"
+    clock.advance(1)
+    with _journal(tmp_path, clock=clock) as j:
+        # Restart must never discard a committed Writer proof or replay it.
+        assert j.lookup(run_id) == final
+        assert j.writer_proof(run_id)["overview_after_sha256"] == "d" * 64
+        assert j.snapshot()["last_writer_readback"] == final
+        assert j.snapshot()["last_verified_pipeline_success"] is None
+
+
+@pytest.mark.parametrize("changes,reason", [
+    ({"status_after_sha256": "BAD"}, "invalid_writer_receipt"),
+    ({"overview_proposal_sha256": True}, "invalid_writer_receipt"),
+    ({"observed_at": -1.0}, "invalid_time"),
+    ({"observed_at": 999.0}, "clock_regression"),
+    ({"observed_at": 1001.0}, "clock_regression"),
+])
+def test_writer_receipt_refused_before_mutating_running_state(tmp_path, changes, reason):
+    clock = Clock(1000.0)
+    with _journal(tmp_path, clock=clock) as j:
+        _, item = j.admit(REQUEST, BINDING, REV1)
+        j.start(item["run_id"])
+        args = _PROOF_HASHES | {"observed_at": 1000.0} | changes
+        # Future time 1001 is invalid unless current owner clock advances.
+        with pytest.raises(InvalidAttempt, match=reason):
+            j.record_writer_readback(item["run_id"], **args)
+        assert j.lookup(item["run_id"])["state"] == "running"
+        assert j.writer_proof(item["run_id"]) is None
+
+
+def test_proof_completion_invalid_for_unstarted_unknown_or_terminal_attempt(tmp_path):
+    with _journal(tmp_path) as j:
+        with pytest.raises(InvalidAttempt, match="unknown_run"):
+            j.record_writer_readback("9" * 32, **_PROOF_HASHES, observed_at=1000.0)
+        _, item = j.admit(REQUEST, BINDING, REV1)
+        with pytest.raises(InvalidAttempt, match="invalid_transition"):
+            j.record_writer_readback(item["run_id"], **_PROOF_HASHES, observed_at=1000.0)
+        j.start(item["run_id"])
+        j.finish(item["run_id"], terminal_code="effect_unknown")
+        with pytest.raises(InvalidAttempt, match="invalid_transition"):
+            j.record_writer_readback(item["run_id"], **_PROOF_HASHES, observed_at=1000.0)
+
+
+def test_v1_store_migrates_in_place_without_resetting_durable_run_ids(tmp_path):
+    import sqlite3
+
+    clock = Clock(1000.0)
+    with _journal(tmp_path, clock=clock) as j:
+        _, item = j.admit(REQUEST, BINDING, REV1)
+        j.start(item["run_id"])
+        j.finish(item["run_id"], terminal_code="cas_conflict")
+    db_path = tmp_path / "private-b3" / "b3-attempts.sqlite3"
+    with sqlite3.connect(db_path) as db:
+        # Emulate an already-existing v1 store with legitimate original runs.
+        db.execute("DROP TABLE writer_proofs")
+        db.execute("PRAGMA user_version=1")
+    with _journal(tmp_path, clock=clock) as j:
+        assert j.lookup(item["run_id"])["terminal_code"] == "cas_conflict"
+        outcome, replay = j.admit(REQUEST, BINDING, REV1)
+        assert outcome == "replayed" and replay["run_id"] == item["run_id"]
+        assert j.snapshot()["last_writer_readback"] is None
+    with sqlite3.connect(db_path) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert db.execute("SELECT count(*) FROM writer_proofs").fetchone()[0] == 0
+
+
+def test_corrupt_writer_proof_missing_or_unpaired_is_not_silent_success(tmp_path):
+    import sqlite3
+
+    clock = Clock(1000)
+    with _journal(tmp_path, clock=clock) as j:
+        _, item = j.admit(REQUEST, BINDING, REV1)
+        j.start(item["run_id"])
+        j.record_writer_readback(item["run_id"], **_PROOF_HASHES, observed_at=1000)
+    db_path = tmp_path / "private-b3" / "b3-attempts.sqlite3"
+    with sqlite3.connect(db_path) as db:
+        db.execute("DELETE FROM writer_proofs")
+    with pytest.raises(InvalidAttempt, match="invalid_writer_proof_state"):
+        _journal(tmp_path, clock=clock)
+
+
+def test_v2_proof_schema_loss_fails_closed(tmp_path):
+    import sqlite3
+
+    with _journal(tmp_path):
+        pass
+    db_path = tmp_path / "private-b3" / "b3-attempts.sqlite3"
+    with sqlite3.connect(db_path) as db:
+        db.execute("DROP TABLE writer_proofs")
+    with pytest.raises(InvalidAttempt, match="invalid_writer_proof_schema"):
+        _journal(tmp_path)
+
+
+
+def test_tampered_proof_digest_is_not_read_as_valid_after_restart(tmp_path):
+    import sqlite3
+
+    clock = Clock(1000.0)
+    with _journal(tmp_path, clock=clock) as j:
+        _, item = j.admit(REQUEST, BINDING, REV1)
+        j.start(item["run_id"])
+        j.record_writer_readback(
+            item["run_id"], **_PROOF_HASHES, observed_at=1000.0,
+        )
+    file = tmp_path / "private-b3" / "b3-attempts.sqlite3"
+    with sqlite3.connect(file) as db:
+        db.execute(
+            "UPDATE writer_proofs SET status_after_sha256='INVALID'"
+        )
+    with pytest.raises(InvalidAttempt, match="invalid_writer_proof_state"):
+        _journal(tmp_path, clock=clock)
+
+
+
+def test_crash_interrupted_v1_to_v2_upgrade_rolls_back_all_schema_ddl(
+    tmp_path, monkeypatch,
+):
+    import sqlite3
+    from obsidian_automation import github_b3_attempts as module
+
+    clock = Clock(1000.0)
+    with _journal(tmp_path, clock=clock) as j:
+        _, item = j.admit(REQUEST, BINDING, REV1)
+        j.start(item["run_id"])
+        j.finish(item["run_id"], terminal_code="cas_conflict")
+    path = tmp_path / "private-b3" / "b3-attempts.sqlite3"
+    with sqlite3.connect(path) as db:
+        db.execute("DROP TABLE writer_proofs")
+        db.execute("PRAGMA user_version=1")
+
+    real_connect = sqlite3.connect
+
+    class CrashDuringDDL(sqlite3.Connection):
+        def execute(self, sql, parameters=()):
+            cursor = super().execute(sql, parameters)
+            if sql.startswith("CREATE TABLE IF NOT EXISTS writer_proofs"):
+                raise KeyboardInterrupt("synthetic process interruption")
+            return cursor
+
+    def injected_connect(*args, **kwargs):
+        return real_connect(*args, factory=CrashDuringDDL, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(module.sqlite3, "connect", injected_connect)
+        with pytest.raises(KeyboardInterrupt):
+            _journal(tmp_path, clock=clock, initialize=False)
+
+    with sqlite3.connect(path) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert db.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='writer_proofs'"
+        ).fetchone() is None
+
+    # The original v1 request ID survives the crash; the next open migrates.
+    with _journal(tmp_path, clock=clock, initialize=False) as j:
+        decision, replay = j.admit(REQUEST, BINDING, REV1)
+        assert decision == "replayed"
+        assert replay["run_id"] == item["run_id"]
+    with sqlite3.connect(path) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 2
+
+
+
+def test_v1_migration_rejects_v2_only_writer_terminal_without_its_proof(tmp_path):
+    """A corrupt v1 row must not be promoted to verified Writer readback.
+
+    Disposable fixture: emulate a v1 sqlite DB containing a v2-only terminal,
+    which was never a valid v1 producer outcome. Reject before schema upgrade,
+    preserving the original request identity for explicit recovery.
+    """
+    import sqlite3
+
+    clock = Clock(1000.0)
+    with _journal(tmp_path, clock=clock) as journal:
+        _, row = journal.admit(REQUEST, BINDING, REV1)
+        run_id = row["run_id"]
+        journal.start(run_id)
+        journal.record_writer_readback(
+            run_id, **_PROOF_HASHES, observed_at=1000.0,
+        )
+    database = tmp_path / "private-b3" / "b3-attempts.sqlite3"
+    with sqlite3.connect(database) as conn:
+        # A valid v1 schema never had writer_proofs or this terminal_code.
+        conn.execute("DROP TABLE writer_proofs")
+        conn.execute("PRAGMA user_version=1")
+
+    with pytest.raises(InvalidAttempt, match="invalid_writer_proof_state"):
+        _journal(tmp_path, clock=clock, initialize=False)
+
+    # A fail-closed rejection MUST not partially migrate the suspect store.
+    with sqlite3.connect(database) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='writer_proofs'"
+        ).fetchone() is None
+        assert conn.execute(
+            "SELECT terminal_code FROM runs WHERE run_id=?", (run_id,),
+        ).fetchone()[0] == "writer_readback_observed"
