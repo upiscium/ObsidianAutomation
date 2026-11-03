@@ -531,3 +531,53 @@ def test_many_managed_path_changes_are_not_limited_to_4k_git_output(fixture) -> 
     assert result.status == "candidate_prepared"
     assert git(fixture["core_remote"], "rev-parse", "main") == fixture["core_sha"]
     assert len(list(fixture["config"].state_dir.glob("receipts/*.json"))) == 1
+
+
+def test_git_timeout_is_a_finite_failure(tmp_path: Path, monkeypatch) -> None:
+    """Do not leak subprocess exceptions or consider an unknown Git result success."""
+
+    def timed_out(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=["git", "status"], timeout=120)
+
+    monkeypatch.setattr(lp.subprocess, "run", timed_out)
+    with pytest.raises(PreviewError, match="git_unavailable_or_timeout"):
+        lp._git(["status", "--porcelain"], env={}, cwd=tmp_path)
+
+
+def test_git_path_inventory_output_cap_is_fail_closed(tmp_path: Path, monkeypatch) -> None:
+    """The larger path allowance is still a finite bound, not unbounded output."""
+    def oversized_output(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            ["git", "diff"], 0, stdout=b"x" * (1024 * 1024 + 1), stderr=b""
+        )
+
+    monkeypatch.setattr(lp.subprocess, "run", oversized_output)
+    with pytest.raises(PreviewError, match="git_failed"):
+        lp._git(
+            ["diff", "--name-only", "-z"], env={}, cwd=tmp_path,
+            max_output_bytes=1024 * 1024, preserve_output=True,
+        )
+
+
+def test_publisher_timeout_kills_process_group_and_fails_closed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An over-budget validator is never treated as a completed projection."""
+    calls: list[tuple[int, int]] = []
+
+    class TimedOutPublisher:
+        pid = 987654
+        times_waited = 0
+
+        def wait(self, timeout=None):
+            self.times_waited += 1
+            if self.times_waited == 1:
+                raise subprocess.TimeoutExpired(cmd="synthetic-publisher", timeout=timeout)
+            return -9
+
+    monkeypatch.setattr(lp.subprocess, "Popen", lambda *args, **kwargs: TimedOutPublisher())
+    monkeypatch.setattr(lp.os, "killpg", lambda pid, sig: calls.append((pid, sig)))
+    with pytest.raises(PreviewError, match="projection_timeout"):
+        lp._run_publisher(tmp_path, tmp_path, tmp_path / "policy.toml",
+                          env={}, cwd=tmp_path)
+    assert calls == [(987654, lp.signal.SIGKILL)]
