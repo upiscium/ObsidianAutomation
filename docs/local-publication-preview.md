@@ -68,8 +68,11 @@ For valid evidence, the preview:
    generated child commit. Its changed paths must ALL match the managed
    allowlist (not repository-owned or excluded). This extra fence matters
    because the existing public_publish CLI uses git add -A, and Node
-   validation may accidentally create unrelated files. Independently
-   re-reads both remote refs before accepting a candidate.
+   validation may accidentally create unrelated files. Additionally the
+   complete generated Core projection is recomputed against the pinned
+   source with the same allowlist and semantic appearance rules: any
+   remaining content drift (even within allowed paths) rejects the preview.
+   Independently re-reads both remote refs before accepting a candidate.
 7. Persists a 0600 fsynced candidate_prepared or no_changes receipt
    (only SHAs, policy digest, finite status; no URLs/notes). Repeated
    keys verify the local source/candidate and return already_prepared

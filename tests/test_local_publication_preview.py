@@ -430,3 +430,35 @@ def test_frozen_policy_mutation_after_validator_fails_closed(fixture, monkeypatc
     with pytest.raises(PreviewError, match="policy_mutated"):
         prepare_local_preview(fixture["evidence"], fixture["config"])
     assert list(fixture["config"].state_dir.glob("receipts/*.json")) == []
+
+
+def test_validator_rewriting_managed_file_is_rejected_before_receipt(fixture) -> None:
+    """Allowlisted *path* alone is insufficient if validator changes its bytes."""
+    validator_script = (
+        "import { writeFileSync } from 'node:fs'; "
+        "writeFileSync('98-System/view.js', 'UNEXPECTED_MANAGED_BYTES\\n');\n"
+    )
+    reviewed_head = advance(
+        fixture["core"], "98-System/99-dev/validate-repo.mjs", validator_script
+    )
+    with pytest.raises(PreviewError, match="candidate_source_diverged"):
+        prepare_local_preview(fixture["evidence"], fixture["config"])
+    assert git(fixture["core_remote"], "rev-parse", "main") == reviewed_head
+    assert list(fixture["config"].state_dir.glob("receipts/*.json")) == []
+    failure = next(fixture["config"].state_dir.glob("runs/*/failure.json"))
+    assert json.loads(failure.read_text())["reason"] == "candidate_source_diverged"
+
+
+def test_source_convergence_check_rejects_a_clean_generated_wrong_tree(fixture) -> None:
+    """A clean, marked local commit can be wrong even when only managed paths differ."""
+    result = prepare_local_preview(fixture["evidence"], fixture["config"])
+    run_dir = fixture["config"].state_dir / "runs" / result.run_key
+    core = run_dir / "core"
+    source = run_dir / "source"
+    assert result.candidate_sha
+    (core / "98-System/view.js").write_text("UNEXPECTED_MANAGED_BYTES\n")
+    # The explicit convergence predicate must reject tampered bytes even if
+    # the path is allowed and the existing candidate SHA remains unchanged.
+    with pytest.raises(PreviewError, match="candidate_source_diverged"):
+        lp._assert_projection_converged(source, core, run_dir / "policy.toml")
+    assert git(fixture["core_remote"], "rev-parse", "main") == fixture["core_sha"]
