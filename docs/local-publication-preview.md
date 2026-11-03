@@ -95,7 +95,8 @@ scheduling/resource budget. Preview success is never published_verified.
   Missing or failing Core validator/tests also produce no success.
 - Source ref moved during checkout/after generation, Core HEAD changed,
   process timeout, validation failure, crashed prior intent, simultaneous
-  duplicate, corrupt receipt, mutated candidate/policy => fail closed.
+  duplicate, concurrent run-folder creation (including a race after its
+  absence check), corrupt receipt, mutated candidate/policy => fail closed.
 - A cache hit proves only exact remote refs and presence/validity of
   the local candidate; it does not certify public publication or
   point-in-time Nextcloud source consistency.

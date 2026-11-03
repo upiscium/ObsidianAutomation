@@ -399,7 +399,14 @@ def prepare_local_preview(evidence: SnapshotEvidence, config: PreviewConfig) -> 
                                policy=policy, revision=revision, key=key, env=env)
             if run_dir.exists() or run_dir.is_symlink():
                 raise PreviewError("unreconciled_prior_run")
-            run_dir.mkdir(mode=0o700)
+            try:
+                run_dir.mkdir(mode=0o700)
+            except FileExistsError as exc:
+                # Another process may create the path after the initial check.
+                # Never adopt its contents or convert this into a retry.
+                raise PreviewError("unreconciled_prior_run") from exc
+            except OSError as exc:
+                raise PreviewError("unsafe_state") from exc
             _atomic_receipt(run_dir / "intent.json", {
                 "version": _VERSION, "run_key": key, "state": "started",
                 "source_sha": source_sha, "core_before_sha": core_sha,

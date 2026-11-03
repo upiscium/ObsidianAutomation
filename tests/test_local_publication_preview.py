@@ -476,3 +476,20 @@ def test_cached_git_metadata_symlink_is_rejected(fixture, repository: str) -> No
     with pytest.raises(PreviewError, match="invalid_existing_receipt"):
         prepare_local_preview(fixture["evidence"], fixture["config"])
     assert git(fixture["core_remote"], "rev-parse", "main") == fixture["core_sha"]
+
+
+def test_run_directory_creation_race_is_a_finite_failure(fixture, monkeypatch) -> None:
+    original = Path.mkdir
+
+    def simulate_concurrent_creation(path, *args, **kwargs):
+        if path.parent.name == "runs" and len(path.name) == 64:
+            original(path, *args, **kwargs)
+            raise FileExistsError("synthetic concurrent directory creation")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", simulate_concurrent_creation)
+    with pytest.raises(PreviewError, match="unreconciled_prior_run"):
+        prepare_local_preview(fixture["evidence"], fixture["config"])
+    assert list(fixture["config"].state_dir.glob("runs/*/intent.json")) == []
+    assert list(fixture["config"].state_dir.glob("receipts/*.json")) == []
+    assert git(fixture["core_remote"], "rev-parse", "main") == fixture["core_sha"]
