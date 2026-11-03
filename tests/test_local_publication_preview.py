@@ -129,6 +129,13 @@ def test_candidate_is_local_validated_and_remote_unmodified(fixture) -> None:
     assert receipt.stat().st_mode & 0o777 == 0o600
     assert "git_url" not in receipt.read_text()
     assert "token" not in receipt.read_text()
+    assert data["config"].source_url not in receipt.read_text()
+    assert data["config"].core_url not in receipt.read_text()
+    assert "98-System/view.js" not in receipt.read_text()
+    assert set(json.loads(receipt.read_text())) == {
+        "version", "status", "run_key", "source_sha", "core_before_sha",
+        "candidate_sha", "policy_sha256", "publisher_revision",
+    }
     assert (data["config"].state_dir / "runs" / got.run_key / "intent.json").stat().st_mode & 0o777 == 0o600
 
 
@@ -581,3 +588,40 @@ def test_publisher_timeout_kills_process_group_and_fails_closed(
         lp._run_publisher(tmp_path, tmp_path, tmp_path / "policy.toml",
                           env={}, cwd=tmp_path)
     assert calls == [(987654, lp.signal.SIGKILL)]
+
+
+def test_git_environment_does_not_inherit_ambient_home_or_credentials(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("HOME", "/tmp/PRIVATE_HOME")
+    monkeypatch.setenv("GH_TOKEN", "SECRET_CANARY")
+    monkeypatch.setenv("GIT_ASKPASS", "/tmp/malicious-git-askpass")
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/malicious-agent")
+    isolated = tmp_path / "publisher-home"
+    env = lp._git_env(isolated, fixture=False)
+    assert env["HOME"] == str(isolated)
+    assert env["GIT_CONFIG_GLOBAL"] == "/dev/null"
+    assert env["GIT_ALLOW_PROTOCOL"] == "https"
+    assert "SECRET_CANARY" not in str(env)
+    assert not ({"GH_TOKEN", "GIT_ASKPASS", "SSH_AUTH_SOCK"} & env.keys())
+
+
+def test_crash_after_run_dir_before_intent_never_replays(fixture, monkeypatch) -> None:
+    """Durable run directory alone is sufficient to prevent implicit replay."""
+    original = lp._atomic_receipt
+
+    def crash_before_intent(path, record):
+        if path.name == "intent.json":
+            raise PreviewError("synthetic_before_intent")
+        return original(path, record)
+
+    monkeypatch.setattr(lp, "_atomic_receipt", crash_before_intent)
+    with pytest.raises(PreviewError, match="synthetic_before_intent"):
+        prepare_local_preview(fixture["evidence"], fixture["config"])
+    assert len(list(fixture["config"].state_dir.glob("runs/*"))) == 1
+    assert not list(fixture["config"].state_dir.glob("runs/*/intent.json"))
+    monkeypatch.setattr(lp, "_atomic_receipt", original)
+    with pytest.raises(PreviewError, match="unreconciled_prior_run"):
+        prepare_local_preview(fixture["evidence"], fixture["config"])
+    assert not list(fixture["config"].state_dir.glob("receipts/*.json"))
+    assert git(fixture["core_remote"], "rev-parse", "main") == fixture["core_sha"]
