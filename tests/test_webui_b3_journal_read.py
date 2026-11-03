@@ -264,11 +264,12 @@ def test_forged_or_missing_source_never_gets_action_rights(case):
     with pytest.raises(TypeError):
         B3JournalReadAdapter(journal, clock=None)
     p = B3JournalReadAdapter(journal, clock=clock)
-    # The existing optional port registry explicitly rejects this real port
-    # until a sole route integrator reviews and binds it.
-    with pytest.raises(TypeError, match="invalid_workflow_control_read_ports"):
-        validate_optional_read_ports({"b3": p})
+    # The integrator now accepts only this exact read-only type. The map
+    # supplies no runtime authority; source presence alone still does nothing.
+    registered = validate_optional_read_ports({"b3": p})
+    assert registered == {"b3": p} and registered is not p
     assert p.observe()["availableActions"] == []
+    assert p.observe()["lastVerifiedOutcome"] is None
 
 
 def test_malformed_journal_projection_never_spoofs_composer(case, monkeypatch):

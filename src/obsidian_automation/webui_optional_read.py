@@ -1,13 +1,15 @@
-"""Explicit optional read sources, not a runtime registry or execution port.
+"""Explicit, opt-in B1/B3/B5 read sources; never an execution port.
 
-B3FakeAdapter and B5 ReadPort only inspect test-only mock state. Accepting their
-exact types does not create production readers or authenticate effect evidence.
-The existing v1 composer remains the final DTO/redaction boundary.
+The real B3JournalReadAdapter is accepted only when a trusted server caller
+explicitly injects an already-open single-owner B3 Journal. Acceptance does not
+open/initialize any database, enable a Writer, register a Scheduler or attest
+complete Vault pipeline success. The v1 composer remains the final DTO gate.
 """
 from __future__ import annotations
 
 from .webui_b1_adapter import B1ReadAdapter
 from .webui_b3_adapter import B3FakeAdapter
+from .webui_b3_journal_read import B3JournalReadAdapter
 from .webui_b5_ports import ReadPort
 
 
@@ -21,8 +23,12 @@ def validate_optional_read_ports(ports: object) -> dict[str, object]:
     if (type(ports) is not dict or
             not all(type(key) is str and key in ("b1", "b3", "b5") for key in ports)):
         raise TypeError("invalid_workflow_control_read_ports")
-    for key, approved in (("b1", B1ReadAdapter), ("b3", B3FakeAdapter), ("b5", ReadPort)):
-        if key in ports and type(ports[key]) is not approved:
+    for key, approved in (
+        ("b1", (B1ReadAdapter,)),
+        ("b3", (B3FakeAdapter, B3JournalReadAdapter)),
+        ("b5", (ReadPort,)),
+    ):
+        if key in ports and type(ports[key]) not in approved:
             raise TypeError("invalid_workflow_control_read_ports")
     return dict(ports)
 

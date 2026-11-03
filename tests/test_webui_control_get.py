@@ -603,3 +603,103 @@ def test_optional_ports_not_observed_for_static_head_other_get_post_or_rejected_
         assert request(server, "/api/v1/workflow-control/b3/requests/" + _ID)[0] == 503
     observe.assert_not_called()
     assert snap.effects == daily_job.effects == formatter.effects == writer.calls == 0
+
+
+
+def test_real_b3_journal_read_port_through_http_is_opt_in_and_never_executes(tmp_path, monkeypatch):
+    """Exercise the actual existing GET route with an already-open Journal."""
+    from obsidian_automation.github_b3_attempts import B3AttemptJournal
+    from obsidian_automation.webui_b3_journal_read import B3JournalReadAdapter
+
+    root = tmp_path / "private-b3"
+    root.mkdir(mode=0o700)
+    public_request = "1" * 32
+    private_binding = "2" * 32
+    private_revision = "3" * 32
+    private_hashes = {
+        "status_proposal_sha256": "a" * 64,
+        "status_after_sha256": "b" * 64,
+        "overview_proposal_sha256": "c" * 64,
+        "overview_after_sha256": "d" * 64,
+    }
+    with B3AttemptJournal(root, initialize=True, clock=lambda: 1000.0) as journal:
+        _, run = journal.admit(public_request, private_binding, private_revision)
+        journal.start(run["run_id"])
+        journal.record_writer_readback(
+            run["run_id"], **private_hashes, observed_at=1000.0,
+        )
+        port = B3JournalReadAdapter(journal, clock=lambda: 1001.0)
+        observed = Mock(wraps=port.observe)
+        monkeypatch.setattr(port, "observe", observed)
+        b2, b4 = ReadOnlyJob(snapshot()), ReadOnlyJob(daily())
+        before = journal.db.total_changes
+        with serving(b2, b4, ports={"b3": port}) as server:
+            assert server.workflow_control_read_ports == {"b3": port}
+            assert b2.reads == b4.reads == 0 and observed.call_count == 0
+            status, _, raw = request(server, "/api/v1/workflow-control")
+            assert status == 200
+            catalog = json.loads(raw)
+            assert catalog["authority"] == "observation_only"
+            assert [w["id"] for w in catalog["workflows"]] == [
+                "b1", "b2", "b3", "b4", "b5",
+            ]
+            b3 = catalog["workflows"][2]
+            assert b3["adapterMode"] == "read_only"
+            assert b3["integration"] == "pending"
+            assert b3["lastAttempt"]["requestId"] == public_request
+            assert b3["lastAttempt"]["outcome"] == "unknown"
+            assert b3["lastVerifiedOutcome"] is None
+            assert b3["availableActions"] == []
+            assert b3["actionReasons"]["sync_project"] == "read_only"
+            assert b3["schedule"]["state"] == "unknown"
+            assert catalog["workflows"][1]["id"] == "b2"
+            assert catalog["workflows"][3]["id"] == "b4"
+            assert catalog["workflows"][1]["integration"] == "pending"
+            assert catalog["workflows"][3]["integration"] == "pending"
+            assert b2.reads == b4.reads == 1
+            assert "secret" not in raw.decode()
+            for private in [run["run_id"], private_binding, private_revision,
+                            *private_hashes.values(), str(root)]:
+                assert private not in raw.decode()
+
+            status, _, direct = request(server, "/api/v1/workflow-control/b3")
+            assert status == 200 and json.loads(direct) == b3
+            assert b2.reads == b4.reads == 2
+            assert request(server, "/api/v1/workflow-control/b3", "HEAD")[0] == 200
+            assert request(server, "/api/v1/workflow-control/b3",
+                           host="example.invalid")[0] == 403
+            for method in ("POST", "PUT", "PATCH", "DELETE", "OPTIONS"):
+                status, _, body = request(
+                    server, "/api/v1/workflow-control/b3", method,
+                )
+                assert status == 405 and body == b"Method not allowed"
+            assert request(server, "/api/v1/workflow-control/b3/syncs", "POST")[0] == 405
+            assert request(server, "/api/v1/workflow-control/b3/syncs")[0] == 404
+            # Only the two actual versioned GETs may observe the Journal.
+            # HEAD, rejected Host and mutation methods must not look it up.
+            assert observed.call_count == 2
+            # Legacy B2/B4 status() is also consulted by HEAD to compute
+            # response headers; this PR must not change that existing route.
+            assert b2.reads == b4.reads == 3
+        assert journal.db.total_changes == before
+        assert b2.effects == b4.effects == 0
+
+
+def test_b3_read_port_closed_journal_stays_unavailable_without_leaking(tmp_path):
+    from obsidian_automation.github_b3_attempts import B3AttemptJournal
+    from obsidian_automation.webui_b3_journal_read import B3JournalReadAdapter
+
+    state = tmp_path / "private-b3"
+    state.mkdir(mode=0o700)
+    with B3AttemptJournal(state, initialize=True) as journal:
+        port = B3JournalReadAdapter(journal)
+    with serving(ReadOnlyJob(snapshot()), ReadOnlyJob(daily()),
+                 ports={"b3": port}) as server:
+        status, _, body = request(server, "/api/v1/workflow-control/b3")
+        assert status == 200
+        b3 = json.loads(body)
+        assert b3["integration"] == "unavailable"
+        assert b3["lastVerifiedOutcome"] is None
+        assert b3["availableActions"] == []
+        assert "journal_closed" not in body.decode()
+        assert str(state).encode() not in body

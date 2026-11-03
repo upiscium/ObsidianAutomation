@@ -259,9 +259,38 @@ def test_mock_verified_history_is_suppressed_not_vault_success(monkeypatch):
 def test_module_dependencies_and_calls_are_read_only_source_only():
     tree = ast.parse(Path(optional.__file__).read_text(encoding="utf-8"))
     imports = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
-    assert imports == {"__future__", "webui_b1_adapter", "webui_b3_adapter", "webui_b5_ports"}
+    assert imports == {"__future__", "webui_b1_adapter", "webui_b3_adapter",
+                       "webui_b3_journal_read", "webui_b5_ports"}
     assert not any(isinstance(n, ast.Import) for n in ast.walk(tree))
     calls = [n.func for n in ast.walk(tree) if isinstance(n, ast.Call)]
     assert {n.attr for n in calls if isinstance(n, ast.Attribute)} == {"observe"}
     assert {n.id for n in calls if isinstance(n, ast.Name)} <= {
         "type", "all", "dict", "TypeError", "validate_optional_read_ports"}
+
+
+
+def test_explicit_real_b3_read_port_is_exact_type_and_constructor_never_observes(
+    monkeypatch,
+):
+    """No duck-typed B3 Writer/Job may bypass the already-attached read slot."""
+    from obsidian_automation.webui_b3_journal_read import B3JournalReadAdapter
+
+    port = B3JournalReadAdapter(None, clock=lambda: 10.0)
+    monkeypatch.setattr(
+        B3JournalReadAdapter, "observe",
+        property(lambda self: pytest.fail("constructor accessed real read port")),
+    )
+    expected = optional.validate_optional_read_ports({"b3": port})
+    assert expected == {"b3": port}
+    assert expected is not port
+    assert expected["b3"] is port
+
+    class Unapproved(B3JournalReadAdapter):
+        pass
+
+    for bad in (Unapproved(None, clock=lambda: 10.0), object()):
+        with pytest.raises(TypeError, match="invalid_workflow_control_read_ports"):
+            optional.validate_optional_read_ports({"b3": bad})
+    for forbidden in ("b1", "b5"):
+        with pytest.raises(TypeError, match="invalid_workflow_control_read_ports"):
+            optional.validate_optional_read_ports({forbidden: port})
