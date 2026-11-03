@@ -115,7 +115,10 @@ def _git_env(home: Path, *, fixture: bool) -> dict[str, str]:
     }
 
 
-def _git(args: list[str], *, env: dict[str, str], cwd: Path) -> str:
+def _git(
+    args: list[str], *, env: dict[str, str], cwd: Path,
+    max_output_bytes: int = 4096, preserve_output: bool = False,
+) -> str:
     try:
         result = subprocess.run(
             ["git", *args], cwd=cwd, env=env, stdin=subprocess.DEVNULL,
@@ -124,10 +127,13 @@ def _git(args: list[str], *, env: dict[str, str], cwd: Path) -> str:
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise PreviewError("git_unavailable_or_timeout") from exc
-    if result.returncode or len(result.stdout) > 4096:
+    if result.returncode or len(result.stdout) > max_output_bytes:
         raise PreviewError("git_failed")
     try:
-        return result.stdout.decode("utf-8", errors="strict").strip()
+        output = result.stdout.decode("utf-8", errors="strict")
+        # The NUL-delimited path inventory is arbitrary Git filename data.
+        # Stripping whitespace can change the identity of the first path.
+        return output if preserve_output else output.strip()
     except UnicodeDecodeError as exc:
         raise PreviewError("git_invalid_output") from exc
 
@@ -279,7 +285,8 @@ def _candidate_sha(core: Path, before: str, *, env: dict[str, str], policy_path:
     except (ExportError, OSError, ValueError) as exc:
         raise PreviewError("candidate_policy_invalid") from exc
     raw_paths = _git(["diff", "--no-renames", "--name-only", "-z", before, head, "--"],
-                     env=env, cwd=core)
+                     env=env, cwd=core, max_output_bytes=1024 * 1024,
+                     preserve_output=True)
     paths = [path for path in raw_paths.split("\x00") if path]
     if any(not _projection_managed(path, config) for path in paths):
         raise PreviewError("candidate_out_of_scope")

@@ -366,12 +366,12 @@ def test_git_credentials_are_not_inherited_into_projection_process(fixture, monk
     monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/bad-agent")
     original = lp._git
 
-    def reject_env_leak(args, *, env, cwd):
+    def reject_env_leak(args, *, env, cwd, **kwargs):
         assert "GH_TOKEN" not in env
         assert "GIT_ASKPASS" not in env
         assert "SSH_AUTH_SOCK" not in env
         assert "GIT_CONFIG_GLOBAL" in env
-        return original(args, env=env, cwd=cwd)
+        return original(args, env=env, cwd=cwd, **kwargs)
 
     monkeypatch.setattr(lp, "_git", reject_env_leak)
     got = prepare_local_preview(fixture["evidence"], fixture["config"])
@@ -493,3 +493,41 @@ def test_run_directory_creation_race_is_a_finite_failure(fixture, monkeypatch) -
     assert list(fixture["config"].state_dir.glob("runs/*/intent.json")) == []
     assert list(fixture["config"].state_dir.glob("receipts/*.json")) == []
     assert git(fixture["core_remote"], "rev-parse", "main") == fixture["core_sha"]
+
+
+def test_validator_unmanaged_leading_whitespace_path_rejected(fixture) -> None:
+    """Git NUL-delimited paths must retain leading whitespace, not be stripped."""
+    script = (
+        "import { mkdirSync, writeFileSync } from 'node:fs'; "
+        "mkdirSync(' 98-System', { recursive: true }); "
+        "writeFileSync(' 98-System/view.js', 'UNMANAGED\\n');\n"
+    )
+    prior = advance(fixture["core"], "98-System/99-dev/validate-repo.mjs", script)
+    with pytest.raises(PreviewError, match="candidate_out_of_scope"):
+        prepare_local_preview(fixture["evidence"], fixture["config"])
+    assert git(fixture["core_remote"], "rev-parse", "main") == prior
+    assert not list(fixture["config"].state_dir.glob("receipts/*.json"))
+
+
+def test_many_managed_path_changes_are_not_limited_to_4k_git_output(fixture) -> None:
+    """A bounded large NUL-delimited diff must not fail for normal bulk updates."""
+    from dataclasses import replace
+
+    policy = fixture["config"].policy_path
+    policy.write_text(
+        'version = 1\nstrict_missing = true\n'
+        'include = ["98-System/**"]\n'
+        'repository_owned = [".git", ".git/**", ".github/**", "README.md", "98-System/99-dev/**"]\n'
+    )
+    source = fixture["source"]
+    for i in range(160):
+        (source / "98-System" / f"long-managed-name-{i:04d}-abcdefghijklmnopqrstuvwxyz.md").write_text(
+            f"managed-{i}\n"
+        )
+    new_source = commit(source, "Synthetic bulk update")
+    git(source, "push", "--quiet", "origin", "HEAD:main")
+    new_evidence = replace(fixture["evidence"], remote_ref=new_source)
+    result = prepare_local_preview(new_evidence, fixture["config"])
+    assert result.status == "candidate_prepared"
+    assert git(fixture["core_remote"], "rev-parse", "main") == fixture["core_sha"]
+    assert len(list(fixture["config"].state_dir.glob("receipts/*.json"))) == 1

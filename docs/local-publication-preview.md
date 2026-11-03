@@ -66,11 +66,14 @@ For valid evidence, the preview:
 6. After validation, rechecks the source checkout and frozen policy bytes,
    then checks clean local Core tree and unchanged HEAD or exactly one marked
    generated child commit. Its changed paths must ALL match the managed
-   allowlist (not repository-owned or excluded). This extra fence matters
-   because the existing public_publish CLI uses git add -A, and Node
-   validation may accidentally create unrelated files. Additionally the
-   complete generated Core projection is recomputed against the pinned
-   source with the same allowlist and semantic appearance rules: any
+   allowlist (not repository-owned or excluded). Git NUL-delimited paths
+   preserve leading whitespace and are read with a separate bounded 1 MiB
+   budget; the ordinary 4 KiB Git-output bound is not appropriate for a
+   legitimate bulk change. This extra fence matters because the existing
+   public_publish CLI uses git add -A, and Node validation may accidentally
+   create unrelated files. Additionally, the complete generated Core
+   projection is recomputed against the pinned source with the same
+   allowlist and semantic appearance rules: any
    remaining content drift (even within allowed paths) rejects the preview.
    Independently re-reads both remote refs before accepting a candidate.
 7. Persists a 0600 fsynced candidate_prepared or no_changes receipt
