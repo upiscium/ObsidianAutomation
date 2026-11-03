@@ -462,3 +462,17 @@ def test_source_convergence_check_rejects_a_clean_generated_wrong_tree(fixture) 
     with pytest.raises(PreviewError, match="candidate_source_diverged"):
         lp._assert_projection_converged(source, core, run_dir / "policy.toml")
     assert git(fixture["core_remote"], "rev-parse", "main") == fixture["core_sha"]
+
+
+@pytest.mark.parametrize("repository", ["source", "core"])
+def test_cached_git_metadata_symlink_is_rejected(fixture, repository: str) -> None:
+    """Do not trust a cached checkout redirected to a different .git directory."""
+    result = prepare_local_preview(fixture["evidence"], fixture["config"])
+    clone = fixture["config"].state_dir / "runs" / result.run_key / repository
+    metadata = clone / ".git"
+    relocated = clone / ".git-original"
+    metadata.rename(relocated)
+    metadata.symlink_to(relocated, target_is_directory=True)
+    with pytest.raises(PreviewError, match="invalid_existing_receipt"):
+        prepare_local_preview(fixture["evidence"], fixture["config"])
+    assert git(fixture["core_remote"], "rev-parse", "main") == fixture["core_sha"]

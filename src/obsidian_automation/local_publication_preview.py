@@ -329,6 +329,9 @@ def _cached(
         or record.get("status") not in {"candidate_prepared", "no_changes"}
         or not run_dir.is_dir()
         or not (run_dir / "core" / ".git").is_dir()
+        or (run_dir / "core" / ".git").is_symlink()
+        or not (run_dir / "source" / ".git").is_dir()
+        or (run_dir / "source" / ".git").is_symlink()
     ):
         raise PreviewError("invalid_existing_receipt")
     candidate = record.get("candidate_sha")

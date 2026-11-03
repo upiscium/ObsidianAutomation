@@ -76,7 +76,8 @@ For valid evidence, the preview:
 7. Persists a 0600 fsynced candidate_prepared or no_changes receipt
    (only SHAs, policy digest, finite status; no URLs/notes). Repeated
    keys verify the local source/candidate and return already_prepared
-   without rerunning validators.
+   without rerunning validators. Cached source/Core Git metadata must be
+   real directories, never symlinks into other repositories.
 8. On failure after intent, writes a 0600 failure.json with a finite
    reason. No remote write is attempted.
 
