@@ -406,6 +406,37 @@ class B3AttemptJournal:
                             "overview_after_sha256 TEXT NOT NULL, "
                             "observed REAL NOT NULL)"
                         )
+                        # One bounded lookup path for historical Writer-pair
+                        # and unresolved-run reads. The existing v2 DB schema
+                        # and single owner are unchanged; this performance
+                        # index is created transactionally on first open.
+                        self.db.execute(
+                            "CREATE INDEX IF NOT EXISTS runs_b3_state_terminal_seq "
+                            "ON runs(state, terminal_code, seq DESC)"
+                        )
+                        index_rows = [
+                            row for row in self.db.execute("PRAGMA index_list(runs)")
+                            if row[1] == "runs_b3_state_terminal_seq"
+                        ]
+                        # IF NOT EXISTS alone cannot reject a forged partial
+                        # index with the correct column names. That index
+                        # would not serve the unconfirmed-state query.
+                        index_columns = tuple(
+                            (row[2], row[3], row[4])
+                            for row in self.db.execute(
+                                "PRAGMA index_xinfo(runs_b3_state_terminal_seq)"
+                            ) if row[5] == 1
+                        )
+                        if (
+                            len(index_rows) != 1
+                            or index_rows[0][2:] != (0, "c", 0)
+                            or index_columns != (
+                                ("state", 0, "BINARY"),
+                                ("terminal_code", 0, "BINARY"),
+                                ("seq", 1, "BINARY"),
+                            )
+                        ):
+                            raise InvalidAttempt("invalid_runs_index")
                         self.db.execute(f"PRAGMA user_version={_STORE_VERSION}")
                         # No effect was admitted before the persisted start().
                         self.db.execute(
@@ -671,6 +702,92 @@ class B3AttemptJournal:
                 "status_proposal_sha256", "status_after_sha256",
                 "overview_proposal_sha256", "overview_after_sha256", "observed_at",
             ), found))
+
+    def workflow_read_observation(self) -> dict[str, object]:
+        """Private fixed-schema read for the #483 read-only Workflow adapter.
+
+        The request ID is an opaque UI correlation handle, NOT a secret
+        binding, a retry authority, a Writer result or a remote Vault fact.
+        Read at most the latest run and latest paired Writer observation.
+        This method never admits, retries, verifies or starts any effect.
+        """
+        with self._lock:
+            self._ready()
+            row = self._fetch(
+                "SELECT request_id,state,terminal_code,created,started,completed "
+                "FROM runs ORDER BY seq DESC LIMIT 1"
+            )
+            last = None
+            if row is not None:
+                request, state, code, created, started, completed = row
+                if not _is_id(request) or type(state) is not str:
+                    raise InvalidAttempt("invalid_workflow_observation")
+                try:
+                    created_at = _when(created)
+                    started_at = _when(started) if started is not None else None
+                    completed_at = _when(completed) if completed is not None else None
+                except InvalidAttempt:
+                    raise InvalidAttempt("invalid_workflow_observation") from None
+                if state == "queued":
+                    valid = code is None and started_at is None and completed_at is None
+                elif state == "running":
+                    valid = (code is None and started_at is not None
+                             and completed_at is None
+                             and created_at <= started_at)
+                elif state == "unconfirmed":
+                    valid = (type(code) is str and code in _UNCONFIRMED
+                             and started_at is not None and completed_at is not None
+                             and created_at <= started_at <= completed_at)
+                elif state == "completed":
+                    valid = (type(code) is str and code in
+                             (_DETERMINISTIC_REFUSALS |
+                              {_ABANDONED_BEFORE_START, _WRITER_OBSERVED})
+                             and completed_at is not None
+                             and created_at <= completed_at
+                             and (started_at is None
+                                  if code == _ABANDONED_BEFORE_START else
+                                  started_at is not None
+                                  and created_at <= started_at <= completed_at))
+                else:
+                    valid = False
+                if not valid:
+                    raise InvalidAttempt("invalid_workflow_observation")
+                last = {
+                    "request_id": request,
+                    "state": state,
+                    "terminal_code": code,
+                    "created_at": created_at,
+                    "started_at": started_at,
+                    "completed_at": completed_at,
+                }
+            pair = self._fetch(
+                "SELECT r.completed,p.observed FROM runs r "
+                "JOIN writer_proofs p ON p.run_id=r.run_id "
+                "WHERE r.state='completed' "
+                "AND r.terminal_code='writer_readback_observed' "
+                "ORDER BY r.seq DESC LIMIT 1"
+            )
+            last_pair_at = None
+            if pair is not None:
+                try:
+                    finished, observed = _when(pair[0]), _when(pair[1])
+                except InvalidAttempt:
+                    raise InvalidAttempt("invalid_workflow_observation") from None
+                if observed > finished:
+                    raise InvalidAttempt("invalid_workflow_observation")
+                last_pair_at = finished
+            if last is not None and last["terminal_code"] == _WRITER_OBSERVED:
+                if last_pair_at is None:
+                    raise InvalidAttempt("invalid_workflow_observation")
+            unconfirmed = self._fetch(
+                "SELECT 1 FROM runs WHERE state='unconfirmed' LIMIT 1"
+            )
+            return {
+                "schema_version": VERSION,
+                "last_attempt": last,
+                "last_writer_pair_at": last_pair_at,
+                "has_unconfirmed": unconfirmed is not None,
+            }
 
     def snapshot(self, *, recent: int = 32) -> dict[str, object]:
         """Only local admissions and producer-reported dispositions.
