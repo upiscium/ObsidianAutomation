@@ -380,12 +380,55 @@ def test_guard_rejection_before_start_never_leads_to_writer_effect(setup_job):
     with B3AttemptJournal(case["root"], initialize=True) as j:
         with pytest.raises(JobNotAvailable, match="writer_not_started"):
             _invoke(j, case, writer_guard=rejected)
+        abandoned = j.snapshot()["last_attempt"]
+        assert abandoned["state"] == "completed"
+        assert abandoned["terminal_code"] == "abandoned_before_start"
+        assert abandoned["started_at"] is None
+        assert case["transport"].calls == []
+        # Same request ID stays replay-only: it cannot silently run later.
+        replay = _invoke(j, case)
+        assert replay["decision"] == "replayed"
+        assert replay["receipt"] == abandoned
+        assert case["guard"].entered == 0
+        assert case["transport"].calls == []
+        # A new explicit request can proceed without restarting the service.
+        next_request = B3RunRequest("d" * 32, BINDING, REVISION)
+        result = _invoke(j, case, request=next_request)
+        assert result["decision"] == "accepted"
+        assert result["writer_readback"] == "two_fresh_gets_match_receipt_hashes"
+        assert case["guard"].entered == 1
+        assert case["transport"]._puts == 2
+    with B3AttemptJournal(case["root"], initialize=False) as j:
+        assert j.lookup(abandoned["run_id"]) == abandoned
+        assert j.snapshot()["last_attempt"]["terminal_code"] == "writer_readback_observed"
+
+
+def test_invalid_guard_context_without_any_start_is_abandoned(setup_job):
+    case = setup_job
+    with B3AttemptJournal(case["root"], initialize=True) as j:
+        with pytest.raises(JobNotAvailable, match="writer_not_started"):
+            _invoke(j, case, writer_guard=lambda: None)
+        assert j.snapshot()["last_attempt"]["terminal_code"] == "abandoned_before_start"
+        assert case["transport"].calls == []
+
+
+def test_baseexception_during_guard_acquisition_is_recovered_only_on_restart(
+    setup_job,
+):
+    case = setup_job
+
+    @contextmanager
+    def interrupted():
+        raise SimulatedCrash()
+        yield
+
+    with B3AttemptJournal(case["root"], initialize=True) as j:
+        with pytest.raises(SimulatedCrash):
+            _invoke(j, case, writer_guard=interrupted)
         assert j.snapshot()["last_attempt"]["state"] == "queued"
         assert case["transport"].calls == []
     with B3AttemptJournal(case["root"], initialize=False) as j:
-        assert j.snapshot()["last_attempt"]["terminal_code"] == (
-            "abandoned_before_start"
-        )
+        assert j.snapshot()["last_attempt"]["terminal_code"] == "abandoned_before_start"
 
 
 def test_server_configuration_never_exposes_password_in_object_repr(setup_job):

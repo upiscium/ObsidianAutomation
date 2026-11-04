@@ -254,16 +254,22 @@ def run_b3_writer_once(
             "last_verified_pipeline_success": None,
         }
     except Exception:
+        if not started:
+            # A refused shared Writer guard must not wedge a live Journal
+            # with an unstarted queued admission. This is safe only if the
+            # Journal can still prove start() was never persisted.
+            try:
+                journal.abandon_before_start(run_id)
+            except Exception:
+                raise JobNotAvailable("journal_unavailable") from None
+            raise JobNotAvailable("writer_not_started") from None
         # Once start was persisted, no exception can establish no remote
         # effect: hold the run unconfirmed and never retry automatically.
-        if started:
-            try:
-                journal.finish(run_id, terminal_code="effect_unknown")
-            except Exception:
-                # If the DB failed, refuse to advertise safe continuation.
-                raise JobNotAvailable("journal_unavailable") from None
-        raise JobNotAvailable(
-            "writer_effect_unknown" if started else "writer_not_started"
-        ) from None
+        try:
+            journal.finish(run_id, terminal_code="effect_unknown")
+        except Exception:
+            # If the DB failed, refuse to advertise safe continuation.
+            raise JobNotAvailable("journal_unavailable") from None
+        raise JobNotAvailable("writer_effect_unknown") from None
     # BaseException / process interruption deliberately escapes so restart
     # marks a running attempt as interrupted_unknown, without replay.

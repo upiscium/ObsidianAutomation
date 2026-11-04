@@ -563,6 +563,48 @@ class B3AttemptJournal:
                 )
             return "accepted", self.lookup(run_id)
 
+    def abandon_before_start(self, run_id: str) -> dict[str, object]:
+        """Finish an admission refused before the durable effect boundary.
+
+        A shared Writer guard may fail to acquire while the owner process
+        remains alive. Keeping that attempt queued would prevent every future
+        request until a Journal restart. This transition is legal ONLY before
+        start() has persisted; no remote effect can yet have been invoked.
+        The same request ID remains replay-only after abandonment.
+        """
+        if not _is_id(run_id):
+            raise InvalidAttempt("invalid_run_id")
+        with self._lock:
+            self._ready()
+            row = self._fetch(
+                f"SELECT {self._select()} FROM runs WHERE run_id=?", (run_id,),
+            )
+            if row is None:
+                raise InvalidAttempt("unknown_run")
+            data = dict(zip(_COLS, row))
+            if (data["state"] == "completed"
+                    and data["terminal_code"] == _ABANDONED_BEFORE_START
+                    and data["started"] is None):
+                return _public(row)
+            if (data["state"] != "queued" or data["terminal_code"] is not None
+                    or data["started"] is not None
+                    or data["completed"] is not None):
+                raise InvalidAttempt("invalid_transition")
+            now = _when(self.clock())
+            if now < data["created"]:
+                raise InvalidAttempt("clock_regression")
+            with self.db:
+                changed = self.db.execute(
+                    "UPDATE runs SET state='completed', terminal_code=?, "
+                    "completed=? WHERE run_id=? AND state='queued' "
+                    "AND started IS NULL AND completed IS NULL "
+                    "AND terminal_code IS NULL",
+                    (_ABANDONED_BEFORE_START, now, run_id),
+                )
+                if changed.rowcount != 1:
+                    raise InvalidAttempt("invalid_transition")
+            return self.lookup(run_id)
+
     def start(self, run_id: str) -> dict[str, object]:
         if not _is_id(run_id):
             raise InvalidAttempt("invalid_run_id")
