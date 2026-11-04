@@ -91,7 +91,10 @@ def _validate_fixture(config: FixtureDeliveryConfig) -> None:
         b2_state = config.b2_state.resolve(strict=True).relative_to(root)
     except (OSError, ValueError) as exc:
         raise DeliveryError("fixture_out_of_bounds") from exc
-    if not local_state.parts or not b2_state.parts or local_state == b2_state:
+    # The isolated fixture has fixed sibling paths. Merely checking that
+    # state is under root would permit writes inside source.git/core.git or
+    # the B2 owner's directory, violating the no-extra-effects boundary.
+    if local_state != Path("p2-state") or b2_state != Path("b2-state"):
         raise DeliveryError("fixture_out_of_bounds")
     if not _RUN_ID.fullmatch(config.b2_run_id):
         raise DeliveryError("invalid_b2_run_id")

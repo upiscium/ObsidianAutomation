@@ -637,3 +637,20 @@ def test_remote_moves_during_independent_readback_is_not_current_success(
     assert first.candidate_sha != altered[0]
     # No automatic second send when latest ref is now different.
     assert config_result(fixture).status == "unknown"
+
+
+@pytest.mark.parametrize("nested_parent", ["source.git", "core.git", "b2-state"])
+def test_fixture_delivery_state_cannot_live_inside_git_or_b2_tree(
+    fixture, nested_parent: str,
+) -> None:
+    """Fixture state must never modify bare Git internals or the B2 owner's tree."""
+    cfg = fixture["config"]
+    nested_state = cfg.fixture_root / nested_parent / "publisher-state"
+    changed = dataclasses.replace(
+        cfg, preview=dataclasses.replace(cfg.preview, state_dir=nested_state)
+    )
+    with pytest.raises(delivery.DeliveryError, match="fixture_out_of_bounds"):
+        delivery.deliver_disposable_fixture(changed)
+    assert not nested_state.exists()
+    assert git(fixture["core_git"], "rev-parse", "main") == fixture["core_sha"]
+    assert git(fixture["source_git"], "rev-parse", "main") == fixture["source_sha"]
