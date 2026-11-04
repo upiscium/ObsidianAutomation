@@ -654,3 +654,26 @@ def test_fixture_delivery_state_cannot_live_inside_git_or_b2_tree(
     assert not nested_state.exists()
     assert git(fixture["core_git"], "rev-parse", "main") == fixture["core_sha"]
     assert git(fixture["source_git"], "rev-parse", "main") == fixture["source_sha"]
+
+
+@pytest.mark.parametrize("repository_name", ["source.git", "core.git"])
+def test_nested_repository_endpoint_cannot_target_b2_tree(
+    fixture, repository_name: str,
+) -> None:
+    """A basename match alone must not admit a nested Git endpoint."""
+    cfg = fixture["config"]
+    nested = cfg.b2_state / repository_name
+    nested.mkdir()
+    changed_preview = dataclasses.replace(
+        cfg.preview,
+        **{
+            "source_url" if repository_name == "source.git" else "core_url":
+                nested.as_uri()
+        },
+    )
+    changed = dataclasses.replace(cfg, preview=changed_preview)
+    with pytest.raises(delivery.DeliveryError, match="wrong_fixture_repository"):
+        delivery.deliver_disposable_fixture(changed)
+    assert not cfg.preview.state_dir.exists()
+    assert git(fixture["core_git"], "rev-parse", "main") == fixture["core_sha"]
+    assert git(fixture["source_git"], "rev-parse", "main") == fixture["source_sha"]

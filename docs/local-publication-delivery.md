@@ -21,9 +21,9 @@ local_publication_delivery.deliver_disposable_fixture requires all of:
 - explicit enabled=True and P1 allow_file_fixture=True
 - a private 0700 disposable root with a 0600 fixed-content
   .oa511-p2-disposable-fixture marker
-- two fixed file:// Git repositories source.git and core.git under that
-  exact root, with separate sibling state directories b2-state and p2-state.
-  State may not be placed inside the bare repositories or another job's tree
+- exactly two file:// Git repositories at root/source.git and root/core.git,
+  with separate sibling state directories root/b2-state and root/p2-state.
+  Nested Git endpoints and state inside another job's tree are rejected
 
 **All HTTPS destinations, including the real public ObsidianCore GitHub
 repository, are rejected before Git or state writes.** No credentials or

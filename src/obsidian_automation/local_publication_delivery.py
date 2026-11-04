@@ -63,8 +63,9 @@ def _fixture_repo(url: str, root: Path, expected: str) -> Path:
     raw = Path(unquote(parsed.path))
     if raw.is_symlink():
         raise DeliveryError("fixture_out_of_bounds")
-    _relative_under(raw, root)
-    if raw.name != expected:
+    # A matching basename under b2-state or a nested directory is not
+    # the fixed disposable endpoint. Admit only the root's direct sibling.
+    if _relative_under(raw, root) != Path(expected):
         raise DeliveryError("wrong_fixture_repository")
     return raw
 
