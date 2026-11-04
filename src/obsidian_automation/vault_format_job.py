@@ -24,6 +24,22 @@ from .vault_format_writer import _validated_plan, FormatWriteError
 _ID = re.compile(r"[a-f0-9]{32}\Z")
 _TERMINAL = {"would_change", "no_changes", "applied", "conflict", "failed",
              "indeterminate", "unconfirmed"}
+# Writer's fixed, non-sensitive result vocabulary; keep real preflight
+# refusals distinct from unobservable PUT outcomes.
+_WRITER_SUCCESS = frozenset({"applied", "recovered", "already_desired"})
+_WRITER_PRECHECK = frozenset({
+    "ready", "remote_unavailable", "remote_missing_or_rejected",
+    "source_changed", "formatter_policy_mismatch", "weak_or_missing_etag",
+})
+_WRITER_TERMINAL = frozenset({
+    "cas_conflict", "write_rejected", "indeterminate",
+})
+_WRITER_RESULTS = _WRITER_SUCCESS | _WRITER_PRECHECK | _WRITER_TERMINAL
+_WRITER_CONFLICT = frozenset({"source_changed", "cas_conflict"})
+_WRITER_FAILURE = frozenset({
+    "remote_unavailable", "remote_missing_or_rejected",
+    "weak_or_missing_etag", "formatter_policy_mismatch", "write_rejected",
+})
 
 # Static non-sensitive policy reasons. Do not publish an arbitrary reason or
 # any filename, user note, or private metadata from the source plan.
@@ -47,6 +63,83 @@ def _skip_reason_counts(entries: dict[str, dict]) -> dict[str, int]:
             code = raw if type(raw) is str and raw in _SAFE_SKIP_REASONS else "unclassified"
             counts[code] += 1
     return dict(sorted(counts.items()))
+
+
+def _writer_status(
+    result: object, plan_sha: str, entries: dict[str, dict]
+) -> tuple[str, str | None, str | None]:
+    """Validate an exact CAS Writer receipt before reporting any success.
+
+    These checks are *shape and plan consistency*, not independent proof that
+    a real remote effect occurred; only the separately authorized Writer
+    produces and durably verifies its own content-addressed receipt.
+    """
+    invalid = ("indeterminate", "writer_result_invalid", None)
+    if type(result) is not dict or result.get("plan_sha256") != plan_sha:
+        return invalid
+    state, outcomes = result.get("status"), result.get("outcomes")
+    operation, receipt = result.get("operation_id"), result.get("receipt_sha256")
+    if state not in ("complete", "blocked", "partial", "indeterminate"):
+        return invalid
+    if (type(operation) is not str or _ID.fullmatch(operation) is None
+            or type(receipt) is not str
+            or re.fullmatch(r"[a-f0-9]{64}", receipt) is None
+            or type(outcomes) is not list or not 1 <= len(outcomes) <= 32):
+        return invalid
+    codes: list[str] = []
+    paths: set[str] = set()
+    for row in outcomes:
+        if type(row) is not dict:
+            return invalid
+        path, code = row.get("path"), row.get("result")
+        entry = entries.get(path) if type(path) is str else None
+        if (entry is None or entry.get("status") != "would_change"
+                or path in paths
+                or type(code) is not str or code not in _WRITER_RESULTS
+                or row.get("before_sha256") != entry.get("before_sha256")
+                or row.get("after_sha256") != entry.get("after_sha256")):
+            return invalid
+        paths.add(path)
+        codes.append(code)
+    effect = result.get("vault_modified")
+    if state == "complete":
+        # R1 has no per-run selected-path contract: complete means the entire
+        # Plan's would_change set, not an arbitrary subset. R2 must define
+        # explicit selected-scope admission before allowing partial scope.
+        planned = {path for path, entry in entries.items()
+                   if entry.get("status") == "would_change"}
+        if paths != planned or any(code not in _WRITER_SUCCESS for code in codes):
+            return invalid
+        changed = any(code in {"applied", "recovered"} for code in codes)
+        if effect is not changed:
+            return invalid
+        return ("applied" if changed else "no_changes", None, state)
+    if state == "blocked":
+        if effect is not False or any(
+            code in {"applied", "recovered", "indeterminate"} for code in codes
+        ):
+            return invalid
+        if any(code in _WRITER_FAILURE for code in codes):
+            return ("failed", "writer_preflight_or_remote_failed", state)
+        if any(code in _WRITER_CONFLICT for code in codes):
+            return ("conflict", "writer_conflict", state)
+        return invalid
+    if state == "partial":
+        terminal = [code for code in codes if code in {"cas_conflict", "write_rejected"}]
+        if (effect is not True
+                or not any(code in {"applied", "recovered"} for code in codes)
+                or len(terminal) != 1 or codes[-1] != terminal[0]
+                or any(code in _WRITER_PRECHECK or code == "indeterminate"
+                       for code in codes)):
+            return invalid
+        if terminal[0] == "write_rejected":
+            # A 401/403/404 after an earlier successful PUT is an incident,
+            # not a CAS conflict; preserve writer_outcome='partial'.
+            return ("failed", "writer_partial_write_rejected", state)
+        return ("conflict", "writer_partial_conflict", state)
+    if effect is not None or "indeterminate" not in codes:
+        return invalid
+    return ("indeterminate", "remote_effect_unknown", state)
 
 
 class FormatterInvalid(ValueError):
@@ -97,7 +190,16 @@ class FormatterJob:
         self.writer = writer
         self.clock = clock
         self._lock = threading.RLock()
+        # A separate gate serializes mode acknowledgements and the Writer
+        # effect window. Keep the normal Job lock free during remote I/O so
+        # the shared scheduler and unrelated jobs continue to tick.
+        self._write_gate = threading.RLock()
         self._worker: threading.Thread | None = None
+        # A queued auto-apply run is bound to the exact settings/source epoch
+        # from admission. Turning Off (or even Off then On during a scan) must
+        # not silently re-authorize that already queued operation.
+        self._settings_epoch = 0
+        self._write_admissions: dict[str, tuple[int, str | None]] = {}
         try:
             self.db = sqlite3.connect(state / "formatter.sqlite3", check_same_thread=False)
             self.db.execute("PRAGMA journal_mode=WAL")
@@ -183,12 +285,18 @@ class FormatterJob:
                     "UPDATE settings SET mode='off',next_due=NULL,"
                     "source_generation=? WHERE id=1", (current,)
                 )
+            self._settings_epoch += 1
 
     def connections_saved(self) -> None:
-        """Reset independent formatter scheduling before changing credentials."""
-        with self._lock:
+        """Revoke scheduled writes after a verified shared-connection change.
+
+        Lock order must match update() and the Dashboard credential handlers:
+        Writer gate -> other workload locks (when present) -> Formatter lock.
+        """
+        with self._write_gate, self._lock:
             with self.db:
                 self.db.execute("UPDATE settings SET mode='off',next_due=NULL WHERE id=1")
+            self._settings_epoch += 1
 
     def settings(self) -> dict:
         with self._lock:
@@ -214,7 +322,12 @@ class FormatterJob:
                 or not 300 <= payload["interval_seconds"] <= 86400):
             raise FormatterInvalid("invalid_formatter_settings")
         mode, interval = payload["mode"], payload["interval_seconds"]
-        with self._lock:
+        # Strict order: write gate -> Formatter lock -> shared SetupStore.
+        # Do not call update() while already holding Formatter's lock.
+        # An Off acknowledgement cannot race a Writer starting. If a
+        # conditional PUT has already been admitted, Off waits for its
+        # bounded Writer call to return; it cannot revoke an in-flight PUT.
+        with self._write_gate, self._lock:
             previous = self.settings()
             if mode != "off" and not previous["configured"]:
                 raise FormatterInvalid("formatter_connection_missing")
@@ -228,6 +341,8 @@ class FormatterJob:
                     "UPDATE settings SET mode=?, interval_seconds=?, next_due=? WHERE id=1",
                     (mode, interval, due),
                 )
+            if previous["mode"] != mode or previous["interval_seconds"] != interval:
+                self._settings_epoch += 1
             return self.settings()
 
     def run(self, run_id: str) -> dict | None:
@@ -304,6 +419,8 @@ class FormatterJob:
                     "VALUES (?,?,?,?,?,?)",
                     (run_id, request_id, trigger, mode, "queued", self.clock()),
                 )
+            if mode == "auto-apply":
+                self._write_admissions[run_id] = (self._settings_epoch, self._generation())
             self._launch_worker(run_id)
             return "accepted", self.run(run_id)
 
@@ -315,6 +432,7 @@ class FormatterJob:
             self._worker.start()
         except Exception:
             self._worker = None
+            self._write_admissions.pop(run_id, None)
             with self.db:
                 self.db.execute(
                     "UPDATE runs SET status='unconfirmed',completed=? "
@@ -328,6 +446,7 @@ class FormatterJob:
             if current is None:
                 return
             mode = current["run_mode"]
+            admitted = self._write_admissions.pop(run_id, None)
             with self.db:
                 self.db.execute("UPDATE runs SET status='running' WHERE run_id=?", (run_id,))
         fields: dict = {}
@@ -359,44 +478,38 @@ class FormatterJob:
             }
             status = "would_change" if changed else "no_changes"
             if mode == "auto-apply" and changed:
-                if self.writer is None or not self.configured():
-                    raise FormatterInvalid("formatter_writer_unavailable")
-                # Every actual effect remains owned by the independently
-                # authorized writer. This job never assembles PUT bytes.
-                try:
-                    result = self.writer(plan)
-                except Exception:
-                    # Unknown whether WebDAV side effects happened.
-                    status = "indeterminate"
-                    reason_code = "writer_result_unknown"
-                else:
-                    if (type(result) is not dict or result.get("plan_sha256") != digest
-                            or result.get("status") not in
-                            {"complete", "blocked", "partial", "indeterminate"}
-                            or type(result.get("outcomes")) is not list
-                            or not result["outcomes"]
-                            or not all(type(row) is dict and row.get("result") in
-                                       {"applied", "recovered", "already_desired",
-                                        "cas_conflict", "write_rejected"} for row in result["outcomes"])
-                            or (result["status"] == "complete" and
-                                any(row["result"] not in
-                                    {"applied", "recovered", "already_desired"}
-                                    for row in result["outcomes"]))):
-                        status = "indeterminate"
-                        reason_code = "writer_result_invalid"
-                    elif result["status"] == "indeterminate":
-                        status = "indeterminate"
-                        reason_code = "remote_effect_unknown"
-                    elif result["status"] in {"blocked", "partial"}:
-                        status = "conflict"
-                        reason_code = "writer_conflict" if result["status"] == "blocked" else "writer_partial_conflict"
-                        writer_outcome = result["status"]
+                # Serialize only the Writer effect window with mode updates.
+                # Unlike self._lock, this gate is never acquired by tick(),
+                # read-only status, or independent Snapshot/Daily workers.
+                with self._write_gate:
+                    with self._lock:
+                        self._refresh_generation()
+                        settings_mode = self.db.execute(
+                            "SELECT mode FROM settings WHERE id=1"
+                        ).fetchone()[0]
+                        valid_admission = (
+                            admitted is not None
+                            and admitted == (self._settings_epoch, self._generation())
+                            and settings_mode == "auto-apply"
+                            and self.writer is not None
+                            and self.configured()
+                        )
+                    if not valid_admission:
+                        # Off/On, credential rotation or config change during
+                        # a long scan cancels this run before remote effects.
+                        status = "failed"
+                        reason_code = "writer_admission_revoked"
                     else:
-                        status = "applied" if any(
-                            row.get("result") in {"applied", "recovered"}
-                            for row in result["outcomes"] if type(row) is dict
-                        ) else "no_changes"
-                        writer_outcome = result["status"]
+                        # Every actual effect remains owned by the separately
+                        # authorized Writer. This Job never constructs PUT bytes.
+                        try:
+                            result = self.writer(plan)
+                        except Exception:
+                            # The effect may have been sent: do not replay.
+                            status = "indeterminate"
+                            reason_code = "writer_result_unknown"
+                        else:
+                            status, reason_code, writer_outcome = _writer_status(result, digest, entries)
         except Exception:
             if status != "indeterminate":
                 status = "failed"
@@ -435,5 +548,7 @@ class FormatterJob:
                     "UPDATE settings SET next_due=? WHERE id=1",
                     (self.clock() + s["interval_seconds"],),
                 )
+            if s["mode"] == "auto-apply":
+                self._write_admissions[run_id] = (self._settings_epoch, self._generation())
             self._launch_worker(run_id)
             return True
