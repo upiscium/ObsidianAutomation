@@ -123,6 +123,51 @@ R1 does not establish a recurring Writer credential broker, cross-process
 rotation lock, actual production approval, or Snapshot→Gitea→Core end-to-end
 convergence. Those remain later #472 gates.
 
+## R2/A0 — recurring admission proposal (source-only, no effects)
+
+`vault_format_recurring_admission.py` defines a pure, separately injectable
+proposal builder for a future scoped Writer. It is **not** used by the normal
+app, Scheduler, HTTP API, or the one-shot #471 Canary adapter:
+
+- A frozen `RecurringPolicy` pins `98-System/**`, the versioned Formatter
+  policy, exact Nextcloud source-generation hash, account-binding digest,
+  external provider-proof reference, and explicit file-count / byte budgets
+  (never exceeding the existing CAS Writer ceilings).
+- The external `verify_operator_policy` callback must confirm the *exact*
+  canonical policy digest against an independently retained Human approval.
+  Merely constructing a policy object or providing a verifier which always
+  returns True does **not** grant real write authority. No normal runtime
+  supplies such a verifier.
+- `prepare_recurring_admission` snapshots the complete operator-policy
+  scalar values *before* any callback. Even `object.__setattr__` mutations to
+  a caller-owned frozen dataclass cannot enlarge the verified limits or change
+  the reported binding after approval. Only those private pinned values are
+  used for checks and the admission proposal.
+- It creates a **bounded** immutable JSON snapshot of authoritative Plan
+  metadata, omitting untrusted display-only `diffs`; overlarge serialized
+  metadata is rejected before JSON decoding. It checks source generation
+  before and after proof verification, Plan SHA, and every selected target's
+  before/after SHA, source/desired size and format-line metadata.
+  It admits **the full `would_change` selection or none**. If a Plan exceeds
+  file-count or source/output byte budgets, it **rejects** rather than
+  silently selecting the first N entries. Zero-change Plans return no
+  operation to apply.
+- Every run supplies an already-persisted 32-hex `run_id`. The deterministic
+  `operation_id` is derived from that run_id only, *not* from mutable Plan,
+  credential or policy contents. Replaying a run with a different Plan must
+  still collide with the same durable Writer operation marker. The marker
+  is created before HTTP effects; it does not prove a previous effect finished.
+- A resulting `RecurringAdmission` is **descriptive metadata**, not a
+  capability token. A later effect-time adapter must revalidate all pins
+  under the existing Writer gate / connection-store lock, require an
+  independently approved CAS-provider proof, reserve the receipt/operation
+  marker durably, and recheck source identity before every GET/PUT. Its
+  conditional PUTs and readback remain owned by the #471 Writer, never by
+  Snapshot, Dashboard or the Plan builder.
+- A0 uses no credentials, performs no WebDAV request, does not write any
+  operator approval, and is not registered in `snapshot_app`. Independent
+  review, R2/B effect-time binding, and user authorization are later gates.
+
 ## Production requirements NOT YET MET
 
 Source tests and this app integration do not enable live mutation. The
