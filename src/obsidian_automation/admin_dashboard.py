@@ -1599,7 +1599,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 payload = validate_nextcloud(json.loads(self._read_bounded_json()))
-                with snapshot_job._lock, (daily_job._lock if daily_job else nullcontext()), (
+                # Acquire Writer gate before all workload locks. The shared
+                # connection save and Formatter revocation are one admission
+                # interval; never acquire the gate while holding Formatter._lock.
+                formatter_gate = formatter._write_gate if formatter else nullcontext()
+                with formatter_gate, snapshot_job._lock, (
+                        daily_job._lock if daily_job else nullcontext()), (
                         formatter._lock if formatter else nullcontext()):
                     if snapshot_job.db.execute(
                         "SELECT 1 FROM runs WHERE status IN ('queued','running') LIMIT 1"
@@ -1773,7 +1778,11 @@ class Handler(BaseHTTPRequestHandler):
                     payload = {**nextcloud, **payload}
                 daily = self.server.daily_job
                 formatter = getattr(self.server, "formatter_job", None)
-                with job._lock, (daily._lock if daily is not None else nullcontext()), (
+                # Serialize credential rotation and Writer effect admission
+                # before acquiring Snapshot/Daily/Formatter's existing locks.
+                formatter_gate = formatter._write_gate if formatter else nullcontext()
+                with formatter_gate, job._lock, (
+                        daily._lock if daily is not None else nullcontext()), (
                         formatter._lock if formatter else nullcontext()):
                     if job.db.execute("SELECT 1 FROM runs WHERE status IN ('queued','running') LIMIT 1").fetchone():
                         self._reply(409, b'{"error":"snapshot_busy"}', "application/json")

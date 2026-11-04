@@ -32,6 +32,27 @@ def prepared_plan(tmp_path):
     return create_plan(vault)
 
 
+def synthetic_writer_result(plan, state, codes):
+    """Emulate actual guarded Writer receipt metadata, without real effects."""
+    entries = sorted((x for x in plan["results"] if x["status"] == "would_change"),
+                     key=lambda x: x["path"])
+    assert len(entries) == len(codes)
+    return {
+        "status": state, "plan_sha256": plan["plan_sha256"],
+        "operation_id": "a" * 32, "receipt_sha256": "b" * 64,
+        "vault_modified": (None if state == "indeterminate"
+                           else False if state == "blocked"
+                           else any(x in {"applied", "recovered"} for x in codes)),
+        "outcomes": [
+            {"path": row["path"],
+             "before_sha256": row["before_sha256"],
+             "after_sha256": row["after_sha256"],
+             "result": code}
+            for row, code in zip(entries, codes)
+        ],
+    }
+
+
 def new_job(tmp_path, runner, *, generation=None, writer=None, clock=None):
     if generation is None:
         generation = ["a" * 64]
@@ -177,10 +198,7 @@ def test_auto_apply_requires_injected_writer_and_runs_schedule_only(tmp_path):
     clock = [1200.]
     def mock_writer(p):
         written.append(p["plan_sha256"])
-        return {
-            "status": "complete", "plan_sha256": p["plan_sha256"],
-            "outcomes": [{"result": "applied"}],
-        }
+        return synthetic_writer_result(p, "complete", ["applied"])
     with new_job(tmp_path, lambda: plan, writer=mock_writer, clock=clock) as job:
         assert job.settings()["write_capable"] is True
         job.update({"mode": "auto-apply", "interval_seconds": 300})
@@ -567,12 +585,12 @@ def test_untrusted_writer_complete_without_outcomes_is_indeterminate(tmp_path):
 
 
 def test_writer_partial_conflict_not_mislabeled_success(tmp_path):
-    plan = prepared_plan(tmp_path)
+    prepared_plan(tmp_path)
+    extra = tmp_path / "read-only-vault" / "98-System" / "sub" / "another.md"
+    extra.write_bytes(RAW)
+    plan = create_plan(tmp_path / "read-only-vault")
     clock = [1000.]
-    writer = lambda p: {
-        "status": "partial", "plan_sha256": p["plan_sha256"],
-        "outcomes": [{"result": "applied"}, {"result": "cas_conflict"}],
-    }
+    writer = lambda p: synthetic_writer_result(p, "partial", ["applied", "cas_conflict"])
     with new_job(tmp_path, lambda: plan, writer=writer, clock=clock) as job:
         job.update({"mode":"auto-apply","interval_seconds":300})
         clock[0] = 1300
@@ -893,3 +911,116 @@ def test_real_local_rclone_growth_is_rejected_by_hard_transfer_cap(tmp_path, mon
     assert "--cutoff-mode" in copy_calls[0]
     assert not (dest / "grown.md").exists()
     assert not list((tmp_path / "mirror").glob(".formatter-allowlist-*"))
+
+
+
+@pytest.mark.parametrize("route", [
+    "/api/v1/nextcloud/connections", "/api/v1/snapshot/connections",
+])
+def test_472_dashboard_connection_save_uses_writer_gate_before_job_locks(
+        tmp_path, route):
+    """Both connection handlers must be able to call the reentrant revoke hook."""
+    import hashlib
+
+    class SharedStore:
+        def __init__(self):
+            self.nc = {
+                "webdav_url": "https://nextcloud.invalid/remote.php/dav/files/u/",
+                "vault_folder": "ObsidianVault",
+                "nextcloud_user": "u",
+                "nextcloud_password": "SYNTHETIC-OLD",
+            }
+
+        def fingerprint(self):
+            raw = json.dumps(self.nc, sort_keys=True).encode()
+            return hashlib.sha256(raw).hexdigest()
+
+        def generation(self):
+            return "9" * 64
+
+        def load_nextcloud(self):
+            return dict(self.nc)
+
+        def load(self):
+            return None
+
+        def nextcloud_probe(self, _):
+            return True
+
+        def save_nextcloud(self, payload, probed=False):
+            self.nc = dict(payload)
+            return True
+
+        def save(self, payload):
+            self.nc = {key: payload[key] for key in self.nc}
+            return True
+
+        def status(self):
+            return {"version": 1, "configured": True,
+                    "nextcloud": "configured", "gitea": "configured"}
+
+        def nextcloud_status(self):
+            return {"version": 1, "configured": True,
+                    "scope": "shared_nextcloud", "writes_vault": False}
+
+    store = SharedStore()
+    fmt = FormatterJob(
+        tmp_path / "formatter", lambda: prepared_plan(tmp_path),
+        configured=lambda: True, source_generation=store.fingerprint
+    )
+    snapshot = SnapshotJob(
+        tmp_path / "snapshot", lambda _: ("no_changes", "verify", None)
+    )
+    server = make_server(
+        port=0, formatter_job=fmt, snapshot_job=snapshot,
+        snapshot_setup=store, observer=lambda: [], ai_observer=lambda: {},
+    )
+    listening = threading.Thread(target=server.serve_forever, daemon=True)
+    listening.start()
+    completed = threading.Event()
+    result = []
+    errors = []
+    try:
+        fmt.update({"mode": "dry-run", "interval_seconds": 3600})
+        payload = {**store.nc, "nextcloud_password": "SYNTHETIC-NEW"}
+        if route.endswith("/snapshot/connections"):
+            payload.update({
+                "git_url": "https://gitea.invalid/u/r.git",
+                "git_user": "synthetic", "git_token": "SYNTHETIC-TOKEN",
+                "branch": "main",
+            })
+        origin = f"http://127.0.0.1:{server.server_address[1]}"
+        csrf = token(server)
+
+        def save():
+            try:
+                result.append(
+                    request(server, "POST", route, payload,
+                            origin=origin, csrf=csrf)[0]
+                )
+            except Exception as exc:
+                errors.append(type(exc).__name__)
+            finally:
+                completed.set()
+
+        # Simulate a Writer holding its gate. The UI connection handler must
+        # wait outside the Snapshot/Daily/Formatter locks, then acquire gate
+        # first and invoke connections_saved() without self-deadlock.
+        with fmt._write_gate:
+            t = threading.Thread(target=save)
+            t.start()
+            assert not completed.wait(0.12)
+            assert fmt.status()["settings"]["mode"] == "dry-run"
+        t.join(4)
+        assert completed.is_set(), "credential handler deadlocked on Writer gate"
+        assert errors == []
+        assert result == [200]
+        assert fmt.settings()["mode"] == "off"
+        assert fmt.status()["settings"]["write_capable"] is False
+        assert store.nc["nextcloud_password"] == "SYNTHETIC-NEW"
+    finally:
+        server.shutdown()
+        listening.join(4)
+        server.server_close()
+        snapshot.close()
+        fmt.close()

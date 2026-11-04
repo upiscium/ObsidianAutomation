@@ -74,6 +74,55 @@ Nextcloud source identity resets only the Formatter mode/schedule to Off.
 A failed save or a Gitea-only settings change does not disable Formatter.
 Other app jobs retain their independent operating modes.
 
+## Source-only scheduled Writer admission semantics (#472 R1)
+
+The ordinary application still creates `FormatterJob(writer=None)`; this
+section documents behavior only when a separately approved Writer is injected
+in isolated tests or a future authorized runtime. It is **not** permission to
+activate live Auto apply.
+
+- Each queued scheduled `auto-apply` run pins the current settings epoch and
+  canonical Nextcloud source generation. A change to Off, Dry-run, schedule
+  interval, or the source identity while the Plan is being scanned revokes that
+  run. Even an Off→On transition never revives the old queued approval.
+- The final admission check is performed **after** the Plan scan and immediately
+  before the Writer invocation. A revoked run records `failed /
+  writer_admission_revoked` with **no Writer call** and no automatic replay.
+- Off settings requests serialize with the one Writer invocation: if a Writer
+  is already in flight, Off is *acknowledged only after it returns*. A button
+  click or pending HTTP response cannot cancel a PUT already transmitted.
+  The mode update may wait for the full bounded Writer call and may outlast
+  the operator's HTTP client timeout; a timed-out click is **not** proof that
+  Off has taken effect. The credential-save and post-save
+  `connections_saved()` paths also acquire the **reentrant Writer gate
+  before** Snapshot/Daily/Formatter locks; never call the revocation hook
+  under Formatter's lock without first owning that gate. The lock order is
+  Writer gate → Snapshot/Daily locks (only on credential routes) →
+  Formatter lock → shared connection store. The shared Scheduler, Snapshot
+  and Daily workers do not themselves acquire the new Writer gate.
+- Known CAS preflight conflicts are reported as `conflict`, known preflight
+  availability/policy failures as `failed`, and unobservable writes or
+  malformed Writer receipts as `indeterminate`. Before displaying `applied`,
+  the Job validates an exact Plan SHA, operation ID, receipt SHA, target paths,
+  before/after digests and consistency of `vault_modified` with the Writer
+  outcome. During R1, a `complete` receipt must cover **every**
+  `would_change` entry in its Plan. A future partial-scope Writer needs a
+  separate explicit selection-admission contract in R2: updating only a
+  subset must not look like whole-plan success. Partial CAS conflict is
+  distinct from partial HTTP authorization/refusal (`failed /
+  writer_partial_write_rejected`), and `writer_outcome=partial` is retained.
+  These are **structural checks**, not independent verification of
+  receipt durability or remote state: the authorized Writer remains responsible
+  for private immutable evidence and provider readback. No raw Vault body,
+  path, ETag, credential or exception string is included in public results.
+- A process crash still marks queued/running rows `unconfirmed` on restart.
+  The new in-memory admission token is never restored from SQLite and
+  cannot turn an interrupted run into an automatic write retry.
+
+R1 does not establish a recurring Writer credential broker, cross-process
+rotation lock, actual production approval, or Snapshot→Gitea→Core end-to-end
+convergence. Those remain later #472 gates.
+
 ## Production requirements NOT YET MET
 
 Source tests and this app integration do not enable live mutation. The
