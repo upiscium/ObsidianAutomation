@@ -78,6 +78,56 @@ def test_admission_start_and_known_cas_refusal_are_durable(tmp_path):
         assert j.snapshot()["last_deterministic_refusal"]["run_id"] == run
 
 
+def test_guard_prestart_abandon_is_idempotent_and_durable_without_restart(tmp_path):
+    clock = Clock()
+    with _journal(tmp_path, clock=clock) as j:
+        _, first = j.admit(REQUEST, BINDING, REV1)
+        clock.advance()
+        abandoned = j.abandon_before_start(first["run_id"])
+        assert abandoned["state"] == "completed"
+        assert abandoned["terminal_code"] == "abandoned_before_start"
+        assert abandoned["started_at"] is None
+        assert abandoned["completed_at"] == 1001.0
+        assert j.abandon_before_start(first["run_id"]) == abandoned
+        assert j.admit(REQUEST, BINDING, REV1) == ("replayed", abandoned)
+        assert j.snapshot()["last_unconfirmed"] is None
+        assert j.snapshot()["last_verified_pipeline_success"] is None
+        with pytest.raises(InvalidAttempt, match="invalid_transition"):
+            j.start(first["run_id"])
+        # New ID or explicit child retry can be admitted without process death.
+        _, second = j.admit(NEXT, BINDING, REV1, retry_of=first["run_id"])
+        assert second["retry_of"] == first["run_id"]
+        j.start(second["run_id"])
+        with pytest.raises(InvalidAttempt, match="invalid_transition"):
+            j.abandon_before_start(second["run_id"])
+        j.finish(second["run_id"], terminal_code="effect_unknown")
+        with pytest.raises(InvalidAttempt, match="invalid_transition"):
+            j.abandon_before_start(second["run_id"])
+    with _journal(tmp_path, clock=clock) as j:
+        assert j.lookup(first["run_id"]) == abandoned
+        assert j.snapshot()["last_unconfirmed"]["terminal_code"] == "effect_unknown"
+
+
+def test_guard_prestart_abandon_requires_provably_unstarted_run(tmp_path):
+    clock = Clock()
+    with _journal(tmp_path, clock=clock) as j:
+        _, first = j.admit(REQUEST, BINDING, REV1)
+        with pytest.raises(InvalidAttempt, match="invalid_run_id"):
+            j.abandon_before_start("not-id")
+        with pytest.raises(InvalidAttempt, match="unknown_run"):
+            j.abandon_before_start("f" * 32)
+        clock.value = 999.0
+        with pytest.raises(InvalidAttempt, match="clock_regression"):
+            j.abandon_before_start(first["run_id"])
+        assert j.lookup(first["run_id"])["state"] == "queued"
+        clock.value = 1001.0
+        j.start(first["run_id"])
+        with pytest.raises(InvalidAttempt, match="invalid_transition"):
+            j.abandon_before_start(first["run_id"])
+        assert j.snapshot()["last_attempt"]["state"] == "running"
+        assert j.snapshot()["last_verified_pipeline_success"] is None
+
+
 def test_explicit_manual_retry_requires_new_cas_revision(tmp_path):
     clock = Clock()
     with _journal(tmp_path, clock=clock) as j:
