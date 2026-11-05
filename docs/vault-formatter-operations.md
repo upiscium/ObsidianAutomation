@@ -221,6 +221,104 @@ root configuration; real CAS capability acceptance; separate owner consent
 for an isolated canary; and then a further explicit approval for recurring
 production Auto apply. Merely merging this source is not one of those grants.
 
+## R2/B2a-S — detached signed-run verification and bounded drain (source-only)
+
+The **unwired** `vault_format_signed_run.py` verifier and
+`vault_format_run_drain.py` effect/stop gate implement a narrow future
+authority boundary. They are **not** instantiated by `snapshot_app`,
+Scheduler or WebUI. Normal operation remains `FormatterJob(writer=None)`.
+These two modules do not issue approvals, create signing keys or enable
+production writes.
+
+- An external operator signs a **canonical JSON run grant** using OpenSSH
+  SSHSIG (namespace `obsidian-vault-formatter-run`). The approved signer key
+  and detached grant/signature must live in a directory owned by a separately
+  trusted OS identity; the ordinary Formatter worker must not control its
+  signer private key or `allowed_signers` trust anchor. A testing directory
+  owned by the same UID demonstrates behavior but **not** production trust.
+- The grant binds exact `run_id`, Plan and policy SHA-256, deterministic
+  operation ID, Nextcloud source generation, account-binding digest, provider
+  proof digest, scope/policy version, **one receipt-root path digest**, and a
+  bounded issue/expiry interval. Files are opened via no-follow descriptors,
+  checked for owner/perms/hardlinks and passed as pinned descriptors to the
+  system OpenSSH signature verifier. A merely present `approved=true`
+  field, unsigned scheduler row or `lambda True` is never sufficient.
+  No raw Vault document contents or credentials appear in this grant.
+- A pre-provisioned `effect-drain.lock` inode coordinates all **cooperating**
+  effect writers and the trusted stop actor using a kernel exclusive lock on
+  a **single local filesystem**. The gate refuses a receipt root whose path
+  digest differs from the one pinned by the signed verifier. Under the lock,
+  it checks the signature and fsyncs a local claim in the writer-owned receipt
+  directory **before** yielding to an already authorized Writer. A process
+  crash releases the kernel lock but leaves the claim **while that directory
+  remains intact**. The worker can also delete its own claim and CAS Writer
+  marker, so these are **not tamper-proof one-use evidence**. The source-only
+  tests explicitly demonstrate this boundary. Actual unattended one-use
+  enforcement still requires a separate, operator-controlled, non-worker-
+  writable durable claim ledger or an equivalent trusted issuer.
+- `stop_and_drain(run_id)` attempts the **same lock** for at most a fixed
+  timeout. If an effect still holds it, stop returns `drain_timeout` and
+  must **not** be displayed as acknowledged Off. After the writer releases
+  the lock, the trusted operator records and fsyncs a revoked marker.
+  A previously existing marker is revalidated and **both its file and
+  directory are fsynced again** before returning an acknowledged
+  `already_stopped`. A short marker write or either fsync failure never
+  acknowledges Off; tests cover both retry cases.
+  Subsequent verification refuses that run even if its signed grant is
+  otherwise valid. No other formatter runs, Snapshot, AI or Daily timers
+  are stopped by this source-only gate.
+- This provides a clear *acknowledgement* boundary **only when all writers,
+  credential rotations and stop actors participate in the same lease**.
+  It does not forcibly cancel an already sent PUT, protect against
+  uncoordinated external credential changes, guarantee flock on a network
+  filesystem, or provide rollback. No worker/stop integration is enabled yet.
+
+**Remaining production gates:** independently operated Human approval,
+OS ownership and root-pinned trusted signers, a **non-worker-writable durable
+claim ledger**, provisioning of the same stable lock inode for all effect
+processes, a bounded operator stop workflow,
+credential rotation under the same lease, explicit runtime injection after
+separate authorization, real Nextcloud CAS proof, one-time canary, and
+Snapshot→Gitea→ObsidianCore convergence. A signature for each run is
+suited to a controlled canary but **not** scalable unattended operation:
+a later trusted delegated issuer under a long-lived approved policy is
+required for the intended recurring use, without re-asking the Human
+for every run. No such issuer exists in B2a.
+
+## R2/B2a-L — durable run-intent registry (source-only)
+
+`vault_format_run_ledger.py` introduces an independent SQLite run-intent
+registry for a future trusted operator workflow. It is **not** a Human approval
+issuer, not an HTTP/API endpoint, and not connected to the Scheduler or Writer.
+
+- Each sealed `RunIntent` binds one run ID to exact Plan/policy hashes,
+  operation ID, connection generation, account binding, provider-proof hash,
+  and receipt root. An externally controlled operator-verification callback
+  must explicitly approve registration; merely passing a permissive callback
+  is **not** real operator authorization and must never be exposed to clients.
+  The persisted intent is copied before the callback; the callback receives
+  a second detached copy. Neither a mutable caller object nor callback-side
+  mutation can replace the Plan or run ID accepted for persistence.
+- The owner-private state directory requires mode 0700; the database is 0600
+  and contains no credentials or Vault bodies. SQLite `BEGIN IMMEDIATE`
+  serializes cross-connection claim and revocation updates, with synchronous
+  full commits. A run may be claimed **once**. Duplicate run/operation IDs and
+  mutations to a registered Plan are rejected rather than silently replayed.
+- The read-only `verify_claimed` has the exact four-argument shape required
+  by the R2/B1 run callback, but no production callback injection exists.
+  **Every fresh registry instance starts with verification disabled** until
+  explicit owner-recovery reconciliation. Recovery changes all older
+  `claimed` entries to `unconfirmed` before enabling any positive check;
+  they are never automatically returned to approved/claimable. Revocation
+  also fails closed. A future owner process must coordinate recovery with
+  all other active processes; this source-only ledger is not a lease.
+- This registry provides durable state, **not** a cross-process authority lease
+  that spans a remote PUT. A registry row also does not prove that the
+  external callback was a legitimate Human approver. That independent
+  authority signature/issuer, trusted receipt-root ownership, coordination
+  of revoke with in-flight effects, stop/drain and real-provider acceptance
+  are separate R2/B2b+ requirements.
+
 ## Production requirements NOT YET MET
 
 Source tests and this app integration do not enable live mutation. The
