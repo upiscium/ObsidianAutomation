@@ -125,3 +125,104 @@ def test_wireframe_js_has_safe_fixed_endpoints_and_no_new_mutation_transport():
     assert 'grid-template-columns:1fr' in css
     assert "manager-signal" in css
     assert "prefers-reduced-motion" in css
+
+
+def test_top_status_rejects_historical_success_when_latest_attempt_unknown():
+    """Execute the actual dashboard status classifier: older green must not hide unknown."""
+    import shutil
+    import subprocess
+    import pytest
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node unavailable; other HTML/HTTP contract tests remain active")
+    script = r"""
+const fs=require('node:fs');
+const vm=require('node:vm');
+const assert=require('node:assert/strict');
+const source=fs.readFileSync(process.argv[1],'utf8');
+const start=source.indexOf('  function displayStatus(id) {');
+const end=source.indexOf('  function fact(',start);
+assert.ok(start>0 && end>start,'status implementation must be present');
+const context=vm.createContext({
+  state:{phase:'ready',services:[{
+    id:'b1',integration:'connected',adapterMode:'read_only',execution:'Idle',
+    lastAttempt:{state:'completed',outcome:'unknown',
+      effect:{kind:'review_artifact',state:'unknown',changed:null}},
+    lastVerifiedOutcome:{status:'success',
+      effect:{kind:'review_artifact',state:'verified',changed:true}}
+  }],jobs:{}},
+  IN_PROGRESS:new Set(['queued','running']),
+  FAILURE:new Set(['failed','publish_failed','conflict']),
+  SUCCESS:new Set(['saved','no_changes','published','applied'])
+});
+vm.runInContext(
+  "const jobFor=id=>state.jobs[id]||null;"+
+  "const serviceFor=id=>state.services.find(x=>x.id===id)||null;"+
+  source.slice(start,end)+";globalThis.classify=displayStatus;",context
+);
+const first=context.classify('b1');
+assert.equal(first.kind,'unknown','latest unknown must never inherit historical green');
+context.state.services[0].lastAttempt.outcome='failure';
+context.state.services[0].lastAttempt.effect.state='unknown';
+assert.equal(context.classify('b1').kind,'failure');
+context.state.services[0].lastAttempt.outcome='success';
+context.state.services[0].lastAttempt.effect.state='verified';
+assert.equal(context.classify('b1').kind,'success');
+"""
+    result = subprocess.run(
+        [node, "-e", script, str(ASSET_ROOT / "status_manager.js")],
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_status_manager_refuses_cross_job_terminal_states():
+    """Never project an unrelated Job's terminal state as verified success."""
+    import shutil
+    import subprocess
+    import pytest
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node unavailable; other HTML/HTTP tests remain active")
+    script = r"""
+const fs=require('node:fs');
+const vm=require('node:vm');
+const assert=require('node:assert/strict');
+const source=fs.readFileSync(process.argv[1],'utf8');
+const sets=source.slice(
+  source.indexOf('  const JOB_STATUSES = Object.freeze('),
+  source.indexOf('  const VIEW = Object.freeze('));
+const start=source.indexOf('  function validJob(raw,id) {');
+const end=source.indexOf('  function serviceFor(id) {',start);
+assert.ok(sets.length>100 && start>0 && end>start);
+const context=vm.createContext({
+  JOB_ENDPOINT:{b2:['/api/v1/snapshot','vault_snapshot'],
+    b4:['/api/v1/daily','github_daily_preview'],
+    formatter:['/api/v1/formatter','vault_formatter']}
+});
+vm.runInContext(sets+source.slice(start,end)+';globalThis.parse=validJob;',context);
+const make=(job,status)=>({version:1,job,
+  settings:{configured:true,enabled:true,mode:'dry-run'},
+  last_run:{status,stage:'verify'}
+});
+const real=[
+ ['b2','vault_snapshot','saved'],
+ ['b4','github_daily_preview','preview_ready'],
+ ['formatter','vault_formatter','would_change'],
+];
+for (const [id,job,status] of real) assert.ok(context.parse(make(job,status),id));
+for (const [id,job,status] of [
+ ['b2','vault_snapshot','published'],
+ ['b4','github_daily_preview','saved'],
+ ['formatter','vault_formatter','published'],
+ ['formatter','vault_formatter','preview_ready']
+]) assert.equal(context.parse(make(job,status),id),null,
+  'wrong Job terminal must not show historical success');
+"""
+    result = subprocess.run(
+        [node, "-e", script, str(ASSET_ROOT / "status_manager.js")],
+        text=True, capture_output=True, timeout=10, check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

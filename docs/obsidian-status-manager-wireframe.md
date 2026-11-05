@@ -44,7 +44,10 @@ read-only observation page as the finished Dashboard:
   status. These GET results are for rendering only, not action admission.
   Job status can show green only for explicitly known verified outcomes,
   red for explicitly known failures; unknown, disabled, stale and
-  Preview-only outcomes remain gray. The available action controls are
+  Preview-only outcomes remain gray. Each job has a fixed accepted terminal
+  vocabulary: a Daily response cannot use a Snapshot-only success status.
+  A newer unknown attempt stays gray even if older history says success.
+  The available action controls are
   solely the original, backend-guarded forms, never synthesized from
   workflow GET \`availableActions\`.
 - \`webui_design_v1/status_manager.css\` applies the neutral visual

@@ -29,6 +29,13 @@
     would_change:"Dry-run：変更候補あり",applied:"Formatter適用確認",
     unconfirmed:"結果不明",indeterminate:"結果不明"
   });
+  // A valid-looking status for a different Job is invalid here. In
+  // particular, Daily 'saved' must never masquerade as confirmed publication.
+  const JOB_STATUSES = Object.freeze({
+    b2:new Set(["queued","running","saved","no_changes","failed","unconfirmed"]),
+    b4:new Set(["queued","running","preview_ready","published","publish_failed","failed","unconfirmed"]),
+    formatter:new Set(["queued","running","would_change","no_changes","applied","conflict","failed","indeterminate","unconfirmed"])
+  });
   const VIEW = Object.freeze({home:"manager-home",detail:"manager-detail",global:"manager-global"});
   const state = {selected:null,phase:"loading",services:[],jobs:Object.create(null),generation:0};
   let mountedDetail = null;
@@ -63,7 +70,7 @@
     }
     const last=raw.last_run;
     if (last!==null && (typeof last!=="object" || Array.isArray(last) ||
-        typeof last.status!=="string" || !Object.hasOwn(JOB_LABEL,last.status))) return null;
+        typeof last.status!=="string" || !JOB_STATUSES[id].has(last.status))) return null;
     return {settings:st,last};
   }
   function serviceFor(id) {
@@ -100,9 +107,16 @@
       return {kind:"unknown",text:s.integration==="pending"?"統合待ち":"未接続・未確認"};
     if (s.execution==="Running" || s.execution==="Queued")
       return {kind:"running",text:s.execution==="Running"?"実行中":"受付済み"};
+    // A historical verified success is not the result of a newer unknown
+    // attempt. Never color the card green unless the *latest* attempt has
+    // its own verified successful effect.
     if (s.lastAttempt?.outcome==="failure") return {kind:"failure",text:"直近の実行で失敗"};
+    if (s.lastAttempt?.outcome==="unknown")
+      return {kind:"unknown",text:"直近の実行結果は不明"};
+    if (s.lastAttempt?.outcome==="success" && s.lastAttempt.effect?.state==="verified")
+      return {kind:"success",text:"直近の結果を検証済み"};
     if (s.lastVerifiedOutcome?.status==="success")
-      return {kind:"success",text:"前回結果を検証済み"};
+      return {kind:"unknown",text:"過去の成功記録のみ"};
     return {kind:"unknown",text:"結果未確認"};
   }
   function fact(label,value) {
