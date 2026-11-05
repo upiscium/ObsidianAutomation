@@ -47,12 +47,79 @@ HTML = """<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>ObsidianAutomation | Status</title>
+  <meta name="application-name" content="ObsidianAutomation">
+  <title>Obsidian Status Manager</title>
   <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/status-manager.css">
   <script defer src="/static/app.js"></script>
+  <script defer src="/static/workflow-control/model.js"></script>
+  <script defer src="/static/status-manager.js"></script>
 </head>
 <body>
   <main class="frame">
+  <div id="status-manager" class="status-manager" aria-label="Obsidian Status Manager">
+    <header class="manager-header">
+      <div>
+        <p class="manager-eyebrow">OBSIDIAN AUTOMATION</p>
+        <h1>Obsidian Status Manager</h1>
+        <p class="manager-subtitle">すべての自動化サービスを一か所で確認・管理</p>
+      </div>
+      <div class="manager-navigation">
+        <button id="manager-menu-toggle" class="manager-menu-toggle" type="button"
+          aria-label="メニューを開く" aria-expanded="false" aria-controls="manager-menu">☰<span>Menu</span></button>
+        <nav id="manager-menu" class="manager-menu" aria-label="Global navigation" hidden>
+          <button type="button" data-manager-route="home">Service overview</button>
+          <button type="button" data-manager-route="global">Global System Settings</button>
+          <button type="button" data-manager-route="global" data-manager-target="manager-global-nextcloud">Nextcloud Settings</button>
+          <button type="button" data-manager-route="global" data-manager-target="manager-global-gitea">Gitea Settings</button>
+          <button type="button" data-manager-route="global" data-manager-target="manager-global-github">GitHub Settings</button>
+        </nav>
+      </div>
+    </header>
+    <section id="manager-home" aria-labelledby="manager-home-title">
+      <div class="manager-section-heading">
+        <div>
+          <p class="manager-eyebrow">SERVICE OVERVIEW</p>
+          <h2 id="manager-home-title">サービス一覧</h2>
+        </div>
+        <button id="manager-refresh" type="button">状態を更新</button>
+      </div>
+      <p id="manager-summary" class="manager-summary" aria-live="polite">状態を確認しています…</p>
+      <div id="manager-card-grid" class="manager-card-grid" aria-busy="true"></div>
+      <p class="manager-legend"><span class="manager-legend-good">● 緑＝検証済み成功</span><span class="manager-legend-bad">● 赤＝確認済み失敗</span><span class="manager-legend-unknown">● グレー＝未確認・停止・未接続</span></p>
+    </section>
+    <section id="manager-detail" aria-labelledby="manager-detail-title" hidden>
+      <button id="manager-detail-back" class="manager-back" type="button">← サービス一覧に戻る</button>
+      <div class="manager-section-heading">
+        <div>
+          <p id="manager-detail-type" class="manager-eyebrow">SERVICE SETTINGS</p>
+          <h2 id="manager-detail-title">サービスの詳細</h2>
+        </div>
+        <span id="manager-detail-status" class="manager-status-chip">未確認</span>
+      </div>
+      <div id="manager-detail-facts" class="manager-detail-facts" aria-live="polite"></div>
+      <div id="manager-detail-advice" class="manager-advice" role="status"></div>
+      <div id="manager-detail-slot"></div>
+    </section>
+    <section id="manager-global" aria-labelledby="manager-global-title" hidden>
+      <button id="manager-global-back" class="manager-back" type="button">← サービス一覧に戻る</button>
+      <p class="manager-eyebrow">SHARED CONFIGURATION</p>
+      <h2 id="manager-global-title">Global System Settings</h2>
+      <p class="manager-summary">接続先は共通設定で管理します。認証情報は画面へ再表示されず、保存時は既存の検証APIを使います。</p>
+      <div id="manager-global-content" class="manager-global-content">
+        <section class="manager-global-card" id="manager-global-github" aria-label="GitHub settings">
+          <h3>GitHub Settings</h3>
+          <p>Daily Progressで使用するGitHub接続を設定します。</p>
+        </section>
+      </div>
+      <details id="manager-advanced" class="manager-global-card">
+        <summary>Advanced · system health / operation preview</summary>
+        <div id="manager-advanced-slot"></div>
+      </details>
+    </section>
+    <p id="manager-error" class="manager-error" role="status"></p>
+  </div>
+  <div id="manager-legacy-root" class="manager-legacy-root">
     <header>
       <div><p class="eyebrow">OBSIDIAN AUTOMATION</p>
         <h1>サービスの稼働状況</h1>
@@ -80,7 +147,7 @@ HTML = """<!doctype html>
       <div id="workflow-catalog" class="cards" aria-live="polite"></div>
     </section>
     <section id="services" class="cards" aria-label="既存systemdサービス一覧" aria-live="polite"></section>
-    <section class="pipeline" aria-label="共通Nextcloud接続">
+    <section id="manager-global-nextcloud" class="pipeline" aria-label="共通Nextcloud接続">
       <h2>Nextcloud（共有アカウント）</h2>
       <p id="nextcloud-state">未設定 / 状態確認中</p>
       <form id="nextcloud-form" autocomplete="off">
@@ -95,7 +162,7 @@ HTML = """<!doctype html>
       <p id="nextcloud-message" role="status"></p>
       <p>GitHub DailyのPreviewにはNextcloudとGitHubだけで十分です。GiteaはSnapshot利用時に追加します。</p>
     </section>
-    <section class="pipeline" aria-label="Snapshot接続設定">
+    <section id="manager-global-gitea" class="pipeline" aria-label="Snapshot接続設定">
       <h2>Snapshot用 Gitea接続（必要な場合のみ）</h2>
       <p id="connection-state">状態を確認中</p>
       <form id="connections-form" autocomplete="off">
@@ -190,6 +257,7 @@ HTML = """<!doctype html>
     </section>
     <p id="error" class="error" role="status"></p>
     <footer>状態はsystemdの直近の観測結果です。成功履歴やVaultの完全性を証明するものではありません。</footer>
+  </div>
   </main>
 </body>
 </html>
@@ -1245,6 +1313,8 @@ WORKFLOW_UI_ASSETS = {
     "/static/workflow-control/model.js": ("model.js", "text/javascript; charset=utf-8"),
     "/static/workflow-control/live.js": ("live.js", "text/javascript; charset=utf-8"),
     "/static/workflow-control/styles.css": ("styles.css", "text/css; charset=utf-8"),
+    "/static/status-manager.js": ("status_manager.js", "text/javascript; charset=utf-8"),
+    "/static/status-manager.css": ("status_manager.css", "text/css; charset=utf-8"),
 }
 
 
