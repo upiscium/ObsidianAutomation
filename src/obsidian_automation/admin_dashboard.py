@@ -54,6 +54,7 @@ HTML = """<!doctype html>
   <script defer src="/static/app.js"></script>
   <script defer src="/static/workflow-control/model.js"></script>
   <script defer src="/static/status-manager.js"></script>
+  <script defer src="/static/setup-readiness.js"></script>
 </head>
 <body>
   <main class="frame">
@@ -106,6 +107,13 @@ HTML = """<!doctype html>
       <p class="manager-eyebrow">SHARED CONFIGURATION</p>
       <h2 id="manager-global-title">Global System Settings</h2>
       <p class="manager-summary">接続先は共通設定で管理します。認証情報は画面へ再表示されず、保存時は既存の検証APIを使います。</p>
+      <details id="manager-setup-readiness" class="manager-global-card">
+        <summary>初回セットアップの確認（読み取り専用）</summary>
+        <p>接続状況を確認し、必要な設定を下のフォームで登録してください。確認してもジョブは開始されません。</p>
+        <button id="manager-setup-check" type="button">接続設定の状態を確認</button>
+        <p id="manager-setup-summary" role="status" aria-live="polite">まだ確認していません。</p>
+        <ul id="manager-setup-results" class="manager-setup-results" aria-label="設定項目"></ul>
+      </details>
       <div id="manager-global-content" class="manager-global-content">
         <section class="manager-global-card" id="manager-global-github" aria-label="GitHub settings">
           <h3>GitHub Settings</h3>
@@ -1314,6 +1322,7 @@ WORKFLOW_UI_ASSETS = {
     "/static/workflow-control/live.js": ("live.js", "text/javascript; charset=utf-8"),
     "/static/workflow-control/styles.css": ("styles.css", "text/css; charset=utf-8"),
     "/static/status-manager.js": ("status_manager.js", "text/javascript; charset=utf-8"),
+    "/static/setup-readiness.js": ("setup_readiness.js", "text/javascript; charset=utf-8"),
     "/static/status-manager.css": ("status_manager.css", "text/css; charset=utf-8"),
 }
 
