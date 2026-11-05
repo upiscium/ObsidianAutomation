@@ -71,9 +71,6 @@ HTML = """<!doctype html>
         <nav id="manager-menu" class="manager-menu" aria-label="Global navigation" hidden>
           <button type="button" data-manager-route="home">Service overview</button>
           <button type="button" data-manager-route="global">Global System Settings</button>
-          <button type="button" data-manager-route="global" data-manager-target="manager-global-nextcloud">Nextcloud Settings</button>
-          <button type="button" data-manager-route="global" data-manager-target="manager-global-gitea">Gitea Settings</button>
-          <button type="button" data-manager-route="global" data-manager-target="manager-global-github">GitHub Settings</button>
         </nav>
       </div>
     </header>

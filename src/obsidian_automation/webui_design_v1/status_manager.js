@@ -393,14 +393,7 @@
     $("manager-menu-toggle").setAttribute("aria-label",menu.hidden?"メニューを開く":"メニューを閉じる");
   });
   for (const button of $("manager-menu").querySelectorAll("[data-manager-route]")) {
-    button.addEventListener("click",()=>{
-      navigate(button.dataset.managerRoute);
-      const target=button.dataset.managerTarget;
-      if (target && ["manager-global-nextcloud","manager-global-gitea","manager-global-github"].includes(target)) {
-        const panel=$(target);
-        if (panel && typeof panel.scrollIntoView==="function") panel.scrollIntoView({block:"start"});
-      }
-    });
+    button.addEventListener("click",()=>navigate(button.dataset.managerRoute));
   }
   document.addEventListener("keydown",event=>{
     if (event.key==="Escape"&&!$("manager-menu").hidden) {
