@@ -148,10 +148,11 @@ class Sources:
         self.cutover_calls += 1
         return self.cutover
 
-    def registered(self):
+    def registered(self, request):
         self.registered_calls += 1
         return B3RegisteredInputs(
-            self.config, status_proposal(), overview_proposal(),
+            self.config, status_proposal(), overview_proposal(), request.requestId,
+            "e" * 32, "f" * 32,
         )
 
 
@@ -392,7 +393,7 @@ def test_private_registered_source_error_is_fixed_and_does_not_admit(context):
     sources, dav, guard, journal, _ = context
     authorize(sources)
 
-    def unavailable_source():
+    def unavailable_source(_request):
         raise RuntimeError("private-config-file /etc/secrets/password")
 
     port = B3TrustedJobPort(
@@ -424,6 +425,23 @@ def test_forged_cutover_type_does_not_grant_execution(context):
         port.sync_project(req(), transport=dav)
     assert journal.snapshot()["last_attempt"] is None
     assert sources.registered_calls == 0 and dav.calls == []
+
+
+def test_registered_input_must_match_exact_request_id(context):
+    sources, dav, guard, journal, _ = context
+    authorize(sources)
+    port = B3TrustedJobPort(
+        journal,
+        registered_inputs=lambda request: replace(
+            sources.registered(request), request_id="c" * 32,
+        ),
+        cutover_observation=sources.evidence,
+        shared_writer_guard=guard,
+    )
+    with pytest.raises(B3ExecutionUnavailable):
+        port.sync_project(req(), transport=dav)
+    assert journal.snapshot()["last_attempt"] is None
+    assert guard.entered == 0 and dav.calls == []
 
 
 def test_wrong_project_is_never_selected_from_public_request(context):
