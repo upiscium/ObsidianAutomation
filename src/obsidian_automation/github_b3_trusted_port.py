@@ -51,6 +51,10 @@ class B3RegisteredInputs:
     config: B3JobConfig
     status_proposal: ProjectStatusProposal
     overview_proposal: ProjectOverviewProposal
+    # Bound to the exact admitted request and producer snapshot identity.
+    request_id: str
+    source_generation: str
+    source_record_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,7 +91,7 @@ class B3TrustedJobPort:
         self,
         journal: B3AttemptJournal,
         *,
-        registered_inputs: Callable[[], B3RegisteredInputs],
+        registered_inputs: Callable[[ProjectSyncRequest], B3RegisteredInputs],
         cutover_observation: Callable[[], B3CutoverObservation],
         shared_writer_guard: WriterGuard,
     ) -> None:
@@ -157,12 +161,16 @@ class B3TrustedJobPort:
         req = self._validate_request(request)
         cutover = self._check_cutover(req)  # refuse before reading secrets
         try:
-            registered = self._registered_inputs()
+            registered = self._registered_inputs(req)
         except Exception:
             raise B3ExecutionUnavailable("registered_inputs_unavailable") from None
         if (
             type(registered) is not B3RegisteredInputs
             or type(registered.config) is not B3JobConfig
+            or type(registered.request_id) is not str
+            or registered.request_id != req.requestId
+            or not _id(registered.source_generation)
+            or not _id(registered.source_record_id)
             or registered.config.binding_ref != req.bindingRef
             or registered.config.revision != req.expectedRevision
         ):
@@ -174,6 +182,21 @@ class B3TrustedJobPort:
             # the existing CAS Writers and fresh GET checks are finished.
             with self._shared_writer_guard():
                 self._check_cutover(req, cutover)
+                try:
+                    current = self._registered_inputs(req)
+                    if (type(current) is not B3RegisteredInputs
+                            or current != registered):
+                        raise B3ExecutionUnavailable(
+                            "registered_inputs_changed"
+                        )
+                except B3ExecutionUnavailable:
+                    raise
+                except Exception:
+                    # A changed or unreadable producer must be refused
+                    # before journal.start() establishes an effect boundary.
+                    raise B3ExecutionUnavailable(
+                        "registered_inputs_unavailable"
+                    ) from None
                 yield
 
         return run_b3_writer_once(
