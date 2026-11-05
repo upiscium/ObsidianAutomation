@@ -37,7 +37,13 @@
     formatter:new Set(["queued","running","would_change","no_changes","applied","conflict","failed","indeterminate","unconfirmed"])
   });
   const VIEW = Object.freeze({home:"manager-home",detail:"manager-detail",global:"manager-global"});
-  const state = {selected:null,phase:"loading",services:[],jobs:Object.create(null),generation:0};
+  const state = {selected:null,view:"home",phase:"loading",services:[],jobs:Object.create(null),generation:0};
+  // Native iOS/Android edge-swipe Back traverses History API entries. We do
+  // not synthesize touch gestures, which would compete with browser/OS input.
+  const HISTORY_KEY = "__obsidianStatusManager";
+  const HISTORY_VERSION = 1;
+  let historyDepth = 0;
+  let historyReady = false;
   let mountedDetail = null;
   const legacy = $("manager-legacy-root");
 
@@ -229,16 +235,20 @@
       slot.append(node("p","このサービスの操作は現在利用できません。状態表示のみです。","manager-summary"));
     }
   }
-  function navigate(view,id) {
-    if (!Object.hasOwn(VIEW,view) || (view==="detail"&&!Object.hasOwn(ID,id))) return;
+  function validRoute(view,id) {
+    return Object.hasOwn(VIEW,view) && (view!=="detail" || Object.hasOwn(ID,id));
+  }
+  function renderView(view,id) {
+    if (!validRoute(view,id)) return;
     if (view!=="global" && !$("manager-global").hidden) {
-      // A write-only replacement secret must not linger in a hidden form
-      // after the user leaves Global System Settings.
+      // Browser Back/Forward and the in-page Home button both clear
+      // unsaved write-only secrets when leaving Global System Settings.
       for (const field of $("manager-global").querySelectorAll('input[type="password"]')) {
         field.value="";
       }
     }
     if (view!=="detail") restorePanel();
+    state.view=view;
     state.selected=view==="detail"?id:null;
     for (const [key,target] of Object.entries(VIEW)) $(target).hidden=key!==view;
     if (view==="detail") renderDetail();
@@ -246,11 +256,78 @@
     $("manager-menu").hidden=true;
     $("manager-menu-toggle").setAttribute("aria-expanded","false");
     $("manager-menu-toggle").setAttribute("aria-label","メニューを開く");
-    const focus= view==="home"?$("manager-home-title"):
+    const focus=view==="home"?$("manager-home-title"):
       view==="global"?$("manager-global-title"):$("manager-detail-title");
     focus.setAttribute("tabindex","-1");
     focus.focus({preventScroll:true});
     if (typeof window.scrollTo==="function") window.scrollTo(0,0);
+  }
+  function readHistory(value) {
+    const item=value && typeof value==="object" && value[HISTORY_KEY];
+    if (!item || item.version!==HISTORY_VERSION ||
+        !Number.isSafeInteger(item.depth) || item.depth<0 || item.depth>100 ||
+        !validRoute(item.view,item.id)) return null;
+    return item;
+  }
+  function historyState(view,id,depth) {
+    const previous=window.history.state;
+    const preserved=previous && typeof previous==="object" && !Array.isArray(previous)
+      ? previous : {};
+    return {...preserved,
+      [HISTORY_KEY]:{version:HISTORY_VERSION,view,id:view==="detail"?id:null,depth}};
+  }
+  function setupHistory() {
+    if (!window.history || typeof window.history.pushState!=="function" ||
+        typeof window.history.replaceState!=="function") return;
+    const existing=readHistory(window.history.state);
+    try {
+      if (!existing) window.history.replaceState(historyState("home",null,0),"");
+      historyReady=true;
+      historyDepth=existing?.depth ?? 0;
+      window.addEventListener("popstate",event=>{
+        const route=readHistory(event.state);
+        historyDepth=route?.depth ?? 0;
+        renderView(route?.view ?? "home",route?.id ?? null);
+      });
+      if (existing) renderView(existing.view,existing.id);
+    } catch {
+      historyReady=false;
+      historyDepth=0;
+    }
+  }
+  function backToHome() {
+    if (state.view==="home") {
+      renderView("home",null);
+      return;
+    }
+    // Returning Home must not PUSH a new Home entry: otherwise the next
+    // edge-swipe would reopen the Settings screen the user just left.
+    if (historyReady && historyDepth>0) {
+      window.history.go(-historyDepth);
+      return;
+    }
+    renderView("home",null);
+  }
+  function navigate(view,id) {
+    if (!validRoute(view,id)) return;
+    if (view==="home") {
+      backToHome();
+      return;
+    }
+    if (state.view===view && (view!=="detail" || state.selected===id)) {
+      renderView(view,id);
+      return;
+    }
+    if (historyReady) {
+      try {
+        const depth=historyDepth+1;
+        window.history.pushState(historyState(view,id,depth),"");
+        historyDepth=depth;
+      } catch {
+        historyReady=false;
+      }
+    }
+    renderView(view,id);
   }
   function moveGlobalPanels() {
     const container=$("manager-global-content");
@@ -337,5 +414,6 @@
   $("manager-refresh").addEventListener("click",refresh);
   moveGlobalPanels();
   renderHome();
+  setupHistory();
   refresh();
 })();
