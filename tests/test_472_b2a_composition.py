@@ -68,6 +68,11 @@ def test_signed_run_and_ledger_claim_can_coexist_inside_drain(tmp_path):
             gate.stop_and_drain(RUN, timeout=0)
     assert gate.stop_and_drain(RUN) == "stopped_after_drain"
     assert not verifier(RUN, PLAN, POLICY, OPERATION)
+    # This separate source-only stop changes only the signed grant. The
+    # ledger remains claimed until a trusted owner explicitly revokes it.
+    # Neither state alone is a production authority; future orchestration
+    # must coordinate them and preserve the shared effect lease.
+    assert ledger.verify_claimed(RUN, PLAN, POLICY, OPERATION)
     assert ledger.revoke(RUN)
     assert not ledger.verify_claimed(RUN, PLAN, POLICY, OPERATION)
     assert not ledger.claim(intent)

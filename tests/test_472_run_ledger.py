@@ -133,7 +133,7 @@ def test_private_file_and_no_secret_values_in_schema(setup):
 
 
 
-def test_new_process_reader_defaults_to_denied_before_recovery(setup):
+def test_new_ledger_instance_denied_before_owner_recovery(setup):
     ledger, intent, state = setup
     ledger.register(intent, verify_external_approval=lambda *_: True)
     assert ledger.claim(intent)
@@ -218,3 +218,42 @@ def test_single_claim_across_distinct_processes(setup):
         intent.run_id, intent.plan_sha256,
         intent.policy_sha256, intent.operation_id,
     )
+
+
+def _verify_from_independent_process(args):
+    """Fresh OS process and independent SQLite connection, no shared boot flag."""
+    from pathlib import Path
+    from obsidian_automation.vault_format_run_ledger import DurableRunLedger
+
+    location, intent = args
+    verifier = DurableRunLedger(Path(location))
+    values = (intent.run_id, intent.plan_sha256,
+              intent.policy_sha256, intent.operation_id)
+    before_recovery = verifier.verify_claimed(*values)
+    affected = verifier.mark_unconfirmed_after_restart()
+    after_recovery = verifier.verify_claimed(*values)
+    replay_allowed = verifier.claim(intent)
+    return before_recovery, affected, after_recovery, replay_allowed
+
+
+def test_fresh_os_process_denies_previous_claim_before_and_after_recovery(setup):
+    """An actual second OS process must not inherit prior approval authority."""
+    from multiprocessing import get_context
+
+    ledger, intent, state = setup
+    ledger.register(intent, verify_external_approval=lambda _: True)
+    assert ledger.claim(intent)
+    values = (intent.run_id, intent.plan_sha256,
+              intent.policy_sha256, intent.operation_id)
+    assert ledger.verify_claimed(*values)
+    # This synthetic owner-restart barrier is only safe when all active
+    # effect workers have been drained. No runtime owner coordinator exists.
+    with get_context("fork").Pool(processes=1) as pool:
+        result = pool.apply(
+            _verify_from_independent_process,
+            args=((str(state), intent),),
+        )
+    assert result == (False, 1, False, False)
+    # Recovery in the second process has also invalidated the former
+    # owner's read-only verification through durable SQLite state.
+    assert not ledger.verify_claimed(*values)
