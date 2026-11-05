@@ -161,7 +161,7 @@ def _trusted_dir(*, producer_uid: int, pipeline_gid: int) -> int:
         if (
             final.st_uid != producer_uid
             or final.st_gid != pipeline_gid
-            or stat.S_IMODE(final.st_mode) not in (0o700, 0o750)
+            or stat.S_IMODE(final.st_mode) != 0o750
         ):
             raise B3SourceUnavailable()
         result, fd = fd, None

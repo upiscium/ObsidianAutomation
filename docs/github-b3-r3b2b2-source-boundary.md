@@ -18,7 +18,8 @@ Writer, touch Nextcloud, or attest a legacy Writer retirement.
   `obsidian-github-writer`; these must be **distinct non-root UIDs**.
   The root path ancestry must be root-owned, non-group/world-writable;
   the final directory is producer-owned, group
-  `obsidian-github-pipeline`, exact mode `0700` or `0750`.
+  `obsidian-github-pipeline`, **exact mode `0750`**. Mode `0700`
+  would prevent the distinct Writer reader UID from traversing the source.
   The Writer may read but must never be able to replace Producer records.
 - Every object must be producer-owned, group
   `obsidian-github-pipeline`, exact mode `0640`, regular non-symlink and

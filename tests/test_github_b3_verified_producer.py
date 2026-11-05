@@ -171,6 +171,13 @@ def test_group_or_world_writable_parent_refused(owned_fixture, mode):
     assert_unavailable()
 
 
+def test_producer_directory_requires_group_reader_traversal(owned_fixture):
+    root, _, _, _, _ = owned_fixture
+    # The real reader is a different UID, so 0700 cannot be supported.
+    root.chmod(0o700)
+    assert_unavailable()
+
+
 def test_unavailable_source_directory_fails_closed(owned_fixture):
     root, _, paths, _, _ = owned_fixture
     root.rename(root.parent / "moved")
@@ -304,7 +311,9 @@ def test_verified_role_source_feeds_exact_existing_b3_request_binder(
         repository=repo, registered_base_url=(
             "https://nextcloud.example/remote.php/dav/files/owner/ObsidianVault"
         ),
-        username="writer", password="synthetic-only",
+        # B3 request binding is pure; no authentication or Writer is used.
+        # Deliberately supply no credentials in this synthetic fixture.
+        username="", password="",
     )
     bound = bind_b3_registered_inputs(
         B3RegisteredScope(config, GENERATION),
