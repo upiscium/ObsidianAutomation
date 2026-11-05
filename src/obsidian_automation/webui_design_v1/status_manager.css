@@ -142,6 +142,17 @@ body { background:var(--sm-page); color:var(--sm-ink); }
 #manager-global form button { justify-self:start; }
 #manager-global .manager-global-card h3 { font-size:1.16rem; margin:0 0 9px; }
 #manager-global .manager-global-card > p { color:var(--sm-soft); }
+#manager-setup-readiness { padding:16px 22px; }
+#manager-setup-readiness summary { cursor:pointer; font-weight:730; min-height:42px; }
+#manager-setup-readiness > p { color:var(--sm-soft); }
+.manager-setup-results { display:grid; gap:10px; list-style:none; padding:0; margin:12px 0 2px; }
+.manager-setup-results li { display:flex; align-items:center; justify-content:space-between;
+  flex-wrap:wrap; gap:10px; border-top:1px solid #d3d5d8; padding:12px 0; }
+.manager-setup-results button { min-height:44px; padding:8px 14px; }
+.manager-setup-state { font-size:.91rem; font-weight:680; overflow-wrap:anywhere; }
+.manager-setup-state[data-kind="unavailable"] { color:#5e6068; }
+.manager-setup-state[data-kind="missing"],.manager-setup-state[data-kind="requires_nextcloud"] { color:#9a6725; }
+.manager-setup-state[data-kind="configured"],.manager-setup-state[data-kind="verified_at_save"] { color:#236a43; }
 #manager-advanced { padding:16px 22px; }
 #manager-advanced summary { cursor:pointer; font-weight:730; min-height:42px; }
 #manager-advanced-slot { padding-top:12px; }
