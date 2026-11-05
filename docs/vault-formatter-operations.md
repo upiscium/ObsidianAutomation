@@ -168,6 +168,59 @@ app, Scheduler, HTTP API, or the one-shot #471 Canary adapter:
   operator approval, and is not registered in `snapshot_app`. Independent
   review, R2/B effect-time binding, and user authorization are later gates.
 
+## R2/B1 — opt-in effect-time Writer adapter (source-only)
+
+`vault_format_recurring_binding.py` adds an **unwired** `RecurringEffectWriter`
+for future approved recurring runs. The ordinary `snapshot_app` continues
+to construct `FormatterJob(writer=None)`; no HTTP route, timer or CLI
+can create this adapter. This is not evidence of a production permission.
+
+- Each instance is pinned to **one run ID**, one validated `RecurringPolicy`,
+  and one private receipt root. The complete Plan is copied into bounded,
+  non-aliasing metadata before any injected verifier runs.
+- Three **separately trusted injected callbacks** are mandatory: exact
+  operator policy digest approval, an already-persisted current run's
+  run/Plan/policy/operation authority, and actual provider CAS capability
+  proof. A permissive synthetic callback is not a real approval. B1 does
+  **not** implement the durable authority issuer or automatically trust
+  a scheduler row.
+- External operator-policy, run and provider verifiers **and injected
+  source-generation callbacks** are called without holding the SetupStore
+  lock. The approved policy itself is also rechecked at every request
+  boundary, so revocations observed between GET and PUT fail closed. This avoids
+  blocking another worker that needs SetupStore to complete validation.
+  The observed generation is then checked against the canonical credential
+  hash and account binding inside the lock. The lock is released **before**
+  each actual HTTP transport callback to prevent waiting on a worker that
+  itself needs SetupStore. Run/provider authority checks and canonical
+  credential checks are performed before each GET, conditional PUT and
+  readback; they are **not atomic with transmission**. The underlying
+  `apply_plan` owns remote
+  bytes, immutable receipt records, conditional If-Match and the operation
+  replay marker; no secondary PUT implementation is introduced. A second
+  concurrent call fails immediately with `recurring_effect_busy`.
+- These checks guarantee rejection **only if revocation is observed before
+  the individual request**. They cannot atomically bind a remote PUT to an
+  authority decision: a revocation after the last check can race a request
+  already transmitted. Production admission still requires a separately
+  governed authority lease / cancellation barrier and cross-process
+  credential-rotation protocol. Verifier callbacks must be read-only,
+  idempotent and externally trusted, not user-configurable lambdas.
+- If a credential or approval changes *after the initial GET*, the Writer
+  can conservatively classify the attempted effect `indeterminate`, even if
+  the synthetic transport proves no PUT was transmitted. This incident is
+  never automatically replayed.
+- B1's synthetic fake-WebDAV cases include full-plan conditional writes,
+  readback, same-run replay with a changed Plan, revocation between GET and
+  PUT, and missing/denied verifier handling. None uses real credentials.
+
+**Outstanding R2/B gates:** a concrete independently governed, durable run
+issuer/verifier; origin and lifecycle of per-run grants, cross-process
+credential-rotation coordination and bounded stop/drain; exact trusted receipt
+root configuration; real CAS capability acceptance; separate owner consent
+for an isolated canary; and then a further explicit approval for recurring
+production Auto apply. Merely merging this source is not one of those grants.
+
 ## Production requirements NOT YET MET
 
 Source tests and this app integration do not enable live mutation. The
