@@ -49,6 +49,20 @@ class RunStatusObservation:
     claimed_now: bool
 
 
+def _require_socket_path(path: Path) -> None:
+    """Validate path shape/encodability with one stable public error code."""
+    if (not isinstance(path, Path) or not path.is_absolute()
+            or path.name in ("", ".", "..") or ".." in path.parts
+            or "\x00" in str(path)):
+        raise WorkerIPCDenied("worker_path_invalid")
+    try:
+        encoded = os.fsencode(path)
+    except (UnicodeError, ValueError, TypeError):
+        raise WorkerIPCDenied("worker_path_invalid") from None
+    if len(encoded) >= 100:
+        raise WorkerIPCDenied("worker_path_invalid")
+
+
 def _trusted_parent(path: Path, owner_uid: int, ipc_group_gid: int) -> int:
     """Pin the root-to-parent path without following directory symlinks.
 
@@ -56,10 +70,7 @@ def _trusted_parent(path: Path, owner_uid: int, ipc_group_gid: int) -> int:
     granting read/list permission. This mirrors B1's Owner-side trust rules
     but works under the separate, restricted Worker UID.
     """
-    if (not isinstance(path, Path) or not path.is_absolute()
-            or path.name in ("", ".", "..") or ".." in path.parts
-            or "\x00" in str(path) or len(os.fsencode(path)) >= 100):
-        raise WorkerIPCDenied("worker_path_invalid")
+    _require_socket_path(path)
     if _O_PATH == 0 or not hasattr(os, "O_NOFOLLOW"):
         raise WorkerIPCDenied("worker_unsupported")
     flags = _O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -143,10 +154,7 @@ class WorkerUnixClient:
                 or os.geteuid() == 0 or owner_uid == os.geteuid()):
             raise WorkerIPCDenied("worker_policy_invalid")
         # Fully validate path shape before constructing a reusable client.
-        if (not isinstance(path, Path) or not path.is_absolute()
-                or path.name in ("", ".", "..") or ".." in path.parts
-                or "\x00" in str(path) or len(os.fsencode(path)) >= 100):
-            raise WorkerIPCDenied("worker_path_invalid")
+        _require_socket_path(path)
         self._path = path
         self._owner_uid = owner_uid
         self._ipc_group_gid = ipc_group_gid

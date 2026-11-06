@@ -588,9 +588,14 @@ stop, recovery, sign, generic RPC, PUT, or credential-rotation method.
   not been replaced. Unix-domain FD forwarding or a proxy authenticates the
   **connected peer**, not the original human/requester. No HTTP credentials
   or Vault body is accepted.
-- Every command creates one connection with a **bounded total deadline**.
-  It sends one exact JSON newline frame, write-half-closes with
-  `shutdown(SHUT_WR)`, and reads the response through EOF. Duplicate JSON
+- Every command creates one connection with a **3-second monotonic
+  budget for socket I/O** (connect/send/receive), including one strict
+  request frame, `shutdown(SHUT_WR)` and a response read through EOF.
+  This is **not** a complete wall-clock deadline: trusted-path
+  `os.open` / `os.stat` metadata calls cannot be interrupted by the
+  socket timeout. Production provisioning must separately qualify the
+  socket directory as a trusted **local filesystem** and exclude
+  blocking/network-backed metadata before activation. Duplicate JSON
   fields, trailing bytes, second frames, oversized responses, invalid
   positive acknowledgements, unexpected response keys and unrecognized
   reason codes fail closed with fixed error codes. No request is auto-sent

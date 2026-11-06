@@ -292,6 +292,32 @@ def test_same_uid_owner_client_construction_is_rejected(tmp_path):
                          ipc_group_gid=os.getegid())
 
 
+def _restricted_worker_child_env(source_dir: Path) -> dict[str, str]:
+    """Permit only import path and the shared-library path Python needs.
+
+    actions/setup-python may require LD_LIBRARY_PATH to load libpython;
+    dropping it makes the nobody child exit before announcing READY. Never
+    forward the full Owner environment, which might contain credentials.
+    """
+    safe = {"PYTHONPATH": str(source_dir)}
+    library_path = os.environ.get("LD_LIBRARY_PATH")
+    if library_path:
+        safe["LD_LIBRARY_PATH"] = library_path
+    return safe
+
+
+def test_disposable_child_env_preserves_python_loader_not_secrets(
+    monkeypatch, tmp_path,
+):
+    with monkeypatch.context() as env:
+        env.setenv("LD_LIBRARY_PATH", "/opt/hostedtoolcache/Python/mock/lib")
+        env.setenv("D0_TEST_PRIVATE_TOKEN", "TEST_ONLY_PRIVATE")
+        assert _restricted_worker_child_env(tmp_path) == {
+            "PYTHONPATH": str(tmp_path),
+            "LD_LIBRARY_PATH": "/opt/hostedtoolcache/Python/mock/lib",
+        }
+
+
 @pytest.mark.skipif(os.geteuid() != 0, reason="root-only disposable real-UID fixture")
 def test_root_real_distinct_uid_worker_client_claim_and_status(owner_fixture):
     """Actual worker EUID != Owner EUID, filesystem ACL and SO_PEERCRED."""
@@ -364,14 +390,29 @@ def test_root_real_distinct_uid_worker_client_claim_and_status(owner_fixture):
                  json.dumps(asdict(intent)).encode().hex(),
                  str(os.geteuid()), str(other.pw_gid)],
                 user=other.pw_uid, group=other.pw_gid, extra_groups=[],
-                env={"PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")},
+                env=_restricted_worker_child_env(
+                    Path(__file__).resolve().parents[1] / "src",
+                ),
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, bufsize=1,
             )
             try:
                 import select
                 assert select.select([child.stdout], [], [], 10)[0]
-                assert child.stdout.readline().strip() == "READY"
+                ready = child.stdout.readline().strip()
+                if ready != "READY":
+                    _, stderr = child.communicate(timeout=5)
+                    # No raw error, source path or credential is copied into
+                    # the test log: only a static pre-READY failure category.
+                    cause = ("python_loader" if "error while loading shared libraries" in stderr
+                             else "module_import" if "ModuleNotFoundError" in stderr
+                             else "permission" if "PermissionError" in stderr
+                             else "syntax" if "SyntaxError" in stderr
+                             else "unknown")
+                    pytest.fail(
+                        f"root Worker child pre-ready {cause} (exit {child.returncode})",
+                        pytrace=False,
+                    )
                 deadline = time.monotonic() + 12
                 served = 0
                 while served < 3 and time.monotonic() < deadline:
@@ -456,3 +497,15 @@ def test_root_fixture_child_source_compiles_without_root():
     embedded = ast.literal_eval(programs[0])
     compile(embedded, "<root-only-worker-client-source>", "exec")
     assert "claim_once" in embedded and "status" in embedded
+
+
+def test_unencodable_unicode_path_is_fixed_error_before_io(tmp_path):
+    """An invalid filesystem path never leaks UnicodeEncodeError details."""
+    malformed = tmp_path / ("not-encodable-" + chr(0xD800) + ".sock")
+    with pytest.raises(WorkerIPCDenied, match="^worker_path_invalid$"):
+        WorkerUnixClient(
+            malformed, owner_uid=os.geteuid() + 1,
+            ipc_group_gid=os.getegid(),
+        )
+    with pytest.raises(WorkerIPCDenied, match="^worker_path_invalid$"):
+        _trusted_parent(malformed, os.geteuid() + 1, os.getegid())
