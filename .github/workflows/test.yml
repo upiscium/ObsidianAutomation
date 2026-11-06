@@ -82,6 +82,31 @@ jobs:
           assert all(total(k) == 0 for k in ("failures", "errors", "skipped")), "root-mode fixture was skipped or failed"
           print("PASS: all three root-mode Stage/Activate fixtures executed")
           PY
+      - name: Run disposable cross-UID Owner IPC fixture
+        # Source-only B1: no persistent users/services, credentials or live Vault.
+        # Requires root solely to spawn an existing different-UID process in
+        # an ephemeral /tmp fixture. Reject SKIP, not merely a green job.
+        run: |
+          set -euo pipefail
+          PY="$(command -v python)"
+          sudo -n env PYTHONPATH="$GITHUB_WORKSPACE/src" "$PY" -m pytest -q -rs \
+            --junitxml="$RUNNER_TEMP/owner-listener-crossuid.xml" \
+            tests/test_472_owner_listener.py::test_genuine_distinct_uid_worker_claim_and_owner_only_stop \
+            tests/test_472_owner_listener.py::test_wrong_parent_group_rejected \
+            tests/test_472_owner_listener.py::test_root_fixture_rejects_wrong_parent_owner
+          "$PY" - "$RUNNER_TEMP/owner-listener-crossuid.xml" <<'PY'
+          import sys
+          from xml.etree import ElementTree as ET
+          document = ET.parse(sys.argv[1]).getroot()
+          suites = (document.findall("testsuite")
+                    if document.tag == "testsuites" else [document])
+          counts = lambda name: sum(int(s.get(name, 0)) for s in suites)
+          assert counts("tests") == 3, "Owner IPC privileged fixture count differs"
+          assert all(counts(k) == 0 for k in ("failures", "errors", "skipped")), (
+              "cross-UID fixture failed or skipped"
+          )
+          print("PASS: real different-UID SO_PEERCRED claim and Owner-only stop")
+          PY
 
   authority-fixture:
     # #410: Independent production-reference + new-host-OS ACL qualification.

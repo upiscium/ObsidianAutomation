@@ -443,6 +443,76 @@ failure/reconnect handling, credential generation rotation integration,
 independent provider proof, live single-run Nextcloud CAS canary, full
 Snapshot→Gitea→ObsidianCore convergence and **separate Human approval**.
 
+## R2/B2c-B1 — pre-provisioned Owner Unix listener lifecycle (source-only)
+
+The opt-in `vault_format_owner_listener.py` supplies a **one-accept-at-a-time**
+Linux Unix socket listener for the already source-only `OperatorUnixIPC`.
+The listener is **not imported by `snapshot_app`**, installed as a service,
+started by the scheduler or exposed via WebUI. The normal formatter remains
+`FormatterJob(writer=None)`.
+
+- The trusted Owner OS principal must **separately pre-provision** an absolute
+  socket directory owned by the Owner UID and the designated IPC group with
+  exact mode `0710`, plus an existing `owner-listener.lock` file with
+  exact mode `0600` owned by that UID. No runtime code creates the directory,
+  lease file, users, groups or a service. The Worker should have a **different
+  UID**, be authorized to traverse the group-executable directory and connect
+  to the `0660` group socket. Socket group changes require the Owner already
+  to be entitled to use that group. The IPC handler continues to make the
+  final **kernel `SO_PEERCRED` UID** authorization decision.
+- Startup opens path components with **`O_NOFOLLOW`**, rejecting untrusted
+  replacement ancestors, incorrect final owner/group/mode and a pre-existing
+  socket path (including a stale Socket inode). It obtains `flock` on the
+  pre-provisioned stable lock inode before binding. It verifies the newly
+  bound inode's owner/group/exact `0660` mode **before listening** and
+  limits the backlog. If the path is occupied, it **never deletes it
+  automatically**; separate trusted operator remediation is required.
+- Each `serve_once` verifies pinned parent, lock and socket identities,
+  accepts at most one connection with a bounded timeout, and delegates to
+  `OperatorUnixIPC`, which authenticates the connected peer and requires
+  a single JSON frame followed by client `shutdown(SHUT_WR)`/EOF. There is
+  no background loop, request-forwarding proxy or arbitrary call surface.
+  A `run.status` observation is never an effect-time Writer lease.
+- On `close`, a verified Owner unlinks **only the originally bound inode**
+  under the pinned directory and exclusive lease, then synchronizes the
+  directory. A switched socket inode, inaccessible parent or in-flight
+  handler never receives a successful close acknowledgement or foreign
+  unlink. A failure while closing the newly bound socket during startup
+  also leaves its name intact for operator inspection. After `accept`, the
+  Listener independently closes the accepted FD and converts unexpected
+  handler exceptions to a fixed `listener_request_unverified` reason. If
+  accepted-FD cleanup fails, that Listener instance permanently refuses
+  new requests and any automatic pathname unlink. The operator must handle
+  any **`listener_cleanup_unverified`** condition. A crash may leave a stale
+  socket name; restart fails closed.
+- Local disposable tests use a short-lived private `/tmp` fixture, real
+  Linux sockets and real same-UID `SO_PEERCRED` checks without touching any
+  Vault or host service. An additional **root-only temporary fixture** is
+  defined to launch a `nobody`-UID Worker with a pre-provisioned group and
+  test real `run.claim` across distinct OS principals; it is **SKIPPED**
+  on ordinary non-root developer machines. This is not evidence of
+  cross-UID success until it has executed on a reviewed isolated root-capable
+  test runner. The source-only `root-stage-fixtures` GitHub Actions job
+  now includes a **separate three-test acceptance step** covering genuine
+  cross-UID Claim/Owner-only denial, wrong parent group and wrong parent UID,
+  with a JUnit guard that rejects SKIP. That CI step has **not run on a
+  published B1 commit**.
+  The disposable Worker client signals connected readiness explicitly
+  before the Owner accepts its single request and reads response JSON through
+  a newline rather than assuming one Unix-stream `recv` returns the frame.
+  The real Worker fixture also checks that the different UID is denied
+  `run.stop` and `owner.recover` after a successful `run.claim`, before
+  the trusted Owner performs the stop. Neither fixture provisions persistent
+  OS users.
+
+**Still missing before production:** verified independent Owner and Worker
+UID/group provisioning in the target deployment, the root-capable cross-UID
+fixture result, systemd ownership and restart/cleanup policy, protection
+against FD forwarding/proxies, bounded lifecycle recovery and credential
+rotation under the same durable effect lease, a delegated approved issuer,
+live Nextcloud CAS and actual Vault canary, and Snapshot→Gitea→Core E2E.
+A source Merge does **not** authorize production installation or Auto apply.
+
 ## Production requirements NOT YET MET
 
 Source tests and this app integration do not enable live mutation. The
