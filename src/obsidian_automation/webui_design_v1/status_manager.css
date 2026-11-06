@@ -169,6 +169,18 @@ body { background:var(--sm-page); color:var(--sm-ink); }
 #manager-setup-readiness { padding:16px 22px; }
 #manager-setup-readiness summary { cursor:pointer; font-weight:730; min-height:42px; }
 #manager-setup-readiness > p { color:var(--sm-soft); }
+.manager-setup-guide {
+  border:1px solid var(--sm-border); border-radius:12px; padding:16px;
+  margin:12px 0 20px; background:#141c28;
+}
+.manager-setup-guide h3 { font-size:1.05rem; margin:0 0 9px; }
+.manager-setup-guide p { color:var(--sm-soft); margin:7px 0; }
+.manager-setup-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; }
+.manager-setup-actions button { min-height:44px; flex:1 1 160px; }
+#manager-setup-step-state[data-kind="missing"],
+#manager-setup-step-state[data-kind="requires_nextcloud"] { color:#ffce86; }
+#manager-setup-step-state[data-kind="configured"],
+#manager-setup-step-state[data-kind="verified_at_save"] { color:#65e7a9; }
 .manager-setup-results { display:grid; gap:10px; list-style:none; padding:0; margin:12px 0 2px; }
 .manager-setup-results li { display:flex; align-items:center; justify-content:space-between;
   flex-wrap:wrap; gap:10px; border-top:1px solid #3e4a5c; padding:12px 0; }

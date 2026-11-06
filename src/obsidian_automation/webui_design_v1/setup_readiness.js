@@ -66,6 +66,23 @@
   const list=document.getElementById("manager-setup-results");
   if (!button || !label || !list) return;
 
+  // The guide never performs a save or submits a form. Original connection
+  // forms remain authoritative, including their validation and write gates.
+  const guide={
+    title:document.getElementById("manager-setup-step-title"),
+    hint:document.getElementById("manager-setup-step-hint"),
+    status:document.getElementById("manager-setup-step-state"),
+    back:document.getElementById("manager-setup-prev"),
+    open:document.getElementById("manager-setup-open"),
+    next:document.getElementById("manager-setup-next")
+  };
+  const GUIDE_HINTS=Object.freeze([
+    "共有Nextcloudの接続設定。保存後は「接続設定の状態を確認」で更新してください。",
+    "GiteaはVault Snapshot利用時のみ必要です。GitHub Dailyには必須ではありません。",
+    "GitHub Dailyの進捗取込を利用する場合に接続します。"
+  ]);
+  let step=0;
+  let observed=null;
   let generation=0;
   let previous=null;
   const node=(tag,text)=>{
@@ -73,8 +90,46 @@
     if (text!==undefined) element.textContent=text;
     return element;
   };
+  function openSettings(targetName) {
+    const target=document.getElementById(targetName);
+    if (target && typeof target.scrollIntoView==="function")
+      target.scrollIntoView({block:"start"});
+    const heading=target?.querySelector("h2,h3");
+    if (heading) {
+      heading.setAttribute("tabindex","-1");
+      heading.focus({preventScroll:true});
+    }
+  }
+  function renderGuide({focus=false}={}) {
+    if (!Object.values(guide).every(Boolean)) return;
+    const item=ITEMS[step];
+    const row=observed?.[step];
+    guide.title.textContent="Step "+(step+1)+" / "+ITEMS.length+" · "+item.name;
+    guide.hint.textContent=GUIDE_HINTS[step];
+    guide.status.textContent=row
+      ? row.label+"。設定変更後は確認ボタンで再取得してください。"
+      : "状態未確認。確認ボタンで取得してください。";
+    guide.status.dataset.kind=row?.kind??"unavailable";
+    guide.back.disabled=step===0;
+    guide.next.disabled=step===ITEMS.length-1;
+    if (focus) guide.title.focus({preventScroll:true});
+  }
+  if (Object.values(guide).every(Boolean)) {
+    guide.back.addEventListener("click",()=>{
+      step=Math.max(0,step-1);
+      renderGuide({focus:true});
+    });
+    guide.next.addEventListener("click",()=>{
+      step=Math.min(ITEMS.length-1,step+1);
+      renderGuide({focus:true});
+    });
+    guide.open.addEventListener("click",()=>openSettings(ITEMS[step].target));
+    renderGuide();
+  }
   function render(payloads) {
     const rows=project(payloads);
+    observed=rows;
+    renderGuide();
     list.replaceChildren();
     for (const item of rows) {
       const li=node("li");
@@ -83,16 +138,7 @@
       status.dataset.kind=item.kind;
       const goto=node("button","設定を開く");
       goto.type="button";
-      goto.addEventListener("click",()=>{
-        const target=document.getElementById(item.target);
-        if (target && typeof target.scrollIntoView==="function")
-          target.scrollIntoView({block:"start"});
-        const heading=target?.querySelector("h2,h3");
-        if (heading) {
-          heading.setAttribute("tabindex","-1");
-          heading.focus({preventScroll:true});
-        }
-      });
+      goto.addEventListener("click",()=>openSettings(item.target));
       li.append(status,goto);
       list.append(li);
     }
