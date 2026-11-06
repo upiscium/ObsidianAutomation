@@ -107,6 +107,15 @@ HTML = """<!doctype html>
       <details id="manager-setup-readiness" class="manager-global-card">
         <summary>初回セットアップの確認（読み取り専用）</summary>
         <p>接続状況を確認し、必要な設定を下のフォームで登録してください。確認してもジョブは開始されません。</p>
+        <div class="manager-setup-workflow">
+          <label for="manager-setup-workflow">セットアップする機能</label>
+          <select id="manager-setup-workflow" aria-describedby="manager-setup-workflow-note">
+            <option value="both">Vault Snapshot と GitHub Daily</option>
+            <option value="snapshot">Vault Snapshot のみ</option>
+            <option value="daily">GitHub Daily のみ</option>
+          </select>
+          <p id="manager-setup-workflow-note">案内の表示対象を切り替えるだけです。設定・ジョブの有効状態は変更されません。</p>
+        </div>
         <section id="manager-setup-guide" class="manager-setup-guide" aria-labelledby="manager-setup-step-title">
           <h3 id="manager-setup-step-title" tabindex="-1">Step 1 / 3 · Nextcloud</h3>
           <p id="manager-setup-step-hint">Vaultの共有Nextcloudアカウントを設定します。</p>

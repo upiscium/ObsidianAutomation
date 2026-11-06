@@ -169,6 +169,13 @@ body { background:var(--sm-page); color:var(--sm-ink); }
 #manager-setup-readiness { padding:16px 22px; }
 #manager-setup-readiness summary { cursor:pointer; font-weight:730; min-height:42px; }
 #manager-setup-readiness > p { color:var(--sm-soft); }
+.manager-setup-workflow { display:grid; gap:7px; margin:14px 0; max-width:560px; }
+.manager-setup-workflow label { font-weight:700; }
+.manager-setup-workflow select {
+  min-height:44px; width:100%; max-width:100%; padding:9px 12px;
+  border:1px solid #64738a; border-radius:9px; background:#111823; color:#f1f4fa;
+}
+.manager-setup-workflow p { color:var(--sm-soft); font-size:.89rem; margin:0; }
 .manager-setup-guide {
   border:1px solid var(--sm-border); border-radius:12px; padding:16px;
   margin:12px 0 20px; background:#141c28;

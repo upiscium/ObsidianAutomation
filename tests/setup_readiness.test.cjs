@@ -20,7 +20,8 @@ function adapter(){
    project(values){
     const raw=vm.runInContext("JSON.parse("+JSON.stringify(JSON.stringify(values))+")",ctx);
     return ctx.ObsidianSetupReadiness.project(raw);
-   }
+   },
+   stepsFor(flow){return Array.from(ctx.ObsidianSetupReadiness.stepsFor(flow));}
  };
 }
 test("exact current saved settings are not described as live healthy",()=>{
@@ -62,6 +63,15 @@ test("malformed claims and cross-type statuses fail closed",()=>{
  for(const x of cases)assert.ok(adapter().project(x).some(row=>row.kind==="unavailable"));
  assert.throws(()=>adapter().project([]),/invalid_setup_observation/);
 });
+test("workflow scope uses an immutable, closed two-workflow allowlist",()=>{
+ const a=adapter();
+ assert.deepEqual(a.stepsFor("both"),[0,1,2]);
+ assert.deepEqual(a.stepsFor("snapshot"),[0,1]);
+ assert.deepEqual(a.stepsFor("daily"),[0,2]);
+ for(const bad of ["__proto__","constructor","B1","B3","B5","",null]){
+  assert.throws(()=>a.stepsFor(bad),/invalid_setup_workflow/);
+ }
+});
 class Element{
  constructor(tag,id){this.tagName=tag;this.id=id;this.children=[];this.handlers={};
   this._text="";this.dataset={};this.disabled=false;this.hidden=false;}
@@ -75,7 +85,10 @@ class Element{
  setAttribute(key,val){this[key]=String(val);}
  querySelector(){return new Element("h2");}
  scrollIntoView(){this.scrolled=true;}
- focus(){this.focused=true;}
+ focus(){this.focused=true;if(this.ownerDocument)this.ownerDocument.activeElement=this;}
+}
+function browserRecord(context,value){
+ return vm.runInContext("JSON.parse("+JSON.stringify(JSON.stringify(value))+")",context);
 }
 function deferred(){
  let resolve,reject;
@@ -84,13 +97,15 @@ function deferred(){
 }
 async function browser(){
  const names=["manager-setup-check","manager-setup-summary","manager-setup-results",
-   "manager-setup-step-title","manager-setup-step-hint","manager-setup-step-state",
+   "manager-setup-workflow","manager-setup-step-title","manager-setup-step-hint","manager-setup-step-state",
    "manager-setup-prev","manager-setup-open","manager-setup-next",
    "manager-global-nextcloud","manager-global-gitea","manager-global-github"];
  const nodes=Object.fromEntries(names.map(id=>[id,new Element("div",id)]));
+ const document={activeElement:null,getElementById:id=>nodes[id]||null,createElement:tag=>new Element(tag)};
+ for(const element of Object.values(nodes))element.ownerDocument=document;
  const requests=[];let ticks=0;const timers=new Map();
  const context=vm.createContext({
-  document:{getElementById:id=>nodes[id]||null,createElement:tag=>new Element(tag)},
+  document,
   AbortController,
   fetch(url,options){const pending=deferred();requests.push({url,options,...pending});return pending.promise;},
   setTimeout(fn,ms){assert.equal(ms,9500);const id=++ticks;timers.set(id,fn);return id;},
@@ -198,6 +213,105 @@ async function browser(){
   assert.ok(guided.nodes["manager-global-nextcloud"]);
   assert.ok(guided.nodes["manager-global-gitea"]);
   assert.ok(guided.nodes["manager-global-github"]);
+ });
+ const snapshotOnly=await browser();
+ test("selecting Snapshot-only reduces guide to Nextcloud plus Gitea without network",()=>{
+  const selector=snapshotOnly.nodes["manager-setup-workflow"];
+  assert.equal(selector.value,"both");
+  selector.focus();
+  assert.equal(snapshotOnly.context.document.activeElement,selector);
+  selector.value="snapshot";
+  selector.fire("change");
+  // Native select keyboard change must not move focus to the step heading.
+  assert.equal(snapshotOnly.context.document.activeElement,selector);
+  assert.match(snapshotOnly.nodes["manager-setup-step-title"].textContent,/Step 1 \/ 2.*Nextcloud/);
+  assert.equal(snapshotOnly.requests.length,0);
+  assert.equal(snapshotOnly.nodes["manager-setup-summary"].textContent.includes("表示対象を変更"),true);
+ });
+ await snapshotOnly.nodes["manager-setup-next"].fire("click");
+ test("Snapshot-only last step targets Gitea, not GitHub",()=>{
+  assert.match(snapshotOnly.nodes["manager-setup-step-title"].textContent,/Step 2 \/ 2.*Gitea/);
+  assert.equal(snapshotOnly.nodes["manager-setup-next"].disabled,true);
+  assert.equal(snapshotOnly.requests.length,0);
+ });
+ const snapStatus=snapshotOnly.nodes["manager-setup-check"].fire("click");
+ assert.deepEqual(snapshotOnly.requests.map(x=>x.url),[
+  "/api/v1/nextcloud/connections","/api/v1/snapshot/connections"
+ ]);
+ for(const [index,payload] of [fixtures.nextcloud,fixtures.snapshot].entries())
+  snapshotOnly.requests[index].resolve({status:200,json:async()=>browserRecord(snapshotOnly.context,payload)});
+ await snapStatus;
+ test("Snapshot-only summary counts two relevant saved settings without GitHub",()=>{
+  assert.match(snapshotOnly.nodes["manager-setup-summary"].textContent,/2 \/ 2/);
+  const rows=snapshotOnly.nodes["manager-setup-results"];
+  assert.equal(rows.children.length,2);
+  assert.match(rows.textContent,/Nextcloud.*Gitea/);
+  assert.doesNotMatch(rows.textContent,/GitHub/);
+  assert.match(snapshotOnly.nodes["manager-setup-step-state"].textContent,/保存時に検証済み/);
+ });
+ const dailyOnly=await browser();
+ dailyOnly.nodes["manager-setup-workflow"].value="daily";
+ await dailyOnly.nodes["manager-setup-workflow"].fire("change");
+ await dailyOnly.nodes["manager-setup-next"].fire("click");
+ await dailyOnly.nodes["manager-setup-open"].fire("click");
+ test("Daily-only guide skips Gitea and opens original GitHub form",()=>{
+  assert.match(dailyOnly.nodes["manager-setup-step-title"].textContent,/Step 2 \/ 2.*GitHub/);
+  assert.equal(dailyOnly.nodes["manager-setup-next"].disabled,true);
+  assert.equal(dailyOnly.nodes["manager-global-github"].scrolled,true);
+  assert.equal(dailyOnly.requests.length,0);
+ });
+ const dailyStatus=dailyOnly.nodes["manager-setup-check"].fire("click");
+ assert.deepEqual(dailyOnly.requests.map(x=>x.url),[
+  "/api/v1/nextcloud/connections","/api/v1/daily/connections"
+ ]);
+ dailyOnly.requests[0].resolve({status:200,json:async()=>browserRecord(dailyOnly.context,fixtures.nextcloud)});
+ dailyOnly.requests[1].resolve({status:200,json:async()=>browserRecord(dailyOnly.context,fixtures.daily)});
+ await dailyStatus;
+ test("Daily-only summary is independent of missing Gitea and never echoes secrets",()=>{
+  assert.match(dailyOnly.nodes["manager-setup-summary"].textContent,/2 \/ 2/);
+  const rows=dailyOnly.nodes["manager-setup-results"];
+  assert.equal(rows.children.length,2);
+  assert.match(rows.textContent,/GitHub Daily/);
+  assert.doesNotMatch(rows.textContent,/Gitea|SECRET_GITEA/);
+  assert.equal(dailyOnly.requests.every(x=>x.options.method==="GET"),true);
+ });
+ const stale=await browser();
+ const staleRead=stale.nodes["manager-setup-check"].fire("click");
+ assert.equal(stale.requests.length,3);
+ stale.nodes["manager-setup-workflow"].value="daily";
+ await stale.nodes["manager-setup-workflow"].fire("change");
+ test("workflow change aborts pending GET status and clears old result",()=>{
+  assert.ok(stale.requests.every(r=>r.options.signal.aborted));
+  assert.equal(stale.nodes["manager-setup-check"].disabled,false);
+  assert.equal(stale.nodes["manager-setup-results"].children.length,0);
+  assert.match(stale.nodes["manager-setup-summary"].textContent,/表示対象を変更/);
+ });
+ for(const [i,payload] of [fixtures.nextcloud,fixtures.snapshot,fixtures.daily].entries())
+  stale.requests[i].resolve({status:200,json:async()=>browserRecord(stale.context,payload)});
+ await staleRead;
+ test("stale response cannot repopulate a changed workflow",()=>{
+  assert.equal(stale.nodes["manager-setup-results"].children.length,0);
+  assert.doesNotMatch(stale.nodes["manager-setup-summary"].textContent,/3 \/ 3/);
+ });
+ const newStatus=stale.nodes["manager-setup-check"].fire("click");
+ assert.deepEqual(stale.requests.slice(3).map(x=>x.url),[
+  "/api/v1/nextcloud/connections","/api/v1/daily/connections"
+ ]);
+ for(const [i,payload] of [fixtures.nextcloud,fixtures.daily].entries())
+  stale.requests[3+i].resolve({status:200,json:async()=>browserRecord(stale.context,payload)});
+ await newStatus;
+ test("new explicit status GET after switching shows only selected items",()=>{
+  assert.match(stale.nodes["manager-setup-summary"].textContent,/2 \/ 2/);
+  assert.equal(stale.nodes["manager-setup-results"].children.length,2);
+  assert.ok(stale.requests.every(x=>x.options.method==="GET"));
+ });
+ const invalid=await browser();
+ invalid.nodes["manager-setup-workflow"].value="__proto__";
+ await invalid.nodes["manager-setup-workflow"].fire("change");
+ test("invalid flow is rejected locally without any network or new authority",()=>{
+  assert.equal(invalid.nodes["manager-setup-workflow"].value,"both");
+  assert.match(invalid.nodes["manager-setup-step-title"].textContent,/Step 1 \/ 3.*Nextcloud/);
+  assert.equal(invalid.requests.length,0);
  });
  console.log("setup_readiness:",n,"PASS (pure status + controlled browser transport)");
 })().catch(error=>{console.error(error);process.exitCode=1;});

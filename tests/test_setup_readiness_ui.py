@@ -127,7 +127,7 @@ def test_node_readiness_contract_and_fake_browser_transport():
         cwd=ROOT, capture_output=True, text=True, check=False, timeout=30
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "setup_readiness: 15 PASS" in result.stdout
+    assert "setup_readiness: 25 PASS" in result.stdout
 
 
 def test_guided_three_steps_preserve_existing_forms_and_explicit_save():
@@ -151,6 +151,38 @@ def test_guided_three_steps_preserve_existing_forms_and_explicit_save():
     script = ASSET.read_text()
     assert "GUIDE_HINTS" in script
     assert "renderGuide(" in script
-    assert "openSettings(ITEMS[step].target)" in script
+    assert "openSettings(ITEMS[stepsFor(workflow)[step]].target)" in script
     assert 'method:"POST"' not in script
     assert 'method:"GET"' in script
+
+
+def test_workflow_scope_selector_is_read_only_and_does_not_replace_forms():
+    """#304 R1/B changes only client-side guidance scope, never authority."""
+    import html as _html
+
+    assert HTML.count('id="manager-setup-workflow"') == 1
+    assert HTML.count('id="manager-setup-workflow-note"') == 1
+    assert 'for="manager-setup-workflow"' in HTML
+    for value, label in (
+        ("both", "Vault Snapshot と GitHub Daily"),
+        ("snapshot", "Vault Snapshot のみ"),
+        ("daily", "GitHub Daily のみ"),
+    ):
+        assert f'<option value="{value}">{_html.escape(label)}</option>' in HTML
+    assert "設定・ジョブの有効状態は変更されません" in HTML
+    for name in ("nextcloud-form", "connections-form", "daily-connections-form"):
+        assert HTML.count(f'id="{name}"') == 1
+    asset = ASSET.read_text()
+    assert 'const WORKFLOW_STEPS=Object.freeze({' in asset
+    assert 'snapshot:Object.freeze([0,1])' in asset
+    assert 'daily:Object.freeze([0,2])' in asset
+    assert 'workflowSelect.addEventListener("change"' in asset
+    assert 'if (previous) previous.abort();' in asset
+    assert '++generation;' in asset
+    assert 'const scoped=stepsFor(workflow).map(index=>rows[index]);' in asset
+    assert 'Promise.all(active.map(index=>read(ITEMS[index].path,controller.signal)))' in asset
+    assert 'const all=Array(ITEMS.length).fill(null);' in asset
+    assert 'method:"GET"' in asset
+    assert 'method:"POST"' not in asset
+    assert 'localStorage.setItem' not in asset
+    assert 'sessionStorage' not in asset
