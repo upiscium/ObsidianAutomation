@@ -161,7 +161,8 @@
       button.disabled=false;
       list.replaceChildren();
       label.textContent="表示対象を変更しました。確認ボタンで状態を再取得してください。";
-      renderGuide({focus:true});
+      // Keep keyboard focus on the native select so ArrowDown can continue cycling flows.
+      renderGuide();
     });
   }
   function render(payloads) {

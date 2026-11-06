@@ -85,7 +85,7 @@ class Element{
  setAttribute(key,val){this[key]=String(val);}
  querySelector(){return new Element("h2");}
  scrollIntoView(){this.scrolled=true;}
- focus(){this.focused=true;}
+ focus(){this.focused=true;if(this.ownerDocument)this.ownerDocument.activeElement=this;}
 }
 function browserRecord(context,value){
  return vm.runInContext("JSON.parse("+JSON.stringify(JSON.stringify(value))+")",context);
@@ -101,9 +101,11 @@ async function browser(){
    "manager-setup-prev","manager-setup-open","manager-setup-next",
    "manager-global-nextcloud","manager-global-gitea","manager-global-github"];
  const nodes=Object.fromEntries(names.map(id=>[id,new Element("div",id)]));
+ const document={activeElement:null,getElementById:id=>nodes[id]||null,createElement:tag=>new Element(tag)};
+ for(const element of Object.values(nodes))element.ownerDocument=document;
  const requests=[];let ticks=0;const timers=new Map();
  const context=vm.createContext({
-  document:{getElementById:id=>nodes[id]||null,createElement:tag=>new Element(tag)},
+  document,
   AbortController,
   fetch(url,options){const pending=deferred();requests.push({url,options,...pending});return pending.promise;},
   setTimeout(fn,ms){assert.equal(ms,9500);const id=++ticks;timers.set(id,fn);return id;},
@@ -216,8 +218,12 @@ async function browser(){
  test("selecting Snapshot-only reduces guide to Nextcloud plus Gitea without network",()=>{
   const selector=snapshotOnly.nodes["manager-setup-workflow"];
   assert.equal(selector.value,"both");
+  selector.focus();
+  assert.equal(snapshotOnly.context.document.activeElement,selector);
   selector.value="snapshot";
   selector.fire("change");
+  // Native select keyboard change must not move focus to the step heading.
+  assert.equal(snapshotOnly.context.document.activeElement,selector);
   assert.match(snapshotOnly.nodes["manager-setup-step-title"].textContent,/Step 1 \/ 2.*Nextcloud/);
   assert.equal(snapshotOnly.requests.length,0);
   assert.equal(snapshotOnly.nodes["manager-setup-summary"].textContent.includes("表示対象を変更"),true);

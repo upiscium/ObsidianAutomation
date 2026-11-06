@@ -32,7 +32,9 @@ observations, not currently healthy connectivity, full Job readiness,
 successful Vault output or proof of any B1/B3/B5 effect.
 
 Selecting another workflow resets to Step 1, invalidates displayed
-observations and aborts an in-flight status request. A response from
+observations and aborts an in-flight status request. Keyboard focus stays
+on the workflow selector so arrow-key selection can continue; explicit
+Previous/Next actions may focus the new step heading. A response from
 the old selection cannot repopulate the new workflow view. The strict
 allowlist rejects unknown values and prototype-property names.
 Prev/Next and opening an existing form are local DOM-only actions.
