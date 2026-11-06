@@ -146,9 +146,9 @@ class OwnerUnixListener:
         self._lock_fd: int | None = None
         self._socket_identity: tuple[int, int] | None = None
         self._parent_identity: tuple[int, int] | None = None
-        # A failed close of an accepted connection is not a verified drain.
-        # This instance may never restart after that indeterminate state.
-        self._request_cleanup_unverified = False
+        # Any indeterminate socket, accepted peer or lock cleanup permanently
+        # poisons this instance: only a separate trusted operator may recover.
+        self._cleanup_unverified = False
 
     def _require_owner(self) -> None:
         if os.geteuid() != self.owner_uid:
@@ -195,7 +195,7 @@ class OwnerUnixListener:
         listener = None
         bound_identity = None
         try:
-            if self._request_cleanup_unverified:
+            if self._cleanup_unverified:
                 raise OwnerListenerDenied("listener_cleanup_unverified")
             if self._listener is not None:
                 raise OwnerListenerDenied("listener_already_open")
@@ -219,8 +219,9 @@ class OwnerUnixListener:
             try:
                 st = _sock_state(parent_fd, self.path.name)
             except OSError:
-                # Never delete an inode whose identity we could not pin.
-                # The trusted operator must inspect any possible stale name.
+                # A bound-but-unverifiable inode is an indeterminate cleanup,
+                # even if no cleanup failure is independently detected later.
+                self._cleanup_unverified = True
                 raise OwnerListenerDenied("listener_cleanup_unverified") from None
             bound_identity = (st.st_dev, st.st_ino)
             if not stat.S_ISSOCK(st.st_mode) or st.st_uid != self.owner_uid:
@@ -293,6 +294,7 @@ class OwnerUnixListener:
                 finally:
                     self._gate.release()
             if cleanup_failed:
+                self._cleanup_unverified = True
                 raise OwnerListenerDenied("listener_cleanup_unverified")
 
     def serve_once(self) -> bool:
@@ -301,7 +303,7 @@ class OwnerUnixListener:
         if not self._gate.acquire(blocking=False):
             raise OwnerListenerDenied("listener_busy")
         try:
-            if self._request_cleanup_unverified:
+            if self._cleanup_unverified:
                 raise OwnerListenerDenied("listener_cleanup_unverified")
             self._validate_pinned()
             try:
@@ -322,7 +324,7 @@ class OwnerUnixListener:
                 except OSError:
                     # An indeterminate accepted FD prevents further accepts
                     # and automatic socket-name cleanup on this instance.
-                    self._request_cleanup_unverified = True
+                    self._cleanup_unverified = True
                     raise OwnerListenerDenied("listener_cleanup_unverified") from None
             return True
         finally:
@@ -338,7 +340,7 @@ class OwnerUnixListener:
         lock_fd, self._lock_fd = self._lock_fd, None
         identity, self._socket_identity = self._socket_identity, None
         parent_identity, self._parent_identity = self._parent_identity, None
-        failure = self._request_cleanup_unverified
+        failure = self._cleanup_unverified
         try:
             if listener is not None:
                 try:
@@ -402,6 +404,10 @@ class OwnerUnixListener:
                     except OSError:
                         failure = True
             finally:
+                # Latch failure while still holding the owner gate; otherwise
+                # another thread could reopen between gate release and latch.
+                if failure:
+                    self._cleanup_unverified = True
                 self._gate.release()
         if failure:
             raise OwnerListenerDenied("listener_cleanup_unverified")

@@ -203,10 +203,15 @@ def test_post_bind_unverifiable_inode_is_fail_closed_and_requires_manual_cleanup
         ):
             listener.open()
     assert listener.path.is_socket()
-    with pytest.raises(OwnerListenerDenied, match="^listener_path_occupied$"):
+    with pytest.raises(OwnerListenerDenied, match="^listener_cleanup_unverified$"):
         listener.open()
-    # Test-only trusted operator removes this exact synthetic stale socket.
+    with pytest.raises(OwnerListenerDenied, match="^listener_cleanup_unverified$"):
+        listener.close()
+    # Test-only trusted operator removes this exact synthetic stale socket,
+    # but even explicit pathname removal may not recover a poisoned instance.
     listener.path.unlink()
+    with pytest.raises(OwnerListenerDenied, match="^listener_cleanup_unverified$"):
+        listener.open()
 
 
 def test_post_bind_chmod_failure_cleans_only_newly_pinned_owned_socket(
@@ -255,9 +260,18 @@ def test_post_bind_failed_fsync_is_redacted_and_all_locks_released(
             listener.open()
     assert "SENSITIVE" not in str(error.value)
     assert not listener.path.exists()
-    # No stranded owner guard or flock after error.
-    listener.open()
-    listener.close()
+    # The lease is released, but this instance may never acknowledge recovery.
+    with pytest.raises(OwnerListenerDenied, match="^listener_cleanup_unverified$"):
+        listener.close()
+    with pytest.raises(OwnerListenerDenied, match="^listener_cleanup_unverified$"):
+        listener.open()
+    # Only a separately constructed Owner listener can be used after operator
+    # recovery; it obtains an independent lease from the original lock name.
+    recovered = OwnerUnixListener(
+        listener.handler, listener.path, ipc_group_gid=os.getegid(),
+    )
+    recovered.open()
+    recovered.close()
 
 
 def test_post_bind_failed_unlink_is_redacted_and_stale_socket_not_reused(
@@ -288,10 +302,12 @@ def test_post_bind_failed_unlink_is_redacted_and_stale_socket_not_reused(
             listener.open()
     assert "SENSITIVE" not in str(error.value)
     assert listener.path.is_socket()
-    with pytest.raises(OwnerListenerDenied, match="^listener_path_occupied$"):
+    with pytest.raises(OwnerListenerDenied, match="^listener_cleanup_unverified$"):
         listener.open()
     # Separate trusted operator recovery only in disposable fixture.
     listener.path.unlink()
+    with pytest.raises(OwnerListenerDenied, match="^listener_cleanup_unverified$"):
+        listener.open()
 
 
 def test_untrusted_socket_replacement_is_not_unlinked(listener_site):
@@ -304,11 +320,16 @@ def test_untrusted_socket_replacement_is_not_unlinked(listener_site):
     listener.path.symlink_to(foreign.name)
     with pytest.raises(OwnerListenerDenied, match="^listener_cleanup_unverified$"):
         listener.close()
+    # Repeating cleanup may never turn a failed first attempt into an ACK.
+    with pytest.raises(OwnerListenerDenied, match="^listener_cleanup_unverified$"):
+        listener.close()
     assert listener.path.is_symlink()
     assert foreign.read_bytes() == b"not ours"
     assert moved.exists()
     listener.path.unlink()
     moved.unlink()
+    with pytest.raises(OwnerListenerDenied, match="^listener_cleanup_unverified$"):
+        listener.open()
 
 
 def test_close_cannot_ack_while_a_request_is_in_flight(listener_site):
@@ -371,11 +392,15 @@ def test_replacement_socket_inode_is_preserved_on_close(listener_site):
         foreign.close()
     with pytest.raises(OwnerListenerDenied, match="^listener_cleanup_unverified$"):
         listener.close()
+    with pytest.raises(OwnerListenerDenied, match="^listener_cleanup_unverified$"):
+        listener.close()
     after = listener.path.lstat()
     assert stat.S_ISSOCK(after.st_mode)
     assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino)
     listener.path.unlink()
     saved.unlink()
+    with pytest.raises(OwnerListenerDenied, match="^listener_cleanup_unverified$"):
+        listener.open()
 
 
 def test_wrong_lock_mode_and_hardlink_are_rejected(listener_site):
@@ -408,9 +433,13 @@ def test_replaced_lock_inode_invalidates_serving_and_cleanup(listener_site):
         listener.close()
     assert replacement.lstat().st_ino == lock_inode
     assert listener.path.is_socket()
+    with pytest.raises(OwnerListenerDenied, match="^listener_cleanup_unverified$"):
+        listener.close()
     listener.path.unlink()
     replacement.unlink()
     saved.unlink()
+    with pytest.raises(OwnerListenerDenied, match="^listener_cleanup_unverified$"):
+        listener.open()
 
 
 def test_wrong_parent_group_rejected(listener_site):
@@ -579,8 +608,12 @@ def test_close_socket_error_is_redacted_and_requires_operator_cleanup(listener_s
         listener.close()
     assert "SECRET" not in str(error.value)
     assert listener.path.is_socket()
+    with pytest.raises(OwnerListenerDenied, match="^listener_cleanup_unverified$"):
+        listener.close()
     # Trusted synthetic cleanup after no successful Off acknowledgement.
     listener.path.unlink()
+    with pytest.raises(OwnerListenerDenied, match="^listener_cleanup_unverified$"):
+        listener.open()
 
 
 @pytest.mark.parametrize("fd_role", ["parent", "lock"])
@@ -608,9 +641,17 @@ def test_close_fd_error_releases_gate_and_reports_fixed_reason(
             listener.close()
     assert "SECRET" not in str(error.value)
     assert not listener.path.exists()
-    # A failure never leaves a permanently blocked in-process gate/flock.
-    listener.open()
-    listener.close()
+    # A failed descriptor close poisons this instance, even if the underlying
+    # OS close actually completed; a fresh instance can acquire the lock.
+    with pytest.raises(OwnerListenerDenied, match="^listener_cleanup_unverified$"):
+        listener.close()
+    with pytest.raises(OwnerListenerDenied, match="^listener_cleanup_unverified$"):
+        listener.open()
+    replacement = OwnerUnixListener(
+        listener.handler, listener.path, ipc_group_gid=os.getegid(),
+    )
+    replacement.open()
+    replacement.close()
 
 
 def test_validation_descriptor_close_failure_redacted_and_gate_released(
@@ -755,9 +796,12 @@ def test_open_socket_close_failure_preserves_stale_name_and_live_fd(
         assert len(created) == 1
         assert created[0].inner.fileno() >= 0
         assert listener.path.is_socket()
-        # Never silently reuse/unlink the uncertain socket on restart.
-        with pytest.raises(OwnerListenerDenied, match="^listener_path_occupied$"):
+        # The uncertain socket is preserved, and even manual pathname removal
+        # cannot turn this instance's unknown FD lifetime into a clean restart.
+        with pytest.raises(OwnerListenerDenied, match="^listener_cleanup_unverified$"):
             listener.open()
+        with pytest.raises(OwnerListenerDenied, match="^listener_cleanup_unverified$"):
+            listener.close()
     finally:
         for item in created:
             item.inner.close()
