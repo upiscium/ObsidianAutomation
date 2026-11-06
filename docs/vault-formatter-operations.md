@@ -495,8 +495,10 @@ started by the scheduler or exposed via WebUI. The normal formatter remains
   test runner. The source-only `root-stage-fixtures` GitHub Actions job
   now includes a **separate three-test acceptance step** covering genuine
   cross-UID Claim/Owner-only denial, wrong parent group and wrong parent UID,
-  with a JUnit guard that rejects SKIP. That CI step has **not run on a
-  published B1 commit**.
+  with a JUnit guard that rejects SKIP. This step ran successfully for B1 in
+  PR #544's exact-head Actions run **#42201086197**: **3 PASS, 0 SKIP** in
+  the isolated root job. That is disposable CI evidence, not a production
+  Owner/Worker identity or credential-rotation acceptance.
   The disposable Worker client signals connected readiness explicitly
   before the Owner accepts its single request and reads response JSON through
   a newline rather than assuming one Unix-stream `recv` returns the frame.
@@ -506,12 +508,65 @@ started by the scheduler or exposed via WebUI. The normal formatter remains
   OS users.
 
 **Still missing before production:** verified independent Owner and Worker
-UID/group provisioning in the target deployment, the root-capable cross-UID
-fixture result, systemd ownership and restart/cleanup policy, protection
+UID/group provisioning in the target deployment, target-host cross-UID
+acceptance, systemd ownership and restart/cleanup policy, protection
 against FD forwarding/proxies, bounded lifecycle recovery and credential
 rotation under the same durable effect lease, a delegated approved issuer,
 live Nextcloud CAS and actual Vault canary, and Snapshot→Gitea→Core E2E.
 A source Merge does **not** authorize production installation or Auto apply.
+
+## R2/B2c-C0 — bounded Owner process session and boot reconciliation (source-only)
+
+The new opt-in `vault_format_owner_session.py` provides **`BoundedOwnerSession`**
+for an **already separately trusted Owner process** with an explicitly
+constructed B1 `OwnerUnixListener` and B2b coordinator. It is **not** a
+process spawner, daemon, systemd unit, scheduler, credential store, grant
+issuer, Worker client or Writer adapter. No app import or startup hook was
+added. Normal `snapshot_app` continues to construct `FormatterJob` with no
+Writer and cannot enable Auto apply.
+
+- The session pins the constructing PID, EUID, exact Listener, IPC handler,
+  coordinator and Ledger binding. A session object inherited across fork,
+  rebound to another coordinator or run a second time is rejected. This is
+  **process identity fencing**, not independent OS authority provisioning.
+- Startup first obtains the B1 **exclusive lifetime lock** by opening its
+  trusted pre-provisioned Listener. **While holding that lock**, and **before
+  accepting any client request**, it invokes deterministic
+  `recover_after_quiescence()` under the shared effect-drain lock. This
+  converts old `claimed` Ledger entries to `unconfirmed`, never recreates
+  grants and refuses a nonfresh Ledger. If another Owner already holds the
+  Listener lock, the contender is rejected **without** invalidating that
+  Owner's active Claim. The socket may be bound/connectable during recovery,
+  but no request can be dispatched before recovery completes.
+- The handler accepts **at most 1–16 connections** and allows **at most
+  1–24 cumulative idle polls** (no activity-based reset, general loop or
+  background task). Each accept and IPC message retains B1/B2c time limits.
+  `OwnerSessionResult` provides counts/exit reason only after the Listener
+  closes successfully; it is not a capability, Writer permit, or stop ACK.
+- On boot recovery, dispatch, listener-close, or ledger identity failure,
+  the session returns **no success result**, redacts OS/SQLite error text,
+  and cannot be retried on the same instance. Uncertain stale socket and
+  Owner cleanup still require separately reviewed operator intervention.
+- Disposable tests verify that a freshly constructed Owner session in a
+  **different real PID** invalidates a previously claimed synthetic Run ID
+  before serving, refuses an Owner-UID call to the Worker-only Claim
+  endpoint, and exits after a fixed number of requests with the Socket
+  removed. The test-only Owner
+  per-request readiness gates let the parent queue and release each request
+  separately, avoiding both an idle-poll race and reliance on a multi-entry
+  Unix socket pending-connection queue. Other tests enforce
+  inherited-process rejection, bounded idle exit, no double boot, fail-closed
+  recovery under active effect lock, no response before recovery and no false
+  success on unverified close. These fork-based tests use the **same UID**;
+  the earlier B1 root-capable CI fixture independently proved an actual
+  different-UID Worker Claim but is **not a combined C0 production test**.
+
+**Not yet implemented:** a production Owner process launcher/supervisor
+and target-host UID/GID/service policy, authenticated and replay-safe Worker
+client, delegated signed-Run issuer, credential generation changes under the
+stable effect lease, effect-time Writer binding, real Nextcloud CAS/Vault
+canary and publication convergence. A C0 source-only test/merge confers
+**no** permission to run a production Listener or enable Auto apply.
 
 ## Production requirements NOT YET MET
 
