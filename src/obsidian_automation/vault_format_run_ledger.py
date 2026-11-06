@@ -305,6 +305,18 @@ class DurableRunLedger:
             db.close()
 
     @_database_errors
+    def is_revoked(self, run_id: str) -> bool:
+        """Read-only durable stop evidence, not a new authorization."""
+        if type(run_id) is not str or _ID.fullmatch(run_id) is None:
+            return False
+        db = self._open()
+        try:
+            row = self._row(db, run_id)
+            return bool(row and row[-1] == "revoked")
+        finally:
+            db.close()
+
+    @_database_errors
     def mark_unconfirmed_after_restart(self) -> int:
         """Recovery is fail closed; claimed intent is never reissued."""
         db = self._open()

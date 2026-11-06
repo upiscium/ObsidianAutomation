@@ -15,7 +15,7 @@ from pathlib import Path
 import re
 import stat
 import time
-from typing import Iterator
+from typing import Callable, Iterator
 
 from .vault_format_signed_run import SignedRunVerifier, _secure_directory, receipt_root_digest
 from .vault_format_writer import _root, FormatWriteError
@@ -177,7 +177,10 @@ class DurableRunDrain:
         finally:
             os.close(root_fd)
 
-    def stop_and_drain(self, run_id: str, *, timeout: float | None = None) -> str:
+    def stop_and_drain(
+        self, run_id: str, *, timeout: float | None = None,
+        on_drained: Callable[[], bool] | None = None,
+    ) -> str:
         """Privileged operator action: durable revocation after effect drain.
 
         The authority-root owner must be able to create the marker. A
@@ -185,6 +188,22 @@ class DurableRunDrain:
         not be permitted to add/rewrite signed records or revoke markers.
         """
         _check_run(run_id)
+        if on_drained is not None and not callable(on_drained):
+            raise RunDrainDenied("invalid_stop_postcondition")
+
+        def require_postcondition() -> None:
+            # Called after durable signed revocation, while still holding the
+            # SAME exclusive lock. It can durably revoke the separate ledger
+            # before we acknowledge Off. A false/failed callback is NOT Off.
+            if on_drained is None:
+                return
+            try:
+                confirmed = on_drained()
+            except Exception:
+                raise RunDrainDenied("stop_postcondition_unverified") from None
+            if confirmed is not True:
+                raise RunDrainDenied("stop_postcondition_unverified")
+
         budget = self.maximum_stop_seconds if timeout is None else timeout
         if (type(budget) not in (int, float)
                 or not 0 <= budget <= self.maximum_stop_seconds):
@@ -234,6 +253,7 @@ class DurableRunDrain:
                         os.fsync(root_fd)
                     except OSError:
                         raise RunDrainDenied("revocation_not_durable") from None
+                    require_postcondition()
                     return "already_stopped"
                 except OSError:
                     raise RunDrainDenied("revocation_unavailable") from None
@@ -247,6 +267,7 @@ class DurableRunDrain:
                     raise RunDrainDenied("revocation_not_durable") from None
                 finally:
                     os.close(fd)
+                require_postcondition()
                 return "stopped_after_drain"
             finally:
                 os.close(lock_fd)
