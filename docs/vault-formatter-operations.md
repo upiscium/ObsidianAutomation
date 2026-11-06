@@ -319,6 +319,67 @@ issuer, not an HTTP/API endpoint, and not connected to the Scheduler or Writer.
   of revoke with in-flight effects, stop/drain and real-provider acceptance
   are separate R2/B2b+ requirements.
 
+## R2/B2b-R0 — operator-side quiescence and combined stop proof (source-only)
+
+This slice adds **only** the opt-in local `OperatorRunCoordinator` interface
+(`vault_format_owner_coordination.py`) and synthetic tests. Its normal
+`snapshot_app`, Formatter Scheduler, Admin API and WebUI **are not connected**
+to it; normal operation remains `FormatterJob(writer=None)`. The
+owner-side test signer and Ledger run under the *same temporary test UID* and
+therefore **do not demonstrate a separately trusted production OS principal**.
+
+- The operator process must hold the same **pre-provisioned, stable local
+  `effect-drain.lock` inode** as every cooperating Writer. Owner recovery
+  waits for an exclusive lock before changing previously `claimed` rows to
+  irreversible `unconfirmed`. Timeout cannot be reported as recovery
+  completed. The new test executes a **fresh Python interpreter**, not merely
+  `fork`, to confirm the old claim is not reaccepted before/after recovery.
+- The authoritative SQLite Ledger directory has the fixed operator-owned
+  directory `<signed authority_root>/run-ledger/` (0700) with fixed
+  `formatter-run-intents.sqlite3` (0600), rather than a caller-selected
+  state database. `OperatorRunCoordinator` rejects another
+  database even when its schema and Run IDs look valid. The signing/authority
+  root is operator-provisioned and must not be writable by the Worker.
+- Owner `register_signed` only registers an exact `RunIntent` matching the
+  independently verified SSHSIG grant and pinned source-generation/account/
+  provider/root digests. `claim_signed` reserves the already approved run
+  **exactly once** under the same lock. Both require a completed owner
+  recovery barrier. These methods do **not** sign grants or automatically
+  authorize future runs. They do not return a remote-effect token.
+- `change_under_quiescence` holds the same lock while a separately supplied
+  operator callback makes and **independently verifies** a change, returning
+  literal `True` only on success. The interface does **not** read or rotate
+  real Nextcloud credentials, implement a canonical credential-generation
+  store or prove durable updates by itself. Failed/late callbacks never return
+  a successful owner-change acknowledgement.
+- `stop_and_revoke` performs bounded drain, **durably writes the signed
+  revocation marker**, and then runs the Ledger revoke/verification callback
+  **before releasing the same lock or acknowledging stop**. The new optional
+  `DurableRunDrain.stop_and_drain(on_drained=...)` hook only acknowledges after
+  the callback returns literal `True`. If the Ledger step fails, the signed
+  revocation remains in force, the call fails closed, and a retry verifies the
+  existing marker and completes the Ledger revoke. An **uncoordinated** raw
+  `stop_and_drain()` still means *only* the signed-run marker was stopped;
+  do not expose that result as a combined Ledger/Writer Off acknowledgement.
+- The source-only fixture uses a fake WebDAV transport to verify **one** CAS
+  conditional PUT and **post-PUT GET/readback** guarded by signed grant,
+  owner Ledger Claim, shared drain and `RecurringEffectWriter`. A separate
+  synthetic OS process holding the shared effect gate also verifies that the
+  Owner cannot ACK stop, recovery or credential change until it releases it. It does not access a real Vault or
+  Nextcloud account. Worker-owned receipt markers remain tamperable by their
+  own UID; the owner Ledger is only independent if deployed under a genuinely
+  different OS principal that the worker cannot modify.
+
+**Still not production ready:** no separately operated approved signer/private
+key or controlled delegated issuer, no authenticated IPC from a distinct
+Worker identity to the Owner, no deployed Owner/Writer credential-generation
+lease, no resilient crash/restart of the actual multi-process service, no
+network filesystem `flock` guarantee, no real CAS provider proof, no canary,
+no Snapshot→Gitea→Core publication E2E and **no Auto apply activation**.
+Every participant must use the same stable local lock; direct edits outside
+that lease remain unprotected. This B2b source checkpoint must never be
+interpreted as permission to inject a Writer or to run against live Vault data.
+
 ## Production requirements NOT YET MET
 
 Source tests and this app integration do not enable live mutation. The
