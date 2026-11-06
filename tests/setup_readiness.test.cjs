@@ -84,6 +84,8 @@ function deferred(){
 }
 async function browser(){
  const names=["manager-setup-check","manager-setup-summary","manager-setup-results",
+   "manager-setup-step-title","manager-setup-step-hint","manager-setup-step-state",
+   "manager-setup-prev","manager-setup-open","manager-setup-next",
    "manager-global-nextcloud","manager-global-gitea","manager-global-github"];
  const nodes=Object.fromEntries(names.map(id=>[id,new Element("div",id)]));
  const requests=[];let ticks=0;const timers=new Map();
@@ -167,6 +169,35 @@ async function browser(){
   assert.equal(timeoutCase.timers.size,0);
   assert.ok(timeoutCase.nodes["manager-setup-summary"].textContent.startsWith("0 / 3"));
   assert.equal(timeoutCase.nodes["manager-setup-results"].children.length,3);
+ });
+ const guided=await browser();
+ test("guide starts Nextcloud without auto-reading credentials or status",()=>{
+  assert.match(guided.nodes["manager-setup-step-title"].textContent,/Step 1 \/ 3.*Nextcloud/);
+  assert.equal(guided.nodes["manager-setup-prev"].disabled,true);
+  assert.equal(guided.nodes["manager-setup-next"].disabled,false);
+  assert.equal(guided.requests.length,0);
+ });
+ await guided.nodes["manager-setup-next"].fire("click");
+ test("step 2 is optional Gitea and does not block progression",()=>{
+  assert.match(guided.nodes["manager-setup-step-title"].textContent,/Step 2 \/ 3.*Gitea/);
+  assert.match(guided.nodes["manager-setup-step-hint"].textContent,/必須ではありません/);
+  assert.equal(guided.nodes["manager-setup-next"].disabled,false);
+  assert.equal(guided.nodes["manager-setup-prev"].disabled,false);
+ });
+ await guided.nodes["manager-setup-open"].fire("click");
+ test("step form-opening only scrolls to the original Gitea form",()=>{
+  assert.equal(guided.nodes["manager-global-gitea"].scrolled,true);
+  assert.equal(guided.requests.length,0);
+ });
+ await guided.nodes["manager-setup-next"].fire("click");
+ test("step 3 is GitHub, and back navigation keeps all forms intact",()=>{
+  assert.match(guided.nodes["manager-setup-step-title"].textContent,/Step 3 \/ 3.*GitHub/);
+  assert.equal(guided.nodes["manager-setup-next"].disabled,true);
+  assert.equal(guided.nodes["manager-setup-prev"].disabled,false);
+  assert.equal(guided.requests.length,0);
+  assert.ok(guided.nodes["manager-global-nextcloud"]);
+  assert.ok(guided.nodes["manager-global-gitea"]);
+  assert.ok(guided.nodes["manager-global-github"]);
  });
  console.log("setup_readiness:",n,"PASS (pure status + controlled browser transport)");
 })().catch(error=>{console.error(error);process.exitCode=1;});

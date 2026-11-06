@@ -127,4 +127,30 @@ def test_node_readiness_contract_and_fake_browser_transport():
         cwd=ROOT, capture_output=True, text=True, check=False, timeout=30
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "setup_readiness: 11 PASS" in result.stdout
+    assert "setup_readiness: 15 PASS" in result.stdout
+
+
+def test_guided_three_steps_preserve_existing_forms_and_explicit_save():
+    """The guide is navigation only; every write stays in the original form."""
+    for element_id in (
+        "manager-setup-guide", "manager-setup-step-title",
+        "manager-setup-step-hint", "manager-setup-step-state",
+        "manager-setup-prev", "manager-setup-open", "manager-setup-next",
+    ):
+        assert f'id="{element_id}"' in HTML
+    for control in ("manager-setup-prev", "manager-setup-open", "manager-setup-next"):
+        assert f'id="{control}" type="button"' in HTML
+    assert HTML.index('id="manager-setup-guide"') > HTML.index(
+        'id="manager-setup-readiness"'
+    )
+    assert HTML.index('id="manager-setup-guide"') < HTML.index(
+        'id="manager-global-content"'
+    )
+    for form in ("nextcloud-form", "connections-form", "daily-connections-form"):
+        assert HTML.count(f'id="{form}"') == 1
+    script = ASSET.read_text()
+    assert "GUIDE_HINTS" in script
+    assert "renderGuide(" in script
+    assert "openSettings(ITEMS[step].target)" in script
+    assert 'method:"POST"' not in script
+    assert 'method:"GET"' in script

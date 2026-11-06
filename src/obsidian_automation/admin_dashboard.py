@@ -107,6 +107,16 @@ HTML = """<!doctype html>
       <details id="manager-setup-readiness" class="manager-global-card">
         <summary>初回セットアップの確認（読み取り専用）</summary>
         <p>接続状況を確認し、必要な設定を下のフォームで登録してください。確認してもジョブは開始されません。</p>
+        <section id="manager-setup-guide" class="manager-setup-guide" aria-labelledby="manager-setup-step-title">
+          <h3 id="manager-setup-step-title" tabindex="-1">Step 1 / 3 · Nextcloud</h3>
+          <p id="manager-setup-step-hint">Vaultの共有Nextcloudアカウントを設定します。</p>
+          <p id="manager-setup-step-state" role="status" aria-live="polite">状態未確認。下の確認ボタンで再取得してください。</p>
+          <div class="manager-setup-actions" role="group" aria-label="セットアップ手順">
+            <button id="manager-setup-prev" type="button" disabled>前の手順</button>
+            <button id="manager-setup-open" type="button">設定フォームを開く</button>
+            <button id="manager-setup-next" type="button">次の手順</button>
+          </div>
+        </section>
         <button id="manager-setup-check" type="button">接続設定の状態を確認</button>
         <p id="manager-setup-summary" role="status" aria-live="polite">まだ確認していません。</p>
         <ul id="manager-setup-results" class="manager-setup-results" aria-label="設定項目"></ul>
