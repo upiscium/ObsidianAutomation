@@ -415,3 +415,29 @@ def test_cross_process_effect_lease_prevents_owner_stop_and_rotation(
     assert worker.exitcode == 0
     assert owner.stop_and_revoke(RUN) == "stopped_after_drain"
     assert owner.ledger.is_revoked(RUN)
+
+
+def test_ledger_path_rebound_after_owner_init_cannot_ack_stop(owner_fixture):
+    """A changed ledger.path must not silently redirect authoritative revoke."""
+    import shutil
+
+    owner, intent, _, trusted, _, _, _ = owner_fixture
+    owner.recover_after_quiescence()
+    owner.register_signed(intent)
+    owner.claim_signed(intent)
+    canonical = owner.ledger.path
+    alternate = canonical.with_name("alternate.sqlite3")
+    shutil.copy2(canonical, alternate)
+    assert alternate.is_file()
+    owner.ledger.path = alternate
+    try:
+        with pytest.raises(
+            OwnerCoordinationDenied, match="^owner_ledger_root_mismatch$",
+        ):
+            owner.stop_and_revoke(RUN)
+    finally:
+        owner.ledger.path = canonical
+    assert owner.ledger.verify_claimed(RUN, PLAN, POLICY, OPERATION)
+    assert not (trusted / (RUN + ".revoked")).exists()
+    assert owner.stop_and_revoke(RUN) == "stopped_after_drain"
+    assert owner.ledger.is_revoked(RUN)

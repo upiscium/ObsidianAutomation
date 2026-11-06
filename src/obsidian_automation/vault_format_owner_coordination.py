@@ -54,10 +54,26 @@ class OperatorRunCoordinator:
         )
         if ledger.path != expected_ledger:
             raise OwnerCoordinationDenied("owner_ledger_root_mismatch")
+        # Pin what was checked before any externally supplied callbacks can
+        # run. A caller may mutate a public ledger.path attribute later.
+        self._expected_ledger_path = expected_ledger
+        self._expected_ledger_state_inode = ledger._state_inode
+        self._bound_ledger = ledger
         self.drain = drain
         self.ledger = ledger
         self._serial = threading.Lock()
         self._require_owner()
+
+    def _require_ledger_binding(self) -> None:
+        # Validate both the bound ledger object and its exact canonical file
+        # each time owner authority is exercised, not just at construction.
+        # The Ledger itself still enforces path ancestry and directory inode
+        # on every SQLite open; this is the higher-level binding fence.
+        if (self.ledger is not self._bound_ledger
+                or type(self.ledger) is not DurableRunLedger
+                or self.ledger.path != self._expected_ledger_path
+                or self.ledger._state_inode != self._expected_ledger_state_inode):
+            raise OwnerCoordinationDenied("owner_ledger_root_mismatch")
 
     def _require_owner(self) -> None:
         if os.geteuid() != self.drain.verifier.trusted_owner_uid:
@@ -81,6 +97,7 @@ class OperatorRunCoordinator:
         The external mutation itself must establish its own durable success.
         """
         self._require_owner()
+        self._require_ledger_binding()
         budget = self._budget(timeout)
         if not self._serial.acquire(blocking=False):
             raise OwnerCoordinationDenied("owner_busy")
@@ -94,6 +111,7 @@ class OperatorRunCoordinator:
                 )
                 lock_fd = self.drain._open_lock(root_fd)
                 self.drain._acquire(lock_fd, budget)
+                self._require_ledger_binding()
             except RunDrainDenied as error:
                 if str(error) == "drain_timeout":
                     raise OwnerCoordinationDenied("owner_drain_timeout") from None
@@ -215,13 +233,18 @@ class OperatorRunCoordinator:
         if a subsequent ledger update/verification failed.
         """
         self._require_owner()
+        self._require_ledger_binding()
         budget = self._budget(timeout)
         if not self._serial.acquire(blocking=False):
             raise OwnerCoordinationDenied("owner_busy")
         try:
             def persisted_revocation() -> bool:
+                self._require_ledger_binding()
                 revoked_now = self.ledger.revoke(run_id)
-                return revoked_now is True or self.ledger.is_revoked(run_id) is True
+                self._require_ledger_binding()
+                confirmed = revoked_now is True or self.ledger.is_revoked(run_id) is True
+                self._require_ledger_binding()
+                return confirmed
 
             try:
                 return self.drain.stop_and_drain(
