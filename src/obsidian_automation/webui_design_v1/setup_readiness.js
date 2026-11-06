@@ -6,6 +6,17 @@
     Object.freeze({name:"Gitea Snapshot",path:"/api/v1/snapshot/connections",target:"manager-global-gitea"}),
     Object.freeze({name:"GitHub Daily",path:"/api/v1/daily/connections",target:"manager-global-github"})
   ]);
+  // Client-local display scope only. No Job admission or new backend data.
+  const WORKFLOW_STEPS=Object.freeze({
+    both:Object.freeze([0,1,2]),
+    snapshot:Object.freeze([0,1]),
+    daily:Object.freeze([0,2])
+  });
+  function stepsFor(flow) {
+    if (!Object.prototype.hasOwnProperty.call(WORKFLOW_STEPS,flow))
+      throw new Error("invalid_setup_workflow");
+    return WORKFLOW_STEPS[flow];
+  }
   const record = value => value !== null && typeof value === "object" &&
     !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
 
@@ -58,12 +69,13 @@
       return {name:item.name,target:item.target,kind,label:LABELS[kind]};
     });
   }
-  root.ObsidianSetupReadiness = Object.freeze({project});
+  root.ObsidianSetupReadiness = Object.freeze({project,stepsFor});
   if (typeof document === "undefined") return;
 
   const button=document.getElementById("manager-setup-check");
   const label=document.getElementById("manager-setup-summary");
   const list=document.getElementById("manager-setup-results");
+  const workflowSelect=document.getElementById("manager-setup-workflow");
   if (!button || !label || !list) return;
 
   // The guide never performs a save or submits a form. Original connection
@@ -81,6 +93,7 @@
     "GiteaはVault Snapshot利用時のみ必要です。GitHub Dailyには必須ではありません。",
     "GitHub Dailyの進捗取込を利用する場合に接続します。"
   ]);
+  let workflow="both";
   let step=0;
   let observed=null;
   let generation=0;
@@ -102,16 +115,18 @@
   }
   function renderGuide({focus=false}={}) {
     if (!Object.values(guide).every(Boolean)) return;
-    const item=ITEMS[step];
-    const row=observed?.[step];
-    guide.title.textContent="Step "+(step+1)+" / "+ITEMS.length+" · "+item.name;
-    guide.hint.textContent=GUIDE_HINTS[step];
+    const indices=stepsFor(workflow);
+    const itemIndex=indices[step];
+    const item=ITEMS[itemIndex];
+    const row=observed?.[itemIndex];
+    guide.title.textContent="Step "+(step+1)+" / "+indices.length+" · "+item.name;
+    guide.hint.textContent=GUIDE_HINTS[itemIndex];
     guide.status.textContent=row
       ? row.label+"。設定変更後は確認ボタンで再取得してください。"
       : "状態未確認。確認ボタンで取得してください。";
     guide.status.dataset.kind=row?.kind??"unavailable";
     guide.back.disabled=step===0;
-    guide.next.disabled=step===ITEMS.length-1;
+    guide.next.disabled=step===indices.length-1;
     if (focus) guide.title.focus({preventScroll:true});
   }
   if (Object.values(guide).every(Boolean)) {
@@ -120,18 +135,42 @@
       renderGuide({focus:true});
     });
     guide.next.addEventListener("click",()=>{
-      step=Math.min(ITEMS.length-1,step+1);
+      step=Math.min(stepsFor(workflow).length-1,step+1);
       renderGuide({focus:true});
     });
-    guide.open.addEventListener("click",()=>openSettings(ITEMS[step].target));
+    guide.open.addEventListener("click",()=>{
+      openSettings(ITEMS[stepsFor(workflow)[step]].target);
+    });
     renderGuide();
+  }
+  // Flow selection changes only the visible guide and observed summary.
+  // Invalidate even in-flight status reads so stale responses cannot claim
+  // that the newly chosen workflow has just been checked.
+  if (workflowSelect) {
+    workflowSelect.value="both";
+    workflowSelect.addEventListener("change",()=>{
+      try { stepsFor(workflowSelect.value); }
+      catch { workflowSelect.value=workflow; return; }
+      if (workflowSelect.value===workflow) return;
+      workflow=workflowSelect.value;
+      step=0;
+      observed=null;
+      ++generation;
+      if (previous) previous.abort();
+      previous=null;
+      button.disabled=false;
+      list.replaceChildren();
+      label.textContent="表示対象を変更しました。確認ボタンで状態を再取得してください。";
+      renderGuide({focus:true});
+    });
   }
   function render(payloads) {
     const rows=project(payloads);
     observed=rows;
     renderGuide();
     list.replaceChildren();
-    for (const item of rows) {
+    const scoped=stepsFor(workflow).map(index=>rows[index]);
+    for (const item of scoped) {
       const li=node("li");
       const status=node("span",item.name+" — "+item.label);
       status.className="manager-setup-state";
@@ -142,8 +181,8 @@
       li.append(status,goto);
       list.append(li);
     }
-    const confirmed=rows.filter(item=>["configured","verified_at_save"].includes(item.kind)).length;
-    label.textContent=confirmed+" / 3 接続設定を確認しました。接続の現在の正常性やB1〜B5の実行可否は証明しません。";
+    const confirmed=scoped.filter(item=>["configured","verified_at_save"].includes(item.kind)).length;
+    label.textContent=confirmed+" / "+scoped.length+" 接続設定を確認しました。接続の現在の正常性やB1〜B5の実行可否は証明しません。";
   }
   async function read(url,signal) {
     try {
@@ -174,8 +213,15 @@
       },9500);
     });
     try {
+      const active=stepsFor(workflow);
       const observations=await Promise.race([
-        Promise.all(ITEMS.map(item=>read(item.path,controller.signal))),deadline
+        Promise.all(active.map(index=>read(ITEMS[index].path,controller.signal)))
+          .then(values=>{
+            const all=Array(ITEMS.length).fill(null);
+            active.forEach((index,i)=>{all[index]=values[i];});
+            return all;
+          }),
+        deadline
       ]);
       if (mine===generation) render(observations);
     } catch {
