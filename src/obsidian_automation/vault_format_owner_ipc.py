@@ -54,7 +54,7 @@ def _reject_constant(_: str) -> None:
 
 
 def _request_frame(conn: socket.socket) -> dict:
-    """One bounded newline-terminated JSON request. No request pipelining."""
+    """Require one bounded frame and a write-half-close before dispatch."""
     data = bytearray()
     deadline = time.monotonic() + _SOCKET_TIMEOUT
     try:
@@ -67,8 +67,9 @@ def _request_frame(conn: socket.socket) -> dict:
             if not chunk:
                 break
             data.extend(chunk)
-            if b"\n" in chunk:
-                break
+            # Unix streams have no frame boundary. A newline returned by
+            # recv() cannot prove that further bytes are not forthcoming.
+            # Require peer write-half-close/EOF under the total deadline.
     except (TimeoutError, OSError):
         raise OwnerIPCDenied("ipc_frame_invalid") from None
     if (not data or len(data) > _MAX_FRAME or data.count(b"\n") != 1

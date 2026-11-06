@@ -397,9 +397,12 @@ credentials, or a runtime Writer. The regular formatter remains read-only.
   mechanism. An `AF_UNIX` forwarding proxy would authenticate the proxy,
   **not** the original client.
 - Requests are versioned JSON, exactly one newline-delimited frame per
-  connection with a strict **2048-byte** limit, duplicate-key rejection,
-  exact operation schemas, one monotonic **total frame-read deadline**, no
-  request pipelining and static error codes. No Vault body, raw WebDAV credential,
+  connection with a strict **2048-byte** limit (including its newline),
+  duplicate-key rejection and exact operation schemas. The client **must
+  write-half-close** with `shutdown(SHUT_WR)` after sending the request. The
+  handler reads through EOF before dispatch under a monotonic **total
+  frame-read deadline**, rejecting second frames even in later `recv()` chunks.
+  There is no request pipelining, and failures use static error codes. No Vault body, raw WebDAV credential,
   arbitrary URL/path, free-form shell command, or generic function callback
   is accepted.
 - Only the configured Worker UID can request `run.claim` (which calls the

@@ -25,6 +25,7 @@ def _exchange(server, message: bytes) -> dict:
     owner_sock, requester_sock = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         requester_sock.sendall(message)
+        requester_sock.shutdown(socket.SHUT_WR)
         server.serve_once(owner_sock)
         response = requester_sock.recv(512)
         assert response.endswith(b"\n")
@@ -365,6 +366,7 @@ def test_kernel_peercred_on_accepted_unix_socket_in_fresh_process(
             "conn=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)\n"
             "conn.connect(sys.argv[1])\n"
             "conn.sendall(bytes.fromhex(sys.argv[2]))\n"
+            "conn.shutdown(socket.SHUT_WR)\n"
             "print(conn.recv(256).decode().strip())\n"
             "conn.close()\n"
         )
@@ -395,3 +397,58 @@ def test_kernel_peercred_on_accepted_unix_socket_in_fresh_process(
             child.kill()
             child.communicate(timeout=5)
         path.unlink(missing_ok=True)
+
+
+def test_second_frame_in_separate_recv_is_denied_before_dispatch(ipc_fixture):
+    """A split stream may not execute the first mutating command."""
+    import threading
+    import time
+
+    server, owner, *_ = ipc_fixture
+    first, second = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    failure = []
+
+    def send_two_distinct_chunks():
+        try:
+            second.sendall(_wire({"v": 1, "op": "owner.recover"}))
+            time.sleep(0.08)  # New recv(), not same-chunk pipelining.
+            second.sendall(_wire({"v": 1, "op": "owner.recover"}))
+            second.shutdown(socket.SHUT_WR)
+        except OSError as error:
+            failure.append(str(type(error).__name__))
+
+    worker = threading.Thread(target=send_two_distinct_chunks, daemon=True)
+    try:
+        worker.start()
+        server.serve_once(first)
+        response = json.loads(second.recv(256))
+        assert response == {
+            "v": 1, "ok": False, "reason": "ipc_frame_invalid",
+        }
+        assert owner.ledger._boot_reconciled is False
+    finally:
+        first.close()
+        second.close()
+        worker.join(timeout=2)
+
+
+def test_complete_frame_without_write_half_close_never_dispatches(
+    ipc_fixture, monkeypatch,
+):
+    """New strict framing contract rejects a complete line without EOF."""
+    import obsidian_automation.vault_format_owner_ipc as ipc_module
+
+    server, owner, *_ = ipc_fixture
+    monkeypatch.setattr(ipc_module, "_SOCKET_TIMEOUT", 0.06)
+    first, second = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        second.sendall(_wire({"v": 1, "op": "owner.recover"}))
+        # Intentionally omit second.shutdown(SHUT_WR).
+        server.serve_once(first)
+        assert json.loads(second.recv(256)) == {
+            "v": 1, "ok": False, "reason": "ipc_frame_invalid",
+        }
+        assert owner.ledger._boot_reconciled is False
+    finally:
+        first.close()
+        second.close()
