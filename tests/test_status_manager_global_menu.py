@@ -94,8 +94,48 @@ def test_source_module_modification_is_only_static_html():
     if baseline.returncode != 0:
         pytest.skip("prior merge baseline unavailable")
     current = MANAGER.read_text()
+
+    # #301: the independently tested Gitea-only TOCTOU correction moves
+    # ONLY source resolution under the existing Writer/Job gates. Reconstruct
+    # the pre-correction source using exact, one-time replacements before the
+    # historical #530 AST check; any other backend/inline-JS change fails.
+    def undo_approved_gitea_lock_move(source: str) -> str:
+        new_prefix = (
+            '                payload = json.loads(self._read_bounded_json())\n'
+            '                gitea_only = type(payload) is dict and set(payload) == GITEA_FIELDS\n'
+            '                daily = self.server.daily_job'
+        )
+        old_prefix = (
+            '                payload = json.loads(self._read_bounded_json())\n'
+            '                if type(payload) is dict and set(payload) == GITEA_FIELDS:\n'
+            '                    nextcloud = store.load_nextcloud()\n'
+            '                    if nextcloud is None:\n'
+            '                        raise ValueError("nextcloud_missing")\n'
+            '                    payload = {**nextcloud, **payload}\n'
+            '                daily = self.server.daily_job'
+        )
+        new_suffix = (
+            '                    # Resolve the ONE canonical shared source only after all\n'
+            '                    # writer/Job gates are held. A Nextcloud rotation that\n'
+            '                    # wins those gates must not be rolled back by a Gitea-only\n'
+            '                    # request that was already in flight.\n'
+            '                    if gitea_only:\n'
+            '                        nextcloud = store.load_nextcloud()\n'
+            '                        if nextcloud is None:\n'
+            '                            raise ValueError("nextcloud_missing")\n'
+            '                        payload = {**nextcloud, **payload}\n'
+            '                    github_setup = self.server.daily_setup'
+        )
+        old_suffix = '                    github_setup = self.server.daily_setup'
+        assert source.count(new_prefix) == 1
+        assert source.count(new_suffix) == 1
+        assert source.count(old_suffix) == 1
+        return source.replace(new_prefix, old_prefix, 1).replace(
+            new_suffix, old_suffix, 1
+        )
+
     previous_ast = ast.parse(baseline.stdout)
-    current_ast = ast.parse(current)
+    current_ast = ast.parse(undo_approved_gitea_lock_move(current))
 
     def without_html(tree: ast.Module):
         return [

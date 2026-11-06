@@ -1866,11 +1866,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 payload = json.loads(self._read_bounded_json())
-                if type(payload) is dict and set(payload) == GITEA_FIELDS:
-                    nextcloud = store.load_nextcloud()
-                    if nextcloud is None:
-                        raise ValueError("nextcloud_missing")
-                    payload = {**nextcloud, **payload}
+                gitea_only = type(payload) is dict and set(payload) == GITEA_FIELDS
                 daily = self.server.daily_job
                 formatter = getattr(self.server, "formatter_job", None)
                 # Serialize credential rotation and Writer effect admission
@@ -1894,6 +1890,15 @@ class Handler(BaseHTTPRequestHandler):
                     ).fetchone():
                         self._reply(409, b'{"error":"formatter_busy"}', "application/json")
                         return
+                    # Resolve the ONE canonical shared source only after all
+                    # writer/Job gates are held. A Nextcloud rotation that
+                    # wins those gates must not be rolled back by a Gitea-only
+                    # request that was already in flight.
+                    if gitea_only:
+                        nextcloud = store.load_nextcloud()
+                        if nextcloud is None:
+                            raise ValueError("nextcloud_missing")
+                        payload = {**nextcloud, **payload}
                     github_setup = self.server.daily_setup
                     previous_source = (github_setup.source_fingerprint()
                                        if github_setup is not None else None)
