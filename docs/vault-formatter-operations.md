@@ -380,6 +380,66 @@ Every participant must use the same stable local lock; direct edits outside
 that lease remain unprotected. This B2b source checkpoint must never be
 interpreted as permission to inject a Writer or to run against live Vault data.
 
+## R2/B2c-A0 — peer-authenticated Unix IPC contract (source-only)
+
+`vault_format_owner_ipc.py` adds an **explicitly opt-in, Linux-only,
+one-request IPC handler** for a previously accepted `AF_UNIX/SOCK_STREAM`
+connection. It is **not a listening server** and does **not create** a
+filesystem socket, directory, daemon, users/groups, private signing key,
+credentials, or a runtime Writer. The regular formatter remains read-only.
+
+- The handler obtains the connecting peer's UID from kernel
+  `SO_PEERCRED` **before reading any request bytes**. An unknown UID is
+  denied immediately without attempting to read a request frame. The trusted
+  Owner UID must be the local process EUID and differ from the provisioned Worker
+  UID; a same-UID Worker cannot claim authority merely by selecting a role
+  field in JSON. This is Linux-specific and is not an HTTP authorization
+  mechanism. An `AF_UNIX` forwarding proxy would authenticate the proxy,
+  **not** the original client.
+- Requests are versioned JSON, exactly one newline-delimited frame per
+  connection with a strict **2048-byte** limit, duplicate-key rejection,
+  exact operation schemas, one monotonic **total frame-read deadline**, no
+  request pipelining and static error codes. No Vault body, raw WebDAV credential,
+  arbitrary URL/path, free-form shell command, or generic function callback
+  is accepted.
+- Only the configured Worker UID can request `run.claim` (which calls the
+  existing **signed-grant + one-shot Ledger** owner gate) or `run.status`
+  (a strictly **read-only snapshot** of current Ledger claim *and* signed
+  grant validity). A successful status query may return
+  `{"ok":true,"claimed_now":false}` when the signed grant was revoked
+  but the Ledger still records a Claim. `ok` describes protocol success,
+  **not effect permission**. The status result `claimed_now` is **NOT**
+  a new effect-time lease and must never authorize a PUT without the existing
+  shared drain lock, CAS plan/policy/provider checks and Writer's own
+  pre-request validation.
+- Only the separately trusted Owner UID can request `run.stop` (same
+  bounded Drain + durable Ledger revoke acknowledgement) or
+  `owner.recover` (coordinated fail-closed invalidation of old claims).
+  There is no `sign`, `approve-any`, `write`, `rotate-password`,
+  `raw-put`, or arbitrary path command. A lost response **must not** cause
+  a mutating request to be replayed automatically: repeated Claims remain
+  denied by the durable Ledger.
+- Synthetic tests use real Linux `SO_PEERCRED` to verify that the local
+  **same UID is denied Worker privileges**, and exercise simulated role
+  policy with a test-only monkeypatch. Such synthetic role simulation is
+  **not** evidence that actual distinct UIDs successfully communicate.
+  Isolated tests use socketpairs and a temporary local filesystem listener
+  with a freshly executed Python client. That real accepted connection also
+  reports the same EUID and correctly denies Worker-only actions. It does
+  **not** prove a truly distinct-UID Worker. Peer credentials also do not
+  authenticate an original requester behind a proxy or a deliberately
+  transferred already-connected socket descriptor.
+
+**Still required before production:** a separately operated Owner UID and
+Worker UID (and distinct trust/claim ownership), secure pre-provisioned
+socket parent and listener (including socket inode owner/mode, group access,
+path lifecycle, connection quota and restart cleanup), cross-UID integration
+tests with real OS peer credentials, an authenticated Owner startup and
+delegated policy/run issuer, stable lock inode across all processes, bounded
+failure/reconnect handling, credential generation rotation integration,
+independent provider proof, live single-run Nextcloud CAS canary, full
+Snapshot→Gitea→ObsidianCore convergence and **separate Human approval**.
+
 ## Production requirements NOT YET MET
 
 Source tests and this app integration do not enable live mutation. The
