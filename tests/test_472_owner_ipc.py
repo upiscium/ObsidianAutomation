@@ -400,36 +400,71 @@ def test_kernel_peercred_on_accepted_unix_socket_in_fresh_process(
 
 
 def test_second_frame_in_separate_recv_is_denied_before_dispatch(ipc_fixture):
-    """A split stream may not execute the first mutating command."""
+    """Synchronize at the actual first recv: never rely on sleep or scheduling."""
     import threading
-    import time
 
     server, owner, *_ = ipc_fixture
     first, second = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
-    failure = []
+    first_received = threading.Event()
+    continue_read = threading.Event()
+    errors = []
 
-    def send_two_distinct_chunks():
+    class FirstReadGate:
+        """Test-only socket wrapper; all real IO uses the kernel socket."""
+        def __init__(self, sock):
+            self.sock = sock
+            self.notified = False
+
+        def __getattr__(self, name):
+            return getattr(self.sock, name)
+
+        def recv(self, nbytes):
+            if not self.notified:
+                # The socket is a byte stream and a kernel recv may be
+                # partial. Assemble the ENTIRE first frame before signaling
+                # the sender, so the old newline-break parser must see it
+                # in one return and incorrectly dispatch before frame two.
+                frame = bytearray()
+                while b"\n" not in frame:
+                    chunk = self.sock.recv(nbytes - len(frame))
+                    if not chunk:
+                        break
+                    frame.extend(chunk)
+                self.notified = True
+                first_received.set()
+                if not continue_read.wait(4):
+                    raise TimeoutError("test synchronization unavailable")
+                return bytes(frame)
+            return self.sock.recv(nbytes)
+
+    def serve():
         try:
-            second.sendall(_wire({"v": 1, "op": "owner.recover"}))
-            time.sleep(0.08)  # New recv(), not same-chunk pipelining.
-            second.sendall(_wire({"v": 1, "op": "owner.recover"}))
-            second.shutdown(socket.SHUT_WR)
-        except OSError as error:
-            failure.append(str(type(error).__name__))
+            server.serve_once(FirstReadGate(first))
+        except BaseException as error:
+            errors.append(type(error).__name__)
 
-    worker = threading.Thread(target=send_two_distinct_chunks, daemon=True)
+    runner = threading.Thread(target=serve, daemon=True)
     try:
-        worker.start()
-        server.serve_once(first)
-        response = json.loads(second.recv(256))
-        assert response == {
+        # Only the first complete frame is in the socket before the first
+        # kernel recv. The wrapped read pauses BEFORE returning to the parser.
+        second.sendall(_wire({"v": 1, "op": "owner.recover"}))
+        runner.start()
+        assert first_received.wait(3), "server did not receive first frame"
+        second.sendall(_wire({"v": 1, "op": "owner.recover"}))
+        second.shutdown(socket.SHUT_WR)
+        continue_read.set()
+        runner.join(5)
+        assert not runner.is_alive()
+        assert not errors
+        assert json.loads(second.recv(256)) == {
             "v": 1, "ok": False, "reason": "ipc_frame_invalid",
         }
         assert owner.ledger._boot_reconciled is False
     finally:
+        continue_read.set()
         first.close()
         second.close()
-        worker.join(timeout=2)
+        runner.join(2)
 
 
 def test_complete_frame_without_write_half_close_never_dispatches(
