@@ -1,0 +1,30 @@
+# #472 D1/B1/A0 — Owner-to-Broker read-only observation channel
+
+**Status:** source-only, LOCAL-ONLY, UNWIRED prototype. D1/A0 contract and D1/B0 Owner-private SQLite journal were merged in PRs #554 and #559. This slice does not create or configure a Broker service, real credentials, OS user, socket, egress policy, Writer, provider operation or deployment. No Commit/Push/PR/Ready/Merge or activation is authorized by this step.
+
+## Bounded scope
+
+A new, otherwise unused module, `vault_format_broker_observation.py`, provides a Linux AF_UNIX stream **read-only Owner-to-Broker client**. No existing application, Owner listener, Worker IPC, scheduler, Vault Formatter, or Writer imports it.
+
+The explicit caller must be the pinned, nonroot Owner UID in its original process; the expected Broker UID must be a **different, nonroot trusted OS identity**, and the pre-provisioned socket must have the expected Broker UID, restricted IPC group, 0660 socket mode, and 0710 Broker-owned parent. Directory ancestry, symlinks, owner/group/mode, socket inode before/after connect, and the **connected peer** UID from Linux `SO_PEERCRED` are checked before sending request bytes. The kernel credential validates the connected process identity, **not** original identity of a forwarded FD or the authority of an untrusted Broker executable. This is a client only: the actual trusted Broker-side socket listener, OS user/ACL/egress isolation and credential authority remain NYI.
+
+The protocol accepts only two exact v1 requests with no credential, raw Vault contents, target bytes, arbitrary PUT or service-control operation:
+
+- `credential.observe`: exact account-binding SHA-256. Response echoes the account and reports a Broker-owned credential-generation digest, credential epoch, and Broker ledger revision digest. This is an **observation only**; Owner may not accept it as a new Claim or issue an effect lease, and rotation must be coordinated under the shared stable effect lock with durable, independently validated Broker state.
+- `operation.finality`: SHA-256 of a canonical, fully sealed D1/B0 `EffectAttempt` plus the exact Run/operation/account identifiers. The digest binds source and credential generations separately, approved plan/policy, canonical target/ETag, immutable before/after digests and Claim epochs. The raw path/ETag, receipt-root path and Vault body are NOT sent. Reply must echo the exact query identity and either `pending` (no settlement proof) or `verified_remote_effect` / `verified_no_effect` with a nonzero receipt digest and positive Broker journal sequence. **These are merely typed reports of what the connected Broker claims**, not proof that Broker's journal, credentials, CAS or provider finality is implemented. Do not feed these objects directly into D1/B0's `record_verified_outcome()` or release resource/quarantine keys.
+
+Every operation uses a fresh connected AF_UNIX stream, bounded requests/replies and a single deadline. Request uses one ASCII JSON line and write-half-close; the reply must terminate with actual EOF and have exactly one ASCII JSON line. Extra bytes, duplicate fields, unsupported replies, invalid types, booleans as epochs, arbitrary numbers, missing complete identity, mismatched hashes, raw errors and unavailable peer credentials fail closed. A report timeout, broken socket or negative response does not imply the provider did or did not write anything. This client never resends a request automatically.
+
+## Explicitly missing follow-up gates (D1/B1-B1 and beyond)
+
+1. A real separately trusted **Broker daemon**, pinned executable/UID, protected Broker-only durable dispatch/receipt journal, credential generation and monotonic rotation authority, idempotency and operation-specific remote finality implementation. An authenticated Unix stream alone does not make a Broker's claimed `verified_no_effect` true.
+2. A trusted Owner effect-session controller that holds the **same pre-provisioned stable effect `flock` for Begin, authenticated generation readback, pre-dispatch Owner-private Claim/SSHSIG/immutable Plan proof, Journal Begin fence, Broker dispatch/readback/finality/Owner settlement**. This A0 client only reads; neither Owner dispatch nor Broker PUT exists. Crucially, Owner must not reenter the same `flock` via Broker callbacks. The earlier D0 Worker Claim is not a Writer permit.
+3. Strictly distinct Owner/Worker/Broker UIDs and OS ACLs, Broker-exclusive provider credentials and egress confinement; real kernel cross-UID acceptance, socket group/ownership lifecycle, liveness, privilege-loss and service-restart tests.
+4. Broker's durable operation-specific proof and independent cancellation guarantee, authenticated full account-scope finality, Owner-wide boot reconciliation and actual power-loss/fault-injection on approved local filesystems.
+5. Any live `98-System/**` Nextcloud CAS canary, provider effect, full Vault/Snapshot/Gitea/Core E2E convergence, Auto apply or deployment. All require independent explicit human authorization.
+
+The response dataclasses are **ordinary Python values, not cryptographic capabilities**. Only the verification of a trusted connected Broker UID and future broker-held monotonic durable evidence makes observations meaningful to a later, separately reviewed Owner controller. Objects created in ordinary Python tests are not authority. No test uses real provider credentials or network.
+
+## Test evidence
+
+`tests/test_472_broker_observation_d1b1a0.py` tests real AF_UNIX stream EOF framing, exact request/response binding, pending vs terminal reports, payload redaction, wrong peer UID rejection using the **real kernel SO_PEERCRED**, invalid/duplicated JSON, extra data, generation/receipt type constraints and all forbidden dispatch/rotation operations. Successful synthetic Broker exchanges use a mocked UID and socket-path trust shim and therefore **do not demonstrate actual distinct-UID isolation**; root-capable integration CI with real Broker and Owner principals is a later gate. A source-only merge must never be interpreted as approval for a Broker request that could write to Nextcloud.
