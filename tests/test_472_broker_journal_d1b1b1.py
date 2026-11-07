@@ -456,3 +456,99 @@ def test_old_instance_cannot_mutate_fresh_broker_boot(broker, broker_dir):
         broker.provision_generation_metadata("f" * 64, OTHER)
     with pytest.raises(BrokerJournalDenied, match="^broker_boot_stale$"):
         broker.fence_pre_dispatch(attempt())
+
+
+def test_r1_pre_fenced_cross_target_dispatch_blocked_by_existing_account_quarantine(
+    broker,
+):
+    """A pre-fenced second target cannot bypass an account quarantine."""
+    boot_ready(broker)
+    first = attempt(run="a", op="b", target="98-System/first.md")
+    second = attempt(run="c", op="d", target="98-System/second.md")
+    broker.fence_pre_dispatch(first)
+    broker.fence_pre_dispatch(second)
+    assert rows(broker, "SELECT count(*) FROM broker_account_quarantine")[0][0] == 0
+
+    broker.mark_dispatch_possible(first)
+    with pytest.raises(BrokerJournalDenied, match="^broker_account_unconfirmed$"):
+        broker.mark_dispatch_possible(second)
+
+    assert rows(
+        broker, "SELECT target,status FROM broker_attempt ORDER BY target",
+    ) == [
+        ("98-System/first.md", "dispatch_possible"),
+        ("98-System/second.md", "pre_dispatch"),
+    ]
+    assert rows(
+        broker, "SELECT account,reason FROM broker_account_quarantine",
+    ) == [(ACCOUNT, "dispatch_may_have_occurred")]
+    assert rows(broker, "SELECT count(*) FROM broker_resource")[0][0] == 2
+
+    # Existing pre-dispatch fences must remain cancellable without claiming
+    # anything about the unresolved first operation's remote outcome.
+    receipt = broker.cancel_never_dispatched(second)
+    assert receipt.disposition == "verified_no_effect"
+    assert broker.observe_finality(first).disposition == "pending"
+    assert rows(broker, "SELECT count(*) FROM broker_resource")[0][0] == 1
+    assert rows(broker, "SELECT count(*) FROM broker_account_quarantine")[0][0] == 1
+
+
+def test_r1_concurrent_pre_fenced_cross_target_dispatch_has_exactly_one_winner(
+    broker,
+):
+    """BEGIN IMMEDIATE must serialize the quarantine check and transition."""
+    boot_ready(broker)
+    first = attempt(run="a", op="b", target="98-System/race-first.md")
+    second = attempt(run="c", op="d", target="98-System/race-second.md")
+    broker.fence_pre_dispatch(first)
+    broker.fence_pre_dispatch(second)
+    barrier = threading.Barrier(2, timeout=5)
+
+    def make_possible(item):
+        barrier.wait()
+        try:
+            broker.mark_dispatch_possible(item)
+            return "accepted"
+        except BrokerJournalDenied as error:
+            return str(error)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        a = pool.submit(make_possible, first)
+        b = pool.submit(make_possible, second)
+        outcomes = [a.result(timeout=8), b.result(timeout=8)]
+    assert sorted(outcomes) == ["accepted", "broker_account_unconfirmed"]
+
+    attempts = rows(
+        broker, "SELECT run_id,status FROM broker_attempt ORDER BY run_id",
+    )
+    assert sorted(status for _, status in attempts) == [
+        "dispatch_possible", "pre_dispatch",
+    ]
+    assert rows(broker, "SELECT count(*) FROM broker_account_quarantine")[0][0] == 1
+    assert rows(broker, "SELECT count(*) FROM broker_resource")[0][0] == 2
+    remaining = first if attempts[0][1] == "pre_dispatch" else second
+    assert broker.cancel_never_dispatched(remaining).disposition == "verified_no_effect"
+    assert rows(broker, "SELECT count(*) FROM broker_account_quarantine")[0][0] == 1
+
+
+def test_r1_cross_account_pre_fenced_dispatch_remains_independent(broker):
+    """An account-wide quarantine must not globally freeze other accounts."""
+    boot_ready(broker)
+    other_account = "e" * 64
+    broker.provision_generation_metadata(other_account, OTHER)
+    first = attempt(run="a", op="b", target="98-System/account-one.md")
+    second = replace(
+        attempt(run="c", op="d", target="98-System/account-two.md"),
+        account_binding_sha256=other_account,
+        credential_generation=OTHER,
+    )
+    broker.fence_pre_dispatch(first)
+    broker.fence_pre_dispatch(second)
+    broker.mark_dispatch_possible(first)
+    broker.mark_dispatch_possible(second)
+    assert rows(
+        broker, "SELECT account,status FROM broker_attempt ORDER BY account",
+    ) == [(ACCOUNT, "dispatch_possible"), (other_account, "dispatch_possible")]
+    assert rows(
+        broker, "SELECT account FROM broker_account_quarantine ORDER BY account",
+    ) == [(ACCOUNT,), (other_account,)]

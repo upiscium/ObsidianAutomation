@@ -485,7 +485,17 @@ class BrokerPrivateJournal:
                         or acct[0] != record.credential_generation
                         or acct[1] != record.claim_credential_epoch):
                     raise BrokerJournalDenied("broker_generation_stale")
-                db.execute("""INSERT OR IGNORE INTO broker_account_quarantine
+                # An earlier pre-fenced operation on a different target may
+                # have already made this whole account uncertain. Recheck
+                # under the SAME BEGIN IMMEDIATE transaction as the state
+                # transition; the earlier fence-time check is insufficient.
+                if db.execute("""SELECT 1 FROM broker_account_quarantine
+                    WHERE account=?""",
+                    (record.account_binding_sha256,)).fetchone():
+                    raise BrokerJournalDenied("broker_account_unconfirmed")
+                # No OR IGNORE: a competing/quarantined account may never
+                # silently authorize a second possible dispatch.
+                db.execute("""INSERT INTO broker_account_quarantine
                     VALUES(?,'dispatch_may_have_occurred')""",
                     (record.account_binding_sha256,))
                 db.execute("""UPDATE broker_attempt SET status='dispatch_possible'
