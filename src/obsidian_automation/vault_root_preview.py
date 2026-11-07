@@ -89,8 +89,17 @@ def _parts(value: object, *, new_candidate: bool) -> tuple[str, ...] | None:
 
 
 def _fold(name: str) -> str:
-    # Folding may introduce decomposed sequences; normalize again so
-    # canonically equivalent sibling names cannot bypass collision checks.
+    # Unicode compatibility-caseless matching: decompose canonically BEFORE
+    # the first fold, then apply compatibility decomposition and a second fold.
+    # This combines canonical and compatibility aliases without depending on
+    # the order of two independent key comparisons.
+    folded = unicodedata.normalize("NFD", name).casefold()
+    folded = unicodedata.normalize("NFKD", folded).casefold()
+    return unicodedata.normalize("NFKD", folded)
+
+
+def _legacy_fold(name: str) -> str:
+    # Preserve all collisions rejected by the already-published V1/A key.
     folded = unicodedata.normalize("NFKC", name).casefold()
     return unicodedata.normalize("NFKC", folded)
 
@@ -153,6 +162,7 @@ def preview_root(
             return _result("blocked", "incomplete_inventory")
 
         siblings = set()
+        legacy_siblings = set()
         selected_resource = None
         for entry in snapshot.entries:
             if type(entry) is not Resource or type(entry.name) is not str:
@@ -165,13 +175,18 @@ def preview_root(
             if entry.kind not in ("directory", "file", "symlink", "unknown"):
                 return _result("blocked", "invalid_inventory")
             folded = _fold(entry.name)
-            if not folded or folded in siblings:
+            legacy_folded = _legacy_fold(entry.name)
+            if (
+                not folded or not legacy_folded
+                or folded in siblings or legacy_folded in legacy_siblings
+            ):
                 return _result("blocked", "casefold_collision")
             if entry.resource_id in seen_ids:
                 # A duplicate canonical ID *anywhere* in the supplied chain
                 # indicates an alias/loop, including unselected sibling rows.
                 return _result("blocked", "identity_alias")
             siblings.add(folded)
+            legacy_siblings.add(legacy_folded)
             seen_ids.add(entry.resource_id)
             if entry.name == component:
                 selected_resource = entry

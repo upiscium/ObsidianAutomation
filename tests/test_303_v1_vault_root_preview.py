@@ -200,8 +200,12 @@ def test_casefold_and_nfkc_sibling_collisions(replacement):
 @pytest.mark.parametrize("first_name,second_name", [
     ("\u0390", "\u03AA\u0301"),  # Greek iota/diaeresis/acute; fold decomposes
     ("\u0390", "\u0399\u0344"),  # alternate canonically equivalent spelling
+    ("\u1FB3\u0308", "\u03B1\u0308\u03B9"),  # decompose ypogegrammeni *before* fold
+    ("\u03B1\u0345\uFF9E", "\u03B1\u03B9\uFF9E"),  # canonical/compat mark reordering
+    ("\u03B1\u0345\uFF9E", "\u03B1\u03B9\u3099"),  # canonical-first compatibility closure
+    ("\u03B1\u0345\uFF9E", "\u03B1\u0345\u3099"),  # retain legacy NFKC alias collision
 ])
-def test_casefold_then_nfkc_detects_unicode_sibling_collisions(first_name, second_name):
+def test_unicode_caseless_and_legacy_sibling_collisions(first_name, second_name):
     root, nested = evidence()
     # Unique server IDs, complete inventory: only the Unicode-equivalent
     # sibling labels should cause this otherwise valid preview to be refused.
