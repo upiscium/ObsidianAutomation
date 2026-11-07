@@ -223,3 +223,13 @@ def test_huge_error_detail_is_bounded_and_never_returned(tmp_path):
     result = invoke(Source(tmp_path), private(tmp_path), watcher=huge_error)
     assert result["state"] == "unknown"
     assert "private" not in str(result)
+
+
+def test_bounded_sink_counts_utf8_bytes_not_unicode_characters():
+    from obsidian_automation.github_b3_watcher_bridge import _BoundedSink
+    sink = _BoundedSink()
+    with pytest.raises(ValueError, match="bounded_observation_exceeded"):
+        sink.write("界" * 180000)
+    assert sink.getvalue() == ""
+    assert sink.write("界") == 1
+    assert sink.getvalue() == "界"

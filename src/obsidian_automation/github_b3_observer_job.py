@@ -213,8 +213,8 @@ class B3ObserverJob:
             "next_due": due if enabled and valid else None,
             "configured": current is not None,
             "reason": (
-                "source_changed" if enabled and not valid
-                else "configuration_missing" if current is None
+                "configuration_missing" if current is None
+                else "source_changed" if enabled and not valid
                 else None
             ),
         }
@@ -269,7 +269,7 @@ class B3ObserverJob:
     def status(self) -> dict[str, object]:
         with self._lock:
             last = self.db.execute(
-                "SELECT run_id FROM runs ORDER BY created DESC, rowid DESC LIMIT 1"
+                "SELECT run_id FROM runs ORDER BY rowid DESC LIMIT 1"
             ).fetchone()
             return {
                 "schema_version": VERSION, "job": "b3_read_only_watcher",
@@ -293,6 +293,7 @@ class B3ObserverJob:
                 or type(trigger) is not str or trigger != "manual"):
             raise Invalid("invalid_b3_observer_request")
         with self._lock:
+            self._reconcile_dead_worker()
             found = self.db.execute(
                 "SELECT run_id FROM runs WHERE request_id=?", (request_id,)
             ).fetchone()
@@ -316,45 +317,116 @@ class B3ObserverJob:
         try:
             self._worker.start()
         except Exception:
-            with self.db:
-                self.db.execute(
-                    "UPDATE runs SET status='unknown',reason='worker_unavailable',"
-                    "completed=? WHERE run_id=?",
-                    (_bounded_now(self.clock), run_id),
-                )
-            self._worker = None
+            self._finish(run_id, status="unknown", reason="worker_unavailable")
+            # Preserve the reference until a later submit/tick can
+            # reconcile any still-queued record after a failed terminal DB
+            # update. No worker ever started, so it is safe to retry that
+            # local reconciliation without re-running a collector.
             raise
 
-    def _execute(self, run_id: str) -> None:
-        with self._lock:
-            with self.db:
-                self.db.execute(
-                    "UPDATE runs SET status='running' WHERE run_id=?", (run_id,)
-                )
+    def _completion_time(self, created: float) -> float:
+        # A broken injected clock must not leave a durable run in "running".
+        # Never persist a completion before admission if the wall clock moved.
         try:
-            value = self.collector()
-            status, reason, count, pending = _result(value)
+            return max(created, _bounded_now(self.clock))
         except Exception:
-            status, reason, count, pending = "unknown", "collector_unavailable", 0, 0
-        with self._lock:
-            with self.db:
-                self.db.execute(
-                    "UPDATE runs SET status=?,reason=?,observations=?,"
-                    "pending_proposals=?,completed=? WHERE run_id=?",
-                    (status, reason, count, pending, _bounded_now(self.clock), run_id),
-                )
+            return max(created, _bounded_now(time.time))
+
+    def _finish(
+        self, run_id: str, *, status: str, reason: str,
+        count: int = 0, pending: int = 0,
+    ) -> bool:
+        """Bounded terminal write; persistent DB faults remain fail-closed.
+
+        A failed commit cannot be called success. The scheduler will mark an
+        orphaned run unknown once this worker has terminated and DB recovers.
+        """
+        for attempt in range(3):
+            try:
+                with self._lock:
+                    with self.db:
+                        row = self.db.execute(
+                            "SELECT created FROM runs WHERE run_id=?", (run_id,)
+                        ).fetchone()
+                        if row is None:
+                            return False
+                        at = self._completion_time(float(row[0]))
+                        self.db.execute(
+                            "UPDATE runs SET status=?,reason=?,observations=?,"
+                            "pending_proposals=?,completed=? WHERE run_id=?",
+                            (status, reason, count, pending, at, run_id),
+                        )
+                return True
+            except (sqlite3.Error, OSError, ValueError):
+                if attempt != 2:
+                    time.sleep(0.05 * (attempt + 1))
+        return False
+
+    def _reconcile_dead_worker(self) -> None:
+        """Admission-only recovery, never a GET side effect.
+
+        This is called under self._lock by submit/tick. A live worker may
+        still own its observation; a *dead* worker may not. No automatic
+        collection retry is admitted under the same request ID.
+        """
+        worker = self._worker
+        if worker is None or worker.is_alive():
+            return
+        try:
+            rows = self.db.execute(
+                "SELECT run_id FROM runs WHERE status IN ('queued','running')"
+            ).fetchall()
+        except sqlite3.Error:
+            # A temporarily unavailable local journal cannot prove the
+            # worker is complete. Leave it pending until the next healthy
+            # scheduler tick; do not admit an overlapping collection here.
+            return
+        for (run_id,) in rows:
+            if not self._finish(
+                run_id, status="unknown", reason="worker_interrupted"
+            ):
+                return
+
+    def _execute(self, run_id: str) -> None:
+        status, reason, count, pending = "unknown", "collector_unavailable", 0, 0
+        try:
+            with self._lock:
+                with self.db:
+                    self.db.execute(
+                        "UPDATE runs SET status='running' WHERE run_id=?", (run_id,)
+                    )
+            try:
+                value = self.collector()
+                status, reason, count, pending = _result(value)
+            except BaseException:
+                # A collector process crash/cancellation is never evidence
+                # that GitHub observations were fully verified.
+                pass
+        except BaseException:
+            status, reason, count, pending = "unknown", "worker_unavailable", 0, 0
+        self._finish(run_id, status=status, reason=reason,
+                     count=count, pending=pending)
 
     def tick(self) -> bool:
         """Called by the existing single in-app scheduler; never runs inline."""
         with self._lock:
+            self._reconcile_dead_worker()
             s = self._settings()
             if s["enabled"] and not s["effective_enabled"]:
-                # Persist Off on source rotation, rather than silently
-                # using a new Nextcloud/credential binding next cycle.
-                with self.db:
-                    self.db.execute(
-                        "UPDATE settings SET enabled=0,next_due=NULL,generation=NULL WHERE id=1"
-                    )
+                # Missing / temporarily unavailable configuration is not
+                # evidence of rotation. Pause the current tick but preserve
+                # the desired schedule for automatic recovery of the same
+                # source. Only an actual different valid generation revokes.
+                current = self._generation()
+                bound = self.db.execute(
+                    "SELECT generation FROM settings WHERE id=1"
+                ).fetchone()[0]
+                if current is not None and current != bound:
+                    with self.db:
+                        self.db.execute(
+                            "UPDATE settings SET enabled=0,next_due=NULL,"
+                            "generation=NULL WHERE id=1"
+                        )
                 return False
             if (not s["effective_enabled"] or s["next_due"] is None
                     or _bounded_now(self.clock) < s["next_due"]):

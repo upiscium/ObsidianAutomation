@@ -273,3 +273,215 @@ def test_read_only_module_exposes_no_canonical_writer_interface():
     assert "webdav_create" not in module
     assert "apply_project_status" not in module
     assert "apply_project_overview" not in module
+
+
+def test_temporary_missing_source_pauses_without_persisting_off(tmp_path):
+    """Transient metadata failure is not evidence of credential rotation."""
+    source, clock = Source(), Clock()
+    with job(tmp_path / "b3", source, clock) as owner:
+        owner.update({"enabled": True, "interval_seconds": 3600})
+        source.ready = False
+        clock.value = 4600.0
+        settings = owner.settings()
+        assert settings["enabled"] is True
+        assert settings["effective_enabled"] is False
+        assert settings["reason"] == "configuration_missing"
+        assert owner.tick() is False
+        assert owner.settings()["enabled"] is True
+        assert source.calls == 0
+        source.ready = True
+        assert owner.tick() is True
+        assert await_terminal(owner, owner.status()["last_run"]["run_id"])["status"] == "observed"
+        assert source.calls == 1
+
+
+def test_invalid_final_clock_uses_safe_timestamp_and_does_not_stick(tmp_path):
+    source, clock = Source(), Clock()
+    def collect():
+        clock.value = "invalid"
+        return source.collect()
+    with B3ObserverJob(
+        tmp_path / "b3", collect, configured=source.configured,
+        generation=source.fingerprint, clock=clock,
+    ) as owner:
+        outcome, admitted = owner.submit("a" * 32)
+        assert outcome == "accepted"
+        observed = await_terminal(owner, admitted["run_id"])
+        assert observed["status"] == "observed"
+        assert observed["completed"] >= observed["created"]
+        assert source.calls == 1
+        assert owner.submit("a" * 32)[0] == "replayed"
+
+
+def test_initial_sqlite_update_failure_does_not_run_collector(tmp_path):
+    source, clock = Source(), Clock()
+    with job(tmp_path / "b3", source, clock) as owner:
+        original = owner.db
+        class FlakyDB:
+            def __init__(self, connection):
+                self.connection = connection
+                self.fail_once = True
+            def __enter__(self):
+                self.connection.__enter__()
+                return self
+            def __exit__(self, *args):
+                return self.connection.__exit__(*args)
+            def execute(self, sql, params=()):
+                if sql.startswith("UPDATE runs SET status='running'") and self.fail_once:
+                    self.fail_once = False
+                    raise sqlite3.OperationalError("synthetic lock")
+                return self.connection.execute(sql, params)
+            def close(self):
+                self.connection.close()
+        owner.db = FlakyDB(original)
+        _, row = owner.submit("a" * 32)
+        done = await_terminal(owner, row["run_id"])
+        assert done["status"] == "unknown"
+        assert done["reason"] == "worker_unavailable"
+        assert source.calls == 0
+        assert owner.submit("a" * 32)[0] == "replayed"
+
+
+def test_transient_terminal_sqlite_lock_retries_without_duplication(tmp_path):
+    source, clock = Source(), Clock()
+    with job(tmp_path / "b3", source, clock) as owner:
+        original = owner.db
+        class FlakyDB:
+            def __init__(self, connection):
+                self.connection = connection
+                self.fail_once = True
+            def __enter__(self):
+                self.connection.__enter__()
+                return self
+            def __exit__(self, *args):
+                return self.connection.__exit__(*args)
+            def execute(self, sql, params=()):
+                if sql.startswith("UPDATE runs SET status=?,reason=?") and self.fail_once:
+                    self.fail_once = False
+                    raise sqlite3.OperationalError("synthetic lock")
+                return self.connection.execute(sql, params)
+            def close(self):
+                self.connection.close()
+        owner.db = FlakyDB(original)
+        _, row = owner.submit("a" * 32)
+        done = await_terminal(owner, row["run_id"])
+        assert done["status"] == "observed"
+        assert source.calls == 1
+        assert owner.submit("a" * 32)[0] == "replayed"
+
+
+def test_persistent_terminal_lock_recovers_unknown_on_next_tick(tmp_path):
+    source, clock = Source(), Clock()
+    with job(tmp_path / "b3", source, clock) as owner:
+        original = owner.db
+        class FaultDB:
+            def __init__(self, connection):
+                self.connection = connection
+                self.block_final = True
+            def __enter__(self):
+                self.connection.__enter__()
+                return self
+            def __exit__(self, *args):
+                return self.connection.__exit__(*args)
+            def execute(self, sql, params=()):
+                if sql.startswith("UPDATE runs SET status=?,reason=?") and self.block_final:
+                    raise sqlite3.OperationalError("synthetic lock")
+                return self.connection.execute(sql, params)
+            def close(self):
+                self.connection.close()
+        fault = FaultDB(original)
+        owner.db = fault
+        _, row = owner.submit("a" * 32)
+        owner._worker.join(timeout=4)
+        assert not owner._worker.is_alive()
+        assert owner.run(row["run_id"])["status"] == "running"
+        fault.block_final = False
+        assert owner.tick() is False
+        recovered = owner.run(row["run_id"])
+        assert recovered["status"] == "unknown"
+        assert recovered["reason"] == "worker_interrupted"
+        assert owner.submit("a" * 32)[0] == "replayed"
+        assert source.calls == 1
+
+
+def test_collector_base_exception_is_unknown_and_not_replayed(tmp_path):
+    source, clock = Source(), Clock()
+    def interrupted():
+        raise KeyboardInterrupt("synthetic interruption")
+    with B3ObserverJob(
+        tmp_path / "b3", interrupted, configured=source.configured,
+        generation=source.fingerprint, clock=clock,
+    ) as owner:
+        _, row = owner.submit("a" * 32)
+        assert await_terminal(owner, row["run_id"])["status"] == "unknown"
+        assert owner.submit("a" * 32)[0] == "replayed"
+
+
+def test_latest_run_is_insertion_order_not_wallclock_order(tmp_path):
+    source, clock = Source(), Clock()
+    with job(tmp_path / "b3", source, clock) as owner:
+        _, first = owner.submit("a" * 32)
+        assert await_terminal(owner, first["run_id"])["status"] == "observed"
+        clock.value = 100.0
+        _, second = owner.submit("b" * 32)
+        assert await_terminal(owner, second["run_id"])["status"] == "observed"
+        assert owner.status()["last_run"]["run_id"] == second["run_id"]
+
+
+def test_source_generation_probe_exception_pauses_and_recovers(tmp_path):
+    source, clock = Source(), Clock()
+    failed = [False]
+
+    def intermittent_generation():
+        if failed[0]:
+            raise OSError("transient metadata error: private")
+        return source.fingerprint()
+
+    with B3ObserverJob(
+        tmp_path / "b3", source.collect, configured=source.configured,
+        generation=intermittent_generation, clock=clock,
+    ) as owner:
+        owner.update({"enabled": True, "interval_seconds": 3600})
+        failed[0] = True
+        clock.value = 4600.0
+        assert owner.tick() is False
+        assert owner.settings()["enabled"] is True
+        assert source.calls == 0
+        failed[0] = False
+        assert owner.tick() is True
+        assert await_terminal(owner, owner.status()["last_run"]["run_id"])["status"] == "observed"
+        assert source.calls == 1
+
+
+def test_reconcile_transient_select_failure_does_not_duplicate(tmp_path):
+    source, clock = Source(), Clock()
+    with job(tmp_path / "b3", source, clock) as owner:
+        _, row = owner.submit("a" * 32)
+        assert await_terminal(owner, row["run_id"])["status"] == "observed"
+        original = owner.db
+
+        class IntermittentDB:
+            def __init__(self, connection):
+                self.connection = connection
+                self.fail_once = True
+
+            def execute(self, sql, params=()):
+                if sql.startswith("SELECT run_id FROM runs WHERE status") and self.fail_once:
+                    self.fail_once = False
+                    raise sqlite3.OperationalError("synthetic db read unavailable")
+                return self.connection.execute(sql, params)
+
+            def __enter__(self):
+                self.connection.__enter__()
+                return self
+
+            def __exit__(self, *args):
+                return self.connection.__exit__(*args)
+
+            def close(self):
+                self.connection.close()
+
+        owner.db = IntermittentDB(original)
+        assert owner.tick() is False
+        assert owner.submit("a" * 32)[0] == "replayed"
+        assert source.calls == 1
