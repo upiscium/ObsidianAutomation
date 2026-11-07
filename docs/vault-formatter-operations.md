@@ -561,12 +561,99 @@ Writer and cannot enable Auto apply.
   the earlier B1 root-capable CI fixture independently proved an actual
   different-UID Worker Claim but is **not a combined C0 production test**.
 
-**Not yet implemented:** a production Owner process launcher/supervisor
-and target-host UID/GID/service policy, authenticated and replay-safe Worker
-client, delegated signed-Run issuer, credential generation changes under the
-stable effect lease, effect-time Writer binding, real Nextcloud CAS/Vault
-canary and publication convergence. A C0 source-only test/merge confers
-**no** permission to run a production Listener or enable Auto apply.
+**At the time of C0 (before the D0 source-only proposal below):**
+no production Owner launcher/supervisor or target-host UID/GID/service policy,
+Worker client, delegated signed-Run issuer, credential-generation change
+under the stable effect lease, effect-time Writer binding, real Nextcloud
+CAS/Vault canary or publication convergence existed. A C0 source Merge
+confers **no** permission to run a production Listener or enable Auto apply.
+
+## R2/B2c-D0 — Worker-side Unix IPC Claim/Status (source-only)
+
+The opt-in `vault_format_worker_ipc_client.py` adds `WorkerUnixClient`
+for a separately provisioned, restricted Worker OS principal, and
+`RunStatusObservation` for read-only inspection. It is **not imported by the
+normal app**, does not provision users/services/sockets/credentials, and does
+not construct or inject a Formatter Writer. It sends **only**
+`run.claim` and `run.status` to the existing B2c Owner IPC; it has no
+stop, recovery, sign, generic RPC, PUT, or credential-rotation method.
+
+- The configured Owner UID must differ from the actual **non-root** Worker
+  EUID; a root Worker is rejected rather than treated as restricted. Before
+  sending anything, the Worker traverses the trusted absolute socket
+  ancestry using Linux `O_PATH | O_NOFOLLOW` directory FDs and validates
+  the preprovisioned Owner-owned `0710` parent with designated IPC group
+  and `0660` Owner-owned socket inode. The Worker verifies **connected
+  `SO_PEERCRED` Owner UID**, and checks that the named socket inode has
+  not been replaced. Unix-domain FD forwarding or a proxy authenticates the
+  **connected peer**, not the original human/requester. No HTTP credentials
+  or Vault body is accepted.
+- Every command creates one connection with a **3-second monotonic
+  budget for socket I/O** (connect/send/receive), including one strict
+  request frame, `shutdown(SHUT_WR)` and a response read through EOF.
+  This is **not** a complete wall-clock deadline: trusted-path
+  `os.open` / `os.stat` metadata calls cannot be interrupted by the
+  socket timeout. Production provisioning must separately qualify the
+  socket directory as a trusted **local filesystem** and exclude
+  blocking/network-backed metadata before activation. Duplicate JSON
+  fields, trailing bytes, second frames, oversized responses, invalid
+  positive acknowledgements, unexpected response keys and unrecognized
+  reason codes fail closed with fixed error codes. No request is auto-sent
+  again on a timeout, disconnection or lost acknowledgment.
+- A `claim_once(RunIntent)` attempt irreversibly consumes that **client
+  instance's** Claim slot **before** validation or I/O. An unconfirmed
+  transport outcome is **not** proof that the Owner did nothing: the durable
+  Owner one-use Ledger still supplies the cross-instance replay fence, not
+  the client object's local boolean. Do not start another run merely
+  because the Claim reply was lost; operator reconciliation is separate.
+- `status(RunIntent)` sends only the four exact Run identity fields and
+  yields `RunStatusObservation(claimed_now=...)`. The result is **a
+  read-only observation**, never a Writer permit, effect lease, credential
+  generation confirmation or authorization to retry `run.claim`.
+- The new local tests use real Unix streams with **explicitly synthetic
+  peer UID and filesystem trust shims** to exercise frames, non-retry,
+  malformed/extra replies, wrong peer, socket inode switch and rejection
+  of Worker-owned paths. They **do not** prove distinct OS principals.
+  A separate **root-only disposable CI fixture** uses an actual restricted
+  `nobody` Worker with a preprovisioned `0710` Owner directory and
+  `0660` group socket, exercising the real kernel `SO_PEERCRED` and
+  one-shot Claim plus read-only Status, a consumed same-instance retry,
+  and an explicitly tested cross-instance second Claim rejected by the
+  Owner's durable Ledger. The existing root-stage CI job
+  adds an **exact one-test JUnit gate rejecting every SKIP**. This new
+  D0 fixture has **not yet run on a published D0 commit**.
+
+### D1+ effect-time Writer/credential-generation boundary (design only)
+
+A valid Claim ACK or Status observation is **necessary but insufficient**
+to write to a canonical Vault. The future Worker effect-time adapter must:
+1. Hold the **same pinned durable effect-drain lock inode** used by the
+   Owner's stop/revoke and credential-generation rotation operation, for
+   the full effect including server-side CAS request and readback.
+2. While holding that lock, revalidate the exact signed Run grant,
+   policy, plan hash, account binding, provider proof and claim/receipt
+   identity. The **Owner-private Ledger must not be read or mutated by the
+   restricted Worker**. D1 must first design and independently test an
+   Owner-verified, replay-safe effect admission / durable attestation that
+   cannot be bypassed by a stale grant or boot-`unconfirmed` Claim.
+   In particular, do not make the Worker hold the shared exclusive lock and
+   then synchronously call an Owner IPC command that attempts to acquire the
+   same lock: that would deadlock. Re-read the current credential-generation
+   binding and reject any mismatch **before** transmitting a PUT.
+3. Enforce the already reviewed `98-System/**` allowlist, change budgets,
+   stale ETag / `If-Match` conditions, and a fresh provider readback.
+   An ACK or cached `claimed_now=true` must **never** bypass these checks.
+4. Coordinate Owner Off/revoke/rotation through the **same lock**; no Off
+   or rotation-success acknowledgment until cooperating in-flight effects
+   have drained and the durable postconditions are verified. Lost effects
+   are `unconfirmed`, not retried blindly.
+5. Keep the existing Snapshot and Gitea promotion pipeline read-only.
+   Require separate target-host OS identities/service, signer/issuer,
+   provider CAS canary, real Vault/E2E and Human Auto apply approval.
+
+**No D1 adapter or credential-generation integration exists in D0.**
+Merging this source-only client would not enable real Vault writes or
+production Owner/Worker connectivity.
 
 ## Production requirements NOT YET MET
 
