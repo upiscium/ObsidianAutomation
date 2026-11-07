@@ -137,19 +137,48 @@ def test_source_module_modification_is_only_static_html():
     previous_ast = ast.parse(baseline.stdout)
     current_ast = ast.parse(undo_approved_gitea_lock_move(current))
 
-    def without_html(tree: ast.Module):
-        return [
-            ast.dump(node, include_attributes=False)
-            for node in tree.body
-            if not (
-                isinstance(node, ast.Assign)
-                and len(node.targets) == 1
-                and isinstance(node.targets[0], ast.Name)
-                and node.targets[0].id == "HTML"
-            )
-        ]
+    # #304 R1/C only changes the shared Nextcloud readiness handler and
+    # Gitea-only submit handler inside the existing inline JS. Preserve the
+    # #301 correction above; compare EVERY other Python AST node and every
+    # other inline-JS byte against the original #530 frozen baseline.
+    def assigned_name(node: ast.AST, name: str) -> bool:
+        return (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == name
+        )
 
-    assert without_html(current_ast) == without_html(previous_ast)
+    def without_r1c_sections(js: str) -> str:
+        markers = (
+            "let snapshotSettings = null;",
+            '$("nextcloud-form").addEventListener("submit"',
+            '$("connections-form").addEventListener("submit"',
+            "async function snapshotRefresh()",
+        )
+        for marker in markers:
+            assert js.count(marker) == 1, marker
+        a, b, c, d = (js.index(marker) for marker in markers)
+        assert a < b < c < d
+        return (
+            js[:a] + "<R1C:shared-nextcloud-status>" + js[b:c]
+            + "<R1C:gitea-only-submit>" + js[d:]
+        )
+
+    def normalized_backend_ast(tree: ast.Module):
+        values = []
+        for node in tree.body:
+            if assigned_name(node, "HTML"):
+                continue
+            if assigned_name(node, "JS"):
+                assert isinstance(node.value, ast.Constant)
+                assert isinstance(node.value.value, str)
+                values.append(("JS", without_r1c_sections(node.value.value)))
+            else:
+                values.append(("BACKEND", ast.dump(node, include_attributes=False)))
+        return values
+
+    assert normalized_backend_ast(current_ast) == normalized_backend_ast(previous_ast)
 
 
 def test_existing_browser_history_regression_remains_green():

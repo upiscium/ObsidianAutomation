@@ -189,16 +189,15 @@ HTML = """<!doctype html>
     <section id="manager-global-gitea" class="pipeline" aria-label="Snapshot接続設定">
       <h2>Snapshot用 Gitea接続（必要な場合のみ）</h2>
       <p id="connection-state">状態を確認中</p>
-      <form id="connections-form" autocomplete="off">
-        <label>Nextcloud WebDAV URL <input name="webdav_url" type="url" required placeholder="https://cloud.example/remote.php/dav/files/user/"></label>
-        <label>Vault folder <input name="vault_folder" required placeholder="Vault"></label>
-        <label>Nextcloud user <input name="nextcloud_user" required></label>
-        <label>Nextcloud app password <input name="nextcloud_password" type="password" required></label>
+      <p id="gitea-nextcloud-prerequisite" role="status" aria-live="polite">
+        先に上のNextcloud接続設定を保存してください。保存状況を確認中です。
+      </p>
+      <form id="connections-form" autocomplete="off" aria-describedby="gitea-nextcloud-prerequisite">
         <label>Private Gitea HTTPS .git URL <input name="git_url" type="url" required></label>
         <label>Gitea user <input name="git_user" required></label>
-        <label>Gitea token <input name="git_token" type="password" required></label>
+        <label>Gitea token <input name="git_token" type="password" autocomplete="off" required></label>
         <label>Branch <input name="branch" value="main" required></label>
-        <button type="submit">接続を検証して保存</button>
+        <button type="submit" disabled>接続を検証して保存</button>
       </form>
       <p id="connection-message" role="status"></p>
     </section>
@@ -507,31 +506,44 @@ function renderAi(p) {
 }
 let snapshotSettings = null;
 let nextcloudReady = false;
+let nextcloudReadGeneration = 0;
+let giteaSaving = false;
+// Gitea-only setup reuses the private, saved Nextcloud source on the server.
+// Never echo or copy the Nextcloud credential into the browser.
+function renderGiteaPrerequisite(state) {
+  const message = $("gitea-nextcloud-prerequisite");
+  const button = $("connections-form").querySelector("button");
+  message.textContent = state === "configured"
+    ? "保存済みの共有Nextcloudを使用します（現在の疎通は未確認）。Nextcloudの再入力は不要です。"
+    : state === "missing"
+      ? "先に上のNextcloud接続を保存してください。Giteaだけを追加できます。"
+      : state === "checking"
+        ? "共有Nextcloudの保存状態を確認中です。Gitea設定はまだ送信できません。"
+        : "Nextcloudの保存状態を確認できません。ページを更新して再確認してください。";
+  button.disabled = giteaSaving || !nextcloudReady;
+}
 async function nextcloudRefresh() {
+  const mine = ++nextcloudReadGeneration;
+  nextcloudReady = false;
+  renderGiteaPrerequisite("checking");
   try {
     const r = await fetch("/api/v1/nextcloud/connections", {
       cache:"no-store", credentials:"same-origin"});
     if (!r.ok) throw Error("unavailable");
     const data = await r.json();
     if (data.version !== 1 || data.scope !== "shared_nextcloud"
+        || data.writes_vault !== false
         || typeof data.configured !== "boolean") throw Error("schema");
+    if (mine !== nextcloudReadGeneration) return;
     nextcloudReady = data.configured;
     $("nextcloud-state").textContent = nextcloudReady
-      ? "Nextcloud接続済み（資格情報は非表示、B2/B4共有）" : "未設定";
-    const snapshotForm = $("connections-form");
-    for (const field of ["webdav_url","vault_folder","nextcloud_user","nextcloud_password"]) {
-      const input = snapshotForm.elements.namedItem(field);
-      input.disabled = nextcloudReady;
-      input.required = !nextcloudReady;
-    }
+      ? "Nextcloud設定済み（現在の疎通は未検証、B2/B4共有）" : "未設定";
+    renderGiteaPrerequisite(nextcloudReady ? "configured" : "missing");
   } catch {
+    if (mine !== nextcloudReadGeneration) return;
     nextcloudReady = false;
     $("nextcloud-state").textContent = "Nextcloud接続状態を取得できません";
-    for (const field of ["webdav_url","vault_folder","nextcloud_user","nextcloud_password"]) {
-      const input = $("connections-form").elements.namedItem(field);
-      input.disabled = false;
-      input.required = true;
-    }
+    renderGiteaPrerequisite("unavailable");
   }
 }
 $("nextcloud-form").addEventListener("submit", async event => {
@@ -565,16 +577,23 @@ async function connectionRefresh() {
 }
 $("connections-form").addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (!nextcloudReady || giteaSaving) {
+    $("connection-message").textContent = "先に共有Nextcloudの保存状態を確認してください。";
+    return;
+  }
   const form = event.currentTarget;
-  const button = form.querySelector("button");
-  button.disabled = true;
+  giteaSaving = true;
+  renderGiteaPrerequisite("configured");
   try {
+    // Only the four Gitea destination fields are submitted. The backend
+    // reuses the canonical saved Nextcloud credentials behind its write gates.
     const body = Object.fromEntries(new FormData(form));
     await snapshotPost("/api/v1/snapshot/connections", body);
     $("connection-message").textContent = "接続を確認して保存しました。定期実行を Off にしました。Git 書き込みは初回の保存成功まで未検証です。";
     form.reset();
   } catch { $("connection-message").textContent = "検証または保存に失敗しました。以前の設定は変更されていません。"; }
-  button.disabled = false;
+  giteaSaving = false;
+  renderGiteaPrerequisite(nextcloudReady ? "configured" : "unavailable");
   await nextcloudRefresh();
   await connectionRefresh();
   await snapshotRefresh();
