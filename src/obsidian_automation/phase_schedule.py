@@ -3,6 +3,13 @@
 This code computes candidate slots only. It does NOT schedule a timer,
 persist settings, admit a job, touch a Vault, or authorize Writer effects.
 
+The anchor is a *repeating daily clock phase*, not a first-activation
+lower bound. For hourly Asia/Tokyo / 12:00 the phase includes every whole
+hour (00:00 through 23:00); at 08:37 the future slots are 09/10/11,
+not 12/13/14. A product wanting "first-ever execution no earlier than
+the next noon" needs a separate persisted activation/start boundary.
+This module must not silently infer that boundary from the saved time.
+
 The first MVI accepts minute-granularity intervals that divide a local day
 exactly; this guarantees a stable daily anchor even across service restarts.
 For IANA regions with DST, nonexistent wall slots are skipped and ambiguous
@@ -49,6 +56,8 @@ def _validate(spec: object) -> tuple[PhaseSchedule, ZoneInfo, int]:
         or not 1 <= len(spec.timezone) <= 64
         or _ZONE.fullmatch(spec.timezone) is None
         or ".." in spec.timezone.split("/")
+        or spec.timezone.startswith(("posix/", "right/"))
+        or spec.timezone in ("localtime", "posixrules")
         or type(spec.anchor_local_time) is not str
         or _HHMM.fullmatch(spec.anchor_local_time) is None
         or type(spec.interval_seconds) is not int
@@ -60,7 +69,9 @@ def _validate(spec: object) -> tuple[PhaseSchedule, ZoneInfo, int]:
         raise InvalidPhaseSchedule()
     try:
         zone = ZoneInfo(spec.timezone)
-    except (ZoneInfoNotFoundError, ValueError):
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        # An IANA lookup must never leak filesystem/provider exceptions to
+        # an eventual WebUI preview endpoint.
         raise InvalidPhaseSchedule() from None
     hour, minute = (int(x) for x in spec.anchor_local_time.split(":"))
     return spec, zone, hour * 60 + minute

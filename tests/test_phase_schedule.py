@@ -183,3 +183,36 @@ def test_preview_shape_stable_and_redacted():
             "2026-11-06T14:00:00+09:00",
         ),
     }
+
+
+
+def test_hourly_noon_anchor_is_a_phase_not_a_first_start_bound():
+    """At 08:37 it is 09/10/11; an activation bound is a separate contract."""
+    assert labels(phase_slots(spec(), local("2026-11-06T08:37"))) == (
+        "2026-11-06 09:00", "2026-11-06 10:00", "2026-11-06 11:00",
+    )
+
+
+def test_timezone_invariant_when_utc_date_differs_from_local_date():
+    japan = local("2026-11-07T00:30")
+    utc = japan.astimezone(timezone.utc)
+    assert utc.date() != japan.date()
+    assert phase_slots(spec(), japan) == phase_slots(spec(), utc)
+
+
+@pytest.mark.parametrize("untrusted_key", (
+    "America", "posix/Asia/Tokyo", "right/Asia/Tokyo",
+    "localtime", "posixrules",
+))
+def test_reject_noniana_directory_or_leap_time_zone_aliases(untrusted_key):
+    with pytest.raises(InvalidPhaseSchedule, match="invalid_phase_schedule"):
+        phase_slots(spec(timezone=untrusted_key), local("2026-11-06T11:59"))
+
+
+def test_timezone_filesystem_io_error_is_redacted(monkeypatch):
+    import obsidian_automation.phase_schedule as module
+    def deny_zone(_):
+        raise PermissionError("secret local timezone path")
+    monkeypatch.setattr(module, "ZoneInfo", deny_zone)
+    with pytest.raises(InvalidPhaseSchedule, match="^invalid_phase_schedule$"):
+        phase_slots(spec(), local("2026-11-06T11:59"))
