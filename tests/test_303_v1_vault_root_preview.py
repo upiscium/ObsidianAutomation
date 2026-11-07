@@ -197,6 +197,24 @@ def test_casefold_and_nfkc_sibling_collisions(replacement):
                    "casefold_collision")
 
 
+@pytest.mark.parametrize("first_name,second_name", [
+    ("\u0390", "\u03AA\u0301"),  # Greek iota/diaeresis/acute; fold decomposes
+    ("\u0390", "\u0399\u0344"),  # alternate canonically equivalent spelling
+])
+def test_casefold_then_nfkc_detects_unicode_sibling_collisions(first_name, second_name):
+    root, nested = evidence()
+    # Unique server IDs, complete inventory: only the Unicode-equivalent
+    # sibling labels should cause this otherwise valid preview to be refused.
+    rows = nested.entries + (
+        Resource(first_name, "obj-greek-1", "directory"),
+        Resource(second_name, "obj-greek-2", "directory"),
+    )
+    assert_blocked(
+        preview_root(choice(), (root, replace(nested, entries=rows))),
+        "casefold_collision",
+    )
+
+
 @pytest.mark.parametrize("resource", [
     Resource("Vault", "obj-new", "file"),
     Resource("Vault", "obj-new", "symlink"),

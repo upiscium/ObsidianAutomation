@@ -89,7 +89,10 @@ def _parts(value: object, *, new_candidate: bool) -> tuple[str, ...] | None:
 
 
 def _fold(name: str) -> str:
-    return unicodedata.normalize("NFKC", name).casefold()
+    # Folding may introduce decomposed sequences; normalize again so
+    # canonically equivalent sibling names cannot bypass collision checks.
+    folded = unicodedata.normalize("NFKC", name).casefold()
+    return unicodedata.normalize("NFKC", folded)
 
 
 def preview_root(
