@@ -667,6 +667,21 @@ change Ledger schema, install services or activate any Writer. A signed-only
 `DurableRunDrain.effect()` is not a replacement for Owner-private Ledger
 effect-time admission. No production Vault write is authorized by D1/A0.
 
+**D1/A0 PR #554 R1 (source-only, local correction):** A post-restart
+`unconfirmed` operation cannot require already-complete boot reconciliation
+before its independently verified finality is durably recorded. A future
+authenticated **Owner-only** recovery path must read the Owner-private exact
+attempt, verify Broker operation-specific finality (or verified never-dispatched
+status), and atomically record that disposition and release the target conflict
+key **while the global admission gate remains closed**. Unknown provider
+account-wide effects remain quarantined until independently resolved. Only
+then may Owner-wide boot reconciliation reopen a restart gate; pending
+Off/rotation remains closed, and old Claim boot epochs remain invalid.
+The R1 `trusted_*` booleans are disposable test abstractions, never Worker/IPC
+authorization fields. No SQL, Owner/Broker/Writer runtime wiring, credential
+mutation or Vault request is implemented by this note.
+
+
 ## Production requirements NOT YET MET
 
 Source tests and this app integration do not enable live mutation. The

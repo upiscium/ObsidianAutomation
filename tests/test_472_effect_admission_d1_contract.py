@@ -78,6 +78,9 @@ class _OwnerJournalSnapshot:
     """
 
     fenced_operations: frozenset[tuple[str, str]] = frozenset()
+    # Immutable Owner-private attempt binding; a Run ID alone cannot prove
+    # which approved target, plan, policy and provider the attempt used.
+    attempt_records: frozenset[_EffectRecord] = frozenset()
     active_operations: frozenset[tuple[str, str]] = frozenset()
     unresolved_operations: frozenset[tuple[str, str]] = frozenset()
     targets: frozenset[tuple[str, str]] = frozenset()
@@ -166,13 +169,22 @@ class _AtomicAdmissionGate:
         self._journal=replace(
             old,
             fenced_operations=old.fenced_operations | {key},
+            attempt_records=old.attempt_records | {record},
             active_operations=old.active_operations | {key},
             targets=old.targets | {target},
         )
 
     def mark_uncertain(self, record: _EffectRecord) -> None:
+        """Never revive a terminal attempt or accept an unbound effect key."""
         key=self._key(record)
         old=self._journal
+        if any((run_id, operation_id) == key for run_id, operation_id, _ in old.terminal_outcomes):
+            raise _ContractDenied("attempt_terminal")
+        if (record not in old.attempt_records
+                or key not in old.fenced_operations
+                or (key not in old.active_operations
+                    and key not in old.unresolved_operations)):
+            raise _ContractDenied("attempt_not_pending")
         self._journal=replace(
             old,
             active_operations=old.active_operations - {key},
@@ -191,9 +203,10 @@ class _AtomicAdmissionGate:
             raise _ContractDenied("settlement_disposition_invalid")
         old=self._journal
         key=self._key(record)
-        if key not in old.fenced_operations or (
-            key not in old.active_operations and key not in old.unresolved_operations
-        ):
+        if (record not in old.attempt_records
+                or key not in old.fenced_operations
+                or (key not in old.active_operations
+                    and key not in old.unresolved_operations)):
             raise _ContractDenied("settlement_unverified")
         target=(record.account_binding_sha256, record.target_path)
         if target not in old.targets:
@@ -233,6 +246,95 @@ class _AtomicAdmissionGate:
             return False
         self.boot_reconciled = True
         return self.reopen_after_verified_boot()
+
+    def owner_reconcile_post_restart(
+        self, record: _EffectRecord, *,
+        trusted_owner_peer: bool,
+        trusted_private_attempt: bool,
+        trusted_broker_finality: bool,
+        broker_disposition: str,
+        durable_broker_receipt: bool,
+        settlement_journal_durable: bool,
+    ) -> None:
+        """Fresh OWNER-side post-restart reconciliation while gate is CLOSED.
+
+        Test-only Owner-private function: its true/false inputs model
+        independently authenticated Owner identity, private Ledger + immutable
+        attempt binding, operation-specific Broker finality, and durable
+        result/journal proof. NEVER expose these flags or this function through
+        a Worker endpoint; they are not authorization credentials.
+
+        This is distinct from _AbstractEffectProtocol.reconcile(), whose
+        stale pre-reboot session MUST continue to fail closed.
+        """
+        if (self.boot_epoch < 1 or self.open
+                or self.boot_reconciled is not False
+                or self.flock_holders or self.active_operations):
+            raise _ContractDenied("owner_boot_unverified")
+        if (trusted_owner_peer is not True
+                or trusted_private_attempt is not True
+                or trusted_broker_finality is not True
+                or durable_broker_receipt is not True
+                or settlement_journal_durable is not True):
+            raise _ContractDenied("owner_reconciliation_unverified")
+        if (type(broker_disposition) is not str
+                or broker_disposition not in (
+                    "verified_remote_effect", "verified_no_effect",
+                )):
+            raise _ContractDenied("owner_disposition_invalid")
+        old = self._journal
+        if (type(record) is not _EffectRecord
+                or record not in old.attempt_records
+                or self._key(record) not in old.unresolved_operations
+                or (record.account_binding_sha256, record.target_path)
+                not in old.targets):
+            raise _ContractDenied("owner_attempt_binding_unverified")
+        # The only terminal transition atomically records exact disposition
+        # AND lifts this one resource-conflict key. Account-wide quarantine
+        # (unknown wider remote effect) remains independently in force.
+        self.commit_verified_settlement(
+            record, disposition=broker_disposition,
+        )
+
+    def owner_reconcile_unknown_account(
+        self, account_binding: str, *,
+        trusted_owner_peer: bool,
+        trusted_account_scope_finality: bool,
+        durable_broker_receipt: bool,
+        settlement_journal_durable: bool,
+    ) -> None:
+        """Only independently verified ACCOUNT-WIDE finality can lift it.
+
+        All known attempts/targets for this account must be terminal first.
+        In a real Broker, delayed/out-of-band effects may make this proof
+        impossible, requiring continued pending quarantine/Human resolution.
+        """
+        if (self.boot_epoch < 1 or self.open
+                or self.boot_reconciled is not False
+                or self.flock_holders or self.active_operations):
+            raise _ContractDenied("owner_boot_unverified")
+        if (trusted_owner_peer is not True
+                or trusted_account_scope_finality is not True
+                or durable_broker_receipt is not True
+                or settlement_journal_durable is not True):
+            raise _ContractDenied("account_finality_unverified")
+        old = self._journal
+        if (type(account_binding) is not str
+                or account_binding not in old.accounts):
+            raise _ContractDenied("account_binding_unverified")
+        if (any(account == account_binding for account, _path in old.targets)
+                or any(
+                    (record.run_id, record.operation_id)
+                    in old.unresolved_operations | old.active_operations
+                    for record in old.attempt_records
+                    if record.account_binding_sha256 == account_binding
+                )):
+            raise _ContractDenied("account_unresolved")
+        # Owner-only one-snapshot update. Existing unrelated-account quarantine
+        # is retained. Real SQL durability/OS identity are NOT modeled.
+        self._journal = replace(
+            old, accounts=old.accounts - {account_binding},
+        )
 
     def close_admissions(self, reason: str) -> None:
         self.open=False
@@ -343,6 +445,9 @@ class _AbstractEffectProtocol:
             self._deny("revoked")
         if not self.admission_gate.open:
             self._deny("new_effects_suspended")
+        if (self.claim_boot_epoch != self.admission_gate.boot_epoch
+                or self.admission_gate.boot_reconciled is not True):
+            self._deny("owner_ledger_unverified")
         if self.lock_held or self.admission_gate.flock_holders:
             self._deny("lease_busy")
         self.lock_held = True
@@ -405,8 +510,9 @@ class _AbstractEffectProtocol:
         if (self.claim_boot_epoch != self.admission_gate.boot_epoch
                 or self.admission_gate.boot_reconciled is not True
                 or key not in self.admission_gate.flock_holders):
+            # Owner restart already fenced active attempts as unresolved.
+            # Never let a stale session change a terminal Owner journal.
             self.unresolved=True
-            self.admission_gate.mark_uncertain(self.expected)
             self._deny("owner_boot_unverified")
         if self.expected.account_binding_sha256 in self.admission_gate.resources.accounts:
             self.unresolved=True
@@ -439,6 +545,15 @@ class _AbstractEffectProtocol:
         """
         if not self.lock_held or not self.attempt_persisted:
             self._deny("no_active_effect")
+        if (self.claim_boot_epoch != self.admission_gate.boot_epoch
+                or self.admission_gate.boot_reconciled is not True
+                or self.admission_gate._key(self.expected)
+                    not in self.admission_gate.flock_holders):
+            # Stale Owner connection was revoked by reboot; do not call the
+            # journal's mark_uncertain or settlement from this old session.
+            self.unresolved = True
+            self.lock_held = False
+            self._deny("owner_boot_unverified")
         if (self.dispatch_recorded and trusted_readback is True
                 and durable_receipt is True
                 and trusted_operation_finality is True
@@ -465,6 +580,13 @@ class _AbstractEffectProtocol:
     def disconnected(self) -> None:
         if not self.lock_held:
             self._deny("no_active_effect")
+        if (self.claim_boot_epoch != self.admission_gate.boot_epoch
+                or self.admission_gate.boot_reconciled is not True
+                or self.admission_gate._key(self.expected)
+                    not in self.admission_gate.flock_holders):
+            self.unresolved = True
+            self.lock_held = False
+            self._deny("owner_boot_unverified")
         self.unresolved = True
         self.admission_gate.mark_uncertain(self.expected)
         self.lock_held = False
@@ -474,6 +596,10 @@ class _AbstractEffectProtocol:
         self.events.extend(("effect_unconfirmed", "owner_lock_released"))
 
     def restart(self) -> None:
+        # Lifecycle control is modeled as Owner-initiated. An obsolete
+        # session may not trigger another global reboot/epoch mutation.
+        if self.claim_boot_epoch != self.admission_gate.boot_epoch:
+            self._deny("owner_boot_unverified")
         self.admission_gate.owner_restart()
         if self.lock_held:
             self.unresolved = True
@@ -1491,10 +1617,11 @@ def test_old_owner_session_cannot_terminally_settle_after_restart(model):
     )
     a=_AbstractEffectProtocol(a_record, admission_gate=gate)
     a.restart()
-    other.finish(
-        trusted_readback=True, durable_receipt=True,
-        trusted_operation_finality=True,
-    )
+    with pytest.raises(_ContractDenied, match="^owner_boot_unverified$"):
+        other.finish(
+            trusted_readback=True, durable_receipt=True,
+            trusted_operation_finality=True,
+        )
     assert other.unresolved and not other.settled
     assert (other.expected.account_binding_sha256,other.expected.target_path) in gate.resources.targets
     assert (other.expected.run_id,other.expected.operation_id) in gate.unresolved_operations
@@ -1515,3 +1642,370 @@ def test_unknown_account_quarantine_after_dispatch_blocks_terminal_success(model
     assert gate.resources.accounts
     assert (first.expected.account_binding_sha256,first.expected.target_path) in gate.resources.targets
     assert first.request_off() == "pending_unconfirmed"
+
+
+# #472 R2/B2c-D1/A0 PR #554 R1: post-restart reconciliation is Owner-only.
+# These are disposable design-contract tests, not a real credential or broker.
+
+
+def _r1_restarted_attempt(model, *, dispatched: bool):
+    gate = _AtomicAdmissionGate()
+    old_owner_session = _AbstractEffectProtocol(
+        model.expected, admission_gate=gate,
+    )
+    old_owner_session.begin(old_owner_session.expected)
+    if dispatched:
+        old_owner_session.broker_dispatch(old_owner_session.expected)
+    old_owner_session.restart()
+    assert not gate.open and not gate.boot_reconciled
+    assert gate.unresolved_operations and gate.resources.targets
+    return gate, old_owner_session
+
+
+def _r1_valid_finality(disposition):
+    return dict(
+        trusted_owner_peer=True,
+        trusted_private_attempt=True,
+        trusted_broker_finality=True,
+        broker_disposition=disposition,
+        durable_broker_receipt=True,
+        settlement_journal_durable=True,
+    )
+
+
+def test_r1_fresh_owner_reconciles_post_restart_remote_effect(model):
+    gate, stale = _r1_restarted_attempt(model, dispatched=True)
+    assert gate.owner_reconcile_boot(trusted_owner_scan=True) is False
+    with pytest.raises(_ContractDenied, match="^owner_boot_unverified$"):
+        stale.reconcile(trusted_provider_outcome=True, durable_receipt=True)
+    gate.owner_reconcile_post_restart(
+        stale.expected, **_r1_valid_finality("verified_remote_effect"),
+    )
+    key = (stale.expected.run_id, stale.expected.operation_id)
+    target = (stale.expected.account_binding_sha256, stale.expected.target_path)
+    assert (key[0], key[1], "verified_remote_effect") in gate._journal.terminal_outcomes
+    assert key in gate.fenced_operations
+    assert key not in gate.unresolved_operations
+    assert target not in gate.resources.targets
+    assert not gate.open and not gate.boot_reconciled
+    assert not stale.settled  # Old per-Run session never gains Owner authority.
+    assert gate.owner_reconcile_boot(trusted_owner_scan=True) is True
+    with pytest.raises(_ContractDenied):
+        stale.begin(stale.expected)
+    new_record = replace(
+        stale.expected, run_id="9" * 32, operation_id="8" * 32,
+    )
+    fresh = _AbstractEffectProtocol(new_record, admission_gate=gate)
+    fresh.begin(new_record)
+    assert fresh.attempt_persisted
+
+
+def test_r1_fresh_owner_reconciles_verified_never_dispatched(model):
+    gate, stale = _r1_restarted_attempt(model, dispatched=False)
+    gate.owner_reconcile_post_restart(
+        stale.expected, **_r1_valid_finality("verified_no_effect"),
+    )
+    key = (stale.expected.run_id, stale.expected.operation_id)
+    assert (key[0], key[1], "verified_no_effect") in gate._journal.terminal_outcomes
+    assert (key[0], key[1], "verified_remote_effect") not in gate._journal.terminal_outcomes
+    assert not gate.unresolved_operations and not gate.resources.targets
+    assert gate.owner_reconcile_boot(trusted_owner_scan=True) is True
+    with pytest.raises(_ContractDenied):
+        stale.begin(stale.expected)
+
+
+@pytest.mark.parametrize("untrusted", [
+    "trusted_owner_peer", "trusted_private_attempt",
+    "trusted_broker_finality", "durable_broker_receipt",
+    "settlement_journal_durable",
+])
+def test_r1_post_restart_owner_fail_closed_for_missing_trust(model, untrusted):
+    gate, stale = _r1_restarted_attempt(model, dispatched=True)
+    trusted = _r1_valid_finality("verified_remote_effect")
+    trusted[untrusted] = False
+    before = gate._journal
+    with pytest.raises(_ContractDenied):
+        gate.owner_reconcile_post_restart(stale.expected, **trusted)
+    assert gate._journal is before
+    assert not gate.open
+    assert gate.owner_reconcile_boot(trusted_owner_scan=True) is False
+
+
+@pytest.mark.parametrize("disposition", [
+    "verified", "unknown", "verified_no_dispatch", "", None, True,
+])
+def test_r1_post_restart_owner_denies_invalid_disposition(model, disposition):
+    gate, stale = _r1_restarted_attempt(model, dispatched=True)
+    before = gate._journal
+    with pytest.raises(_ContractDenied):
+        gate.owner_reconcile_post_restart(
+            stale.expected, **_r1_valid_finality(disposition),
+        )
+    assert gate._journal is before and gate.resources.targets
+
+
+def test_r1_post_restart_owner_denies_foreign_attempt_identity(model):
+    gate, stale = _r1_restarted_attempt(model, dispatched=True)
+    foreign = replace(stale.expected, run_id="4" * 32)
+    swapped_target = replace(stale.expected, target_path="98-System/evil.md")
+    before = gate._journal
+    for record in (foreign, swapped_target):
+        with pytest.raises(_ContractDenied):
+            gate.owner_reconcile_post_restart(
+                record, **_r1_valid_finality("verified_remote_effect"),
+            )
+    assert gate._journal is before
+    assert gate.unresolved_operations and gate.resources.targets
+
+
+def test_r1_post_restart_unresolved_account_requires_independent_proof(model):
+    gate, stale = _r1_restarted_attempt(model, dispatched=True)
+    account = stale.expected.account_binding_sha256
+    gate.resources.quarantine_unknown_account(account)
+    gate.owner_reconcile_post_restart(
+        stale.expected, **_r1_valid_finality("verified_remote_effect"),
+    )
+    assert gate.resources.accounts == {account}
+    assert gate.owner_reconcile_boot(trusted_owner_scan=True) is False
+    with pytest.raises(_ContractDenied):
+        gate.owner_reconcile_unknown_account(
+            account, trusted_owner_peer=True,
+            trusted_account_scope_finality=False,
+            durable_broker_receipt=True, settlement_journal_durable=True,
+        )
+    assert gate.resources.accounts == {account}
+    gate.owner_reconcile_unknown_account(
+        account, trusted_owner_peer=True,
+        trusted_account_scope_finality=True,
+        durable_broker_receipt=True, settlement_journal_durable=True,
+    )
+    assert not gate.resources.accounts
+    assert gate.owner_reconcile_boot(trusted_owner_scan=True) is True
+
+
+def test_r1_pending_off_cannot_be_reopened_by_post_restart_reconciler(model):
+    gate = _AtomicAdmissionGate()
+    stale = _AbstractEffectProtocol(model.expected, admission_gate=gate)
+    stale.begin(stale.expected)
+    stale.broker_dispatch(stale.expected)
+    assert stale.request_off() == "pending_inflight"
+    stale.restart()
+    assert gate.closed_reason == "off" and not gate.open
+    gate.owner_reconcile_post_restart(
+        stale.expected, **_r1_valid_finality("verified_remote_effect"),
+    )
+    assert gate.owner_reconcile_boot(trusted_owner_scan=True) is False
+    assert not gate.open and gate.closed_reason == "off"
+    assert stale.request_off() == "complete"
+    assert stale.revoked and not gate.open
+
+
+
+def test_r1_multiple_outstanding_effects_remain_closed_until_all_reconciled(model):
+    gate = _AtomicAdmissionGate()
+    first = _AbstractEffectProtocol(model.expected, admission_gate=gate)
+    a_record = first.expected
+    first.begin(a_record)
+    first.broker_dispatch(a_record)
+    first.disconnected()
+    b_record = replace(
+        a_record, run_id="4" * 32, operation_id="9" * 32,
+        target_path="98-System/other-target.md",
+    )
+    second = _AbstractEffectProtocol(b_record, admission_gate=gate)
+    second.begin(b_record)
+    second.broker_dispatch(b_record)
+    first.restart()
+    assert len(gate.unresolved_operations) == 2
+    assert len(gate.resources.targets) == 2
+    gate.owner_reconcile_post_restart(
+        a_record, **_r1_valid_finality("verified_remote_effect"),
+    )
+    assert gate.owner_reconcile_boot(trusted_owner_scan=True) is False
+    assert not gate.open and len(gate.resources.targets) == 1
+    gate.owner_reconcile_post_restart(
+        b_record, **_r1_valid_finality("verified_no_effect"),
+    )
+    assert len(gate._journal.terminal_outcomes) == 2
+    assert not gate.resources.targets and not gate.unresolved_operations
+    assert gate.owner_reconcile_boot(trusted_owner_scan=True) is True
+    with pytest.raises(_ContractDenied):
+        second.begin(b_record)
+
+
+def test_r1_recovery_rejects_same_key_wrong_policy_or_operation_plan(model):
+    gate, stale = _r1_restarted_attempt(model, dispatched=True)
+    before = gate._journal
+    for field, value in (
+        ("plan_sha256", "9" * 64),
+        ("policy_sha256", "9" * 64),
+        ("source_generation", "9" * 64),
+        ("account_binding_sha256", "9" * 64),
+        ("receipt_root", "/wrong-root"),
+        ("precondition_etag", '"changed-etag"'),
+        ("after_sha256", "9" * 64),
+    ):
+        alternate = replace(stale.expected, **{field: value})
+        assert alternate != stale.expected
+        with pytest.raises(_ContractDenied, match="^owner_attempt_binding_unverified$"):
+            gate.owner_reconcile_post_restart(
+                alternate, **_r1_valid_finality("verified_remote_effect"),
+            )
+    assert gate._journal is before
+
+
+def test_r1_recovery_not_accessible_from_normal_pre_reboot_session(model):
+    gate = _AtomicAdmissionGate()
+    stale = _AbstractEffectProtocol(model.expected, admission_gate=gate)
+    stale.begin(stale.expected)
+    stale.disconnected()
+    with pytest.raises(_ContractDenied, match="^owner_boot_unverified$"):
+        gate.owner_reconcile_post_restart(
+            stale.expected, **_r1_valid_finality("verified_no_effect"),
+        )
+    assert gate.unresolved_operations and gate.resources.targets
+    assert gate.open  # No implicit global Off/rotation from local disconnect.
+
+
+def test_r1_account_unknown_quarantine_cannot_clear_before_known_attempt(model):
+    gate, stale = _r1_restarted_attempt(model, dispatched=True)
+    account = stale.expected.account_binding_sha256
+    gate.resources.quarantine_unknown_account(account)
+    with pytest.raises(_ContractDenied, match="^account_unresolved$"):
+        gate.owner_reconcile_unknown_account(
+            account,
+            trusted_owner_peer=True,
+            trusted_account_scope_finality=True,
+            durable_broker_receipt=True,
+            settlement_journal_durable=True,
+        )
+    assert gate.resources.accounts and gate.resources.targets
+    assert gate.owner_reconcile_boot(trusted_owner_scan=True) is False
+
+
+@pytest.mark.parametrize("untrusted", [
+    "trusted_owner_peer", "trusted_account_scope_finality",
+    "durable_broker_receipt", "settlement_journal_durable",
+])
+def test_r1_account_quarantine_denies_missing_account_scope_proof(model, untrusted):
+    gate, stale = _r1_restarted_attempt(model, dispatched=False)
+    account = stale.expected.account_binding_sha256
+    gate.resources.quarantine_unknown_account(account)
+    gate.owner_reconcile_post_restart(
+        stale.expected, **_r1_valid_finality("verified_no_effect"),
+    )
+    values = dict(
+        trusted_owner_peer=True,
+        trusted_account_scope_finality=True,
+        durable_broker_receipt=True,
+        settlement_journal_durable=True,
+    )
+    values[untrusted] = False
+    before = gate._journal
+    with pytest.raises(_ContractDenied):
+        gate.owner_reconcile_unknown_account(account, **values)
+    assert gate._journal is before
+    assert gate.owner_reconcile_boot(trusted_owner_scan=True) is False
+
+
+def test_r1_post_restart_reconciliation_does_not_reissue_old_effect(model):
+    gate, stale = _r1_restarted_attempt(model, dispatched=False)
+    old = stale.expected
+    key = old.run_id, old.operation_id
+    gate.owner_reconcile_post_restart(
+        old, **_r1_valid_finality("verified_no_effect"),
+    )
+    before = gate._journal
+    with pytest.raises(_ContractDenied, match="^owner_attempt_binding_unverified$"):
+        gate.owner_reconcile_post_restart(
+            old, **_r1_valid_finality("verified_remote_effect"),
+        )
+    assert gate._journal is before
+    assert len(gate._journal.terminal_outcomes) == 1
+    assert key in gate.fenced_operations
+    assert gate.owner_reconcile_boot(trusted_owner_scan=True) is True
+    with pytest.raises(_ContractDenied):
+        stale.begin(old)
+
+
+
+def _r1_terminal_from_other_session(model, *, dispatched: bool):
+    gate = _AtomicAdmissionGate()
+    b = _AbstractEffectProtocol(model.expected, admission_gate=gate)
+    b.begin(b.expected)
+    if dispatched:
+        b.broker_dispatch(b.expected)
+    a_record = replace(
+        model.expected, run_id="3" * 32, operation_id="4" * 32,
+        target_path="98-System/independent-owner.md",
+    )
+    a = _AbstractEffectProtocol(a_record, admission_gate=gate)
+    a.restart()
+    assert not gate.open and gate.unresolved_operations
+    gate.owner_reconcile_post_restart(
+        b.expected,
+        **_r1_valid_finality(
+            "verified_remote_effect" if dispatched else "verified_no_effect",
+        ),
+    )
+    assert not gate.unresolved_operations and not gate.resources.targets
+    return gate, b
+
+
+def test_r1_late_stale_finish_cannot_resurrect_terminal_journal(model):
+    gate, stale = _r1_terminal_from_other_session(model, dispatched=True)
+    after = gate._journal
+    with pytest.raises(_ContractDenied, match="^owner_boot_unverified$"):
+        stale.finish(
+            trusted_readback=True, durable_receipt=True,
+            trusted_operation_finality=True,
+        )
+    assert gate._journal is after
+    assert not gate.unresolved_operations and not gate.resources.targets
+    assert gate.owner_reconcile_boot(trusted_owner_scan=True) is True
+
+
+def test_r1_late_stale_broker_dispatch_cannot_resurrect_terminal_journal(model):
+    gate, stale = _r1_terminal_from_other_session(model, dispatched=False)
+    after = gate._journal
+    with pytest.raises(_ContractDenied, match="^owner_boot_unverified$"):
+        stale.broker_dispatch(stale.expected)
+    assert gate._journal is after
+    assert not gate.unresolved_operations and not gate.resources.targets
+    assert gate.owner_reconcile_boot(trusted_owner_scan=True) is True
+
+
+def test_r1_late_stale_disconnect_cannot_resurrect_terminal_journal(model):
+    gate, stale = _r1_terminal_from_other_session(model, dispatched=False)
+    after = gate._journal
+    with pytest.raises(_ContractDenied, match="^owner_boot_unverified$"):
+        stale.disconnected()
+    assert gate._journal is after
+    assert not gate.unresolved_operations and not gate.resources.targets
+    assert gate.owner_reconcile_boot(trusted_owner_scan=True) is True
+
+
+def test_r1_owner_journal_refuses_mark_uncertain_after_terminal(model):
+    gate, stale = _r1_restarted_attempt(model, dispatched=True)
+    gate.owner_reconcile_post_restart(
+        stale.expected, **_r1_valid_finality("verified_remote_effect"),
+    )
+    after = gate._journal
+    with pytest.raises(_ContractDenied, match="^attempt_terminal$"):
+        gate.mark_uncertain(stale.expected)
+    assert gate._journal is after
+    assert not gate.unresolved_operations
+    assert not gate.resources.targets
+
+
+
+def test_r1_stale_owner_restart_does_not_advance_boot_epoch(model):
+    gate, stale = _r1_restarted_attempt(model, dispatched=False)
+    epoch = gate.boot_epoch
+    before = gate._journal
+    with pytest.raises(_ContractDenied, match="^owner_boot_unverified$"):
+        stale.restart()
+    assert gate.boot_epoch == epoch
+    assert gate._journal is before
+    assert not gate.open
+    assert gate.unresolved_operations
