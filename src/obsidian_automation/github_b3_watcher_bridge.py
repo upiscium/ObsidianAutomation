@@ -25,10 +25,19 @@ _MAX_CAPTURE_BYTES = 512 * 1024
 
 
 class _BoundedSink(io.StringIO):
+    def __init__(self) -> None:
+        super().__init__()
+        self._bytes = 0
+
     def write(self, value: str) -> int:
-        if self.tell() + len(value) > _MAX_CAPTURE_BYTES:
+        if type(value) is not str:
+            raise TypeError("invalid_observation")
+        size = len(value.encode("utf-8"))
+        if self._bytes + size > _MAX_CAPTURE_BYTES:
             raise ValueError("bounded_observation_exceeded")
-        return super().write(value)
+        result = super().write(value)
+        self._bytes += size
+        return result
 
 
 def _result(state: str, reason: str, *, observations: int = 0,
@@ -130,7 +139,7 @@ def collect_b3_read_only(
             return _result("observed", "local_read_only_observation",
                            observations=count, pending=pending)
     except (OSError, ValueError, TypeError, RuntimeError, AttributeError,
-            json.JSONDecodeError):
+            UnicodeError, json.JSONDecodeError):
         return _result("unknown", "watcher_observation_unavailable")
     finally:
         if fd is not None:
