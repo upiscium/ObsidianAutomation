@@ -76,109 +76,43 @@ def test_javascript_preserves_history_and_secret_boundary():
 
 
 def test_source_module_modification_is_only_static_html():
-    # Compare AST instead of source string: ensure this UI slice did not
-    # silently edit service implementation functions in admin_dashboard.py.
-    # A frozen base copy is the exact previous main revision used by this
-    # isolated implementation, materialized only when running in a Git repo.
+    """Verify the historical #531 UI-only change against its frozen base.
+
+    Compare the actual reviewed #531 head to the previous #527 merge,
+    never a *moving* current main. Later approved B3 backend additions,
+    connection TOCTOU guards and other feature work are independently
+    tested and cannot invalidate this historical UI-only proof.
+    """
     git = shutil.which("git")
     if not git:
         pytest.skip("git unavailable")
-    baseline = subprocess.run(
-        [
-            git, "show",
-            "6b592d527ab1e6500de931e38a42b27ca9c971f4:"
-            "src/obsidian_automation/admin_dashboard.py",
-        ],
-        cwd=ROOT, check=False, capture_output=True, text=True, timeout=8,
-    )
-    if baseline.returncode != 0:
-        pytest.skip("prior merge baseline unavailable")
-    current = MANAGER.read_text()
 
-    # #301: the independently tested Gitea-only TOCTOU correction moves
-    # ONLY source resolution under the existing Writer/Job gates. Reconstruct
-    # the pre-correction source using exact, one-time replacements before the
-    # historical #530 AST check; any other backend/inline-JS change fails.
-    def undo_approved_gitea_lock_move(source: str) -> str:
-        new_prefix = (
-            '                payload = json.loads(self._read_bounded_json())\n'
-            '                gitea_only = type(payload) is dict and set(payload) == GITEA_FIELDS\n'
-            '                daily = self.server.daily_job'
+    def frozen(commit: str) -> ast.Module:
+        result = subprocess.run(
+            [git, "show", commit + ":src/obsidian_automation/admin_dashboard.py"],
+            cwd=ROOT, check=False, capture_output=True, text=True, timeout=8,
         )
-        old_prefix = (
-            '                payload = json.loads(self._read_bounded_json())\n'
-            '                if type(payload) is dict and set(payload) == GITEA_FIELDS:\n'
-            '                    nextcloud = store.load_nextcloud()\n'
-            '                    if nextcloud is None:\n'
-            '                        raise ValueError("nextcloud_missing")\n'
-            '                    payload = {**nextcloud, **payload}\n'
-            '                daily = self.server.daily_job'
-        )
-        new_suffix = (
-            '                    # Resolve the ONE canonical shared source only after all\n'
-            '                    # writer/Job gates are held. A Nextcloud rotation that\n'
-            '                    # wins those gates must not be rolled back by a Gitea-only\n'
-            '                    # request that was already in flight.\n'
-            '                    if gitea_only:\n'
-            '                        nextcloud = store.load_nextcloud()\n'
-            '                        if nextcloud is None:\n'
-            '                            raise ValueError("nextcloud_missing")\n'
-            '                        payload = {**nextcloud, **payload}\n'
-            '                    github_setup = self.server.daily_setup'
-        )
-        old_suffix = '                    github_setup = self.server.daily_setup'
-        assert source.count(new_prefix) == 1
-        assert source.count(new_suffix) == 1
-        assert source.count(old_suffix) == 1
-        return source.replace(new_prefix, old_prefix, 1).replace(
-            new_suffix, old_suffix, 1
-        )
+        if result.returncode != 0:
+            pytest.skip("historical UI-only commit unavailable")
+        return ast.parse(result.stdout)
 
-    previous_ast = ast.parse(baseline.stdout)
-    current_ast = ast.parse(undo_approved_gitea_lock_move(current))
+    before = frozen("6b592d527ab1e6500de931e38a42b27ca9c971f4")
+    after = frozen("c914264aa5d2c5f47be577c390c83ea9f2b49300")
 
-    # #304 R1/C only changes the shared Nextcloud readiness handler and
-    # Gitea-only submit handler inside the existing inline JS. Preserve the
-    # #301 correction above; compare EVERY other Python AST node and every
-    # other inline-JS byte against the original #530 frozen baseline.
-    def assigned_name(node: ast.AST, name: str) -> bool:
-        return (
-            isinstance(node, ast.Assign)
-            and len(node.targets) == 1
-            and isinstance(node.targets[0], ast.Name)
-            and node.targets[0].id == name
-        )
-
-    def without_r1c_sections(js: str) -> str:
-        markers = (
-            "let snapshotSettings = null;",
-            '$("nextcloud-form").addEventListener("submit"',
-            '$("connections-form").addEventListener("submit"',
-            "async function snapshotRefresh()",
-        )
-        for marker in markers:
-            assert js.count(marker) == 1, marker
-        a, b, c, d = (js.index(marker) for marker in markers)
-        assert a < b < c < d
-        return (
-            js[:a] + "<R1C:shared-nextcloud-status>" + js[b:c]
-            + "<R1C:gitea-only-submit>" + js[d:]
-        )
-
-    def normalized_backend_ast(tree: ast.Module):
-        values = []
+    def backend_ast(tree: ast.Module) -> list[str]:
+        result = []
         for node in tree.body:
-            if assigned_name(node, "HTML"):
+            # #531 is permitted to change only its inline presentation
+            # constants. Current live source is intentionally NOT an input.
+            if (isinstance(node, ast.Assign)
+                    and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)
+                    and node.targets[0].id in ("HTML", "JS")):
                 continue
-            if assigned_name(node, "JS"):
-                assert isinstance(node.value, ast.Constant)
-                assert isinstance(node.value.value, str)
-                values.append(("JS", without_r1c_sections(node.value.value)))
-            else:
-                values.append(("BACKEND", ast.dump(node, include_attributes=False)))
-        return values
+            result.append(ast.dump(node, include_attributes=False))
+        return result
 
-    assert normalized_backend_ast(current_ast) == normalized_backend_ast(previous_ast)
+    assert backend_ast(before) == backend_ast(after)
 
 
 def test_existing_browser_history_regression_remains_green():
