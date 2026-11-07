@@ -18,6 +18,7 @@ import sys
 import tempfile
 import threading
 import time
+import zipfile
 
 import pytest
 
@@ -318,6 +319,62 @@ def test_disposable_child_env_preserves_python_loader_not_secrets(
         }
 
 
+def _isolated_worker_source_archive(directory: Path, group_gid: int) -> Path:
+    """Copy .py source only into a disposable, group-readable zip archive.
+
+    The GitHub runner checkout may be inaccessible through /home/runner to
+    the nobody UID; changing checkout permissions is forbidden. Importing
+    from this root-created zip never needs to traverse the checkout. Archive
+    lives under the 0710 Owner/test-group socket directory and is not a
+    credential store, installation, service or host permission change.
+    """
+    source_root = Path(__file__).resolve().parents[1] / "src"
+    package_root = source_root / "obsidian_automation"
+    assert package_root.is_dir()
+    archive_path = directory / "worker-src.zip"
+    with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_STORED) as out:
+        for source in sorted(package_root.rglob("*.py")):
+            assert source.is_file() and not source.is_symlink()
+            name = "obsidian_automation/" + source.relative_to(package_root).as_posix()
+            out.write(source, arcname=name)
+    os.chown(archive_path, os.geteuid(), group_gid)
+    archive_path.chmod(0o640)
+    st = archive_path.lstat()
+    assert stat.S_ISREG(st.st_mode)
+    assert stat.S_IMODE(st.st_mode) == 0o640
+    assert (st.st_uid, st.st_gid) == (os.geteuid(), group_gid)
+    return archive_path
+
+
+def test_disposable_source_archive_imports_without_checkout(monkeypatch, tmp_path):
+    archive = _isolated_worker_source_archive(tmp_path, os.getegid())
+    with zipfile.ZipFile(archive) as zf:
+        members = zf.namelist()
+        assert "obsidian_automation/__init__.py" in members
+        assert "obsidian_automation/vault_format_worker_ipc_client.py" in members
+        assert "obsidian_automation/vault_format_run_ledger.py" in members
+        assert all(name.endswith(".py") for name in members)
+
+    # Prove a child with NO repository path in PYTHONPATH can import the
+    # exact modules used by the root-only Worker subprocess.
+    env = _restricted_worker_child_env(archive)
+    result = subprocess.run(
+        [sys.executable, "-S", "-c",
+         "import obsidian_automation.vault_format_worker_ipc_client as worker; "
+         "import obsidian_automation.vault_format_run_ledger as ledger; "
+         "import sys; "
+         "prefix=sys.argv[1]+'/obsidian_automation/'; "
+         "assert worker.__file__.startswith(prefix), 'worker archive origin'; "
+         "assert ledger.__file__.startswith(prefix), 'ledger archive origin'; "
+         "print('WORKER_IMPORT_OK')",
+         str(archive)],
+        cwd=tmp_path, env=env, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=8,
+    )
+    assert result.returncode == 0
+    assert result.stdout.strip() == "WORKER_IMPORT_OK"
+
+
 @pytest.mark.skipif(os.geteuid() != 0, reason="root-only disposable real-UID fixture")
 def test_root_real_distinct_uid_worker_client_claim_and_status(owner_fixture):
     """Actual worker EUID != Owner EUID, filesystem ACL and SO_PEERCRED."""
@@ -347,7 +404,12 @@ def test_root_real_distinct_uid_worker_client_claim_and_status(owner_fixture):
             "from obsidian_automation.vault_format_run_ledger import RunIntent\n"
             "from obsidian_automation.vault_format_worker_ipc_client "
             "import WorkerUnixClient,WorkerIPCDenied\n"
+            "import obsidian_automation.vault_format_run_ledger as ledger_module\n"
+            "import obsidian_automation.vault_format_worker_ipc_client as worker_module\n"
             "import json,os,sys\n"
+            "prefix=sys.argv[5]+'/obsidian_automation/'\n"
+            "assert ledger_module.__file__.startswith(prefix), 'ledger origin'\n"
+            "assert worker_module.__file__.startswith(prefix), 'worker origin'\n"
             "intent=RunIntent(**json.loads(bytes.fromhex(sys.argv[2])))\n"
             "client=WorkerUnixClient(Path(sys.argv[1]),owner_uid=int(sys.argv[3]),"
             "ipc_group_gid=int(sys.argv[4]))\n"
@@ -369,6 +431,9 @@ def test_root_real_distinct_uid_worker_client_claim_and_status(owner_fixture):
             "print('LEDGER_REPLAY_DENIED',flush=True)\n"
         )
         with listener:
+            isolated_archive = _isolated_worker_source_archive(
+                directory, other.pw_gid,
+            )
             # Independent real-filesystem ACL proof, not merely an inference
             # from the Client's successful connect/response.
             parent_state = directory.lstat()
@@ -388,11 +453,10 @@ def test_root_real_distinct_uid_worker_client_claim_and_status(owner_fixture):
             child = subprocess.Popen(
                 [sys.executable, "-c", program, str(listener.path),
                  json.dumps(asdict(intent)).encode().hex(),
-                 str(os.geteuid()), str(other.pw_gid)],
+                 str(os.geteuid()), str(other.pw_gid),
+                 str(isolated_archive)],
                 user=other.pw_uid, group=other.pw_gid, extra_groups=[],
-                env=_restricted_worker_child_env(
-                    Path(__file__).resolve().parents[1] / "src",
-                ),
+                env=_restricted_worker_child_env(isolated_archive),
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, bufsize=1,
             )
