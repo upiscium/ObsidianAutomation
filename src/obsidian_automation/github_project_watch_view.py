@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -82,6 +83,9 @@ def _project_path(value: object) -> bool:
         and 15 <= len(value) <= 500
         and _PATH.fullmatch(value) is not None
         and all(part not in (".", "..") for part in value.split("/"))
+        # Surrogates from a malformed/untrusted filename cannot be hashed
+        # with strict UTF-8; reject without leaking their raw path.
+        and all(unicodedata.category(ch) != "Cs" for ch in value)
     )
 
 
@@ -96,7 +100,15 @@ def _repository(value: object) -> bool:
 
 def _safe_name(path: str) -> str:
     name = path.rsplit("/", 1)[1][:-3]
-    return name[:120] if name else "Unnamed Project"
+    # User-controlled note filenames appear in a browser list. Replace
+    # controls, direction overrides, and line/paragraph separators so a
+    # name cannot visually reorder neighboring UI rows or status labels.
+    safe = "".join(
+        "?" if unicodedata.category(ch).startswith("C")
+        or unicodedata.category(ch) in ("Zl", "Zp") else ch
+        for ch in name
+    ).strip()
+    return safe[:120] if safe else "Unnamed Project"
 
 
 def project_watch_projection(
@@ -149,6 +161,10 @@ def project_watch_projection(
             or observation.project_path in seen
         ):
             raise ProjectWatchProjectionUnavailable()
+        # Validate all history records even if their Project is currently
+        # disabled or absent. An ignored stale binding is not an excuse to
+        # accept malformed timestamps from the durable observation store.
+        _now_utc(observation.observed_at)
         seen.add(observation.project_path)
         lookup[observation.project_path] = observation
     authoritative = (
@@ -208,7 +224,9 @@ def project_watch_projection(
         })
     return {
         "schemaVersion": _SCHEMA,
-        "observedAt": instant.isoformat(),
+        # Projection/render timestamp only: NOT the SourceOwner's evidence
+        # collection time and NOT a verified Vault write timestamp.
+        "projectedAt": instant.isoformat(),
         "globalDesiredEnabled": global_status.desired_enabled,
         "globalControlVerified": authoritative,
         "projectCount": len(rows),

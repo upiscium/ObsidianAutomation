@@ -218,10 +218,71 @@ def test_unbounded_project_list_rejected():
 def test_output_schema_contains_no_raw_note_body_or_success_claim():
     result=show()
     assert set(result) == {
-        "schemaVersion","observedAt","globalDesiredEnabled",
+        "schemaVersion","projectedAt","globalDesiredEnabled",
         "globalControlVerified","projectCount","projects",
     }
     row=result["projects"][0]
     assert "lastVerifiedVaultWrite" in row and row["lastVerifiedVaultWrite"] is None
     assert "body" not in row and "credentials" not in row
     assert len(row["projectId"]) == 24
+
+
+
+def test_display_name_replaces_bidi_and_unicode_line_separators():
+    # Distinct raw paths remain stable IDs; only presentation is sanitized.
+    path = "10-Project/T/Project\u202eHidden\u2028Name.md"
+    row = item(projects=(config(project_path=path),), histories=())
+    assert row["name"] == "Project?Hidden?Name"
+    assert "\u202e" not in row["name"] and "\u2028" not in row["name"]
+    assert row["lastVerifiedVaultWrite"] is None
+
+
+def test_lone_surrogate_in_project_path_rejected_without_unicode_error():
+    with pytest.raises(ProjectWatchProjectionUnavailable):
+        show(projects=(config(project_path="10-Project/T/Bad\ud800.md"),), histories=())
+
+
+def test_invalid_orphan_observation_clock_is_always_rejected():
+    extra = observed(
+        project_path="10-Project/Orphan/Orphan.md",
+        observed_at="not-a-timestamp",
+    )
+    with pytest.raises(ProjectWatchProjectionUnavailable):
+        show(histories=(observed(), extra))
+
+
+def test_invalid_clock_in_disabled_project_history_is_rejected():
+    with pytest.raises(ProjectWatchProjectionUnavailable):
+        show(projects=(config(github_watch=False),),
+             histories=(observed(observed_at=None),))
+
+
+def test_exactly_256_projects_and_observations_are_allowed():
+    projects = tuple(
+        config(project_path=f"10-Project/L/S{i}.md")
+        for i in range(256)
+    )
+    observations = tuple(
+        observed(project_path=f"10-Project/L/S{i}.md")
+        for i in range(256)
+    )
+    result = show(projects=projects, histories=observations)
+    assert result["projectCount"] == 256
+    assert len(result["projects"]) == 256
+
+
+def test_257_observations_rejected_even_with_one_project():
+    observations = tuple(
+        observed(project_path=f"10-Project/L/S{i}.md")
+        for i in range(257)
+    )
+    with pytest.raises(ProjectWatchProjectionUnavailable):
+        show(histories=observations)
+
+
+def test_projection_timestamp_never_claims_evidence_collection_time():
+    moment = NOW - timedelta(hours=1)
+    result = show(histories=(observed(observed_at=moment),))
+    assert result["projectedAt"] == NOW.isoformat()
+    assert result["projects"][0]["lastWatcherObservedAt"] == moment.isoformat()
+    assert "observedAt" not in result
