@@ -11,6 +11,8 @@ from .snapshot_adapter import Connections, SnapshotAdapter
 from .snapshot_job import SnapshotJob
 from .snapshot_setup import SetupStore
 from .github_daily_job import DailyJob
+from .github_b3_observer_job import B3ObserverJob
+from .github_b3_watcher_bridge import collect_b3_read_only
 from .github_daily_setup import DailySetup
 from .github_daily_runonce import run_once
 from .github_daily_deterministic_writer import publish_verified_daily
@@ -97,15 +99,31 @@ def main() -> int:
                  publisher=daily_publisher if args.daily_publish else None)
         if daily_setup is not None else nullcontext(None)
     )
+
+    # B3 uses B4's configured read-only Project source. There is NO B3
+    # canonical Writer, Promotion, or publishing callback. OFF by default;
+    # its independent observer Job is ticked only by the existing scheduler.
+    b3_state = state / "github-b3" if store is not None else None
+    b3_context = (
+        B3ObserverJob(
+            b3_state,
+            lambda: collect_b3_read_only(daily_setup, state_root=b3_state),
+            configured=daily_setup.configured,
+            generation=daily_setup.source_fingerprint,
+        )
+        if daily_setup is not None else nullcontext(None)
+    )
     with make_server(port=args.port, bind_address=args.bind,
                      snapshot_setup=store) as server, _job_context(
             state, runner, configured=c is not None,
-            connection_generation=store.generation() if store else None) as job, daily_context as daily_job, formatter_context as formatter_job:
+            connection_generation=store.generation() if store else None) as job, daily_context as daily_job, formatter_context as formatter_job, b3_context as b3_job:
         server.snapshot_job = job
         server.daily_job = daily_job
         server.daily_setup = daily_setup
         server.formatter_job = formatter_job
-        hooks = tuple(item.tick for item in (daily_job, formatter_job) if item is not None)
+        server.b3_observer_job = b3_job
+        hooks = tuple(item.tick for item in (daily_job, formatter_job, b3_job)
+                      if item is not None)
         job.start_scheduler(tick_hooks=hooks)
         server.serve_forever(poll_interval=0.25)
     return 0

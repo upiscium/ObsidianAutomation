@@ -194,10 +194,16 @@ def test_real_watcher_function_with_synthetic_files_and_fake_github(tmp_path):
     assert not (tmp_path / "B4-must-not-be-used.sqlite3").exists()
 
 
-def test_no_runtime_registration_in_this_slice(tmp_path):
+def test_runtime_registration_is_observation_only_without_writer(tmp_path):
     source = Path(__file__).resolve().parents[1] / "src" / "obsidian_automation"
-    assert "github_b3_watcher_bridge" not in (source / "snapshot_app.py").read_text()
-    assert "github_b3_watcher_bridge" not in (source / "admin_dashboard.py").read_text()
+    app = (source / "snapshot_app.py").read_text()
+    dashboard = (source / "admin_dashboard.py").read_text()
+    assert "github_b3_watcher_bridge" in app
+    assert "B3ObserverJob" in app
+    assert "github_b3_watcher_bridge" not in dashboard
+    assert "run_b3_writer_once" not in app
+    assert "apply_project_status" not in app
+    assert "apply_project_overview" not in app
 
 
 def test_huge_undisclosed_watcher_output_is_bounded(tmp_path):

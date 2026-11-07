@@ -643,7 +643,13 @@ def test_fresh_single_app_attaches_formatter_but_does_not_schedule_work(
             assert formatter.status()["settings"]["write_capable"] is False
             assert formatter.status()["last_run"] is None
             assert self.snapshot_job._scheduler is not None
-            assert self.snapshot_job._tick_hooks == (self.daily_job.tick, formatter.tick)
+            b3 = self.b3_observer_job
+            assert b3.status()["settings"]["enabled"] is False
+            assert b3.status()["last_run"] is None
+            assert b3.status()["vault_write_authorized"] is False
+            assert self.snapshot_job._tick_hooks == (
+                self.daily_job.tick, formatter.tick, b3.tick
+            )
             observed.append("single-scheduler-off")
     monkeypatch.setattr(snapshot_app, "make_server", lambda **kwargs: FakeServer())
     monkeypatch.setattr(
@@ -653,6 +659,7 @@ def test_fresh_single_app_attaches_formatter_but_does_not_schedule_work(
     assert observed == ["single-scheduler-off"]
     assert (state / "vault-formatter/formatter.sqlite3").is_file()
     assert (state / "github-daily/daily.sqlite3").is_file()
+    assert (state / "github-b3/observer-job.sqlite3").is_file()
     assert (state / "snapshot.sqlite3").is_file()
 
 def test_remote_inventory_rejects_large_and_unsafe_entries():
