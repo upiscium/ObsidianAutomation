@@ -626,11 +626,12 @@ stop, recovery, sign, generic RPC, PUT, or credential-rotation method.
 ### D1+ effect-time Writer/credential-generation boundary (design only)
 
 A valid Claim ACK or Status observation is **necessary but insufficient**
-to write to a canonical Vault. The future Worker effect-time adapter must:
-1. Hold the **same pinned durable effect-drain lock inode** used by the
-   Owner's stop/revoke and credential-generation rotation operation, for
-   the full effect including server-side CAS request and readback.
-2. While holding that lock, revalidate the exact signed Run grant,
+to write to a canonical Vault. The future **Owner-mediated effect path** must:
+1. Have the **Owner (not the Worker)** hold the same pinned effect-drain
+   lock inode used by the Owner's stop/revoke and credential rotation, across
+   broker dispatch, server-side CAS and trusted readback. The restricted
+   Worker does not hold that lock or perform provider writes directly.
+2. While the **Owner** holds the lock, revalidate the exact signed Run grant,
    policy, plan hash, account binding, provider proof and claim/receipt
    identity. The **Owner-private Ledger must not be read or mutated by the
    restricted Worker**. D1 must first design and independently test an
@@ -654,6 +655,17 @@ to write to a canonical Vault. The future Worker effect-time adapter must:
 **No D1 adapter or credential-generation integration exists in D0.**
 Merging this source-only client would not enable real Vault writes or
 production Owner/Worker connectivity.
+
+## R2/B2c-D1/A0 — effect-time admission design and disposable contract (source-only)
+
+See [the D1/A0 protocol and risk analysis](vault-formatter-effect-admission-d1.md)
+and `tests/test_472_effect_admission_d1_contract.py`. These describe an
+Owner-held effect lease, required durable one-shot attempt/settlement record,
+credential-generation authority and denial of Off/rotation after an
+unconfirmed remote effect. The test-only model **does not issue permissions**,
+change Ledger schema, install services or activate any Writer. A signed-only
+`DurableRunDrain.effect()` is not a replacement for Owner-private Ledger
+effect-time admission. No production Vault write is authorized by D1/A0.
 
 ## Production requirements NOT YET MET
 
