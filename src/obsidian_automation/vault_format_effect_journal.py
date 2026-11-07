@@ -13,6 +13,7 @@ import re
 import secrets
 import sqlite3
 import stat
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,33 @@ from typing import Iterator
 _ID = re.compile(r"[a-f0-9]{32}\Z")
 _SHA = re.compile(r"[a-f0-9]{64}\Z")
 _TERMINAL = ("verified_remote_effect", "verified_no_effect")
+# sqlite3.Connection exposes no SQLite VFS database FD to Python.
+# Linux /proc/self/fd is required; ambiguous or unavailable -> deny.
+_FD_DISCOVERY = threading.RLock()
+
+
+class _VerifiedSqliteConnection(sqlite3.Connection):
+    """Captures the actually-opened SQLite DB FD, not a pathname guess."""
+
+
+def _process_regular_fds() -> dict[int, tuple[int, int]]:
+    """Snapshot regular-file FDs of the current process."""
+    result = {}
+    try:
+        for name in os.listdir("/proc/self/fd"):
+            if not name.isdecimal():
+                continue
+            fd = int(name)
+            try:
+                info = os.fstat(fd)
+            except OSError:
+                # /proc enumeration can include its own transient FD.
+                continue
+            if stat.S_ISREG(info.st_mode):
+                result[fd] = (info.st_dev, info.st_ino)
+    except OSError:
+        raise JournalDenied("journal_open_inode_unverifiable") from None
+    return result
 
 
 class JournalDenied(ValueError):
@@ -208,6 +236,13 @@ class OwnerEffectJournal:
             raise JournalDenied("journal_unavailable") from None
 
     def _pin_existing(self) -> None:
+        # Include identity-file opens in the same process-wide FD inventory
+        # window; concurrent same-process Owner handles cannot misattribute
+        # each other's transient identity descriptors to SQLite.
+        with _FD_DISCOVERY:
+            self._pin_existing_locked()
+
+    def _pin_existing_locked(self) -> None:
         if _private_directory(self._state_dir) != self._state_inode:
             raise JournalDenied("journal_directory_unsafe")
         self._identity_inode = self._regular_private_file(self._identity_path)
@@ -243,21 +278,49 @@ class OwnerEffectJournal:
                     or self._regular_private_file(self._path) != self._db_inode):
                 raise JournalDenied("journal_identity_changed")
             uri = "file:" + quote(str(self._path), safe="/") + "?mode=rw"
-            db = sqlite3.connect(uri, uri=True, timeout=1, isolation_level=None)
-            db.execute("PRAGMA busy_timeout=1000")
-            db.execute("PRAGMA synchronous=FULL")
-            if db.execute("PRAGMA journal_mode=DELETE").fetchone()[0] != "delete":
-                raise JournalDenied("journal_mode_unsafe")
-            db.execute("PRAGMA foreign_keys=ON")
-            row = db.execute("SELECT binding FROM journal_binding WHERE id=1").fetchone()
-            if row is None or row[0] != self._binding:
-                raise JournalDenied("journal_identity_changed")
-            # SQLite has opened the inode by now. Check *after* connect before
-            # any journaling transaction: never trust just an lstat-before-open.
-            if (_private_directory(self._state_dir) != self._state_inode
-                    or self._regular_private_file(self._identity_path) != self._identity_inode
-                    or self._regular_private_file(self._path) != self._db_inode):
-                raise JournalDenied("journal_identity_changed")
+            # Path lstat misses swap -> SQLite open alternate -> swap back.
+            # Observe the ACTUAL new regular-file FD SQLite opened.
+            with _FD_DISCOVERY:
+                before = _process_regular_fds()
+                db = sqlite3.connect(
+                    uri, uri=True, timeout=1, isolation_level=None,
+                    factory=_VerifiedSqliteConnection,
+                )
+                db.execute("PRAGMA busy_timeout=1000")
+                db.execute("PRAGMA synchronous=FULL")
+                if db.execute("PRAGMA journal_mode=DELETE").fetchone()[0] != "delete":
+                    raise JournalDenied("journal_mode_unsafe")
+                db.execute("PRAGMA foreign_keys=ON")
+                row = db.execute("SELECT binding FROM journal_binding WHERE id=1").fetchone()
+                if row is None or row[0] != self._binding:
+                    raise JournalDenied("journal_identity_changed")
+                after = _process_regular_fds()
+                if any(fd in after and after[fd] != inode
+                       for fd, inode in before.items()):
+                    raise JournalDenied("journal_open_inode_unverifiable")
+                opened = [(fd, inode) for fd, inode in after.items()
+                          if fd not in before]
+                main_files = []
+                for fd, inode in opened:
+                    try:
+                        target = os.readlink(f"/proc/self/fd/{fd}")
+                    except OSError:
+                        raise JournalDenied("journal_open_inode_unverifiable") from None
+                    # Another current Owner transaction can transiently hold
+                    # the *separate* SQLite rollback-journal FD. Ignore only
+                    # its exactly named -journal companion, never an unknown
+                    # regular FD or a second candidate main DB.
+                    if target in (str(self._path) + "-journal",
+                                  str(self._path) + "-journal (deleted)"):
+                        continue
+                    main_files.append((fd, inode))
+                if len(main_files) != 1:
+                    raise JournalDenied("journal_open_inode_unverifiable")
+                fd, inode = main_files[0]
+                db._journal_fd = fd
+                if inode != self._db_inode:
+                    raise JournalDenied("journal_open_inode_mismatch")
+            self._verify_connection_file(db)
             return db
         except JournalDenied:
             if db is not None:
@@ -267,6 +330,27 @@ class OwnerEffectJournal:
             if db is not None:
                 db.close()
             raise JournalDenied("journal_unavailable") from None
+
+    def _verify_connection_file(self, db: sqlite3.Connection) -> None:
+        """Check actual opened SQLite FD and pinned canonical names.
+
+        Repeat before/after each SQL transaction. A compromised same-UID
+        process replacing all of the trusted state remains outside B0.
+        """
+        fd = getattr(db, "_journal_fd", None)
+        if type(fd) is not int:
+            raise JournalDenied("journal_open_inode_unverifiable")
+        try:
+            info = os.fstat(fd)
+        except OSError:
+            raise JournalDenied("journal_open_inode_unverifiable") from None
+        if (not stat.S_ISREG(info.st_mode)
+                or (info.st_dev, info.st_ino) != self._db_inode):
+            raise JournalDenied("journal_open_inode_mismatch")
+        if (_private_directory(self._state_dir) != self._state_inode
+                or self._regular_private_file(self._identity_path) != self._identity_inode
+                or self._regular_private_file(self._path) != self._db_inode):
+            raise JournalDenied("journal_identity_changed")
 
     @staticmethod
     def _schema(db: sqlite3.Connection) -> None:
@@ -308,9 +392,14 @@ class OwnerEffectJournal:
     def _transaction(self) -> Iterator[sqlite3.Connection]:
         db = self._connect()
         try:
+            self._verify_connection_file(db)
             db.execute("BEGIN IMMEDIATE")
+            self._verify_connection_file(db)
             yield db
+            self._verify_connection_file(db)
             db.execute("COMMIT")
+            # If postcommit verification fails, acknowledge NO success.
+            self._verify_connection_file(db)
         except BaseException:
             if db.in_transaction:
                 try:
@@ -349,7 +438,9 @@ class OwnerEffectJournal:
             db.execute("BEGIN")
             row = self._gate(db)
             active, unresolved = self._counts(db)
+            self._verify_connection_file(db)
             db.execute("COMMIT")
+            self._verify_connection_file(db)
             return dict(state=row[0], reason=row[1], boot_epoch=row[2],
                         boot_reconciled=bool(row[3]),
                         credential_generation=row[4], credential_epoch=row[5],

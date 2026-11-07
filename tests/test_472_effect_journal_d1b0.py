@@ -8,6 +8,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
+import os
 import sqlite3
 import subprocess
 import sys
@@ -206,7 +207,8 @@ def test_symlink_directory_and_file_mode_fail_closed(state_dir, tmp_path):
 
 def test_concurrent_begin_vs_off_has_only_two_serialized_outcomes(journal, state_dir):
     ready(journal)
-    barrier = threading.Barrier(2)
+    # A failed constructor must not strand the other thread indefinitely.
+    barrier = threading.Barrier(2, timeout=5)
     one = attempt(journal)
 
     def begin():
@@ -249,7 +251,9 @@ def test_sql_busy_failure_is_fail_closed(journal, state_dir):
     conn = sqlite3.connect(state_dir / journal.FILE, isolation_level=None)
     try:
         conn.execute("BEGIN IMMEDIATE")
-        with pytest.raises(JournalDenied, match="^journal_unavailable$"):
+        # SQLite may close its underlying fd when the other connection holds
+        # a write lock; both errors are non-success/fail-closed.
+        with pytest.raises(JournalDenied, match="^(journal_unavailable|journal_open_inode_unverifiable)$"):
             journal.record_begin(attempt(journal))
     finally:
         conn.execute("ROLLBACK")
@@ -365,11 +369,172 @@ def test_pathname_symlink_swapped_during_sql_connect_fail_closed(journal, state_
         return original_connect(*args, **kwargs)
 
     monkeypatch.setattr(sqlite3, "connect", swap_before_open)
-    # The same-token DB bypasses the *binding* test, so this failure proves
-    # the later pathname/inode recheck also rejects the symlink swap.
-    with pytest.raises(JournalDenied, match="^journal_file_unsafe$"):
+    # The same-token DB bypasses the SQL binding check, so the actual SQLite
+    # FD inode comparison rejects the swapped-in symlink's different inode.
+    with pytest.raises(JournalDenied, match="^journal_open_inode_mismatch$"):
         journal.status()
     monkeypatch.undo()
     dbfile.unlink()
     os.replace(safe_backup, dbfile)
     assert journal.status()["state"] == "open"
+
+
+def test_r1_swap_back_same_token_wrong_sqlite_open_inode_never_ack(journal, state_dir, tmp_path, monkeypatch):
+    """Canonical inode looks unchanged before/after, but SQLite opens a copy."""
+    ready(journal)
+    approved = attempt(journal)
+    dbfile = state_dir / journal.FILE
+    pinned_inode = dbfile.stat().st_ino
+    matching_copy = tmp_path / "same-token-copy.sqlite3"
+    matching_copy.write_bytes(dbfile.read_bytes())
+    matching_copy.chmod(0o600)
+    saved = tmp_path / "saved-canonical.sqlite3"
+    detached = tmp_path / "sqlite-actually-opened.sqlite3"
+    original_connect = sqlite3.connect
+    swapped = False
+
+    def swapped_open_restore(database, *args, **kwargs):
+        nonlocal swapped
+        if (not swapped and isinstance(database, str)
+                and database.startswith("file:")
+                and journal.FILE in database):
+            swapped = True
+            # A same-UID hostile file rename at the SQLite-open boundary.
+            os.replace(dbfile, saved)
+            os.replace(matching_copy, dbfile)
+            try:
+                opened = original_connect(database, *args, **kwargs)
+            finally:
+                os.replace(dbfile, detached)
+                os.replace(saved, dbfile)
+            assert dbfile.stat().st_ino == pinned_inode
+            return opened
+        return original_connect(database, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(sqlite3, "connect", swapped_open_restore)
+        with pytest.raises(JournalDenied, match="^journal_open_inode_mismatch$"):
+            journal.record_begin(approved)
+    assert swapped
+    assert dbfile.stat().st_ino == pinned_inode
+    with original_connect(dbfile) as db:
+        assert db.execute("SELECT count(*) FROM effect_attempt").fetchone()[0] == 0
+    with original_connect(detached) as db:
+        assert db.execute("SELECT count(*) FROM effect_attempt").fetchone()[0] == 0
+    assert journal.status()["state"] == "open"
+
+
+def test_r1_rename_after_verified_sqlite_connection_blocks_begin(journal, state_dir, tmp_path, monkeypatch):
+    """A pinned sqlite fd is not sufficient if its canonical path vanishes."""
+    ready(journal)
+    approved = attempt(journal)
+    dbfile = state_dir / journal.FILE
+    replacement = tmp_path / "replacement.sqlite3"
+    replacement.write_bytes(dbfile.read_bytes())
+    replacement.chmod(0o600)
+    saved = tmp_path / "opened-and-detached.sqlite3"
+    actual_connect = OwnerEffectJournal._connect
+    renamed = False
+
+    def after_connected(self):
+        nonlocal renamed
+        db = actual_connect(self)
+        if not renamed:
+            renamed = True
+            os.replace(dbfile, saved)
+            os.replace(replacement, dbfile)
+        return db
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(OwnerEffectJournal, "_connect", after_connected)
+            with pytest.raises(JournalDenied, match="^journal_identity_changed$"):
+                journal.record_begin(approved)
+        assert renamed
+        with sqlite3.connect(dbfile) as db:
+            assert db.execute("SELECT count(*) FROM effect_attempt").fetchone()[0] == 0
+        with sqlite3.connect(saved) as db:
+            assert db.execute("SELECT count(*) FROM effect_attempt").fetchone()[0] == 0
+    finally:
+        dbfile.unlink()
+        os.replace(saved, dbfile)
+    assert journal.status()["state"] == "open"
+
+
+def test_r1_procfd_unavailable_fails_closed(journal, monkeypatch):
+    ready(journal)
+    approved = attempt(journal)
+    real_listdir = os.listdir
+
+    def denied_procfs(path):
+        if path == "/proc/self/fd":
+            raise FileNotFoundError(path)
+        return real_listdir(path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "listdir", denied_procfs)
+        with pytest.raises(JournalDenied, match="^journal_open_inode_unverifiable$"):
+            journal.record_begin(approved)
+    assert journal.status()["active"] == 0
+
+
+def test_r1_known_sqlite_rollback_fd_does_not_hide_actual_main_fd(journal, state_dir, monkeypatch):
+    """A competing rollback journal descriptor is not the main DB file."""
+    ready(journal)
+    real_connect = sqlite3.connect
+    held_fds = []
+    journal_path = state_dir / (journal.FILE + "-journal")
+    injected = False
+
+    def with_competing_rollback_fd(database, *args, **kwargs):
+        nonlocal injected
+        con = real_connect(database, *args, **kwargs)
+        if (not injected and isinstance(database, str)
+                and database.startswith("file:") and journal.FILE in database):
+            injected = True
+            held_fds.append(os.open(
+                journal_path, os.O_RDONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600,
+            ))
+        return con
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(sqlite3, "connect", with_competing_rollback_fd)
+            assert journal.status()["state"] == "open"
+        assert injected
+    finally:
+        for fd in held_fds:
+            os.close(fd)
+        journal_path.unlink(missing_ok=True)
+
+
+def test_r1_unrelated_new_regular_fd_fails_closed_without_guessing(journal, state_dir, tmp_path, monkeypatch):
+    """Never silently bind a random extra file descriptor to the SQLite DB."""
+    ready(journal)
+    before = journal.status()
+    approved = attempt(journal)
+    real_connect = sqlite3.connect
+    other = tmp_path / "unrelated-opened-file"
+    other.write_bytes(b"not a journal")
+    held_fds = []
+    injected = False
+
+    def with_unrelated_regular_fd(database, *args, **kwargs):
+        nonlocal injected
+        con = real_connect(database, *args, **kwargs)
+        if (not injected and isinstance(database, str)
+                and database.startswith("file:") and journal.FILE in database):
+            injected = True
+            held_fds.append(os.open(other, os.O_RDONLY | os.O_NOFOLLOW))
+        return con
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(sqlite3, "connect", with_unrelated_regular_fd)
+            with pytest.raises(JournalDenied, match="^journal_open_inode_unverifiable$"):
+                journal.record_begin(approved)
+    finally:
+        for fd in held_fds:
+            os.close(fd)
+    assert injected
+    assert journal.status()["active"] == before["active"] == 0
