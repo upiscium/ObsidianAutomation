@@ -35,6 +35,10 @@ from .admin_ai_status import load_ai_health
 from .snapshot_job import SnapshotJob, Invalid as SnapshotInvalid
 from .snapshot_setup import validate_nextcloud, GITEA_FIELDS
 from .github_daily_job import DailyJob, Invalid as DailyInvalid
+from .github_b3_observer_job import (
+    B3ObserverJob, Invalid as B3ObserverInvalid,
+    parse_request as parse_b3_observer_request,
+)
 from .github_daily_setup import DailySetup, DailySetupError
 from .vault_format_job import FormatterJob, FormatterInvalid
 from .unified_workflows import workflow_catalog
@@ -1447,6 +1451,42 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._reply(200, body, mime)
             return
+        # Read-only B3 watcher Job surface. GET/HEAD must never fetch a Vault,
+        # call GitHub, create a Journal, or schedule a collection.
+        if self.path == "/api/v1/b3/observer" or self.path.startswith(
+            "/api/v1/b3/observer/"
+        ):
+            job = getattr(self.server, "b3_observer_job", None)
+            if job is None:
+                self._reply(503, b'{"error":"b3_observer_disabled"}',
+                            "application/json; charset=utf-8")
+                return
+            if self.path == "/api/v1/b3/observer":
+                try:
+                    data = job.status()
+                except Exception:
+                    self._reply(503, b'{"error":"b3_observer_unavailable"}',
+                                "application/json; charset=utf-8")
+                    return
+            else:
+                prefix = "/api/v1/b3/observer/runs/"
+                identifier = self.path[len(prefix):] if self.path.startswith(prefix) else ""
+                if re.fullmatch(r"[0-9a-f]{32}", identifier) is None:
+                    self._reply(404, b"Not found")
+                    return
+                try:
+                    data = job.run(identifier)
+                except Exception:
+                    self._reply(503, b'{"error":"b3_observer_unavailable"}',
+                                "application/json; charset=utf-8")
+                    return
+                if data is None:
+                    self._reply(404, b"Not found")
+                    return
+            self._reply(200, json.dumps(data, sort_keys=True,
+                                        separators=(",", ":")).encode("utf-8"),
+                        "application/json; charset=utf-8")
+            return
         # Versioned observation-only workflow views. Never share the
         # existing mutable operator/snapshot/daily POST authority here.
         prefix = "/api/v1/workflow-control"
@@ -1677,6 +1717,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/v1/snapshot/connections",
             "/api/v1/nextcloud/connections",
             "/api/v1/daily/settings", "/api/v1/daily/runs",
+            "/api/v1/b3/observer/settings", "/api/v1/b3/observer/runs",
             "/api/v1/daily/connections",
             "/api/v1/formatter/settings", "/api/v1/formatter/runs",
         ):
@@ -1823,6 +1864,34 @@ class Handler(BaseHTTPRequestHandler):
                 return
             except Exception:
                 self._reply(503, b'{"error":"daily_unavailable"}', "application/json")
+                return
+            self._reply(code, json.dumps(result).encode(), "application/json")
+            return
+
+        if self.path in ("/api/v1/b3/observer/settings", "/api/v1/b3/observer/runs"):
+            job = getattr(self.server, "b3_observer_job", None)
+            if job is None:
+                self._reply(503, b'{"error":"b3_observer_disabled"}', "application/json")
+                return
+            try:
+                payload = parse_b3_observer_request(self._read_bounded_json())
+                if self.path.endswith("/settings"):
+                    result = job.update(payload)
+                    code = 200
+                else:
+                    if type(payload) is not dict or set(payload) != {"request_id"}:
+                        raise B3ObserverInvalid("invalid_b3_observer_request")
+                    decision, receipt = job.submit(payload["request_id"])
+                    result = {"schema_version": "github-b3-readonly-observer-job/v1",
+                              "decision": decision,
+                              "run_id": receipt["run_id"] if receipt else None,
+                              "vault_write_authorized": False}
+                    code = 202 if decision in ("accepted", "replayed") else 409
+            except (B3ObserverInvalid, PreviewRequestRejected, ValueError, TypeError):
+                self._reply(400, b'{"error":"invalid_b3_observer_request"}', "application/json")
+                return
+            except Exception:
+                self._reply(503, b'{"error":"b3_observer_unavailable"}', "application/json")
                 return
             self._reply(code, json.dumps(result).encode(), "application/json")
             return
@@ -2067,6 +2136,7 @@ def make_server(
     daily_job: DailyJob | None = None,
     daily_setup: DailySetup | None = None,
     formatter_job: FormatterJob | None = None,
+    b3_observer_job: B3ObserverJob | None = None,
 ) -> ThreadingHTTPServer:
     # Reject ambiguous injection and invalid ports BEFORE opening a listener.
     # Empty explicitly supplied maps count as supplied; None retains defaults.
@@ -2101,6 +2171,7 @@ def make_server(
     server.daily_job = daily_job
     server.daily_setup = daily_setup
     server.formatter_job = formatter_job
+    server.b3_observer_job = b3_observer_job
     server.daemon_threads = True
     return server
 
