@@ -565,3 +565,58 @@ def test_bounded_scan_rejects_fifo_and_scandir_error(tmp_path, monkeypatch):
         patch.setattr(cache.os, "scandir", fail_listing)
         with pytest.raises(CacheUnavailable):
             build_project_snapshot(mirror, watcher_db, now=now())
+
+
+@pytest.mark.parametrize("directory_name", ("Empty.md", ".md"))
+def test_markdown_named_directory_rejected_even_when_empty(
+    tmp_path, directory_name, monkeypatch,
+):
+    """Preserve the old rglob('*.md') + fstat fail-closed contract."""
+    import obsidian_automation.b3_project_cache as cache
+    mirror, db = setup_source(tmp_path)
+    root = mirror / "10-Project"
+    bad = root / directory_name
+    bad.mkdir()
+    assert bad in tuple(root.rglob("*.md"))
+    original = cache.os.scandir
+    called = []
+
+    def tracked(path):
+        called.append(str(path))
+        if path == bad:
+            raise AssertionError("a Markdown-named directory must not be read")
+        return original(path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(cache.os, "scandir", tracked)
+        with pytest.raises(CacheUnavailable):
+            build_project_snapshot(mirror, db, now=now())
+    assert str(bad) not in called
+
+
+def test_nested_markdown_named_directory_rejected_without_partial_success(
+    tmp_path,
+):
+    mirror, db = setup_source(tmp_path)
+    parent = mirror / "10-Project" / "nested"
+    parent.mkdir()
+    (parent / "ordinary.md").write_text("---\ntype: journal\n---\n")
+    assert build_project_snapshot(mirror, db, now=now())["projectCount"] == 4
+    bad = parent / "Folder.md"
+    bad.mkdir()
+    with pytest.raises(CacheUnavailable):
+        build_project_snapshot(mirror, db, now=now())
+    bad.rmdir()
+    assert build_project_snapshot(mirror, db, now=now())["projectCount"] == 4
+
+
+def test_nonmatching_directory_suffix_still_scanned(tmp_path):
+    mirror, db = setup_source(tmp_path)
+    folder = mirror / "10-Project" / "Folder.MD"
+    folder.mkdir()
+    (folder / "Nested.md").write_text(
+        "---\ntype: project\nstatus: running\ngithub_watch: false\n---\n"
+    )
+    snap = build_project_snapshot(mirror, db, now=now())
+    assert snap["projectCount"] == 5
+    assert any(r["name"] == "Nested" for r in snap["projects"])

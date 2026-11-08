@@ -159,6 +159,8 @@
       "件。緑の表示は直近の検証済み結果であり、サービス全体の健全性を保証しません。";
   }
   function intervalLabel(s,job,id) {
+    // B3's catalog interval cannot represent the separate phase scheduler.
+    if (id==="b3") return "—";
     const interval=job?.settings?.interval_seconds ?? s?.intervalSeconds;
     return Number.isSafeInteger(interval) && interval>=60 && interval<=86400
       ? interval+" 秒" : id==="b5"?"手動（スケジュールなし）":"—";
@@ -167,9 +169,12 @@
     const s=serviceFor(id),job=jobFor(id);
     const last=job?.last || null;
     const st=displayStatus(id),data=[];
-    const schedule=job?(id==="formatter"
-      ? job.settings.mode==="off"?"無効":job.settings.mode==="dry-run"?"Dry-run":"Auto apply"
-      :job.settings.enabled?"有効":"無効")
+    // B3's common catalog may describe only legacy/partial scheduling.
+    // Its 'off' cannot attest that phase scheduling is effectively OFF.
+    const schedule=id==="b3"?"未確認（旧相対間隔・時刻基準Phaseは別管理）"
+      :job?(id==="formatter"
+        ? job.settings.mode==="off"?"無効":job.settings.mode==="dry-run"?"Dry-run":"Auto apply"
+        :job.settings.enabled?"有効":"無効")
       :s?(s.schedule==="on"?"有効":s.schedule==="off"?"無効":
         s.schedule==="not_applicable"?"手動":"未確認"):"未確認";
     const configuration=job?job.settings.configured?"設定済み":"未設定":
@@ -180,7 +185,8 @@
     const execution=last?.status && IN_PROGRESS.has(last.status)
       ?last.status:s?.execution||"Unknown";
     const runAt=last?.completed??last?.created??s?.lastAttempt?.completedAt??s?.lastAttemptAt??null;
-    const due=job?.settings?.next_due??s?.nextRun??null;
+    // Do not present a legacy B3 due date as an effective phase due date.
+    const due=id==="b3"?null:(job?.settings?.next_due??s?.nextRun??null);
     data.push(["現在の実行状態",execution==="running"?"実行中":
       execution==="queued"?"受付済み":
       execution==="Idle"?"待機中":execution==="Unknown"?"未確認":execution]);
@@ -216,15 +222,20 @@
       getJson("/api/v1/b3/projects")
     ]).then(([observer,cached])=>{
       if (state.selected!=="b3" || !container.isConnected) return;
+      // /b3/observer exposes ONLY the legacy relative scheduler. The new
+      // wall-clock phase scheduler has no verified GET status contract yet.
+      // Never report legacy OFF as "B3 Observer OFF": phase may be ON.
       const config=observer?.settings;
-      const enabled=config && typeof config.enabled==="boolean"
+      const legacyEnabled=config && typeof config.enabled==="boolean"
         ? config.enabled?"ON":"OFF" : "未確認";
       const last=observer?.last_run;
       const lastStatus=last && typeof last.status==="string"
         ? last.status : "未観測";
       const observed=last && Number.isSafeInteger(last.observations)
         ? last.observations : null;
-      summary.textContent="B3 Observer: "+enabled+" · 最終観測 "+lastStatus+
+      summary.textContent="B3旧相対間隔スケジュール: "+legacyEnabled+
+        " · 時刻基準Phaseスケジュール: 未確認（別管理）"+
+        " · 最終観測 "+lastStatus+
         (observed===null?"":" · GitHub観測 "+observed+"件")+
         " · Vault Writer: 未接続";
       results.replaceChildren();

@@ -61,6 +61,11 @@ def _bounded_markdown_files(root: Path):
         path, depth = pending.pop()
         info = path.lstat()
         if stat.S_ISDIR(info.st_mode):
+            # The former rglob("*.md") yielded matching directories, then
+            # rejected them at the opened-inode check. Keep that fail-closed
+            # behavior even for an empty or nested Markdown-named directory.
+            if path != root and path.name.endswith(".md"):
+                raise CacheUnavailable()
             scanned_dirs += 1
             if depth > _MAX_SCAN_DEPTH or scanned_dirs > _MAX_SCAN_DIRS:
                 raise CacheUnavailable()
