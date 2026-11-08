@@ -11,17 +11,23 @@ import fcntl
 import io
 import json
 import os
+import re
 import stat
+from datetime import datetime, timezone
 from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 
 from .github_project_watcher import GitHubClient, WatcherConfig, run_once
+from .b3_project_cache import (
+    CacheUnavailable, build_project_snapshot, persist_project_snapshot,
+)
 
 VERSION = "github-b3-watcher-bridge/v1"
 _LOCK = "watcher.lock"
 _DB = "watcher.sqlite3"
 _MAX_CAPTURE_BYTES = 512 * 1024
+_SHA = re.compile(r"[0-9a-f]{64}\Z")
 
 
 class _BoundedSink(io.StringIO):
@@ -75,6 +81,7 @@ def collect_b3_read_only(
     daily_setup: object,
     *,
     state_root: Path,
+    expected_generation: str | None = None,
     client_factory: Callable[..., object] = GitHubClient,
     watcher: Callable[..., int] = run_once,
 ) -> dict[str, object]:
@@ -87,6 +94,10 @@ def collect_b3_read_only(
     """
     if not _private_root(state_root):
         return _result("unknown", "private_watcher_state_unavailable")
+    if expected_generation is not None and (
+            type(expected_generation) is not str
+            or _SHA.fullmatch(expected_generation) is None):
+        return _result("unknown", "invalid_source_binding")
     if not callable(client_factory) or not callable(watcher):
         return _result("unknown", "watcher_unavailable")
 
@@ -106,7 +117,14 @@ def collect_b3_read_only(
         except BlockingIOError:
             return _result("blocked", "watcher_already_running")
 
-        with daily_setup.project_source() as (config, token):
+        source_context = (
+            daily_setup.project_source()
+            if expected_generation is None
+            else daily_setup.project_source(
+                expected_generation=expected_generation,
+            )
+        )
+        with source_context as (config, token):
             if (not isinstance(config, WatcherConfig)
                     or type(token) is not str or not token):
                 return _result("unknown", "watcher_source_unavailable")
@@ -136,8 +154,31 @@ def collect_b3_read_only(
                     return _result("unknown", "watcher_observation_unverified")
             if count == 0:
                 return _result("unknown", "watcher_no_observations")
-            return _result("observed", "local_read_only_observation",
-                           observations=count, pending=pending)
+            # Build from the *existing disposable mirror*, never a second
+            # provider request. Stage in memory until project_source() exits
+            # successfully: its teardown checks the original generation.
+            # Do not stamp an old mirror with a newly rotated generation.
+            snapshot, generation = None, None
+            try:
+                fingerprint = getattr(daily_setup, "source_fingerprint", None)
+                if callable(fingerprint):
+                    generation = fingerprint()
+                    snapshot = build_project_snapshot(
+                        config.vault_root, config.state_db,
+                        now=datetime.now(timezone.utc),
+                    )
+            except (CacheUnavailable, AttributeError, TypeError, OSError):
+                snapshot, generation = None, None
+        # The source's post-yield generation check is now complete. A
+        # subsequent rotation causes a mismatch on both publication and GET.
+        if snapshot is not None:
+            try:
+                if fingerprint() == generation:
+                    persist_project_snapshot(state_root, generation, snapshot)
+            except (CacheUnavailable, AttributeError, TypeError, OSError):
+                pass
+        return _result("observed", "local_read_only_observation",
+                       observations=count, pending=pending)
     except (OSError, ValueError, TypeError, RuntimeError, AttributeError,
             UnicodeError, json.JSONDecodeError):
         return _result("unknown", "watcher_observation_unavailable")

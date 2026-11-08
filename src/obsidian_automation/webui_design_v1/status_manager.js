@@ -202,6 +202,63 @@
     }
     $("manager-detail-slot").replaceChildren();
   }
+  function renderB3ReadOnly(slot) {
+    // The Project list is a bounded local cache from a previous B3 GET-only
+    // collection, not a live GitHub/Nextcloud fetch and not Writer success.
+    const container=node("section",undefined,"manager-b3-readonly");
+    const heading=node("h3","Project GitHub monitoring · 読み取り専用");
+    const summary=node("p","監視履歴を確認中…","manager-summary");
+    const results=node("ul",undefined,"manager-b3-project-list");
+    container.append(heading,summary,results);
+    slot.append(container);
+    Promise.all([
+      getJson("/api/v1/b3/observer"),
+      getJson("/api/v1/b3/projects")
+    ]).then(([observer,cached])=>{
+      if (state.selected!=="b3" || !container.isConnected) return;
+      const config=observer?.settings;
+      const enabled=config && typeof config.enabled==="boolean"
+        ? config.enabled?"ON":"OFF" : "未確認";
+      const last=observer?.last_run;
+      const lastStatus=last && typeof last.status==="string"
+        ? last.status : "未観測";
+      const observed=last && Number.isSafeInteger(last.observations)
+        ? last.observations : null;
+      summary.textContent="B3 Observer: "+enabled+" · 最終観測 "+lastStatus+
+        (observed===null?"":" · GitHub観測 "+observed+"件")+
+        " · Vault Writer: 未接続";
+      results.replaceChildren();
+      if (!cached || cached.schemaVersion!=="b3-project-watch-list/v1" ||
+          !Number.isSafeInteger(cached.projectCount) ||
+          cached.projectCount<0 || cached.projectCount>256 ||
+          !Array.isArray(cached.projects) ||
+          cached.projects.length!==cached.projectCount) {
+        results.append(node("li","Project一覧の観測キャッシュは未取得・期限切れ・接続変更のため利用できません。"));
+        return;
+      }
+      if (!cached.projects.length) {
+        results.append(node("li","対象Projectはありません。"));
+        return;
+      }
+      for (const row of cached.projects) {
+        if (!row || typeof row.name!=="string" ||
+            typeof row.monitoringState!=="string") {
+          results.replaceChildren(node("li","監視一覧の形式を確認できません。"));
+          return;
+        }
+        const text=row.name+" · "+
+          (typeof row.repository==="string"?row.repository:"Repo未設定")+" · "+
+          row.monitoringState+
+          (typeof row.lastWatcherObservedAt==="string"
+            ?" · 最終GitHub観測 "+row.lastWatcherObservedAt:"");
+        // textContent only: never render untrusted note names as markup.
+        results.append(node("li",text));
+      }
+    }).catch(()=>{
+      if (state.selected==="b3" && container.isConnected)
+        summary.textContent="B3の読み取り専用状態を取得できません。";
+    });
+  }
   function renderDetail() {
     if (!state.selected || !ID[state.selected]) return;
     const entry=ID[state.selected],st=displayStatus(entry.id);
@@ -231,7 +288,9 @@
         slot.append(panel);
       }
     }
-    if (!mountedDetail) {
+    if (entry.id==="b3") {
+      renderB3ReadOnly(slot);
+    } else if (!mountedDetail) {
       slot.append(node("p","このサービスの操作は現在利用できません。状態表示のみです。","manager-summary"));
     }
   }

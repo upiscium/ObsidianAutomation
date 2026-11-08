@@ -233,3 +233,65 @@ def test_bounded_sink_counts_utf8_bytes_not_unicode_characters():
     assert sink.getvalue() == ""
     assert sink.write("界") == 1
     assert sink.getvalue() == "界"
+
+
+def test_project_cache_published_only_after_source_generation_verification(tmp_path):
+    from obsidian_automation.b3_project_cache import (
+        read_project_snapshot, CacheUnavailable,
+    )
+    from datetime import datetime, timezone
+    root=private(tmp_path)
+    notes=tmp_path/"10-Project"
+    notes.mkdir()
+    (notes/"Demo.md").write_text(
+        "---\ntype: project\nstatus: running\ngithub_watch: true\n"
+        "github_repo: example/demo\n---\nprivate body",encoding="utf-8"
+    )
+
+    class CheckedSource(Source):
+        def __init__(self, root, rotate):
+            super().__init__(root)
+            self.generation="a"*64
+            self.rotate=rotate
+
+        def source_fingerprint(self):
+            return self.generation
+
+        @contextmanager
+        def project_source(self):
+            old=self.generation
+            with super().project_source() as args:
+                yield args
+            if self.rotate:
+                self.generation="b"*64
+            if self.generation!=old:
+                raise ValueError("synthetic source rotated after collection")
+
+    def watcher(config,*,client,stdout,stderr):
+        with sqlite3.connect(config.state_db) as db:
+            db.execute("CREATE TABLE project_state (project_path TEXT PRIMARY KEY,"
+                       "repository TEXT NOT NULL,observed_at TEXT NOT NULL)")
+            db.execute("INSERT INTO project_state VALUES (?,?,?)",
+                       ("10-Project/Demo.md","example/demo",
+                        datetime.now(timezone.utc).isoformat()))
+        print(json.dumps({"event":"project-status-observation","pending":False}),file=stdout)
+        return 0
+
+    # A verified mirror can publish its own cache with no second source pull.
+    first=CheckedSource(tmp_path,rotate=False)
+    result=invoke(first,root,watcher=watcher)
+    assert result["state"]=="observed"
+    snapshot=read_project_snapshot(root,"a"*64)
+    assert snapshot["projectCount"]==1
+    assert snapshot["projects"][0]["name"]=="Demo"
+
+    # Rotation after the collector's yield must NOT publish old mirror rows
+    # against a new fingerprint. A fresh state root prevents stale fixtures.
+    root2=tmp_path/"b3-rotated"
+    root2.mkdir(mode=0o700)
+    second=CheckedSource(tmp_path,rotate=True)
+    result2=invoke(second,root2,watcher=watcher)
+    assert result2["state"]=="unknown"
+    assert not (root2/"project-watch-cache.json").exists()
+    with pytest.raises(CacheUnavailable):
+        read_project_snapshot(root2,"b"*64)

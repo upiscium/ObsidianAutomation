@@ -9,6 +9,7 @@ GET/status, HEAD or settings update.
 from __future__ import annotations
 
 import fcntl
+from contextlib import nullcontext
 import json
 import math
 import os
@@ -119,11 +120,18 @@ class B3ObserverJob:
         configured: Callable[[], bool],
         generation: Callable[[], str | None],
         clock: Callable[[], float] = time.time,
+        phase_collector: Callable[[str], dict[str, object]] | None = None,
+        source_lock: object | None = None,
     ):
         if (not isinstance(state, Path) or not state.is_absolute()
                 or state.is_symlink() or not callable(collector)
                 or not callable(configured) or not callable(generation)
-                or not callable(clock)):
+                or not callable(clock)
+                or (phase_collector is not None and not callable(phase_collector))
+                or (phase_collector is not None and source_lock is None)
+                or (source_lock is not None
+                    and (not callable(getattr(source_lock, "__enter__", None))
+                         or not callable(getattr(source_lock, "__exit__", None))))):
             raise Invalid("invalid_b3_observer_config")
         state.mkdir(mode=0o700, parents=True, exist_ok=True)
         info = state.stat()
@@ -134,6 +142,14 @@ class B3ObserverJob:
         if db_path.is_symlink() or (db_path.exists() and not db_path.is_file()):
             raise Invalid("unsafe_b3_observer_database")
         self.state, self.collector = state, collector
+        # A phase-admitted run must receive its exact source-generation
+        # binding *inside* the collector's source acquisition. Manual and
+        # legacy relative runs continue to use the existing zero-arg path.
+        self.phase_collector = phase_collector
+        # This is the trusted SetupStore rotation RLock for phase runs only.
+        # Terminal verification and durable positive receipt must share it
+        # with the source settings writer (never across network I/O).
+        self.source_lock = source_lock
         self.is_configured, self.get_generation = configured, generation
         self.clock = clock
         self._lock = threading.RLock()
@@ -233,6 +249,16 @@ class B3ObserverJob:
             current = self._generation()
             if payload["enabled"] and current is None:
                 raise Invalid("b3_source_not_configured")
+            # The new phase-based scheduler and the legacy relative interval
+            # must never both be enabled. Both admissions use this same Job
+            # lock and SQLite Owner, not a separate UI or systemd authority.
+            if payload["enabled"] and self.db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='phase_settings'"
+            ).fetchone() and self.db.execute(
+                "SELECT enabled FROM phase_settings WHERE id=1"
+            ).fetchone()[0]:
+                raise Invalid("b3_phase_schedule_already_enabled")
             previous = self._settings()
             enabled = payload["enabled"]
             due = (
@@ -335,27 +361,42 @@ class B3ObserverJob:
     def _finish(
         self, run_id: str, *, status: str, reason: str,
         count: int = 0, pending: int = 0,
+        expected_generation: str | None = None,
     ) -> bool:
         """Bounded terminal write; persistent DB faults remain fail-closed.
 
-        A failed commit cannot be called success. The scheduler will mark an
-        orphaned run unknown once this worker has terminated and DB recovers.
+        Positive phase results require one last source-generation check under
+        the SAME SetupStore RLock that serializes credential/source rotation,
+        held until the SQLite receipt commits. This is a short local critical
+        section, never a lock around remote I/O. Manual/relative runs do not
+        acquire the additional lock or change their receipt semantics.
         """
         for attempt in range(3):
             try:
                 with self._lock:
-                    with self.db:
-                        row = self.db.execute(
-                            "SELECT created FROM runs WHERE run_id=?", (run_id,)
-                        ).fetchone()
-                        if row is None:
-                            return False
-                        at = self._completion_time(float(row[0]))
-                        self.db.execute(
-                            "UPDATE runs SET status=?,reason=?,observations=?,"
-                            "pending_proposals=?,completed=? WHERE run_id=?",
-                            (status, reason, count, pending, at, run_id),
-                        )
+                    guard = (
+                        self.source_lock
+                        if status == "observed" and expected_generation is not None
+                        else nullcontext()
+                    )
+                    with guard:
+                        with self.db:
+                            row = self.db.execute(
+                                "SELECT created FROM runs WHERE run_id=?", (run_id,)
+                            ).fetchone()
+                            if row is None:
+                                return False
+                            if (status == "observed" and expected_generation is not None
+                                    and self._generation() != expected_generation):
+                                status, reason, count, pending = (
+                                    "unknown", "source_changed", 0, 0
+                                )
+                            at = self._completion_time(float(row[0]))
+                            self.db.execute(
+                                "UPDATE runs SET status=?,reason=?,observations=?,"
+                                "pending_proposals=?,completed=? WHERE run_id=?",
+                                (status, reason, count, pending, at, run_id),
+                            )
                 return True
             except (sqlite3.Error, OSError, ValueError):
                 if attempt != 2:
@@ -387,25 +428,68 @@ class B3ObserverJob:
             ):
                 return
 
+    def _phase_generation_for_run(self, run_id: str) -> str | None:
+        """A phase slot's source binding, if this job was phase-admitted.
+
+        Legacy manual/relative runs and old B3 databases have no phase slot.
+        Phase admissions and run rows were committed in one SQLite
+        transaction by B3PhaseRuntime, so this lookup is durable across
+        thread-start delays and cannot depend on an in-memory map.
+        """
+        if self.db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='phase_slots'"
+        ).fetchone() is None:
+            return None
+        row = self.db.execute(
+            "SELECT s.generation FROM phase_slots AS s "
+            "JOIN runs AS r ON s.request_id=r.request_id "
+            "WHERE r.run_id=?", (run_id,)
+        ).fetchone()
+        return row[0] if row else None
+
     def _execute(self, run_id: str) -> None:
         status, reason, count, pending = "unknown", "collector_unavailable", 0, 0
+        expected_generation = None
         try:
             with self._lock:
                 with self.db:
                     self.db.execute(
                         "UPDATE runs SET status='running' WHERE run_id=?", (run_id,)
                     )
-            try:
-                value = self.collector()
-                status, reason, count, pending = _result(value)
-            except BaseException:
-                # A collector process crash/cancellation is never evidence
-                # that GitHub observations were fully verified.
-                pass
+                    expected_generation = self._phase_generation_for_run(run_id)
+            # Connection rotation after a phase slot was admitted but before
+            # the worker runs must never authorize a collection from the
+            # replacement source under the old schedule binding.
+            if (expected_generation is not None
+                    and self._generation() != expected_generation):
+                status, reason = "unknown", "source_changed"
+            elif expected_generation is not None and self.phase_collector is None:
+                # No source-bound observer is configured. Never silently
+                # fall back to an unpinned collector on a phase admission.
+                status, reason = "unknown", "source_binding_unavailable"
+            else:
+                try:
+                    value = (
+                        self.collector() if expected_generation is None
+                        else self.phase_collector(expected_generation)
+                    )
+                    # A mid-flight source swap must not turn an old-source
+                    # admission into an observed receipt for the new source.
+                    if (expected_generation is not None
+                            and self._generation() != expected_generation):
+                        status, reason = "unknown", "source_changed"
+                    else:
+                        status, reason, count, pending = _result(value)
+                except BaseException:
+                    # A collector process crash/cancellation is never evidence
+                    # that GitHub observations were fully verified.
+                    pass
         except BaseException:
             status, reason, count, pending = "unknown", "worker_unavailable", 0, 0
         self._finish(run_id, status=status, reason=reason,
-                     count=count, pending=pending)
+                     count=count, pending=pending,
+                     expected_generation=expected_generation)
 
     def tick(self) -> bool:
         """Called by the existing single in-app scheduler; never runs inline."""

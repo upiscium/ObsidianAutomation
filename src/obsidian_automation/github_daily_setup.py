@@ -5,7 +5,7 @@ staging before each no-LLM Preview run; the remote Vault is never written.
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import hashlib
 from dataclasses import replace
 import json
@@ -19,6 +19,7 @@ import threading
 from . import github_daily_runonce as daily
 from . import github_project_watcher as watcher
 from . import github_daily_deterministic_preview as preview
+from .snapshot_setup import NextcloudSource
 
 
 class DailySetupError(ValueError):
@@ -39,25 +40,36 @@ class DailySetup:
     def _shared(self):
         # Prefer the shared provider-only API, which is valid without
         # Gitea. Retain support for the existing injected B2 test fixtures.
-        source = getattr(self.shared, "source_connections", self.shared.connections)
-        connections = source()
-        if connections is None:
-            raise DailySetupError("nextcloud_not_configured")
-        connections.validate()
-        # Bind semantic WebDAV credentials and the selected Vault, not the
-        # bytes of rclone's obscured password (obscure may use fresh salt).
-        # Gitea-only rotation must not force another GitHub setup.
-        loader = getattr(self.shared, "load_nextcloud", self.shared.load)
-        shared_values = loader()
-        fields = ("webdav_url", "vault_folder", "nextcloud_user", "nextcloud_password")
-        if (type(shared_values) is not dict
-                or any(type(shared_values.get(key)) is not str
-                       for key in fields)):
-            raise DailySetupError("nextcloud_config_unavailable")
-        raw = json.dumps({key: shared_values[key] for key in fields},
-                         ensure_ascii=False, sort_keys=True, separators=(",",":")).encode("utf-8")
-        generation = hashlib.sha256(raw).hexdigest()
-        return connections, generation
+        # SetupStore.save() holds this SAME RLock while replacing both
+        # rclone.conf and the connection JSON. Capture source and semantic
+        # generation together, not across two independent rotations.
+        shared_lock = getattr(self.shared, "_lock", None)
+        with shared_lock if shared_lock is not None else nullcontext():
+            source = getattr(
+                self.shared, "source_connections", self.shared.connections
+            )
+            connections = source()
+            if connections is None:
+                raise DailySetupError("nextcloud_not_configured")
+            connections.validate()
+            # Bind semantic WebDAV credentials and the selected Vault, not
+            # rclone's obscured password bytes (which may use fresh salt).
+            loader = getattr(self.shared, "load_nextcloud", self.shared.load)
+            shared_values = loader()
+            fields = (
+                "webdav_url", "vault_folder",
+                "nextcloud_user", "nextcloud_password",
+            )
+            if (type(shared_values) is not dict
+                    or any(type(shared_values.get(key)) is not str
+                           for key in fields)):
+                raise DailySetupError("nextcloud_config_unavailable")
+            raw = json.dumps(
+                {key: shared_values[key] for key in fields},
+                ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+            ).encode("utf-8")
+            generation = hashlib.sha256(raw).hexdigest()
+            return connections, generation
 
     def source_fingerprint(self) -> str | None:
         try:
@@ -148,22 +160,64 @@ class DailySetup:
             return self.configured()
 
     @contextmanager
-    def project_source(self):
+    def project_source(self, *, expected_generation: str | None = None):
         """Fetch only local Project notes into a fresh, disposable mirror.
 
         The shared B2 Nextcloud/WebDAV account is read-only here. Caller uses
         the validated mirror for run_once and the temporary tree is removed
         even after an API failure. No remote push, upload, DELETE, or MOVE.
         """
-        with self._lock:
-            if not self.configured():
-                raise DailySetupError("github_daily_not_configured")
-            connections, generation = self._shared()
-            config, token = daily.load_run_config(self.state)
-        # Do not hold the Connections/UI lock across remote rclone and GitHub
-        # GETs; background status must stay responsive during a long capture.
-        with tempfile.TemporaryDirectory(prefix=".project-mirror-", dir=self.state) as directory:
+        # The disposable directory also owns any private, source-pinned
+        # rclone.conf copy. No secret is transferred to another trust domain.
+        with tempfile.TemporaryDirectory(
+                prefix=".project-mirror-", dir=self.state) as directory:
             root = Path(directory)
+            with self._lock:
+                if not self.configured():
+                    raise DailySetupError("github_daily_not_configured")
+                if expected_generation is None:
+                    # Existing B4/unpinned source path is unchanged.
+                    connections, generation = self._shared()
+                    config, token = daily.load_run_config(self.state)
+                else:
+                    # SetupStore.save() holds this same shared RLock across
+                    # rclone.conf and JSON rotation. Freeze credentials and
+                    # their semantic generation together, then copy the
+                    # rclone config into this 0700 disposable source before
+                    # allowing connection saves to proceed concurrently.
+                    lock = getattr(self.shared, "_lock", None)
+                    with lock if lock is not None else nullcontext():
+                        connections, generation = self._shared()
+                        config, token = daily.load_run_config(self.state)
+                        if (type(expected_generation) is not str
+                                or generation != expected_generation):
+                            raise DailySetupError("source_connections_changed")
+                        try:
+                            original = Path(connections.rclone_config)
+                            if original.is_symlink():
+                                raise DailySetupError("source_connections_changed")
+                            content = original.read_bytes()
+                            if not 0 < len(content) <= 65536:
+                                raise DailySetupError("source_connections_changed")
+                            pinned = root / ".pinned-rclone.conf"
+                            fd = os.open(
+                                pinned, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                                | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600,
+                            )
+                            with os.fdopen(fd, "wb") as writer:
+                                writer.write(content)
+                                writer.flush()
+                                os.fsync(writer.fileno())
+                            connections = NextcloudSource(
+                                connections.rclone_remote, pinned,
+                            )
+                        except OSError:
+                            raise DailySetupError(
+                                "source_connections_changed"
+                            ) from None
+            # The remote copier uses a private immutable config snapshot for
+            # phase-admitted runs. No Connections/UI lock is held across
+            # remote rclone or GitHub GETs.
             project_dir = root / "10-Project"
             project_dir.mkdir(mode=0o700)
             if not self.copier(connections, project_dir):
