@@ -1,11 +1,22 @@
 # #553 F3 — B3 phase scheduling and cached Project list (source-only)
 
 Scope: **B3 GET-only Observer** integrated into the existing single nonroot
-`obsidian-snapshot-app`. Source worktree base:
+`obsidian-snapshot-app`. Historical source worktree base:
 `main@527bfd7f58b8270cf7c61b2ea6de1e402a551350`.
-A second isolated qualification worktree uses newer
+An early isolated qualification worktree used
 `main@09def9b580fcb394b28a90835832e4fb5f1055a3`.
-This work remains **uncommitted, unpushed, unmerged, undeployed and OFF**.
+
+**Publication checkpoint (2026-11-09, before the R6 docs correction):**
+R0–R5 source/test/CI changes were **committed and pushed** to
+[Draft PR #564](https://github.com/upiscium/ObsidianAutomation/pull/564),
+published HEAD `1f188c3925e0fe982a7ba5ed40e4aafaba1e30f0`.
+At this checkpoint the PR was **Draft / Open / unmerged**; the
+**PR #564 source revisions were not deployed or activated**. This
+does not negate any separately approved, earlier default-OFF B3
+deployment. Publishing or merging these source-only changes does not
+authorize production phase scheduling,
+canonical Vault Writer, Core Promotion or Provider I/O. The phase
+schedule defaults **OFF**; operational effects require separate approval.
 
 ## Phase-locked observer schedule
 
@@ -99,13 +110,18 @@ This work remains **uncommitted, unpushed, unmerged, undeployed and OFF**.
 3. **Cache and live data are separate:** GET is a snapshot of the *last*
    bounded collector; it is not live synchronized with Nextcloud and cannot
    prove source freshness without a new authorized collection.
-4. **Independent review is scope-bounded.** Claude personal session reached
-   its usage limit and Codex CLI returned 401. Short read-only OpenCode
-   reviews confirmed the previous P1 false global/Project attestation has
-   been corrected and found no new P0/P1 in the reviewed cache, Bridge/GET
-   or phase source portions. Cross-file source-binding/Worker changes need
-   final fresh review and regression qualification before publication.
-   Never treat bounded checks as full production E2E certification.
+4. **Independent review is scope-bounded.** At the R5 published HEAD
+   `1f188c3925e0fe982a7ba5ed40e4aafaba1e30f0`, independent read-only
+   OpenCode reviews covered (a) warning/error classification, (b) current
+   Project-only SQLite evidence and (c) F3 cross-boundary phase/GET/UI/CI
+   integration. None reported a new P0/P1/P2 in its reviewed scope.
+   GitHub Actions Run #42528911051 completed successfully across five
+   jobs, including Node browser regressions in both Python matrix jobs.
+   An isolated source integration with `main@e415dec978a77af4531773fafbb405b3c6f344c1`
+   passed 813 pytest cases (2 skipped, 36 subtests passed) and four Node
+   suites. These are SHA-specific source-only checkpoints, not a standing
+   approval for future main/HEAD changes, full production E2E certification,
+   Ready/Merge, Deploy or activation.
 5. Runtime rollout and enabling the hourly B3 observer, and especially
    canonical CAS Writer/Core Promotion, remain *separate effect gates*.
    The `/api/v1/workflow-control` B3 canonical Writer slot stays pending.
