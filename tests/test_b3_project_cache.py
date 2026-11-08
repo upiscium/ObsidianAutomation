@@ -474,7 +474,9 @@ def test_sqlite_readonly_uri_escapes_reserved_path_characters_without_creating_a
     original_db.rename(special)
     shadow = tmp_path / shadow_name
     assert not shadow.exists()
-    evidence = cache._read_watcher_evidence(special)
+    evidence = cache._read_watcher_evidence(
+        special, ("10-Project/Watched.md",),
+    )
     assert len(evidence) == 1
     assert evidence[0].repository == "upiscium/Repo"
     assert evidence[0].project_path == "10-Project/Watched.md"
@@ -506,7 +508,9 @@ def test_sqlite_readonly_uri_reads_exact_database_not_valid_decoy(
             "INSERT INTO project_state VALUES (?,?,?)",
             ("10-Project/Decoy.md", "evil/Decoy", "2026-11-08T00:00:00+00:00"),
         )
-    evidence = cache._read_watcher_evidence(special)
+    evidence = cache._read_watcher_evidence(
+        special, ("10-Project/Watched.md",),
+    )
     assert [(row.project_path, row.repository) for row in evidence] == [
         ("10-Project/Watched.md", "upiscium/Repo"),
     ]

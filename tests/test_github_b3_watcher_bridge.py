@@ -295,3 +295,274 @@ def test_project_cache_published_only_after_source_generation_verification(tmp_p
     assert not (root2/"project-watch-cache.json").exists()
     with pytest.raises(CacheUnavailable):
         read_project_snapshot(root2,"b"*64)
+
+
+def test_real_watcher_metadata_warning_allows_all_project_cache_without_writer(tmp_path):
+    """One invalid watched note must not hide a separate valid observation."""
+    from obsidian_automation.b3_project_cache import read_project_snapshot
+    from obsidian_automation.github_project_watcher import run_once
+
+    root = private(tmp_path)
+    folder = tmp_path / "10-Project"
+    folder.mkdir()
+    (folder / "Watched.md").write_text(
+        "---\ntype: project\nstatus: planning\ngithub_watch: true\n"
+        "github_repo: example/demo\n---\nPRIVATE_NOTE_BODY\n"
+    )
+    (folder / "Invalid.md").write_text(
+        "---\ntype: project\nstatus: running\ngithub_watch: true\n"
+        "github_repo: invalid repository\n---\nPRIVATE_INVALID_BODY\n"
+    )
+
+    class TrustedSource(Source):
+        def source_fingerprint(self):
+            return "a" * 64
+
+    class FakeGitHub(FakeClient):
+        calls = 0
+
+        def snapshot(self, repository, *, observed_at):
+            self.calls += 1
+            assert repository == "example/demo"
+            return RepositorySnapshot(
+                repository=repository, latest_commit_sha="a" * 40,
+                latest_commit_at=observed_at, open_issues=frozenset(),
+                open_prs=frozenset(), observed_at=observed_at,
+            )
+
+    client = FakeGitHub(token="fake-token", timeout_seconds=15,
+                        active_window_days=7)
+    # Only synthetic source + FakeGitHub: run_once is the *real* watcher.
+    result = invoke(TrustedSource(tmp_path), root, watcher=run_once,
+                    client_factory=lambda **_: client)
+    assert client.calls == 1
+    assert result["state"] == "observed"
+    assert result["observations"] == 1
+    assert result["cutover_authorized"] is False
+    assert result["vault_write_authorized"] is False
+    cache = read_project_snapshot(root, "a" * 64)
+    assert cache["projectCount"] == 2
+    rows = {row["name"]: row for row in cache["projects"]}
+    assert rows["Invalid"]["monitoringState"] == "misconfigured"
+    assert rows["Watched"]["lastVerifiedVaultWrite"] is None
+    assert all(item["lastVerifiedVaultWrite"] is None for item in rows.values())
+    assert "PRIVATE" not in json.dumps(cache)
+    assert "invalid repository" not in json.dumps(result)
+
+
+def test_real_watcher_error_with_warning_still_refuses_cache(tmp_path):
+    """Warnings may be accepted; a real watcher error must still fail closed."""
+    from obsidian_automation.github_project_watcher import (
+        GitHubProjectWatcherError, run_once,
+    )
+
+    root = private(tmp_path)
+    folder = tmp_path / "10-Project"
+    folder.mkdir()
+    for filename, repo in (("Good.md", "example/demo"),
+                           ("Bad.md", "invalid repository")):
+        (folder / filename).write_text(
+            f"---\ntype: project\nstatus: planning\n"
+            f"github_watch: true\ngithub_repo: {repo}\n---\n"
+        )
+
+    class BrokenGitHub(FakeClient):
+        def snapshot(self, repository, *, observed_at):
+            raise GitHubProjectWatcherError("synthetic provider failure")
+
+    result = invoke(Source(tmp_path), root, watcher=run_once,
+                    client_factory=BrokenGitHub)
+    assert result["state"] == "unknown"
+    assert result["observations"] == 0
+    assert result["vault_write_authorized"] is False
+    assert not (root / "project-watch-cache.json").exists()
+
+
+@pytest.mark.parametrize("diagnostic,returncode", [
+    ('{"event":"error","message":"private failure"}\n', 0),
+    ('{"event":"warning","message":"not a metadata warning"}\n', 0),
+    ('{"event":"warning","message":"10-Project/Bad.md: invalid github_repo: x"}\n'
+     '{"event":"error","message":"private failure"}\n', 0),
+    ("unstructured error\n", 0),
+    ('{"event":"warning","message":"10-Project/Bad.md: invalid github_repo: x"}\n', 1),
+])
+def test_noncanonical_or_failure_diagnostics_never_promote_observation(
+    tmp_path, diagnostic, returncode,
+):
+    def fake(config, *, client, stdout, stderr):
+        print(json.dumps({
+            "event": "project-status-observation",
+            "pending": False,
+        }), file=stdout)
+        stderr.write(diagnostic)
+        return returncode
+
+    result = invoke(Source(tmp_path), private(tmp_path), watcher=fake)
+    assert result["state"] == "unknown"
+    assert result["observations"] == 0
+    assert result["vault_write_authorized"] is False
+    assert result["cutover_authorized"] is False
+
+
+def test_stale_persistent_watcher_history_does_not_block_live_cache(tmp_path):
+    """Historical 257 rows remain in SQLite but must not block current list."""
+    from obsidian_automation.b3_project_cache import read_project_snapshot
+    from obsidian_automation.github_project_watcher import StateStore, run_once
+
+    root = private(tmp_path)
+    folder = tmp_path / "10-Project"
+    folder.mkdir()
+    note = folder / "Watched.md"
+    note.write_text(
+        "---\ntype: project\nstatus: planning\n"
+        "github_watch: true\ngithub_repo: example/demo\n---\n"
+    )
+
+    class TrustedSource(Source):
+        def source_fingerprint(self):
+            return "a" * 64
+
+    class FakeGitHub(FakeClient):
+        def snapshot(self, repository, *, observed_at):
+            assert repository == "example/demo"
+            return RepositorySnapshot(
+                repository=repository, latest_commit_sha="a" * 40,
+                latest_commit_at=observed_at, open_issues=frozenset(),
+                open_prs=frozenset(), observed_at=observed_at,
+            )
+
+    source = TrustedSource(tmp_path)
+
+    def collect():
+        return invoke(source, root, watcher=run_once,
+                      client_factory=FakeGitHub)
+
+    assert collect()["state"] == "observed"
+    first = read_project_snapshot(root, "a" * 64)
+    assert first["projectCount"] == 1
+    assert first["projects"][0]["projectStatus"] == "planning"
+
+    with StateStore(root / "watcher.sqlite3") as store:
+        store.connection.executemany(
+            "INSERT INTO project_state "
+            "(project_path,repository,last_status,latest_commit_sha,"
+            "latest_commit_at,open_issues_json,open_prs_json,observed_at,"
+            "pending_status,pending_reason) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            [(
+                f"10-Project/Removed_{index:04d}.md", "example/demo",
+                "running", None, None, "[]", "[]",
+                # Invalid stale timestamps should not poison live evidence.
+                "not-a-current-observation", None, None,
+            ) for index in range(257)],
+        )
+        store.connection.commit()
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM project_state"
+        ).fetchone()[0] == 258
+
+    note.write_text(
+        "---\ntype: project\nstatus: running\n"
+        "github_watch: true\ngithub_repo: example/demo\n---\n"
+    )
+    assert collect()["state"] == "observed"
+    second = read_project_snapshot(root, "a" * 64)
+    assert second["projectCount"] == 1
+    assert second["projects"][0]["projectStatus"] == "running"
+    with sqlite3.connect(root / "watcher.sqlite3") as db:
+        # Evidence filtering must NEVER delete historical watcher rows.
+        assert db.execute("SELECT COUNT(*) FROM project_state").fetchone() == (258,)
+
+
+def test_real_watcher_invalid_status_warning_is_not_an_observation_error(tmp_path):
+    """A malformed status header may coexist with a complete valid observation."""
+    from obsidian_automation.github_project_watcher import run_once
+    from obsidian_automation.b3_project_cache import read_project_snapshot
+
+    root = private(tmp_path)
+    folder = tmp_path / "10-Project"
+    folder.mkdir()
+    (folder / "Valid.md").write_text(
+        "---\ntype: project\nstatus: planning\n"
+        "github_watch: true\ngithub_repo: example/demo\n---\n"
+    )
+    (folder / "Invalid.md").write_text(
+        "---\ntype: project\nstatus: impossible\n"
+        "github_watch: true\ngithub_repo: example/demo\n---\n"
+    )
+
+    class TrustedSource(Source):
+        def source_fingerprint(self):
+            return "b" * 64
+
+    class FakeGitHub(FakeClient):
+        def snapshot(self, repository, *, observed_at):
+            assert repository == "example/demo"
+            return RepositorySnapshot(
+                repository=repository, latest_commit_sha="a" * 40,
+                latest_commit_at=observed_at, open_issues=frozenset(),
+                open_prs=frozenset(), observed_at=observed_at,
+            )
+
+    result = invoke(TrustedSource(tmp_path), root,
+                    watcher=run_once, client_factory=FakeGitHub)
+    assert result["state"] == "observed"
+    assert result["observations"] == 1
+    cache = read_project_snapshot(root, "b" * 64)
+    assert cache["projectCount"] == 2
+    assert cache["projects"][0]["lastVerifiedVaultWrite"] is None
+
+
+def test_real_watcher_unreadable_note_warning_still_fails_closed(tmp_path):
+    """An unreadable note is not a metadata-only warning to be tolerated."""
+    from obsidian_automation.github_project_watcher import run_once
+
+    root = private(tmp_path)
+    folder = tmp_path / "10-Project"
+    folder.mkdir()
+    (folder / "Valid.md").write_text(
+        "---\ntype: project\nstatus: planning\n"
+        "github_watch: true\ngithub_repo: example/demo\n---\n"
+    )
+    (folder / "Unreadable.md").symlink_to(tmp_path / "absent.md")
+
+    class FakeGitHub(FakeClient):
+        def snapshot(self, repository, *, observed_at):
+            assert repository == "example/demo"
+            return RepositorySnapshot(
+                repository=repository, latest_commit_sha="a" * 40,
+                latest_commit_at=observed_at, open_issues=frozenset(),
+                open_prs=frozenset(), observed_at=observed_at,
+            )
+
+    result = invoke(Source(tmp_path), root, watcher=run_once,
+                    client_factory=FakeGitHub)
+    assert result["state"] == "unknown"
+    assert result["observations"] == 0
+    assert result["vault_write_authorized"] is False
+    assert not (root / "project-watch-cache.json").exists()
+
+
+def test_metadata_warning_strict_json_duplicate_fields_and_hard_cap():
+    from obsidian_automation.github_b3_watcher_bridge import (
+        _metadata_warnings_only,
+    )
+
+    canonical = json.dumps({
+        "event": "warning",
+        "message": "10-Project/Bad.md: invalid github_repo: 'bad repo'",
+    }) + "\n"
+    assert _metadata_warnings_only(canonical)
+    assert _metadata_warnings_only(canonical * 512)
+    assert not _metadata_warnings_only(canonical * 513)
+    assert not _metadata_warnings_only(canonical[:-1])
+    assert not _metadata_warnings_only(
+        '{"event":"warning","event":"warning",'
+        '"message":"10-Project/Bad.md: invalid github_repo: x"}\n'
+    )
+    assert not _metadata_warnings_only(
+        '{"event":"error","message":"10-Project/Bad.md: invalid github_repo: x"}\n'
+    )
+    assert not _metadata_warnings_only(
+        '{"event":"warning","message":'
+        '"/tmp/mirror/10-Project/Unreadable.md: cannot read project note: 404"}\n'
+    )

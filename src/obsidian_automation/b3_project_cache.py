@@ -140,16 +140,30 @@ def _read_all_projects(vault_root: Path) -> tuple[ProjectWatchConfig, ...]:
     return tuple(rows)
 
 
-def _read_watcher_evidence(db_path: Path) -> tuple[ProjectWatchObservation, ...]:
+def _read_watcher_evidence(
+    db_path: Path, current_paths: tuple[str, ...],
+) -> tuple[ProjectWatchObservation, ...]:
+    # The Watcher stores historical paths indefinitely. Restrict the SQL
+    # lookup to the bounded current mirror before reading/parsing evidence:
+    # removed/renamed Projects must never poison the new snapshot. Do not
+    # prune or modify the persistent Watcher database.
+    if (type(current_paths) is not tuple or len(current_paths) > _MAX_PROJECTS
+            or any(type(path) is not str for path in current_paths)
+            or len(set(current_paths)) != len(current_paths)):
+        raise CacheUnavailable()
     if not db_path.is_absolute() or not db_path.is_file() or db_path.is_symlink():
         raise CacheUnavailable()
+    where = ("project_path IN (" + ",".join("?" for _ in current_paths) + ")"
+             if current_paths else "0")
     try:
         with sqlite3.connect(db_path.as_uri() + "?mode=ro",
                              uri=True, timeout=2) as db:
             db.execute("PRAGMA query_only=ON")
             rows = db.execute(
                 "SELECT project_path,repository,observed_at "
-                "FROM project_state ORDER BY project_path LIMIT 257"
+                "FROM project_state WHERE " + where
+                + " ORDER BY project_path LIMIT 257",
+                current_paths,
             ).fetchall()
     except sqlite3.Error:
         raise CacheUnavailable() from None
@@ -171,7 +185,9 @@ def build_project_snapshot(
     """Trusted collector-time local read; zero provider API or Vault writes."""
     try:
         configs = _read_all_projects(vault_root)
-        observations = _read_watcher_evidence(watcher_db)
+        observations = _read_watcher_evidence(
+            watcher_db, tuple(config.project_path for config in configs),
+        )
         # A local source invocation alone is not trusted evidence that every
         # independent old producer/Writer was excluded.
         return project_watch_projection(
