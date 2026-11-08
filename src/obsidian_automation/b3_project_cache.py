@@ -27,6 +27,10 @@ _FILENAME = "project-watch-cache.json"
 _SHA = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_PROJECTS = 256
 _MAX_NOTES_SCAN = 512
+_MAX_SCAN_ENTRIES = 2048
+_MAX_DIR_ENTRIES = 1024
+_MAX_SCAN_DIRS = 128
+_MAX_SCAN_DEPTH = 8
 _MAX_NOTE_SIZE = 65536
 _MAX_CACHE_BYTES = 262144
 _MAX_CACHE_AGE_SECONDS = 86400
@@ -49,6 +53,39 @@ def _secure_root(root: Path):
         raise CacheUnavailable()
 
 
+def _bounded_markdown_files(root: Path):
+    """Depth-first lexical traversal with hard bounds *before* sorting."""
+    pending = [(root, 0)]
+    scanned_dirs = scanned_entries = 0
+    while pending:
+        path, depth = pending.pop()
+        info = path.lstat()
+        if stat.S_ISDIR(info.st_mode):
+            scanned_dirs += 1
+            if depth > _MAX_SCAN_DEPTH or scanned_dirs > _MAX_SCAN_DIRS:
+                raise CacheUnavailable()
+            children: list[Path] = []
+            with os.scandir(path) as listing:
+                for entry in listing:
+                    scanned_entries += 1
+                    if (scanned_entries > _MAX_SCAN_ENTRIES
+                            or len(children) >= _MAX_DIR_ENTRIES):
+                        raise CacheUnavailable()
+                    children.append(Path(entry.path))
+            # Only a bounded directory's entries are sorted; DFS preserves
+            # lexical path order without materializing an unbounded rglob.
+            pending.extend(
+                (child, depth + 1) for child in reversed(sorted(children))
+            )
+        elif path.name.endswith(".md"):
+            # Match rglob("*.md"), including the literal filename ".md".
+            # Refuse FIFOs/devices before open; symlinks are rejected by
+            # O_NOFOLLOW at the final note boundary below.
+            if not (stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)):
+                raise CacheUnavailable()
+            yield path
+
+
 def _read_all_projects(vault_root: Path) -> tuple[ProjectWatchConfig, ...]:
     root = vault_root / "10-Project"
     if not root.is_dir() or root.is_symlink():
@@ -56,14 +93,16 @@ def _read_all_projects(vault_root: Path) -> tuple[ProjectWatchConfig, ...]:
     rows: list[ProjectWatchConfig] = []
     count = 0
     try:
-        for path in sorted(root.rglob("*.md")):
+        for path in _bounded_markdown_files(root):
             count += 1
             if count > _MAX_NOTES_SCAN:
                 raise CacheUnavailable()
             # Open the exact file with O_NOFOLLOW, then inspect the *opened*
             # inode. A symlink swap after an is_symlink() check must not
             # permit reading outside the authorized disposable mirror.
-            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            fd = os.open(
+                path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
+            )
             with os.fdopen(fd, "rb") as stream:
                 info = os.fstat(stream.fileno())
                 if (not stat.S_ISREG(info.st_mode)
@@ -97,10 +136,11 @@ def _read_all_projects(vault_root: Path) -> tuple[ProjectWatchConfig, ...]:
 
 
 def _read_watcher_evidence(db_path: Path) -> tuple[ProjectWatchObservation, ...]:
-    if not db_path.is_file() or db_path.is_symlink():
+    if not db_path.is_absolute() or not db_path.is_file() or db_path.is_symlink():
         raise CacheUnavailable()
     try:
-        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2) as db:
+        with sqlite3.connect(db_path.as_uri() + "?mode=ro",
+                             uri=True, timeout=2) as db:
             db.execute("PRAGMA query_only=ON")
             rows = db.execute(
                 "SELECT project_path,repository,observed_at "

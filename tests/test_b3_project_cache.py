@@ -356,3 +356,212 @@ def test_get_rechecks_source_generation_after_bounded_local_cache_read(
             server.shutdown()
             thread.join(timeout=3)
             server.server_close()
+
+
+def test_bounded_directory_enumeration_stops_before_unbounded_sort(
+    tmp_path, monkeypatch,
+):
+    """Even a hypothetical million-entry directory is not fully consumed."""
+    import obsidian_automation.b3_project_cache as cache
+    mirror, watcher_db = setup_source(tmp_path)
+    inspected = []
+
+    class HugeSyntheticDirectory:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def __iter__(self):
+            for index in range(1_000_000):
+                inspected.append(index)
+                yield type("Entry", (), {
+                    "path": str(mirror / "10-Project" / f"{index:07d}.md")
+                })()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(cache.os, "scandir", lambda _root: HugeSyntheticDirectory())
+        with pytest.raises(CacheUnavailable):
+            build_project_snapshot(mirror, watcher_db, now=now())
+    assert len(inspected) == cache._MAX_DIR_ENTRIES + 1
+
+
+def test_bounded_markdown_candidate_limit_has_exact_boundary(tmp_path):
+    import obsidian_automation.b3_project_cache as cache
+    mirror, watcher_db = setup_source(tmp_path)
+    folder = mirror / "10-Project"
+    # setup_source installs five Markdown candidates (four Projects).
+    for index in range(cache._MAX_NOTES_SCAN - 5):
+        (folder / f"Journal{index:04d}.md").write_text(
+            "---\ntype: journal\n---\n"
+        )
+    assert build_project_snapshot(
+        mirror, watcher_db, now=now()
+    )["projectCount"] == 4
+    # The old rglob("*.md") also counted a note literally named ".md".
+    (folder / ".md").write_text("---\ntype: journal\n---\n")
+    with pytest.raises(CacheUnavailable):
+        build_project_snapshot(mirror, watcher_db, now=now())
+    (folder / ".md").unlink()
+    (folder / "Overflow.md").write_text("---\ntype: journal\n---\n")
+    with pytest.raises(CacheUnavailable):
+        build_project_snapshot(mirror, watcher_db, now=now())
+
+
+def test_bounded_directory_count_and_depth_fail_closed(tmp_path):
+    import obsidian_automation.b3_project_cache as cache
+    mirror, watcher_db = setup_source(tmp_path)
+    folder = mirror / "10-Project"
+    deep = folder
+    for index in range(cache._MAX_SCAN_DEPTH):
+        deep = deep / f"level{index}"
+        deep.mkdir()
+    (deep / "Valid.md").write_text(
+        "---\ntype: project\nstatus: running\ngithub_watch: false\n---\n"
+    )
+    assert build_project_snapshot(
+        mirror, watcher_db, now=now()
+    )["projectCount"] == 5
+    (deep / "too-deep").mkdir()
+    with pytest.raises(CacheUnavailable):
+        build_project_snapshot(mirror, watcher_db, now=now())
+    (deep / "too-deep").rmdir()
+
+    # Root + the eight nested directories already consume nine slots.
+    for index in range(cache._MAX_SCAN_DIRS - cache._MAX_SCAN_DEPTH - 1):
+        (folder / f"subdir{index:03d}").mkdir()
+    assert build_project_snapshot(
+        mirror, watcher_db, now=now()
+    )["projectCount"] == 5
+    (folder / "OverflowDir").mkdir()
+    with pytest.raises(CacheUnavailable):
+        build_project_snapshot(mirror, watcher_db, now=now())
+
+
+def test_total_directory_entries_bounded_even_when_not_markdown(tmp_path):
+    import obsidian_automation.b3_project_cache as cache
+    mirror, watcher_db = setup_source(tmp_path)
+    folder = mirror / "10-Project"
+    # Root has five Markdown entries and three added directories.
+    per_dir = (cache._MAX_SCAN_ENTRIES - 8) // 3
+    assert 3 * per_dir + 8 == cache._MAX_SCAN_ENTRIES
+    assert per_dir < cache._MAX_DIR_ENTRIES
+    for directory in range(3):
+        nested = folder / f"nonnotes{directory}"
+        nested.mkdir()
+        for index in range(per_dir):
+            (nested / f"{index:04d}.txt").touch()
+    assert build_project_snapshot(
+        mirror, watcher_db, now=now()
+    )["projectCount"] == 4
+    (nested / "Overflow.txt").touch()
+    with pytest.raises(CacheUnavailable):
+        build_project_snapshot(mirror, watcher_db, now=now())
+
+
+@pytest.mark.parametrize("special_name, shadow_name", (
+    ("watcher?copy.sqlite3", "watcher"),
+    ("watcher#copy.sqlite3", "watcher"),
+    ("watcher%23copy.sqlite3", "watcher#copy.sqlite3"),
+))
+def test_sqlite_readonly_uri_escapes_reserved_path_characters_without_creating_alias(
+    tmp_path, special_name, shadow_name,
+):
+    import obsidian_automation.b3_project_cache as cache
+    mirror, original_db = setup_source(tmp_path)
+    special = tmp_path / special_name
+    original_db.rename(special)
+    shadow = tmp_path / shadow_name
+    assert not shadow.exists()
+    evidence = cache._read_watcher_evidence(special)
+    assert len(evidence) == 1
+    assert evidence[0].repository == "upiscium/Repo"
+    assert evidence[0].project_path == "10-Project/Watched.md"
+    assert not shadow.exists()
+    assert not original_db.exists()
+    assert build_project_snapshot(mirror, special, now=now())["projectCount"] == 4
+    assert not shadow.exists()
+
+
+@pytest.mark.parametrize("special_name, shadow_name", (
+    ("watcher?copy.sqlite3", "watcher"),
+    ("watcher#copy.sqlite3", "watcher"),
+    ("watcher%23copy.sqlite3", "watcher#copy.sqlite3"),
+))
+def test_sqlite_readonly_uri_reads_exact_database_not_valid_decoy(
+    tmp_path, special_name, shadow_name,
+):
+    import obsidian_automation.b3_project_cache as cache
+    _, original_db = setup_source(tmp_path)
+    special = tmp_path / special_name
+    original_db.rename(special)
+    shadow = tmp_path / shadow_name
+    with sqlite3.connect(shadow) as conn:
+        conn.execute(
+            "CREATE TABLE project_state (project_path TEXT PRIMARY KEY,"
+            "repository TEXT, observed_at TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO project_state VALUES (?,?,?)",
+            ("10-Project/Decoy.md", "evil/Decoy", "2026-11-08T00:00:00+00:00"),
+        )
+    evidence = cache._read_watcher_evidence(special)
+    assert [(row.project_path, row.repository) for row in evidence] == [
+        ("10-Project/Watched.md", "upiscium/Repo"),
+    ]
+    with sqlite3.connect(shadow) as conn:
+        assert conn.execute("SELECT repository FROM project_state").fetchone() == (
+            "evil/Decoy",
+        )
+
+
+def test_per_directory_entry_limit_exact_boundary(tmp_path):
+    import obsidian_automation.b3_project_cache as cache
+    mirror, watcher_db = setup_source(tmp_path)
+    folder = mirror / "10-Project"
+    for index in range(cache._MAX_DIR_ENTRIES - 5):
+        (folder / f"Ignore{index:04d}.txt").touch()
+    assert build_project_snapshot(
+        mirror, watcher_db, now=now()
+    )["projectCount"] == 4
+    (folder / "Overflow.txt").touch()
+    with pytest.raises(CacheUnavailable):
+        build_project_snapshot(mirror, watcher_db, now=now())
+
+
+def test_bounded_nested_lexical_order_and_no_symlink_directory_traversal(tmp_path):
+    import obsidian_automation.b3_project_cache as cache
+    mirror, watcher_db = setup_source(tmp_path)
+    folder = mirror / "10-Project"
+    nested = folder / "a"
+    nested.mkdir()
+    (nested / "Inside.md").write_text("---\ntype: journal\n---\n")
+    (folder / "a.md").write_text("---\ntype: journal\n---\n")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "Outside.md").write_text("---\ntype: project\n---\n")
+    (folder / "outside-link").symlink_to(outside, target_is_directory=True)
+    found = tuple(cache._bounded_markdown_files(folder))
+    assert found.index(nested / "Inside.md") < found.index(folder / "a.md")
+    assert (outside / "Outside.md") not in found
+    assert build_project_snapshot(
+        mirror, watcher_db, now=now()
+    )["projectCount"] == 4
+
+
+def test_bounded_scan_rejects_fifo_and_scandir_error(tmp_path, monkeypatch):
+    import os
+    import obsidian_automation.b3_project_cache as cache
+    mirror, watcher_db = setup_source(tmp_path)
+    fifo = mirror / "10-Project" / "NotRegular.md"
+    os.mkfifo(fifo)
+    with pytest.raises(CacheUnavailable):
+        build_project_snapshot(mirror, watcher_db, now=now())
+    fifo.unlink()
+    with monkeypatch.context() as patch:
+        def fail_listing(_path):
+            raise OSError("synthetic no directory access")
+        patch.setattr(cache.os, "scandir", fail_listing)
+        with pytest.raises(CacheUnavailable):
+            build_project_snapshot(mirror, watcher_db, now=now())
