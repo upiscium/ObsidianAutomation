@@ -68,7 +68,7 @@ def make(tmp_path, source, clock):
         tmp_path / "b3", source.collect,
         configured=source.configured, generation=source.fingerprint,
         clock=clock, phase_collector=source.collect_bound,
-        source_lock=source.lock,
+        source_lock=lambda: source.lock,
     )
     return job, B3PhaseRuntime(job)
 
@@ -209,7 +209,7 @@ def test_restart_preserves_noon_slot_and_revision(tmp_path):
     job2 = B3ObserverJob(root, source.collect, configured=source.configured,
                          generation=source.fingerprint, clock=clock,
                          phase_collector=source.collect_bound,
-                         source_lock=source.lock)
+                         source_lock=lambda: source.lock)
     with job2:
         resumed = B3PhaseRuntime(job2)
         assert resumed.status()["revision"] == 1
@@ -343,4 +343,229 @@ def test_phase_collector_requires_source_update_lock(tmp_path):
             phase_collector=source.collect_bound,
             # Missing source_lock must fail closed instead of allowing
             # a positive receipt to race credential/source updates.
+        )
+
+
+
+def test_phase_terminal_lock_order_prevents_daily_store_deadlock(tmp_path):
+    """The published #564 store->daily inversion is now forbidden.
+
+    Hold the B4 DailySetup lock and start a B3 positive terminal receipt.
+    B4 must still be able to acquire the shared SetupStore rotation lock
+    while it holds DailySetup, even while the B3 receipt is waiting.
+    Neither thread performs Provider I/O or any canonical Vault write.
+    """
+    from obsidian_automation.github_daily_setup import DailySetup
+
+    b3_lock_attempted = threading.Event()
+    b3_lock_order = []
+
+    class ProbedRLock:
+        """Record the actual __enter__ acquisition boundary, not a hint."""
+        def __init__(self, name):
+            self.name = name
+            self.lock = threading.RLock()
+
+        def __enter__(self):
+            if threading.current_thread().name == "b3-receipt":
+                b3_lock_order.append(self.name)
+                b3_lock_attempted.set()
+            self.lock.acquire()
+            return self
+
+        def __exit__(self, *_):
+            self.lock.release()
+
+        def acquire(self, *args, **kwargs):
+            return self.lock.acquire(*args, **kwargs)
+
+        def release(self):
+            return self.lock.release()
+
+    class Shared:
+        def __init__(self):
+            self._lock = ProbedRLock("shared")
+
+    shared = Shared()
+    daily = DailySetup(tmp_path / "daily", shared)
+    daily._lock = ProbedRLock("daily")
+    b4_has_daily = threading.Event()
+    b4_checked_shared = threading.Event()
+    b4_may_release = threading.Event()
+    result = {}
+
+    def configured():
+        with daily._lock:
+            with shared._lock:
+                return True
+
+    def generation():
+        with shared._lock:
+            return "a" * 64
+
+    def guard_factory():
+        return daily.phase_receipt_guard()
+
+    with B3ObserverJob(
+        tmp_path / "b3", lambda: pytest.fail("no remote collector"),
+        configured=configured, generation=generation,
+        phase_collector=lambda _: pytest.fail("no phase collector"),
+        source_lock=guard_factory, clock=lambda: 1000.0,
+    ) as owner:
+        with owner.db:
+            run = owner._admit("b" * 32, "scheduled", 1000.0)
+
+        def run_b4_acquisition():
+            with daily._lock:
+                b4_has_daily.set()
+                if not b3_lock_attempted.wait(3):
+                    result["b4_error"] = "b3_never_attempted_any_lock"
+                    return
+                # This acquisition was blocked by the original inversion:
+                # B3 held the shared lock while waiting for DailySetup.
+                acquired = shared._lock.acquire(timeout=.75)
+                result["b4_got_shared"] = acquired
+                if acquired:
+                    shared._lock.release()
+                b4_checked_shared.set()
+                # Keep DailySetup held until the assertion phase, ensuring
+                # a B3 that took the reverse lock order would be exposed.
+                b4_may_release.wait(3)
+
+        def run_b3_terminal():
+            result["finished"] = owner._finish(
+                run["run_id"], status="observed", reason="synthetic",
+                count=1, expected_generation="a" * 64,
+            )
+
+        b4 = threading.Thread(target=run_b4_acquisition, daemon=True)
+        b3 = threading.Thread(
+            target=run_b3_terminal, daemon=True, name="b3-receipt",
+        )
+        b4.start()
+        assert b4_has_daily.wait(2)
+        b3.start()
+        try:
+            assert b4_checked_shared.wait(2), result
+            # A reverted Store->Daily guard could pass if the B4 contender
+            # wins the Store lock first. Record the actual first B3 lock
+            # attempt so that inversion fails deterministically.
+            assert b3_lock_order[0] == "daily", b3_lock_order
+            assert result.get("b4_got_shared") is True, result
+        finally:
+            b4_may_release.set()
+            b4.join(timeout=3)
+            b3.join(timeout=3)
+        assert not b4.is_alive() and not b3.is_alive(), "lock inversion"
+        assert result["finished"] is True
+        assert owner.run(run["run_id"])["status"] == "observed"
+
+
+def test_phase_receipt_keeps_shared_rotation_lock_through_sqlite_write(tmp_path):
+    """A concurrent source mutation cannot interleave an observed COMMIT."""
+    from obsidian_automation.github_daily_setup import DailySetup
+
+    class Shared:
+        def __init__(self):
+            self._lock = threading.RLock()
+
+    shared = Shared()
+    daily = DailySetup(tmp_path / "daily", shared)
+    source = Source()
+    at_commit_boundary = threading.Event()
+    release_commit = threading.Event()
+    rotator_attempted = threading.Event()
+    source_rotated = threading.Event()
+    results = {}
+
+    def generation():
+        with shared._lock:
+            return source.generation
+
+    def configured():
+        with daily._lock:
+            with shared._lock:
+                return source.ready
+
+    with B3ObserverJob(
+        tmp_path / "b3", lambda: pytest.fail("no provider I/O"),
+        configured=configured, generation=generation,
+        phase_collector=lambda _: pytest.fail("no provider I/O"),
+        source_lock=daily.phase_receipt_guard,
+        clock=lambda: 1000.0,
+    ) as owner:
+        with owner.db:
+            row = owner._admit("c" * 32, "scheduled", 1000.0)
+        original = owner.db
+
+        class InstrumentedDB:
+            def execute(self, statement, args=()):
+                return original.execute(statement, args)
+
+            def __enter__(self):
+                original.__enter__()
+                return self
+
+            def __exit__(self, *args):
+                # The transaction's COMMIT is performed by the original
+                # sqlite3.Connection.__exit__ below. Pause at that precise
+                # boundary, while the positive receipt must still hold
+                # its shared source-rotation lock.
+                at_commit_boundary.set()
+                assert release_commit.wait(3), "test commit release unavailable"
+                return original.__exit__(*args)
+
+            def close(self):
+                return original.close()
+
+        owner.db = InstrumentedDB()
+
+        def write_receipt():
+            results["written"] = owner._finish(
+                row["run_id"], status="observed",
+                reason="local_read_only_observation", count=1,
+                expected_generation="a" * 64,
+            )
+
+        def rotate_source():
+            rotator_attempted.set()
+            with shared._lock:
+                source.generation = "b" * 64
+                source_rotated.set()
+
+        finish_thread = threading.Thread(target=write_receipt, daemon=True)
+        rotate_thread = threading.Thread(target=rotate_source, daemon=True)
+        finish_thread.start()
+        assert at_commit_boundary.wait(2)
+        # This checks the held lock itself instead of relying only on a
+        # rotator thread receiving CPU time during a short wait.
+        unexpected = shared._lock.acquire(blocking=False)
+        if unexpected:
+            shared._lock.release()
+        rotate_thread.start()
+        try:
+            assert not unexpected, "shared lock was released before COMMIT"
+            assert rotator_attempted.wait(2), "rotator did not start"
+            assert not source_rotated.wait(.20), (
+                "source rotated inside receipt transaction"
+            )
+        finally:
+            release_commit.set()
+            finish_thread.join(timeout=3)
+            rotate_thread.join(timeout=3)
+        assert not finish_thread.is_alive() and not rotate_thread.is_alive()
+        assert results.get("written") is True
+        assert source_rotated.is_set()
+        assert owner.run(row["run_id"])["status"] == "observed"
+        assert source.generation == "b" * 64
+
+
+def test_source_guard_factory_rejects_context_instance(tmp_path):
+    source, clock = Source(), Clock(stamp(11, 59))
+    with pytest.raises(Invalid, match="invalid_b3_observer_config"):
+        B3ObserverJob(
+            tmp_path / "b3", source.collect,
+            configured=source.configured, generation=source.fingerprint,
+            phase_collector=source.collect_bound, clock=clock,
+            source_lock=source.lock,
         )

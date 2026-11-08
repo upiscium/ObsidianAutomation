@@ -77,6 +77,22 @@ class DailySetup:
         except (OSError, ValueError):
             return None
 
+    @contextmanager
+    def phase_receipt_guard(self):
+        """Short phase-only source/receipt fence; never hold during I/O.
+
+        Always acquire DailySetup._lock before SetupStore._lock, matching
+        project_source() and configured(). In particular, taking the shared
+        lock first and then querying configured() can deadlock against B4.
+        A missing shared rotation lock must fail closed for phase receipts.
+        """
+        with self._lock:
+            rotation_lock = getattr(self.shared, "_lock", None)
+            if rotation_lock is None:
+                raise DailySetupError("phase_source_lock_unavailable")
+            with rotation_lock:
+                yield
+
     def configured(self) -> bool:
         try:
             with self._lock:

@@ -115,7 +115,7 @@ def main() -> int:
                 daily_setup, state_root=b3_state,
                 expected_generation=expected,
             ),
-            source_lock=store._lock,
+            source_lock=daily_setup.phase_receipt_guard,
         )
         if daily_setup is not None else nullcontext(None)
     )

@@ -121,17 +121,15 @@ class B3ObserverJob:
         generation: Callable[[], str | None],
         clock: Callable[[], float] = time.time,
         phase_collector: Callable[[str], dict[str, object]] | None = None,
-        source_lock: object | None = None,
+        source_lock: Callable[[], object] | None = None,
     ):
         if (not isinstance(state, Path) or not state.is_absolute()
                 or state.is_symlink() or not callable(collector)
                 or not callable(configured) or not callable(generation)
                 or not callable(clock)
                 or (phase_collector is not None and not callable(phase_collector))
-                or (phase_collector is not None and source_lock is None)
-                or (source_lock is not None
-                    and (not callable(getattr(source_lock, "__enter__", None))
-                         or not callable(getattr(source_lock, "__exit__", None))))):
+                or (phase_collector is not None and not callable(source_lock))
+                or (source_lock is not None and not callable(source_lock))):
             raise Invalid("invalid_b3_observer_config")
         state.mkdir(mode=0o700, parents=True, exist_ok=True)
         info = state.stat()
@@ -146,9 +144,11 @@ class B3ObserverJob:
         # binding *inside* the collector's source acquisition. Manual and
         # legacy relative runs continue to use the existing zero-arg path.
         self.phase_collector = phase_collector
-        # This is the trusted SetupStore rotation RLock for phase runs only.
-        # Terminal verification and durable positive receipt must share it
-        # with the source settings writer (never across network I/O).
+        # Callable factory for the trusted phase-only Source/Receipt guard.
+        # Its acquisition order is DailySetup._lock -> SetupStore._lock,
+        # exactly matching the B4 source acquisition path. A fresh context
+        # manager is created per terminal attempt and held through COMMIT;
+        # never retain these locks across remote provider I/O.
         self.source_lock = source_lock
         self.is_configured, self.get_generation = configured, generation
         self.clock = clock
@@ -365,17 +365,17 @@ class B3ObserverJob:
     ) -> bool:
         """Bounded terminal write; persistent DB faults remain fail-closed.
 
-        Positive phase results require one last source-generation check under
-        the SAME SetupStore RLock that serializes credential/source rotation,
-        held until the SQLite receipt commits. This is a short local critical
-        section, never a lock around remote I/O. Manual/relative runs do not
-        acquire the additional lock or change their receipt semantics.
+        Positive phase results require one last source-generation check
+        while the phase receipt guard holds DailySetup._lock THEN the shared
+        SetupStore._lock through SQLite COMMIT, mirroring source acquisition.
+        This short local critical section never includes provider I/O;
+        manual/relative runs preserve their previous receipt semantics.
         """
         for attempt in range(3):
             try:
                 with self._lock:
                     guard = (
-                        self.source_lock
+                        self.source_lock()
                         if status == "observed" and expected_generation is not None
                         else nullcontext()
                     )
