@@ -204,58 +204,63 @@ class BrokerReadOnlySession:
             }
         raise BrokerReadOnlyDenied("broker_request_invalid")
 
-    def serve_once(self, conn: socket.socket) -> None:
-        """One already-accepted connection, never a long-running service.
+    def _serve_connected(self, conn: socket.socket) -> None:
+        """Process one peer without closing it; trusted caller owns cleanup.
 
         Wrong peer receives NO bytes or Broker state access. Authenticated
         malformed requests receive a fixed generic denial only. A sent
         response is an observation, never durable Owner settlement.
         """
+        # The trusted listener owns this descriptor and will close it once.
         try:
-            try:
-                self._require_broker()
-                _, uid, gid = self._connected_peer(conn)
-                if uid != self._owner_uid or gid != self._owner_gid:
-                    return
-            except (BrokerReadOnlyDenied, BrokerJournalDenied):
+            self._require_broker()
+            _, uid, gid = self._connected_peer(conn)
+            if uid != self._owner_uid or gid != self._owner_gid:
                 return
-            try:
-                deadline = time.monotonic() + _TIMEOUT
-                request = _parse_request(conn, deadline)
-                self._require_broker()
-                response = self._handle(request)
-            except BrokerReadOnlyDenied:
-                response = {"v": 1, "ok": False, "reason": "broker_denied"}
-            except BrokerJournalDenied as error:
-                # Unknown/mismatch must not reveal account or operation
-                # existence; a missing/unsafe DB cannot produce success.
-                reason = str(error)
-                denied = (
-                    reason in (
-                        "broker_account_unknown", "broker_account_invalid",
-                        "broker_attempt_unknown", "broker_attempt_mismatch",
-                        "broker_attempt_invalid",
-                    )
+        except (BrokerReadOnlyDenied, BrokerJournalDenied):
+            return
+        try:
+            deadline = time.monotonic() + _TIMEOUT
+            request = _parse_request(conn, deadline)
+            self._require_broker()
+            response = self._handle(request)
+        except BrokerReadOnlyDenied:
+            response = {"v": 1, "ok": False, "reason": "broker_denied"}
+        except BrokerJournalDenied as error:
+            # Unknown/mismatch must not reveal account or operation
+            # existence; a missing/unsafe DB cannot produce success.
+            reason = str(error)
+            denied = (
+                reason in (
+                    "broker_account_unknown", "broker_account_invalid",
+                    "broker_attempt_unknown", "broker_attempt_mismatch",
+                    "broker_attempt_invalid",
                 )
-                response = {
-                    "v": 1, "ok": False,
-                    "reason": "broker_denied" if denied else "broker_unavailable",
-                }
-            except Exception:
-                response = {"v": 1, "ok": False, "reason": "broker_unavailable"}
-            try:
-                frame = _encode(response)
-            except BrokerReadOnlyDenied:
-                frame = b'{"v":1,"ok":false,"reason":"broker_unavailable"}\n'
-            try:
-                conn.settimeout(max(0.01, deadline - time.monotonic()))
-                conn.sendall(frame)
-                conn.shutdown(socket.SHUT_WR)
-            except (OSError, TimeoutError):
-                # Never retry or presume that a response was delivered.
-                pass
+            )
+            response = {
+                "v": 1, "ok": False,
+                "reason": "broker_denied" if denied else "broker_unavailable",
+            }
+        except Exception:
+            response = {"v": 1, "ok": False, "reason": "broker_unavailable"}
+        try:
+            frame = _encode(response)
+        except BrokerReadOnlyDenied:
+            frame = b'{"v":1,"ok":false,"reason":"broker_unavailable"}\n'
+        try:
+            conn.settimeout(max(0.01, deadline - time.monotonic()))
+            conn.sendall(frame)
+            conn.shutdown(socket.SHUT_WR)
+        except (OSError, TimeoutError):
+            # Never retry or presume that a response was delivered.
+            pass
+
+    def serve_once(self, conn: socket.socket) -> None:
+        """Standalone B2 use: handler owns the final connection close."""
+        try:
+            self._serve_connected(conn)
         finally:
             try:
                 conn.close()
             except OSError:
-                pass
+                raise BrokerReadOnlyDenied("broker_cleanup_unverified") from None
