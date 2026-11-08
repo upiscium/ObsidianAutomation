@@ -115,6 +115,10 @@ def preview_root(
     """
     if type(request) is not RootSelection or type(inventory) is not tuple:
         return _result("blocked", "invalid_request")
+    # Dataclass annotations do not enforce exact runtime types. In particular
+    # a str subclass may override != and escape the new/legacy path gate.
+    if type(request.requested) is not str or type(request.active) is not str:
+        return _result("blocked", "invalid_path")
     if not all(
         _identifier(v)
         for v in (
@@ -149,6 +153,17 @@ def preview_root(
     for component, snapshot in zip(selected, inventory):
         if type(snapshot) is not DirectoryEvidence:
             return _result("blocked", "invalid_inventory")
+        # Every evidence identity/scope field must be an ordinary bounded
+        # string BEFORE any equality comparison with the request. Otherwise
+        # hostile __ne__ methods may spoof namespace/parent/revision checks.
+        if (
+            type(snapshot.parent) is not str or len(snapshot.parent) > 100
+            or not all(_identifier(v) for v in (
+                snapshot.parent_resource_id, snapshot.namespace,
+                snapshot.revision,
+            ))
+        ):
+            return _result("blocked", "invalid_inventory")
         if (
             snapshot.parent != parent
             or snapshot.parent_resource_id != expected_parent_id
@@ -170,9 +185,18 @@ def preview_root(
             # Bound untrusted inventory processing BEFORE Unicode normalization.
             if not 1 <= len(entry.name) <= MAX_SIBLING_NAME_CHARS:
                 return _result("blocked", "invalid_inventory")
+            # A directory inventory contains immediate *single-component*
+            # names, including unselected siblings. Do not confuse malformed
+            # child names with nested paths or special path components.
+            # Do not apply the new-root ASCII grammar to Unicode siblings.
+            if entry.name in (".", "..") or "/" in entry.name or "\x00" in entry.name:
+                return _result("blocked", "invalid_inventory")
             if not _identifier(entry.resource_id) or type(entry.is_alias) is not bool:
                 return _result("blocked", "invalid_inventory")
-            if entry.kind not in ("directory", "file", "symlink", "unknown"):
+            if (
+                type(entry.kind) is not str
+                or entry.kind not in ("directory", "file", "symlink", "unknown")
+            ):
                 return _result("blocked", "invalid_inventory")
             folded = _fold(entry.name)
             legacy_folded = _legacy_fold(entry.name)

@@ -348,3 +348,62 @@ def test_preview_is_pure_no_filesystem_network_or_process(monkeypatch):
     monkeypatch.setattr(subprocess, "Popen", denied)
     monkeypatch.setattr(urllib.request, "urlopen", denied)
     assert preview_root(choice(), evidence()).status == "candidate_valid"
+
+
+# #303 V1/B0 provenance boundary: typed dataclasses still accept fields
+# of arbitrary runtime types, including hostile str subclasses.
+class _SpoofedEvidenceString(str):
+    def __eq__(self, _other):
+        return True
+
+    def __ne__(self, _other):
+        return False
+
+
+class _RaisingEvidenceString(str):
+    def __eq__(self, _other):
+        raise AssertionError("raw identity must not reach comparison")
+
+    def __ne__(self, _other):
+        raise AssertionError("raw identity must not reach comparison")
+
+
+@pytest.mark.parametrize("field", [
+    "parent", "parent_resource_id", "namespace", "revision",
+])
+@pytest.mark.parametrize("bad", [
+    _SpoofedEvidenceString("wrong-scope"),
+    _RaisingEvidenceString("secret-scope"),
+    None,
+    42,
+])
+def test_directory_evidence_scope_fields_require_exact_str(field, bad):
+    a, b = evidence()
+    changed = replace(b, **{field: bad})
+    assert_blocked(preview_root(choice(), (a, changed)), "invalid_inventory")
+
+
+def test_selected_resource_kind_rejects_spoofed_enum_string():
+    a, b = evidence()
+    changed = replace(b, entries=(
+        Resource("Vault", "obj-new", _SpoofedEvidenceString("not-a-kind")),
+    ))
+    assert_blocked(preview_root(choice(), (a, changed)), "invalid_inventory")
+
+
+@pytest.mark.parametrize("field", ["requested", "active"])
+def test_request_path_subclass_cannot_trigger_comparison_hook(field):
+    bogus = choice(**{field: _RaisingEvidenceString("sensitive-path")})
+    assert_blocked(preview_root(bogus, evidence()), "invalid_path")
+
+
+@pytest.mark.parametrize("bad_name", [
+    ".", "..", "Nested/Leaf", "/absolute", "contains\x00nul",
+])
+def test_immediate_sibling_names_must_be_structurally_valid(bad_name):
+    first, second = evidence()
+    bad_sibling = Resource(bad_name, "obj-malformed", "file")
+    changed = replace(second, entries=second.entries + (bad_sibling,))
+    assert_blocked(
+        preview_root(choice(), (first, changed)), "invalid_inventory",
+    )
