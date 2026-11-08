@@ -584,6 +584,72 @@ class BrokerPrivateJournal:
         finally:
             db.close()
 
+    def observe_finality_by_key(
+        self, *, run_id: str, operation_id: str,
+        account_binding_sha256: str, attempt_sha256: str,
+    ) -> BrokerFinalityObservation:
+        """Read one *persisted* exact attempt by digest; NEVER settle an effect.
+
+        B2 read-only observation endpoint does not receive an EffectAttempt,
+        approved plan, target, raw ETag or Vault bytes. The stored sealed
+        attempt digest, not caller-chosen unsealed fields, is authoritative.
+        Only the local never-dispatched terminal can be reported as terminal.
+        """
+        if (not _check_name(run_id, 32) or not _check_name(operation_id, 32)
+                or not _sha(account_binding_sha256)
+                or not _sha(attempt_sha256)):
+            raise BrokerJournalDenied("broker_attempt_invalid")
+        db = self._open()
+        try:
+            db.execute("BEGIN")
+            row = db.execute("""SELECT account,attempt_digest,status,
+                receipt_seq,receipt_digest FROM broker_attempt
+                WHERE run_id=? AND operation_id=?""",
+                (run_id, operation_id)).fetchone()
+            # Pin the receipt watermark and exact resource-release state in
+            # the SAME read transaction as the durable attempt observation.
+            gate_seq = self._gate(db)[4]
+            held = db.execute("""SELECT 1 FROM broker_resource
+                WHERE run_id=? AND operation_id=?""",
+                (run_id, operation_id)).fetchone() is not None
+            self._verify_fd(db)
+            db.execute("COMMIT")
+            if row is None:
+                raise BrokerJournalDenied("broker_attempt_unknown")
+            if row[0] != account_binding_sha256 or row[1] != attempt_sha256:
+                raise BrokerJournalDenied("broker_attempt_mismatch")
+            if row[2] == "verified_no_effect":
+                if (type(row[3]) is not int or not 0 < row[3] < (1 << 62)
+                        or not _sha(row[4]) or row[4] == "0" * 64
+                        or type(gate_seq) is not int or gate_seq < row[3]
+                        or held
+                        or row[4] != _digest([
+                            "broker-never-dispatched-v1", self._binding,
+                            run_id, operation_id, attempt_sha256, row[3],
+                        ])):
+                    # A well-shaped SHA alone is not a receipt. The exact
+                    # durable transcript, monotonic global watermark and
+                    # same-transaction resource release must all agree.
+                    raise BrokerJournalDenied("broker_result_invalid")
+                disposition, seq, receipt = "verified_no_effect", row[3], row[4]
+            elif row[2] in ("pre_dispatch", "dispatch_possible", "unconfirmed"):
+                # Even a malformed pending row must never expose a receipt.
+                if row[3] is not None or row[4] is not None:
+                    raise BrokerJournalDenied("broker_result_invalid")
+                disposition, seq, receipt = "pending", None, None
+            else:
+                raise BrokerJournalDenied("broker_result_invalid")
+            return BrokerFinalityObservation(
+                run_id=run_id, operation_id=operation_id,
+                account_binding_sha256=account_binding_sha256,
+                attempt_sha256=attempt_sha256, disposition=disposition,
+                broker_journal_seq=seq, receipt_sha256=receipt,
+            )
+        except sqlite3.Error:
+            raise BrokerJournalDenied("broker_state_unavailable") from None
+        finally:
+            db.close()
+
     def request_off(self) -> str:
         """Commit global CLOSED, never ACK stopped for unresolved attempt."""
         try:
