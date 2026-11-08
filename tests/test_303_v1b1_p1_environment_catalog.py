@@ -137,6 +137,10 @@ PHASE_BY_CASE = {
     case_id: phase for phase, ids in CASES_BY_PHASE.items()
     for case_id in ids
 }
+# The existing V1/B1 R0 contract fixes each gate to the first character
+# of its canonical case ID. Reapply that *independent* identity rule here:
+# coordinated edits to the source matrix and P1 catalog cannot redefine it.
+GATE_BY_CASE = {case_id: case_id[0] for case_id in PHASE_BY_CASE}
 
 
 @pytest.fixture(scope="module")
@@ -202,6 +206,12 @@ def verify(catalog, matrix):
         by_id[case_id]["phase"] == PHASE_BY_CASE[case_id]
         for case_id in PHASE_BY_CASE
     )
+    assert all(
+        type(by_id[case_id].get("gate")) is str
+        and by_id[case_id]["gate"] == GATE_BY_CASE[case_id]
+        and by_id[case_id]["gate"] in REQUIRED_GATES
+        for case_id in PHASE_BY_CASE
+    ), "source_gate_identity_mismatch"
     cases = catalog["case_coverage"]
     assert type(cases) is list and len(cases) == len(by_id)
     assert len({case["case_id"] for case in cases}) == len(cases)
@@ -209,7 +219,11 @@ def verify(catalog, matrix):
     for entry in cases:
         assert type(entry) is dict and set(entry) == CASE_FIELDS
         case = by_id[entry["case_id"]]
-        assert entry["gate"] == case["gate"]
+        assert (
+            type(entry["gate"]) is str
+            and entry["gate"] == GATE_BY_CASE[entry["case_id"]]
+            and entry["gate"] == case["gate"]
+        ), "catalog_gate_identity_mismatch"
         assert entry["phase"] == case["phase"]
         assert entry["status"] == "NOT_RUN"
         assert type(entry["special_constraint"]) is str
@@ -419,3 +433,97 @@ def test_count_preserving_coordinated_source_and_catalog_phase_swap_is_rejected(
     )
     with pytest.raises(AssertionError):
         verify(changed_catalog, changed_source)
+
+
+def _find_gate_case(rows, case_id, key):
+    return next(row for row in rows if row[key] == case_id)
+
+
+def test_coordinated_count_preserving_cross_gate_swap_rejected(catalog, matrix):
+    # Both *trusted-looking* inputs are edited in lockstep, so comparing only
+    # entry["gate"] == source["gate"] would previously pass.
+    altered_catalog = deepcopy(catalog)
+    altered_matrix = deepcopy(matrix)
+    for case_id, wrong_gate in (("A01", "C"), ("C01", "A")):
+        _find_gate_case(altered_catalog["case_coverage"], case_id, "case_id")[
+            "gate"
+        ] = wrong_gate
+        _find_gate_case(altered_matrix["cases"], case_id, "id")[
+            "gate"
+        ] = wrong_gate
+
+    from collections import Counter
+    assert Counter(row["gate"] for row in altered_matrix["cases"]) == Counter(
+        row["gate"] for row in matrix["cases"]
+    )
+    assert all(
+        _find_gate_case(altered_catalog["case_coverage"], case_id, "case_id")[
+            "phase"
+        ] == _find_gate_case(matrix["cases"], case_id, "id")["phase"]
+        for case_id in ("A01", "C01")
+    )
+    with pytest.raises(AssertionError, match="source_gate_identity_mismatch"):
+        verify(altered_catalog, altered_matrix)
+
+
+@pytest.mark.parametrize("bad_gate", [
+    "C",  # plausible but wrong gate, both inputs coordinated
+    {"unexpected": "synthetic"},  # nested JSON object
+    ["A"],  # list and shape/type violation
+    True,  # bool compares to neither the required string nor exact type
+    None,
+])
+def test_coordinated_invalid_or_forged_gate_values_fail_closed(
+    bad_gate, catalog, matrix
+):
+    altered_catalog = deepcopy(catalog)
+    altered_matrix = deepcopy(matrix)
+    _find_gate_case(altered_catalog["case_coverage"], "A01", "case_id")[
+        "gate"
+    ] = deepcopy(bad_gate)
+    _find_gate_case(altered_matrix["cases"], "A01", "id")[
+        "gate"
+    ] = deepcopy(bad_gate)
+    with pytest.raises(AssertionError, match="source_gate_identity_mismatch"):
+        verify(altered_catalog, altered_matrix)
+
+
+@pytest.mark.parametrize("bad_gate", [
+    "C",
+    {"unexpected": "synthetic"},
+    ["A"],
+    True,
+    None,
+])
+def test_catalog_only_gate_forgery_fails_at_catalog_gate_check(
+    bad_gate, catalog, matrix
+):
+    altered_catalog = deepcopy(catalog)
+    _find_gate_case(altered_catalog["case_coverage"], "A01", "case_id")[
+        "gate"
+    ] = deepcopy(bad_gate)
+    with pytest.raises(AssertionError, match="catalog_gate_identity_mismatch"):
+        verify(altered_catalog, matrix)
+
+
+def test_source_only_gate_forgery_fails_at_source_gate_check(catalog, matrix):
+    altered_matrix = deepcopy(matrix)
+    _find_gate_case(altered_matrix["cases"], "A01", "id")["gate"] = "C"
+    with pytest.raises(AssertionError, match="source_gate_identity_mismatch"):
+        verify(catalog, altered_matrix)
+
+
+def test_actual_gate_contract_is_bound_to_canonical_ids(catalog, matrix):
+    assert set(GATE_BY_CASE) == set(PHASE_BY_CASE)
+    assert len(GATE_BY_CASE) == 41
+    assert all(
+        type(row["gate"]) is str
+        and row["gate"] == GATE_BY_CASE[row["case_id"]]
+        for row in catalog["case_coverage"]
+    )
+    assert all(
+        type(row["gate"]) is str
+        and row["gate"] == GATE_BY_CASE[row["id"]]
+        for row in matrix["cases"]
+    )
+    verify(catalog, matrix)
