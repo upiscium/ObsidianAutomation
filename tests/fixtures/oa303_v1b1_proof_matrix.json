@@ -1,0 +1,683 @@
+{
+  "schema_version": 1,
+  "project": "ObsidianAutomation",
+  "issue": 303,
+  "phase": "V1/B1",
+  "snapshot": "synthetic_plan_only",
+  "base_commit": "bc61c8803cfc92b3ad51fc2ad0b877a8e17b2cf4",
+  "provider_io_authorized": false,
+  "credential_access_authorized": false,
+  "setup_mutation_authorized": false,
+  "activation_authorized": false,
+  "allowed_future_read_methods": [
+    "PROPFIND"
+  ],
+  "approved_operations_now": [],
+  "gate_order": [
+    "A",
+    "I",
+    "X",
+    "L",
+    "C",
+    "R"
+  ],
+  "gate_descriptions": {
+    "A": "authenticated account/instance/base binding",
+    "I": "canonical ID scope and stability",
+    "X": "alias/share/mount classification",
+    "L": "complete bounded authorized inventory",
+    "C": "coherent multi-level directory observation",
+    "R": "configuration/source revision invalidation"
+  },
+  "phase_descriptions": {
+    "read_only": "potentially observable after separate read-only disposable-provider approval",
+    "seed_required": "requires preseeded disposable resources; setup is separate approval",
+    "mutation_required": "requires separately approved fixture writer, not a read-only run",
+    "offline_only": "pure synthetic-local checks; no service requests"
+  },
+  "cases": [
+    {
+      "id": "A01",
+      "gate": "A",
+      "phase": "read_only",
+      "probe": "PROPFIND",
+      "depth": 0,
+      "expected": "observe",
+      "description": "Authenticated modern DAV base self-row and instance binding",
+      "coverage": "modern_account_self",
+      "scope_label": "future_approved_disposable_only",
+      "prerequisites": [
+        "owner_read_only_disposable_approval",
+        "preseeded_fixture"
+      ]
+    },
+    {
+      "id": "A02",
+      "gate": "A",
+      "phase": "read_only",
+      "probe": "PROPFIND",
+      "depth": 0,
+      "expected": "fail_closed",
+      "description": "Missing/invalid auth must not be treated as a listing",
+      "coverage": "auth_reject",
+      "scope_label": "future_approved_disposable_only",
+      "prerequisites": [
+        "owner_read_only_disposable_approval",
+        "preseeded_fixture"
+      ]
+    },
+    {
+      "id": "A03",
+      "gate": "A",
+      "phase": "seed_required",
+      "probe": "PROPFIND",
+      "depth": 0,
+      "expected": "fail_closed",
+      "description": "Forbidden ancestor or wrong account scope",
+      "coverage": "cross_account_forbidden",
+      "scope_label": "future_approved_disposable_only",
+      "prerequisites": [
+        "owner_read_only_disposable_approval",
+        "independently_seeded_fixture"
+      ]
+    },
+    {
+      "id": "A04",
+      "gate": "A",
+      "phase": "read_only",
+      "probe": "PROPFIND",
+      "depth": 0,
+      "expected": "fail_closed",
+      "description": "Missing path: status and valid self-resource must agree",
+      "coverage": "missing_path",
+      "scope_label": "future_approved_disposable_only",
+      "prerequisites": [
+        "owner_read_only_disposable_approval",
+        "preseeded_fixture"
+      ]
+    },
+    {
+      "id": "A05",
+      "gate": "A",
+      "phase": "offline_only",
+      "probe": "OFFLINE_ONLY",
+      "depth": null,
+      "expected": "fail_closed",
+      "description": "Synthetic cross-origin redirect is denied without issuing an off-origin request",
+      "coverage": "redirect_denial",
+      "scope_label": "offline_synthetic",
+      "prerequisites": [
+        "offline_synthetic"
+      ]
+    },
+    {
+      "id": "A06",
+      "gate": "A",
+      "phase": "offline_only",
+      "probe": "OFFLINE_ONLY",
+      "depth": null,
+      "expected": "fail_closed",
+      "description": "Legacy 207 with malformed body cannot imply existence; modern base only",
+      "coverage": "legacy_false_207",
+      "scope_label": "offline_synthetic",
+      "prerequisites": [
+        "offline_synthetic"
+      ]
+    },
+    {
+      "id": "I01",
+      "gate": "I",
+      "phase": "read_only",
+      "probe": "PROPFIND",
+      "depth": 1,
+      "expected": "observe",
+      "description": "Both oc:id and oc:fileid present on all visible children",
+      "coverage": "global_and_local_ids",
+      "scope_label": "future_approved_disposable_only",
+      "prerequisites": [
+        "owner_read_only_disposable_approval",
+        "preseeded_fixture"
+      ]
+    },
+    {
+      "id": "I02",
+      "gate": "I",
+      "phase": "read_only",
+      "probe": "PROPFIND",
+      "depth": 1,
+      "expected": "observe",
+      "description": "Repeat read checks identity stability without mutation",
+      "coverage": "repeat_read_ids",
+      "scope_label": "future_approved_disposable_only",
+      "prerequisites": [
+        "owner_read_only_disposable_approval",
+        "preseeded_fixture"
+      ]
+    },
+    {
+      "id": "I03",
+      "gate": "I",
+      "phase": "offline_only",
+      "probe": "OFFLINE_ONLY",
+      "depth": null,
+      "expected": "observe",
+      "description": "Compare redacted ID semantics from separately authorized instance receipts; never probe second origin",
+      "coverage": "cross_instance_offline",
+      "scope_label": "offline_synthetic",
+      "prerequisites": [
+        "offline_synthetic",
+        "separate_second_instance_approval_for_real_comparison"
+      ]
+    },
+    {
+      "id": "I04",
+      "gate": "I",
+      "phase": "mutation_required",
+      "probe": "OFFLINE_ONLY",
+      "depth": null,
+      "expected": "unknown",
+      "description": "Same object rename/move ID stability requires approved fixture mutation",
+      "coverage": "rename_move_identity",
+      "scope_label": "future_approved_disposable_only",
+      "prerequisites": [
+        "owner_read_only_disposable_approval",
+        "owner_disposable_mutation_approval",
+        "independently_seeded_fixture"
+      ]
+    },
+    {
+      "id": "I05",
+      "gate": "I",
+      "phase": "seed_required",
+      "probe": "PROPFIND",
+      "depth": 1,
+      "expected": "fail_closed",
+      "description": "Duplicate canonical IDs across siblings and ancestors",
+      "coverage": "duplicate_ids",
+      "scope_label": "future_approved_disposable_only",
+      "prerequisites": [
+        "owner_read_only_disposable_approval",
+        "independently_seeded_fixture"
+      ]
+    },
+    {
+      "id": "X01",
+      "gate": "X",
+      "phase": "read_only",
+      "probe": "PROPFIND",
+      "depth": 1,
+      "expected": "observe",
+      "description": "Explicit non-mount classification evidence for local folder",
+      "coverage": "local_mount_classification",
+      "scope_label": "future_approved_disposable_only",
+      "prerequisites": [
+        "owner_read_only_disposable_approval",
+        "preseeded_fixture"
+      ]
+    },
+    {
+      "id": "X02",
+      "gate": "X",
+      "phase": "seed_required",
+      "probe": "PROPFIND",
+      "depth": 1,
+      "expected": "fail_closed",
+      "description": "Share mount root and underlying identity must be disambiguated",
+      "coverage": "shared_mount",
+      "scope_label": "future_approved_disposable_only",
+      "prerequisites": [
+        "owner_read_only_disposable_approval",
+        "independently_seeded_fixture"
+      ]
+    },
+    {
+      "id": "X03",
+      "gate": "X",
+      "phase": "seed_required",
+      "probe": "PROPFIND",
+      "depth": 1,
+      "expected": "fail_closed",
+      "description": "Group/external/external-session mount behavior and ID scope",
+      "coverage": "group_mount",
+      "scope_label": "future_approved_disposable_only",
+      "prerequisites": [
+        "owner_read_only_disposable_approval",
+        "independently_seeded_fixture"
+      ]
+    },
+    {
+      "id": "X04",
+      "gate": "X",
+      "phase": "seed_required",
+      "probe": "PROPFIND",
+      "depth": 1,
+      "expected": "fail_closed",
+      "description": "Missing/404/unknown mount flags cannot default to non-alias",
+      "coverage": "missing_mount_props",
+      "scope_label": "future_approved_disposable_only",
+      "prerequisites": [
+        "owner_read_only_disposable_approval",
+        "independently_seeded_fixture"
+      ]
+    },
+    {
+      "id": "X05",
+      "gate": "X",
+      "phase": "seed_required",
+      "probe": "PROPFIND",
+      "depth": 1,
+      "expected": "fail_closed",
+      "description": "Nested share or provider alias/loop while under target",
+      "coverage": "nested_share_alias",
+      "scope_label": "future_approved_disposable_only",
+      "prerequisites": [
+        "owner_read_only_disposable_approval",
+        "independently_seeded_fixture"
+      ]
+    },
+    {
+      "id": "X06",
+      "gate": "X",
+      "phase": "seed_required",
+      "probe": "PROPFIND",
+      "depth": 1,
+      "expected": "fail_closed",
+      "description": "In-root backend symlink presented as a DAV collection",
+      "coverage": "symlink_in_root",
+      "scope_label": "future_approved_disposable_only",
+      "prerequisites": [
+        "owner_read_only_disposable_approval",
+        "independently_seeded_fixture"
+      ]
+    },
+    {
+      "id": "X07",
+      "gate": "X",
+      "phase": "seed_required",
+      "probe": "PROPFIND",
+      "depth": 1,
+      "expected": "fail_closed",
+      "description": "Out-of-root backend symlink looks like an in-root folder",
+      "coverage": "symlink_out_of_root",
+      "scope_label": "future_approved_disposable_only",
+      "prerequisites": [
+        "owner_read_only_disposable_approval",
+        "independently_seeded_fixture"
+      ]
+    },
+    {
+      "id": "X08",
+      "gate": "X",
+      "phase": "seed_required",
+      "probe": "PROPFIND",
+      "depth": 1,
+      "expected": "fail_closed",
+      "description": "Backend symlink cycle or recursive resource alias",
+      "coverage": "symlink_cycle",
+      "scope_label": "future_approved_disposable_only",
+      "prerequisites": [
+        "owner_read_only_disposable_approval",
+        "independently_seeded_fixture"
+      ]
+    },
+    {
+      "id": "X09",
+      "gate": "X",
+      "phase": "seed_required",
+      "probe": "PROPFIND",
+      "depth": 1,
+      "expected": "fail_closed",
+      "description": "No authoritative symlink classification even if mount-type says local",
+      "coverage": "symlink_unknown",
+      "scope_label": "future_approved_disposable_only",
+      "prerequisites": [
+        "owner_read_only_disposable_approval",
+        "independently_seeded_fixture"
+      ]
+    },
+    {
+      "id": "X10",
+      "gate": "X",
+      "phase": "seed_required",
+      "probe": "PROPFIND",
+      "depth": 1,
+      "expected": "fail_closed",
+      "description": "External-storage mount identity and canonical namespace",
+      "coverage": "external_mount",
+      "scope_label": "future_approved_disposable_only",
+      "prerequisites": [
+        "owner_read_only_disposable_approval",
+        "independently_seeded_fixture"
+      ]
+    },
+    {
+      "id": "X11",
+      "gate": "X",
+      "phase": "seed_required",
+      "probe": "PROPFIND",
+      "depth": 1,
+      "expected": "fail_closed",
+      "description": "External-session mount identity and scope",
+      "coverage": "external_session_mount",
+      "scope_label": "future_approved_disposable_only",
+      "prerequisites": [
+        "owner_read_only_disposable_approval",
+        "independently_seeded_fixture"
+      ]
+    },
+    {
+      "id": "L01",
+      "gate": "L",
+      "phase": "read_only",
+      "probe": "PROPFIND",
+      "depth": 1,
+      "expected": "observe",
+      "description": "Parent self + all immediate authorized siblings (unordered)",
+      "coverage": "authorized_visible_siblings",
+      "scope_label": "future_approved_disposable_only",
+      "prerequisites": [
+        "owner_read_only_disposable_approval",
+        "preseeded_fixture"
+      ]
+    },
+    {
+      "id": "L02",
+      "gate": "L",
+      "phase": "offline_only",
+      "probe": "OFFLINE_ONLY",
+      "depth": null,
+      "expected": "fail_closed",
+      "description": "Synthetic 207 with omitted self, sibling or required property remains untrusted",
+      "coverage": "malformed_multistatus",
+      "scope_label": "offline_synthetic",
+      "prerequisites": [
+        "offline_synthetic"
+      ]
+    },
+    {
+      "id": "L03",
+      "gate": "L",
+      "phase": "seed_required",
+      "probe": "PROPFIND",
+      "depth": 1,
+      "expected": "fail_closed",
+      "description": "Inventory > 2048 children or raw bytes > cap fails closed",
+      "coverage": "resource_limit",
+      "scope_label": "future_approved_disposable_only",
+      "prerequisites": [
+        "owner_read_only_disposable_approval",
+        "independently_seeded_fixture"
+      ]
+    },
+    {
+      "id": "L04",
+      "gate": "L",
+      "phase": "seed_required",
+      "probe": "PROPFIND",
+      "depth": 1,
+      "expected": "fail_closed",
+      "description": "Unicode/casefold collisions including unselected siblings",
+      "coverage": "unicode_alias",
+      "scope_label": "future_approved_disposable_only",
+      "prerequisites": [
+        "owner_read_only_disposable_approval",
+        "independently_seeded_fixture"
+      ]
+    },
+    {
+      "id": "L05",
+      "gate": "L",
+      "phase": "offline_only",
+      "probe": "OFFLINE_ONLY",
+      "depth": null,
+      "expected": "fail_closed",
+      "description": "Synthetic malformed href, traversal and double-escaped forms",
+      "coverage": "unsafe_href",
+      "scope_label": "offline_synthetic",
+      "prerequisites": [
+        "offline_synthetic"
+      ]
+    },
+    {
+      "id": "L06",
+      "gate": "L",
+      "phase": "read_only",
+      "probe": "PROPFIND",
+      "depth": 1,
+      "expected": "fail_closed",
+      "description": "Partial individual propstat with required property unavailable",
+      "coverage": "partial_propstat",
+      "scope_label": "future_approved_disposable_only",
+      "prerequisites": [
+        "owner_read_only_disposable_approval",
+        "preseeded_fixture"
+      ]
+    },
+    {
+      "id": "L07",
+      "gate": "L",
+      "phase": "seed_required",
+      "probe": "PROPFIND",
+      "depth": 1,
+      "expected": "fail_closed",
+      "description": "Valid-looking 207 silently omits one expected authorized child; independent fixture oracle",
+      "coverage": "silent_member_omission",
+      "scope_label": "future_approved_disposable_only",
+      "prerequisites": [
+        "owner_read_only_disposable_approval",
+        "independently_seeded_fixture",
+        "independent_inventory_oracle"
+      ]
+    },
+    {
+      "id": "L08",
+      "gate": "L",
+      "phase": "seed_required",
+      "probe": "PROPFIND",
+      "depth": 1,
+      "expected": "unknown",
+      "description": "ACL-hidden child: fixture owner knows physical and visible sets separately",
+      "coverage": "acl_hidden_child",
+      "scope_label": "future_approved_disposable_only",
+      "prerequisites": [
+        "owner_read_only_disposable_approval",
+        "independently_seeded_fixture",
+        "independent_inventory_oracle"
+      ]
+    },
+    {
+      "id": "L09",
+      "gate": "L",
+      "phase": "offline_only",
+      "probe": "OFFLINE_ONLY",
+      "depth": null,
+      "expected": "fail_closed",
+      "description": "Synthetic contradictory or duplicate required DAV propstat values",
+      "coverage": "contradictory_propstat",
+      "scope_label": "offline_synthetic",
+      "prerequisites": [
+        "offline_synthetic"
+      ]
+    },
+    {
+      "id": "C01",
+      "gate": "C",
+      "phase": "read_only",
+      "probe": "PROPFIND",
+      "depth": 1,
+      "expected": "unknown",
+      "description": "Repeated identical ETag or snapshot label is not atomicity proof",
+      "coverage": "etag_not_atomic",
+      "scope_label": "future_approved_disposable_only",
+      "prerequisites": [
+        "owner_read_only_disposable_approval",
+        "preseeded_fixture"
+      ]
+    },
+    {
+      "id": "C02",
+      "gate": "C",
+      "phase": "mutation_required",
+      "probe": "OFFLINE_ONLY",
+      "depth": null,
+      "expected": "unknown",
+      "description": "Concurrent add/delete/rename between ancestor reads requires a writer",
+      "coverage": "concurrent_mutation",
+      "scope_label": "future_approved_disposable_only",
+      "prerequisites": [
+        "owner_read_only_disposable_approval",
+        "owner_disposable_mutation_approval",
+        "independently_seeded_fixture"
+      ]
+    },
+    {
+      "id": "C03",
+      "gate": "C",
+      "phase": "mutation_required",
+      "probe": "OFFLINE_ONLY",
+      "depth": null,
+      "expected": "unknown",
+      "description": "Replay while root changes must invalidate coherent evidence",
+      "coverage": "cross_level_mutation",
+      "scope_label": "future_approved_disposable_only",
+      "prerequisites": [
+        "owner_read_only_disposable_approval",
+        "owner_disposable_mutation_approval",
+        "independently_seeded_fixture"
+      ]
+    },
+    {
+      "id": "C04",
+      "gate": "C",
+      "phase": "read_only",
+      "probe": "PROPFIND",
+      "depth": 1,
+      "expected": "unknown",
+      "description": "Check whether provider exposes real cross-level revision capability",
+      "coverage": "provider_coherence_capability",
+      "scope_label": "future_approved_disposable_only",
+      "prerequisites": [
+        "owner_read_only_disposable_approval",
+        "preseeded_fixture"
+      ]
+    },
+    {
+      "id": "C05",
+      "gate": "C",
+      "phase": "mutation_required",
+      "probe": "OFFLINE_ONLY",
+      "depth": null,
+      "expected": "unknown",
+      "description": "A-B-A tree state changes and restores between two reads",
+      "coverage": "aba_restoration",
+      "scope_label": "future_approved_disposable_only",
+      "prerequisites": [
+        "owner_read_only_disposable_approval",
+        "owner_disposable_mutation_approval",
+        "independently_seeded_fixture"
+      ]
+    },
+    {
+      "id": "C06",
+      "gate": "C",
+      "phase": "mutation_required",
+      "probe": "OFFLINE_ONLY",
+      "depth": null,
+      "expected": "unknown",
+      "description": "Remote change just after final recheck before hypothetical source save",
+      "coverage": "post_recheck_mutation",
+      "scope_label": "future_approved_disposable_only",
+      "prerequisites": [
+        "owner_read_only_disposable_approval",
+        "owner_disposable_mutation_approval",
+        "independently_seeded_fixture"
+      ]
+    },
+    {
+      "id": "R01",
+      "gate": "R",
+      "phase": "offline_only",
+      "probe": "OFFLINE_ONLY",
+      "depth": null,
+      "expected": "observe",
+      "description": "Source binding concept must be separable from Gitea generation",
+      "coverage": "source_contract_offline",
+      "scope_label": "offline_synthetic",
+      "prerequisites": [
+        "offline_synthetic"
+      ]
+    },
+    {
+      "id": "R02",
+      "gate": "R",
+      "phase": "mutation_required",
+      "probe": "OFFLINE_ONLY",
+      "depth": null,
+      "expected": "unknown",
+      "description": "Connection rotation or account rebinding requires separate authority",
+      "coverage": "credential_rotation",
+      "scope_label": "future_approved_disposable_only",
+      "prerequisites": [
+        "owner_read_only_disposable_approval",
+        "owner_disposable_mutation_approval",
+        "independently_seeded_fixture"
+      ]
+    },
+    {
+      "id": "R03",
+      "gate": "R",
+      "phase": "offline_only",
+      "probe": "OFFLINE_ONLY",
+      "depth": null,
+      "expected": "fail_closed",
+      "description": "No-change preview is not remote connectivity proof",
+      "coverage": "no_change_not_connectivity",
+      "scope_label": "offline_synthetic",
+      "prerequisites": [
+        "offline_synthetic"
+      ]
+    },
+    {
+      "id": "R04",
+      "gate": "R",
+      "phase": "offline_only",
+      "probe": "OFFLINE_ONLY",
+      "depth": null,
+      "expected": "fail_closed",
+      "description": "Replay of source-revision-bound evidence after synthetic source rebinding",
+      "coverage": "stale_evidence_replay",
+      "scope_label": "offline_synthetic",
+      "prerequisites": [
+        "offline_synthetic"
+      ]
+    }
+  ],
+  "non_executable": true,
+  "authority_grant": "NONE",
+  "scope": {
+    "target_class": "disposable_only",
+    "endpoint_class": "authenticated_modern_dav_only",
+    "origin_binding": "future_owner_pinned_allowlist",
+    "path_binding": "future_owner_pinned_fixture_paths",
+    "redirects": "denied",
+    "production_eligible": false,
+    "second_instance_access": false
+  },
+  "future_authorizations": {
+    "provider_read_only": false,
+    "fixture_seeding": false,
+    "fixture_mutation": false,
+    "credential_use": false,
+    "second_instance_observation": false,
+    "fault_injection": false
+  },
+  "proof_status": {
+    "A": "UNKNOWN",
+    "I": "UNKNOWN",
+    "X": "UNKNOWN",
+    "L": "UNKNOWN",
+    "C": "UNKNOWN",
+    "R": "UNKNOWN",
+    "O": "SYNTHETIC_SOURCE_ONLY"
+  }
+}
