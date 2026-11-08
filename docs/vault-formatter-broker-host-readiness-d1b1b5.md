@@ -1,6 +1,6 @@
 # #472 D1/B1/B5 — Host principal/IPC readiness and #298 profile compatibility (design candidate)
 
-**Status: LOCAL DESIGN ONLY / UNWIRED / NOT APPROVED FOR DEPLOYMENT.** Based on `ObsidianAutomation/main@46af364619166a45a9d7173b444ca4170ea2fc7b` (merged B4 PR #569). This is a proposed acceptance contract, not a final product-profile decision, installed Broker, an API, a Writer permit, or permission for privileged tests. No Commit/Push/PR/Ready/Merge, account/group/ACL install, unit changes, credential read, Owner/Broker process startup, Provider/Vault/Nextcloud I/O, Auto apply, deployment or activation.
+**Status: PUBLISHED DESIGN PROPOSAL / UNWIRED / NOT ADOPTED OR APPROVED FOR DEPLOYMENT.** This source-only proposal is published in [Draft PR #571](https://github.com/upiscium/ObsidianAutomation/pull/571) (original publication HEAD `12f2b766201e8b16de99c3990f90f4e25afffeb1`; subsequent revisions require their own review), based on `ObsidianAutomation/main@46af364619166a45a9d7173b444ca4170ea2fc7b` (merged B4 PR #569). Publication does **not** decide the product profile or authorize an installed Broker, API, Writer permit or privileged tests. Any further Commit/Push/PR state change (including Ready/Merge) requires separate Human approval; account/group/ACL installation, unit changes, credential reads, Owner/Broker process startup, Provider/Vault/Nextcloud I/O, Auto apply, deployment and activation remain unapproved.
 
 ## Why another gate is necessary
 
@@ -52,7 +52,7 @@ Passing G1–G3 is **necessary but insufficient** for G4–G7. A simple `uid != 
 - [ ] Keep Strict optional/proposed and impossible to activate implicitly; record that selecting it requires separate Human authorization.
 - [ ] Disentangle userns B4 success, host principal/IPC acceptance, service/executable provenance, credential/egress containment, Owner/Provider finality and live writes.
 - [ ] Host read-only observations disclose neither private Vault content nor raw credentials; bounded absence is not global proof.
-- [ ] No runtime module, installer, systemd unit, config, API, or UI is changed in this design slice. No commit/publication unless separately approved.
+- [ ] No runtime module, installer, systemd unit, config, API, or UI is changed in this design slice. Publication in Draft PR #571 was separately authorized; further Commit/Push/PR state changes, profile adoption and all operational actions require distinct approval.
 - [ ] Independently review this document for conflicting product promises, missing safety boundaries, false claims and an accidentally implied deployment authority.
 
 **Next distinct authorization after reviewed design:** decide whether to adopt the optional Strict profile and approve a concrete disposable-LXC provisioning/identity/IPC acceptance proposal; do not touch production services from a general `Next` continuation.
