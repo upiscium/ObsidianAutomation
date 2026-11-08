@@ -1,0 +1,464 @@
+{
+  "schema_version": 1,
+  "artifact_type": "NON_EXECUTABLE_DISPOSABLE_READINESS_PLAN",
+  "issue_number": 303,
+  "project": "ObsidianAutomation",
+  "source_main_sha": "192aaf050cd7510b785e3b4c29138efa4715b0cf",
+  "real_provider_proof": false,
+  "allowed_actions_now": [],
+  "authority": {
+    "p1a_provisioning": false,
+    "p1b_fixture_setup": false,
+    "p2_authenticated_read": false,
+    "p3_mutation": false,
+    "second_instance": false,
+    "destruction": false,
+    "git_publication": false,
+    "deploy": false,
+    "activation": false
+  },
+  "blueprint": {
+    "target_class": "UNSELECTED_DISPOSABLE_ONLY",
+    "preferred_isolation": "UNPRIVILEGED_VM",
+    "alternate": "UNPRIVILEGED_LXC_REQUIRES_EXTRA_REVIEW",
+    "host": "UNSELECTED",
+    "server_release": "UNPINNED",
+    "image_digest": "UNPINNED",
+    "database_version": "UNPINNED",
+    "resource_allowance_proposal": {
+      "vcpu": 2,
+      "memory_gib": 4,
+      "storage_gib": 32
+    },
+    "disposable_storage_only": true,
+    "production_mounts_allowed": false,
+    "production_credentials_allowed": false,
+    "unapproved_outbound_allowed": false,
+    "one_approved_observer_route_later": true,
+    "existing_vault_data_allowed": false
+  },
+  "required_stage_evidence": {
+    "p1a": [
+      "owner_selected_host",
+      "operator_identity_and_lease",
+      "pinned_runtime_and_app_digests",
+      "isolated_route_and_egress_plan",
+      "separate_test_storage_and_database",
+      "no_production_mount_or_credential",
+      "explicit_provisioning_permission",
+      "teardown_identity_and_retention_plan"
+    ],
+    "p1b": [
+      "p1a_completed_and_readback",
+      "explicit_fixture_write_permission",
+      "test_only_admin_and_viewer_accounts",
+      "independently_produced_visible_child_oracle",
+      "acl_hidden_child_uncertainty_recorded",
+      "share_mount_alias_support_matrix",
+      "no_production_data"
+    ],
+    "p2": [
+      "p1b_completed_and_readback",
+      "explicit_provider_read_permission",
+      "fixed_disposable_origin_and_paths",
+      "fixed_test_only_credential_principal",
+      "read_only_depth_0_or_1",
+      "transport_byte_and_time_limits",
+      "private_redacted_receipts",
+      "no_cross_origin_redirect"
+    ],
+    "p3": [
+      "explicit_disposable_writer_permission",
+      "recorded_exact_test_target",
+      "approved_mutation_case_ids",
+      "separate_test_origin_if_cross_instance",
+      "reversible_disposable_mutations_only"
+    ]
+  },
+  "admission": {
+    "p1a": "BLOCKED",
+    "p1b": "BLOCKED",
+    "p2": "BLOCKED",
+    "p3": "BLOCKED"
+  },
+  "provider_gates": {
+    "A": "UNKNOWN",
+    "I": "UNKNOWN",
+    "X": "UNKNOWN",
+    "L": "UNKNOWN",
+    "C": "UNKNOWN",
+    "R": "UNKNOWN"
+  },
+  "source_matrix_file": "tests/fixtures/oa303_v1b1_proof_matrix.json",
+  "case_coverage": [
+    {
+      "case_id": "A01",
+      "gate": "A",
+      "phase": "read_only",
+      "fixture_stage": "P1-B",
+      "future_observation_stage": "P2",
+      "special_constraint": "ordinary_test_only",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "A02",
+      "gate": "A",
+      "phase": "read_only",
+      "fixture_stage": "P1-B",
+      "future_observation_stage": "P2",
+      "special_constraint": "ordinary_test_only",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "A03",
+      "gate": "A",
+      "phase": "seed_required",
+      "fixture_stage": "P1-B",
+      "future_observation_stage": "P2",
+      "special_constraint": "ordinary_test_only",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "A04",
+      "gate": "A",
+      "phase": "read_only",
+      "fixture_stage": "P1-B",
+      "future_observation_stage": "P2",
+      "special_constraint": "ordinary_test_only",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "A05",
+      "gate": "A",
+      "phase": "offline_only",
+      "fixture_stage": "NONE",
+      "future_observation_stage": "NONE",
+      "special_constraint": "redirect_negative_offline_only",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "A06",
+      "gate": "A",
+      "phase": "offline_only",
+      "fixture_stage": "NONE",
+      "future_observation_stage": "NONE",
+      "special_constraint": "invalid_207_negative_offline_only",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "I01",
+      "gate": "I",
+      "phase": "read_only",
+      "fixture_stage": "P1-B",
+      "future_observation_stage": "P2",
+      "special_constraint": "ordinary_test_only",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "I02",
+      "gate": "I",
+      "phase": "read_only",
+      "fixture_stage": "P1-B",
+      "future_observation_stage": "P2",
+      "special_constraint": "ordinary_test_only",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "I03",
+      "gate": "I",
+      "phase": "offline_only",
+      "fixture_stage": "NONE",
+      "future_observation_stage": "NONE",
+      "special_constraint": "second_instance_offline_only",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "I04",
+      "gate": "I",
+      "phase": "mutation_required",
+      "fixture_stage": "P3",
+      "future_observation_stage": "P3",
+      "special_constraint": "ordinary_test_only",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "I05",
+      "gate": "I",
+      "phase": "seed_required",
+      "fixture_stage": "P1-B",
+      "future_observation_stage": "P2",
+      "special_constraint": "ordinary_test_only",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "X01",
+      "gate": "X",
+      "phase": "read_only",
+      "fixture_stage": "P1-B",
+      "future_observation_stage": "P2",
+      "special_constraint": "ordinary_test_only",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "X02",
+      "gate": "X",
+      "phase": "seed_required",
+      "fixture_stage": "P1-B",
+      "future_observation_stage": "P2",
+      "special_constraint": "ordinary_test_only",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "X03",
+      "gate": "X",
+      "phase": "seed_required",
+      "fixture_stage": "P1-B",
+      "future_observation_stage": "P2",
+      "special_constraint": "group_folder_app_conditional",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "X04",
+      "gate": "X",
+      "phase": "seed_required",
+      "fixture_stage": "P1-B",
+      "future_observation_stage": "P2",
+      "special_constraint": "ordinary_test_only",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "X05",
+      "gate": "X",
+      "phase": "seed_required",
+      "fixture_stage": "P1-B",
+      "future_observation_stage": "P2",
+      "special_constraint": "ordinary_test_only",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "X06",
+      "gate": "X",
+      "phase": "seed_required",
+      "fixture_stage": "P1-B",
+      "future_observation_stage": "P2",
+      "special_constraint": "backend_symlink_conditional",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "X07",
+      "gate": "X",
+      "phase": "seed_required",
+      "fixture_stage": "P1-B",
+      "future_observation_stage": "P2",
+      "special_constraint": "backend_symlink_conditional",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "X08",
+      "gate": "X",
+      "phase": "seed_required",
+      "fixture_stage": "P1-B",
+      "future_observation_stage": "P2",
+      "special_constraint": "backend_symlink_conditional",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "X09",
+      "gate": "X",
+      "phase": "seed_required",
+      "fixture_stage": "P1-B",
+      "future_observation_stage": "P2",
+      "special_constraint": "backend_symlink_conditional",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "X10",
+      "gate": "X",
+      "phase": "seed_required",
+      "fixture_stage": "P1-B",
+      "future_observation_stage": "P2",
+      "special_constraint": "external_storage_app_conditional",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "X11",
+      "gate": "X",
+      "phase": "seed_required",
+      "fixture_stage": "P1-B",
+      "future_observation_stage": "P2",
+      "special_constraint": "external_storage_app_conditional",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "L01",
+      "gate": "L",
+      "phase": "read_only",
+      "fixture_stage": "P1-B",
+      "future_observation_stage": "P2",
+      "special_constraint": "ordinary_test_only",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "L02",
+      "gate": "L",
+      "phase": "offline_only",
+      "fixture_stage": "NONE",
+      "future_observation_stage": "NONE",
+      "special_constraint": "malformed_207_negative_offline_only",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "L03",
+      "gate": "L",
+      "phase": "seed_required",
+      "fixture_stage": "P1-B",
+      "future_observation_stage": "P2",
+      "special_constraint": "ordinary_test_only",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "L04",
+      "gate": "L",
+      "phase": "seed_required",
+      "fixture_stage": "P1-B",
+      "future_observation_stage": "P2",
+      "special_constraint": "ordinary_test_only",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "L05",
+      "gate": "L",
+      "phase": "offline_only",
+      "fixture_stage": "NONE",
+      "future_observation_stage": "NONE",
+      "special_constraint": "malformed_href_negative_offline_only",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "L06",
+      "gate": "L",
+      "phase": "read_only",
+      "fixture_stage": "P1-B",
+      "future_observation_stage": "P2",
+      "special_constraint": "ordinary_test_only",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "L07",
+      "gate": "L",
+      "phase": "seed_required",
+      "fixture_stage": "P1-B",
+      "future_observation_stage": "P2",
+      "special_constraint": "silent_omission_needs_independent_oracle",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "L08",
+      "gate": "L",
+      "phase": "seed_required",
+      "fixture_stage": "P1-B",
+      "future_observation_stage": "P2",
+      "special_constraint": "acl_hidden_needs_independent_oracle",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "L09",
+      "gate": "L",
+      "phase": "offline_only",
+      "fixture_stage": "NONE",
+      "future_observation_stage": "NONE",
+      "special_constraint": "conflicting_propstat_negative_offline_only",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "C01",
+      "gate": "C",
+      "phase": "read_only",
+      "fixture_stage": "P1-B",
+      "future_observation_stage": "P2",
+      "special_constraint": "ordinary_test_only",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "C02",
+      "gate": "C",
+      "phase": "mutation_required",
+      "fixture_stage": "P3",
+      "future_observation_stage": "P3",
+      "special_constraint": "ordinary_test_only",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "C03",
+      "gate": "C",
+      "phase": "mutation_required",
+      "fixture_stage": "P3",
+      "future_observation_stage": "P3",
+      "special_constraint": "ordinary_test_only",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "C04",
+      "gate": "C",
+      "phase": "read_only",
+      "fixture_stage": "P1-B",
+      "future_observation_stage": "P2",
+      "special_constraint": "ordinary_test_only",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "C05",
+      "gate": "C",
+      "phase": "mutation_required",
+      "fixture_stage": "P3",
+      "future_observation_stage": "P3",
+      "special_constraint": "aba_requires_separate_writer",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "C06",
+      "gate": "C",
+      "phase": "mutation_required",
+      "fixture_stage": "P3",
+      "future_observation_stage": "P3",
+      "special_constraint": "post_final_check_requires_separate_writer",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "R01",
+      "gate": "R",
+      "phase": "offline_only",
+      "fixture_stage": "NONE",
+      "future_observation_stage": "NONE",
+      "special_constraint": "ordinary_test_only",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "R02",
+      "gate": "R",
+      "phase": "mutation_required",
+      "fixture_stage": "P3",
+      "future_observation_stage": "P3",
+      "special_constraint": "credential_rotation_requires_separate_writer",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "R03",
+      "gate": "R",
+      "phase": "offline_only",
+      "fixture_stage": "NONE",
+      "future_observation_stage": "NONE",
+      "special_constraint": "ordinary_test_only",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "R04",
+      "gate": "R",
+      "phase": "offline_only",
+      "fixture_stage": "NONE",
+      "future_observation_stage": "NONE",
+      "special_constraint": "ordinary_test_only",
+      "status": "NOT_RUN"
+    }
+  ]
+}
