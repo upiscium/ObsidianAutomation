@@ -225,13 +225,36 @@
       // /b3/observer exposes ONLY the legacy relative scheduler. The new
       // wall-clock phase scheduler has no verified GET status contract yet.
       // Never report legacy OFF as "B3 Observer OFF": phase may be ON.
-      const config=observer?.settings;
-      const legacyEnabled=config && typeof config.enabled==="boolean"
-        ? config.enabled?"ON":"OFF" : "未確認";
-      const last=observer?.last_run;
-      const lastStatus=last && typeof last.status==="string"
-        ? last.status : "未観測";
-      const observed=last && Number.isSafeInteger(last.observations)
+      // A failed/non-200/malformed GET is NOT evidence of zero observations.
+      // Only the exact observation-only Job envelope can attest last_run=null.
+      const validObserver=observer && typeof observer==="object" &&
+        !Array.isArray(observer) &&
+        observer.schema_version==="github-b3-readonly-observer-job/v1" &&
+        observer.job==="b3_read_only_watcher" &&
+        observer.authority==="observation_only" &&
+        observer.vault_write_authorized===false &&
+        observer.cutover_authorized===false &&
+        observer.settings && typeof observer.settings==="object" &&
+        !Array.isArray(observer.settings) &&
+        typeof observer.settings.enabled==="boolean" &&
+        Object.hasOwn(observer,"last_run");
+      const legacyEnabled=validObserver
+        ? observer.settings.enabled?"ON":"OFF" : "未確認";
+      const last=validObserver?observer.last_run:undefined;
+      // The Observer's admitted "observed" receipt requires 1..500
+      // observations and the local read-only provenance reason. A malformed
+      // count must invalidate the STATUS as well as suppress its count.
+      const validLast=last && typeof last==="object" &&
+        !Array.isArray(last) &&
+        ["queued","running","observed","blocked","unknown"].includes(last.status) &&
+        Number.isSafeInteger(last.observations) &&
+        (last.status==="observed"
+          ? last.observations>=1 && last.observations<=500 &&
+            last.reason==="local_read_only_observation"
+          : last.observations===0);
+      const lastStatus=last===null?"未観測"
+        :validLast?last.status:"未確認";
+      const observed=validLast && last.status==="observed"
         ? last.observations : null;
       summary.textContent="B3旧相対間隔スケジュール: "+legacyEnabled+
         " · 時刻基準Phaseスケジュール: 未確認（別管理）"+

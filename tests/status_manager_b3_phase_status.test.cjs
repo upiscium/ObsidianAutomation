@@ -39,7 +39,8 @@ class Element {
 }
 
 async function showB3({
-  legacyEnabled, phaseDesiredEnabled, cacheStatus=200, catalogSchedule="off"
+  legacyEnabled, phaseDesiredEnabled, cacheStatus=200, catalogSchedule="off",
+  observerMode="observed"
 }){
   const ids=[
     "manager-legacy-root","manager-home","manager-detail","manager-global",
@@ -56,20 +57,44 @@ async function showB3({
   ];
   const nodes=Object.fromEntries(ids.map(id=>[id,new Element("div",id)]));
   const calls=[];
+  const observer={
+    schema_version:"github-b3-readonly-observer-job/v1",
+    job:"b3_read_only_watcher",
+    authority:"observation_only",
+    vault_write_authorized:false,
+    cutover_authorized:false,
+    settings:{enabled:legacyEnabled},
+    // Synthetic hint must never claim independently verified phase control.
+    unverified_phase:{enabled:phaseDesiredEnabled},
+    last_run:{status:"observed",observations:9,
+      reason:"local_read_only_observation"}
+  };
+  if(observerMode==="never") observer.last_run=null;
+  if(observerMode==="missing") delete observer.last_run;
+  if(observerMode==="wrong-authority") observer.authority="writer";
+  if(observerMode==="invalid-last") observer.last_run={status:"untrusted",observations:9};
+  if(observerMode==="negative-count") observer.last_run={status:"observed",observations:-1,
+    reason:"local_read_only_observation"};
+  if(observerMode==="zero-count") observer.last_run={status:"observed",observations:0,
+    reason:"local_read_only_observation"};
+  if(observerMode==="over-limit-count") observer.last_run={status:"observed",observations:501,
+    reason:"local_read_only_observation"};
+  if(observerMode==="missing-count") delete observer.last_run.observations;
+  if(observerMode==="invalid-reason") observer.last_run.reason="writer_claimed_success";
+  if(observerMode==="one-count") observer.last_run.observations=1;
+  if(observerMode==="max-count") observer.last_run.observations=500;
+  if(observerMode==="blocked") observer.last_run={status:"blocked",observations:0};
+  if(observerMode==="unknown") observer.last_run={status:"unknown",observations:0};
+  if(observerMode==="unknown-nonzero") observer.last_run={status:"unknown",observations:7};
+  if(observerMode==="blocked-nonzero") observer.last_run={status:"blocked",observations:2};
   const routes={
     "/api/v1/workflow-control":{status:200,body:{}},
     "/api/v1/snapshot":{status:503,body:null},
     "/api/v1/daily":{status:503,body:null},
     "/api/v1/formatter":{status:503,body:null},
     "/api/v1/b3/observer":{
-      status:200,
-      body:{
-        settings: {enabled:legacyEnabled},
-        // Synthetic-only hint: this legacy endpoint MUST NOT be trusted as a
-        // phase/effective schedule status projection, even if extended.
-        unverified_phase: {enabled:phaseDesiredEnabled},
-        last_run:{status:"observed",observations:9}
-      }
+      status:observerMode==="http_503"?503:200,
+      body:observer
     },
     "/api/v1/b3/projects":{
       status:cacheStatus,
@@ -78,6 +103,8 @@ async function showB3({
   };
   const fetch=async (url, options)=>{
     calls.push({url,options});
+    if(url==="/api/v1/b3/observer" && observerMode==="transport")
+      throw Error("synthetic GET-only transport failure");
     assert.ok(Object.hasOwn(routes,url),"Unexpected endpoint: "+url);
     assert.equal(options.method,"GET");
     assert.equal(options.credentials,"omit");
@@ -112,7 +139,8 @@ async function showB3({
   const section=nodes["manager-detail-slot"].children.find(c=>c.className==="manager-b3-readonly");
   assert.ok(section,"read-only B3 panel rendered");
   const facts=nodes["manager-detail-facts"].children.map(row=>row.textContent);
-  return {summary:section.children[1].textContent,calls,facts};
+  return {summary:section.children[1].textContent,calls,facts,
+    projectResult:section.children[2].textContent};
 }
 
 async function main(){
@@ -121,16 +149,55 @@ async function main(){
     {legacyEnabled:false,phaseDesiredEnabled:true,cacheStatus:503,catalogSchedule:"off"},
     {legacyEnabled:false,phaseDesiredEnabled:false,cacheStatus:200,catalogSchedule:"off"},
     {legacyEnabled:true,phaseDesiredEnabled:false,cacheStatus:200,catalogSchedule:"on"},
-    {legacyEnabled:"off",phaseDesiredEnabled:true,cacheStatus:200,catalogSchedule:"unknown"}
+    {legacyEnabled:"off",phaseDesiredEnabled:true,cacheStatus:200,catalogSchedule:"unknown"},
+    {legacyEnabled:false,phaseDesiredEnabled:true,observerMode:"never"},
+    {legacyEnabled:false,phaseDesiredEnabled:true,observerMode:"http_503"},
+    {legacyEnabled:false,phaseDesiredEnabled:true,observerMode:"transport"},
+    {legacyEnabled:false,phaseDesiredEnabled:true,observerMode:"missing"},
+    {legacyEnabled:false,phaseDesiredEnabled:true,observerMode:"wrong-authority"},
+    {legacyEnabled:false,phaseDesiredEnabled:true,observerMode:"invalid-last"},
+    {legacyEnabled:false,phaseDesiredEnabled:true,observerMode:"negative-count"},
+    {legacyEnabled:false,phaseDesiredEnabled:true,observerMode:"zero-count"},
+    {legacyEnabled:false,phaseDesiredEnabled:true,observerMode:"over-limit-count"},
+    {legacyEnabled:false,phaseDesiredEnabled:true,observerMode:"missing-count"},
+    {legacyEnabled:false,phaseDesiredEnabled:true,observerMode:"invalid-reason"},
+    {legacyEnabled:false,phaseDesiredEnabled:true,observerMode:"one-count"},
+    {legacyEnabled:false,phaseDesiredEnabled:true,observerMode:"max-count"},
+    {legacyEnabled:false,phaseDesiredEnabled:true,observerMode:"blocked"},
+    {legacyEnabled:false,phaseDesiredEnabled:true,observerMode:"unknown"},
+    {legacyEnabled:false,phaseDesiredEnabled:true,observerMode:"unknown-nonzero"},
+    {legacyEnabled:false,phaseDesiredEnabled:true,observerMode:"blocked-nonzero"}
   ];
   for(const scenario of cases){
-    const {summary,calls,facts}=await showB3(scenario);
-    const relative=typeof scenario.legacyEnabled==="boolean"
+    const {summary,calls,facts,projectResult}=await showB3(scenario);
+    const brokenObserver=["http_503","transport","missing","wrong-authority"].includes(scenario.observerMode) ||
+      typeof scenario.legacyEnabled!=="boolean";
+    const relative=!brokenObserver
       ?(scenario.legacyEnabled?"ON":"OFF"):"未確認";
+    const malformedLast=[
+      "invalid-last","negative-count","zero-count","over-limit-count",
+      "missing-count","invalid-reason","unknown-nonzero","blocked-nonzero"
+    ].includes(scenario.observerMode);
+    const expectedLast=brokenObserver||malformedLast?"未確認"
+      :scenario.observerMode==="never"?"未観測"
+      :["blocked","unknown"].includes(scenario.observerMode)
+        ?scenario.observerMode:"observed";
     assert.ok(summary.includes("B3旧相対間隔スケジュール: "+relative));
     assert.ok(summary.includes("時刻基準Phaseスケジュール: 未確認（別管理）"));
     assert.ok(summary.includes("Vault Writer: 未接続"));
-    assert.ok(summary.includes("GitHub観測 9件"));
+    assert.ok(summary.includes("最終観測 "+expectedLast));
+    const count=brokenObserver||malformedLast ||
+      ["never","blocked","unknown"].includes(scenario.observerMode) ? null
+      : scenario.observerMode==="one-count"?1
+      : scenario.observerMode==="max-count"?500:9;
+    if(count===null) assert.doesNotMatch(summary,/GitHub観測 [0-9]+件/,
+      "Malformed, unknown or unavailable observer cannot claim observations");
+    else assert.ok(summary.includes("GitHub観測 "+count+"件"),
+      "Only verified 1..500 observations may be displayed");
+    if(scenario.observerMode==="http_503" || scenario.observerMode==="transport"){
+      assert.ok(projectResult.includes("対象Projectはありません。"),
+        "Available project cache remains distinct from unavailable observer");
+    }
     assert.ok(!summary.includes("B3 Observer: OFF"),
       "Legacy OFF must never imply whole Observer OFF");
     assert.ok(!summary.includes("時刻基準Phaseスケジュール: OFF"),
@@ -144,9 +211,20 @@ async function main(){
       "/api/v1/daily","/api/v1/formatter",
       "/api/v1/b3/observer","/api/v1/b3/projects"
     ]);
+    // Assert independently of the mock fetch's thrown checks: getJson()
+    // catches transport errors and must never hide a non-GET request.
+    for(const request of calls){
+      assert.equal(request.options.method,"GET");
+      assert.equal(request.options.credentials,"omit");
+      assert.equal(request.options.mode,"same-origin");
+      assert.equal(request.options.cache,"no-store");
+      assert.equal(request.options.redirect,"error");
+    }
     console.log("PASS legacy="+relative+" phaseSynthetic="+
-      scenario.phaseDesiredEnabled+" cache="+scenario.cacheStatus);
+      scenario.phaseDesiredEnabled+" cache="+scenario.cacheStatus+
+      " observer="+(scenario.observerMode||"observed"));
   }
-  console.log("status_manager_b3_phase_status: 5 synthetic cases passed, GET-only");
+  console.log("status_manager_b3_phase_status: "+cases.length+
+    " synthetic cases passed, GET-only");
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

@@ -33,6 +33,19 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e '.[dev]'
       - run: pytest -q
+      # Keep existing pytest check names; gate the otherwise unexercised
+      # R3 B3 phase/legacy browser assertions on both matrix versions.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: B3 status / browser synthetic regression (GET-only)
+        run: |
+          set -euo pipefail
+          node --test \
+            tests/status_manager_history.test.cjs \
+            tests/webui_design_v1.test.cjs \
+            tests/webui_live_v1.test.cjs \
+            tests/status_manager_b3_phase_status.test.cjs
 
   root-stage-fixtures:
     # These tests require euid=0 to exercise the real root-mode admission
