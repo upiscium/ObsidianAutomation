@@ -121,6 +121,7 @@ class B3ObserverJob:
         generation: Callable[[], str | None],
         clock: Callable[[], float] = time.time,
         phase_collector: Callable[[str], dict[str, object]] | None = None,
+        phase_generation: Callable[[], str | None] | None = None,
         source_lock: Callable[[], object] | None = None,
     ):
         if (not isinstance(state, Path) or not state.is_absolute()
@@ -128,7 +129,11 @@ class B3ObserverJob:
                 or not callable(configured) or not callable(generation)
                 or not callable(clock)
                 or (phase_collector is not None and not callable(phase_collector))
-                or (phase_collector is not None and not callable(source_lock))
+                or (phase_collector is not None
+                    and (not callable(source_lock)
+                         or not callable(phase_generation)))
+                or (phase_generation is not None
+                    and not callable(phase_generation))
                 or (source_lock is not None and not callable(source_lock))):
             raise Invalid("invalid_b3_observer_config")
         state.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -144,6 +149,9 @@ class B3ObserverJob:
         # binding *inside* the collector's source acquisition. Manual and
         # legacy relative runs continue to use the existing zero-arg path.
         self.phase_collector = phase_collector
+        # A phase slot must NOT fall back to the legacy Nextcloud-only
+        # generation. Require a distinct GitHub-credential-bound callback.
+        self.get_phase_generation = phase_generation
         # Callable factory for the trusted phase-only Source/Receipt guard.
         # Its acquisition order is DailySetup._lock -> SetupStore._lock,
         # exactly matching the B4 source acquisition path. A fresh context
@@ -215,6 +223,11 @@ class B3ObserverJob:
 
     def _generation(self) -> str | None:
         return _source_generation(self.is_configured, self.get_generation)
+
+    def _phase_generation(self) -> str | None:
+        if self.get_phase_generation is None:
+            return None
+        return _source_generation(self.is_configured, self.get_phase_generation)
 
     def _settings(self) -> dict[str, object]:
         enabled, interval, due, bound = self.db.execute(
@@ -387,7 +400,7 @@ class B3ObserverJob:
                             if row is None:
                                 return False
                             if (status == "observed" and expected_generation is not None
-                                    and self._generation() != expected_generation):
+                                    and self._phase_generation() != expected_generation):
                                 status, reason, count, pending = (
                                     "unknown", "source_changed", 0, 0
                                 )
@@ -462,7 +475,7 @@ class B3ObserverJob:
             # the worker runs must never authorize a collection from the
             # replacement source under the old schedule binding.
             if (expected_generation is not None
-                    and self._generation() != expected_generation):
+                    and self._phase_generation() != expected_generation):
                 status, reason = "unknown", "source_changed"
             elif expected_generation is not None and self.phase_collector is None:
                 # No source-bound observer is configured. Never silently
@@ -477,7 +490,7 @@ class B3ObserverJob:
                     # A mid-flight source swap must not turn an old-source
                     # admission into an observed receipt for the new source.
                     if (expected_generation is not None
-                            and self._generation() != expected_generation):
+                            and self._phase_generation() != expected_generation):
                         status, reason = "unknown", "source_changed"
                     else:
                         status, reason, count, pending = _result(value)
