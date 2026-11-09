@@ -375,3 +375,74 @@ def test_setup_does_not_require_real_provider_during_app_start(tmp_path):
         sys.argv=argv
     assert len(observed)==1
     assert observed[0]["configured"] is False
+
+
+
+def test_phase_source_binding_refuses_rotated_nextcloud_before_provider_pull(tmp_path):
+    shared, setup = make_setup(tmp_path)
+    assert setup.save({"github_token": TOKEN})
+    old_generation = setup.source_fingerprint()
+    assert isinstance(old_generation, str) and len(old_generation) == 64
+
+    # Simulate a completely valid new B4 setup on a different Nextcloud
+    # source. An old B3 phase slot must not start the pull under B.
+    shared.source_settings["vault_folder"] = "DifferentVault"
+    assert setup.save({"github_token": TOKEN})
+    assert setup.configured()
+    assert setup.source_fingerprint() != old_generation
+
+    pulls = []
+    pinned_paths = []
+    def guarded_copy(connections, destination):
+        pulls.append(1)
+        pinned_paths.append(connections.rclone_config)
+        assert connections.rclone_config.name == ".pinned-rclone.conf"
+        assert connections.rclone_config.stat().st_mode & 0o077 == 0
+        return project_copy(connections, destination)
+    setup.copier = guarded_copy
+
+    with pytest.raises(DailySetupError, match="source_connections_changed"):
+        with setup.project_source(expected_generation=old_generation):
+            pytest.fail("rotated phase source should not be entered")
+    assert pulls == []
+
+    # A new correctly bound source may still be used by the existing B4
+    # reader without changing the default authorization of other jobs.
+    with setup.project_source(
+        expected_generation=setup.source_fingerprint()
+    ) as (config, token):
+        assert token == TOKEN
+        assert config.vault_root.is_dir()
+    assert pulls == [1]
+    assert len(pinned_paths) == 1 and not pinned_paths[0].exists()
+
+
+
+def test_phase_source_uses_private_config_snapshot_during_concurrent_rotation(tmp_path):
+    shared, setup = make_setup(tmp_path)
+    assert setup.save({"github_token": TOKEN})
+    expected = setup.source_fingerprint()
+    previous_rclone = shared.config.read_text()
+    snapshots = []
+
+    def rotate_while_copying(connections, destination):
+        # A production SetupStore save atomically replaces rclone.conf.
+        # The phase copier must receive a private *old* config inode,
+        # never the mutable shared path after that replacement.
+        pinned = connections.rclone_config
+        snapshots.append(pinned)
+        assert pinned != shared.config
+        assert pinned.read_text() == previous_rclone
+        assert pinned.stat().st_mode & 0o077 == 0
+        shared.config.write_text("[nextcloud]\ntype = local\nnew_version=1\n")
+        shared.source_settings["vault_folder"] = "RotatedVault"
+        assert pinned.read_text() == previous_rclone
+        return project_copy(connections, destination)
+
+    setup.copier = rotate_while_copying
+    with pytest.raises(DailySetupError, match="source_connections_changed"):
+        with setup.project_source(expected_generation=expected):
+            pytest.fail("mid-flight source rotation must invalidate result")
+
+    assert len(snapshots) == 1 and not snapshots[0].exists()
+    assert setup.source_fingerprint() != expected

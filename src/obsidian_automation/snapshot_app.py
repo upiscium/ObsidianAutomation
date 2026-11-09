@@ -12,6 +12,7 @@ from .snapshot_job import SnapshotJob
 from .snapshot_setup import SetupStore
 from .github_daily_job import DailyJob
 from .github_b3_observer_job import B3ObserverJob
+from .b3_phase_runtime import B3PhaseRuntime
 from .github_b3_watcher_bridge import collect_b3_read_only
 from .github_daily_setup import DailySetup
 from .github_daily_runonce import run_once
@@ -110,6 +111,11 @@ def main() -> int:
             lambda: collect_b3_read_only(daily_setup, state_root=b3_state),
             configured=daily_setup.configured,
             generation=daily_setup.source_fingerprint,
+            phase_collector=lambda expected: collect_b3_read_only(
+                daily_setup, state_root=b3_state,
+                expected_generation=expected,
+            ),
+            source_lock=daily_setup.phase_receipt_guard,
         )
         if daily_setup is not None else nullcontext(None)
     )
@@ -122,7 +128,11 @@ def main() -> int:
         server.daily_setup = daily_setup
         server.formatter_job = formatter_job
         server.b3_observer_job = b3_job
-        hooks = tuple(item.tick for item in (daily_job, formatter_job, b3_job)
+        # Phase scheduling is an independent, durable, OFF-by-default B3
+        # observer-only admission. There is deliberately no public control
+        # route or UI activation in this source slice.
+        phase_job = B3PhaseRuntime(b3_job) if b3_job is not None else None
+        hooks = tuple(item.tick for item in (daily_job, formatter_job, b3_job, phase_job)
                       if item is not None)
         job.start_scheduler(tick_hooks=hooks)
         server.serve_forever(poll_interval=0.25)

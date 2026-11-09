@@ -159,6 +159,8 @@
       "件。緑の表示は直近の検証済み結果であり、サービス全体の健全性を保証しません。";
   }
   function intervalLabel(s,job,id) {
+    // B3's catalog interval cannot represent the separate phase scheduler.
+    if (id==="b3") return "—";
     const interval=job?.settings?.interval_seconds ?? s?.intervalSeconds;
     return Number.isSafeInteger(interval) && interval>=60 && interval<=86400
       ? interval+" 秒" : id==="b5"?"手動（スケジュールなし）":"—";
@@ -167,9 +169,12 @@
     const s=serviceFor(id),job=jobFor(id);
     const last=job?.last || null;
     const st=displayStatus(id),data=[];
-    const schedule=job?(id==="formatter"
-      ? job.settings.mode==="off"?"無効":job.settings.mode==="dry-run"?"Dry-run":"Auto apply"
-      :job.settings.enabled?"有効":"無効")
+    // B3's common catalog may describe only legacy/partial scheduling.
+    // Its 'off' cannot attest that phase scheduling is effectively OFF.
+    const schedule=id==="b3"?"未確認（旧相対間隔・時刻基準Phaseは別管理）"
+      :job?(id==="formatter"
+        ? job.settings.mode==="off"?"無効":job.settings.mode==="dry-run"?"Dry-run":"Auto apply"
+        :job.settings.enabled?"有効":"無効")
       :s?(s.schedule==="on"?"有効":s.schedule==="off"?"無効":
         s.schedule==="not_applicable"?"手動":"未確認"):"未確認";
     const configuration=job?job.settings.configured?"設定済み":"未設定":
@@ -180,7 +185,8 @@
     const execution=last?.status && IN_PROGRESS.has(last.status)
       ?last.status:s?.execution||"Unknown";
     const runAt=last?.completed??last?.created??s?.lastAttempt?.completedAt??s?.lastAttemptAt??null;
-    const due=job?.settings?.next_due??s?.nextRun??null;
+    // Do not present a legacy B3 due date as an effective phase due date.
+    const due=id==="b3"?null:(job?.settings?.next_due??s?.nextRun??null);
     data.push(["現在の実行状態",execution==="running"?"実行中":
       execution==="queued"?"受付済み":
       execution==="Idle"?"待機中":execution==="Unknown"?"未確認":execution]);
@@ -201,6 +207,91 @@
       mountedDetail=null;
     }
     $("manager-detail-slot").replaceChildren();
+  }
+  function renderB3ReadOnly(slot) {
+    // The Project list is a bounded local cache from a previous B3 GET-only
+    // collection, not a live GitHub/Nextcloud fetch and not Writer success.
+    const container=node("section",undefined,"manager-b3-readonly");
+    const heading=node("h3","Project GitHub monitoring · 読み取り専用");
+    const summary=node("p","監視履歴を確認中…","manager-summary");
+    const results=node("ul",undefined,"manager-b3-project-list");
+    container.append(heading,summary,results);
+    slot.append(container);
+    Promise.all([
+      getJson("/api/v1/b3/observer"),
+      getJson("/api/v1/b3/projects")
+    ]).then(([observer,cached])=>{
+      if (state.selected!=="b3" || !container.isConnected) return;
+      // /b3/observer exposes ONLY the legacy relative scheduler. The new
+      // wall-clock phase scheduler has no verified GET status contract yet.
+      // Never report legacy OFF as "B3 Observer OFF": phase may be ON.
+      // A failed/non-200/malformed GET is NOT evidence of zero observations.
+      // Only the exact observation-only Job envelope can attest last_run=null.
+      const validObserver=observer && typeof observer==="object" &&
+        !Array.isArray(observer) &&
+        observer.schema_version==="github-b3-readonly-observer-job/v1" &&
+        observer.job==="b3_read_only_watcher" &&
+        observer.authority==="observation_only" &&
+        observer.vault_write_authorized===false &&
+        observer.cutover_authorized===false &&
+        observer.settings && typeof observer.settings==="object" &&
+        !Array.isArray(observer.settings) &&
+        typeof observer.settings.enabled==="boolean" &&
+        Object.hasOwn(observer,"last_run");
+      const legacyEnabled=validObserver
+        ? observer.settings.enabled?"ON":"OFF" : "未確認";
+      const last=validObserver?observer.last_run:undefined;
+      // The Observer's admitted "observed" receipt requires 1..500
+      // observations and the local read-only provenance reason. A malformed
+      // count must invalidate the STATUS as well as suppress its count.
+      const validLast=last && typeof last==="object" &&
+        !Array.isArray(last) &&
+        ["queued","running","observed","blocked","unknown"].includes(last.status) &&
+        Number.isSafeInteger(last.observations) &&
+        (last.status==="observed"
+          ? last.observations>=1 && last.observations<=500 &&
+            last.reason==="local_read_only_observation"
+          : last.observations===0);
+      const lastStatus=last===null?"未観測"
+        :validLast?last.status:"未確認";
+      const observed=validLast && last.status==="observed"
+        ? last.observations : null;
+      summary.textContent="B3旧相対間隔スケジュール: "+legacyEnabled+
+        " · 時刻基準Phaseスケジュール: 未確認（別管理）"+
+        " · 最終観測 "+lastStatus+
+        (observed===null?"":" · GitHub観測 "+observed+"件")+
+        " · Vault Writer: 未接続";
+      results.replaceChildren();
+      if (!cached || cached.schemaVersion!=="b3-project-watch-list/v1" ||
+          !Number.isSafeInteger(cached.projectCount) ||
+          cached.projectCount<0 || cached.projectCount>256 ||
+          !Array.isArray(cached.projects) ||
+          cached.projects.length!==cached.projectCount) {
+        results.append(node("li","Project一覧の観測キャッシュは未取得・期限切れ・接続変更のため利用できません。"));
+        return;
+      }
+      if (!cached.projects.length) {
+        results.append(node("li","対象Projectはありません。"));
+        return;
+      }
+      for (const row of cached.projects) {
+        if (!row || typeof row.name!=="string" ||
+            typeof row.monitoringState!=="string") {
+          results.replaceChildren(node("li","監視一覧の形式を確認できません。"));
+          return;
+        }
+        const text=row.name+" · "+
+          (typeof row.repository==="string"?row.repository:"Repo未設定")+" · "+
+          row.monitoringState+
+          (typeof row.lastWatcherObservedAt==="string"
+            ?" · 最終GitHub観測 "+row.lastWatcherObservedAt:"");
+        // textContent only: never render untrusted note names as markup.
+        results.append(node("li",text));
+      }
+    }).catch(()=>{
+      if (state.selected==="b3" && container.isConnected)
+        summary.textContent="B3の読み取り専用状態を取得できません。";
+    });
   }
   function renderDetail() {
     if (!state.selected || !ID[state.selected]) return;
@@ -231,7 +322,9 @@
         slot.append(panel);
       }
     }
-    if (!mountedDetail) {
+    if (entry.id==="b3") {
+      renderB3ReadOnly(slot);
+    } else if (!mountedDetail) {
       slot.append(node("p","このサービスの操作は現在利用できません。状態表示のみです。","manager-summary"));
     }
   }

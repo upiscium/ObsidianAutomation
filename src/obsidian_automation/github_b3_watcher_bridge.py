@@ -11,17 +11,32 @@ import fcntl
 import io
 import json
 import os
+import re
 import stat
+from datetime import datetime, timezone
 from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 
 from .github_project_watcher import GitHubClient, WatcherConfig, run_once
+from .b3_project_cache import (
+    CacheUnavailable, build_project_snapshot, persist_project_snapshot,
+)
 
 VERSION = "github-b3-watcher-bridge/v1"
 _LOCK = "watcher.lock"
 _DB = "watcher.sqlite3"
 _MAX_CAPTURE_BYTES = 512 * 1024
+_MAX_METADATA_WARNINGS = 512
+_MAX_WARNING_LINE_BYTES = 4096
+# The existing watcher emits these two invalid-frontmatter warnings with
+# relative 10-Project paths. Its unreadable-note warnings use absolute paths;
+# those and all error diagnostics must remain fail-closed.
+_METADATA_WARNING = re.compile(
+    r"10-Project/(?:[^/\x00-\x1f]+/)*[^/\x00-\x1f]+\.md: "
+    r"invalid (?:github_repo|Project status): .+\Z"
+)
+_SHA = re.compile(r"[0-9a-f]{64}\Z")
 
 
 class _BoundedSink(io.StringIO):
@@ -38,6 +53,45 @@ class _BoundedSink(io.StringIO):
         result = super().write(value)
         self._bytes += size
         return result
+
+
+def _unique_warning_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("noncanonical_watcher_warning")
+        result[key] = value
+    return result
+
+
+def _metadata_warnings_only(stderr: str) -> bool:
+    """Permit only bounded, structured invalid-frontmatter warnings.
+
+    A watcher exit code other than integer 0 is rejected separately. We never
+    interpret a generic stderr line, an unreadable-note diagnostic or an
+    event='error' as a recoverable warning.
+    """
+    if not stderr:
+        return True
+    if not stderr.endswith("\n"):
+        return False
+    lines = stderr.splitlines()
+    if len(lines) > _MAX_METADATA_WARNINGS:
+        return False
+    for line in lines:
+        if not line or len(line.encode("utf-8")) > _MAX_WARNING_LINE_BYTES:
+            return False
+        try:
+            item = json.loads(line, object_pairs_hook=_unique_warning_object)
+        except (ValueError, TypeError, UnicodeError):
+            return False
+        if (type(item) is not dict
+                or set(item) != {"event", "message"}
+                or item["event"] != "warning"
+                or type(item["message"]) is not str
+                or _METADATA_WARNING.fullmatch(item["message"]) is None):
+            return False
+    return True
 
 
 def _result(state: str, reason: str, *, observations: int = 0,
@@ -75,6 +129,7 @@ def collect_b3_read_only(
     daily_setup: object,
     *,
     state_root: Path,
+    expected_generation: str | None = None,
     client_factory: Callable[..., object] = GitHubClient,
     watcher: Callable[..., int] = run_once,
 ) -> dict[str, object]:
@@ -87,6 +142,10 @@ def collect_b3_read_only(
     """
     if not _private_root(state_root):
         return _result("unknown", "private_watcher_state_unavailable")
+    if expected_generation is not None and (
+            type(expected_generation) is not str
+            or _SHA.fullmatch(expected_generation) is None):
+        return _result("unknown", "invalid_source_binding")
     if not callable(client_factory) or not callable(watcher):
         return _result("unknown", "watcher_unavailable")
 
@@ -106,7 +165,14 @@ def collect_b3_read_only(
         except BlockingIOError:
             return _result("blocked", "watcher_already_running")
 
-        with daily_setup.project_source() as (config, token):
+        source_context = (
+            daily_setup.project_source()
+            if expected_generation is None
+            else daily_setup.project_source(
+                expected_generation=expected_generation,
+            )
+        )
+        with source_context as (config, token):
             if (not isinstance(config, WatcherConfig)
                     or type(token) is not str or not token):
                 return _result("unknown", "watcher_source_unavailable")
@@ -120,7 +186,8 @@ def collect_b3_read_only(
             # Existing watcher owns deterministic per-project observation and
             # SQLite commits; errors cannot leak credentials/note paths to UI.
             code = watcher(config, client=api, stdout=output, stderr=errors)
-            if type(code) is not int or code != 0 or errors.getvalue():
+            if (type(code) is not int or code != 0
+                    or not _metadata_warnings_only(errors.getvalue())):
                 return _result("unknown", "watcher_observation_unverified")
             count = 0
             pending = 0
@@ -136,8 +203,31 @@ def collect_b3_read_only(
                     return _result("unknown", "watcher_observation_unverified")
             if count == 0:
                 return _result("unknown", "watcher_no_observations")
-            return _result("observed", "local_read_only_observation",
-                           observations=count, pending=pending)
+            # Build from the *existing disposable mirror*, never a second
+            # provider request. Stage in memory until project_source() exits
+            # successfully: its teardown checks the original generation.
+            # Do not stamp an old mirror with a newly rotated generation.
+            snapshot, generation = None, None
+            try:
+                fingerprint = getattr(daily_setup, "source_fingerprint", None)
+                if callable(fingerprint):
+                    generation = fingerprint()
+                    snapshot = build_project_snapshot(
+                        config.vault_root, config.state_db,
+                        now=datetime.now(timezone.utc),
+                    )
+            except (CacheUnavailable, AttributeError, TypeError, OSError):
+                snapshot, generation = None, None
+        # The source's post-yield generation check is now complete. A
+        # subsequent rotation causes a mismatch on both publication and GET.
+        if snapshot is not None:
+            try:
+                if fingerprint() == generation:
+                    persist_project_snapshot(state_root, generation, snapshot)
+            except (CacheUnavailable, AttributeError, TypeError, OSError):
+                pass
+        return _result("observed", "local_read_only_observation",
+                       observations=count, pending=pending)
     except (OSError, ValueError, TypeError, RuntimeError, AttributeError,
             UnicodeError, json.JSONDecodeError):
         return _result("unknown", "watcher_observation_unavailable")

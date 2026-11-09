@@ -39,6 +39,7 @@ from .github_b3_observer_job import (
     B3ObserverJob, Invalid as B3ObserverInvalid,
     parse_request as parse_b3_observer_request,
 )
+from .b3_project_cache import CacheUnavailable, read_project_snapshot
 from .github_daily_setup import DailySetup, DailySetupError
 from .vault_format_job import FormatterJob, FormatterInvalid
 from .unified_workflows import workflow_catalog
@@ -1450,6 +1451,32 @@ class Handler(BaseHTTPRequestHandler):
                 self._reply(404, b"Not found")
                 return
             self._reply(200, body, mime)
+            return
+        # A Project list GET only reads the bounded local cache persisted
+        # by an earlier explicit/scheduled B3 collection. It never pulls a
+        # Vault, calls GitHub, or starts a Job. An old source binding fails
+        # closed instead of presenting stale rows as current.
+        if self.path == "/api/v1/b3/projects":
+            job = getattr(self.server, "b3_observer_job", None)
+            if job is None:
+                self._reply(503, b'{"error":"b3_project_cache_unavailable"}',
+                            "application/json; charset=utf-8")
+                return
+            try:
+                generation = job._generation()
+                data = read_project_snapshot(job.state, generation)
+                # A connection rotation during the bounded local cache read
+                # cannot make a response from the previous generation look
+                # current. GET remains local and has no state side effects.
+                if generation is None or job._generation() != generation:
+                    raise CacheUnavailable()
+            except (CacheUnavailable, OSError, ValueError):
+                self._reply(503, b'{"error":"b3_project_cache_unavailable"}',
+                            "application/json; charset=utf-8")
+                return
+            self._reply(200, json.dumps(data, sort_keys=True,
+                                        separators=(",", ":")).encode("utf-8"),
+                        "application/json; charset=utf-8")
             return
         # Read-only B3 watcher Job surface. GET/HEAD must never fetch a Vault,
         # call GitHub, create a Journal, or schedule a collection.

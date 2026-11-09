@@ -647,9 +647,26 @@ def test_fresh_single_app_attaches_formatter_but_does_not_schedule_work(
             assert b3.status()["settings"]["enabled"] is False
             assert b3.status()["last_run"] is None
             assert b3.status()["vault_write_authorized"] is False
-            assert self.snapshot_job._tick_hooks == (
+            hooks = self.snapshot_job._tick_hooks
+            assert len(hooks) == 4
+            assert hooks[:3] == (
                 self.daily_job.tick, formatter.tick, b3.tick
             )
+            # F3 adds exactly one phase-only observer hook. The first three
+            # existing B4/Formatter/B3 hooks remain ordered and unchanged.
+            # Registration is not activation: the phase remains OFF and
+            # cannot collect or authorize a canonical Vault Writer.
+            from obsidian_automation.b3_phase_runtime import B3PhaseRuntime
+            phase_hook = hooks[3]
+            assert isinstance(phase_hook.__self__, B3PhaseRuntime)
+            assert phase_hook.__self__.job is b3
+            phase = phase_hook.__self__.status()
+            assert phase["enabled"] is False
+            assert phase["effectiveEnabled"] is False
+            assert phase["revision"] == 0
+            assert phase["nextDueAt"] is None
+            assert phase["vaultWriteAuthorized"] is False
+            assert phase_hook() is False
             observed.append("single-scheduler-off")
     monkeypatch.setattr(snapshot_app, "make_server", lambda **kwargs: FakeServer())
     monkeypatch.setattr(
