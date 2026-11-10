@@ -67,7 +67,8 @@ def make(tmp_path, source, clock):
     job = B3ObserverJob(
         tmp_path / "b3", source.collect,
         configured=source.configured, generation=source.fingerprint,
-        clock=clock, phase_collector=source.collect_bound,
+        clock=clock, phase_generation=source.fingerprint,
+        phase_collector=source.collect_bound,
         source_lock=lambda: source.lock,
     )
     return job, B3PhaseRuntime(job)
@@ -208,6 +209,7 @@ def test_restart_preserves_noon_slot_and_revision(tmp_path):
         assert phase.status()["revision"] == 1
     job2 = B3ObserverJob(root, source.collect, configured=source.configured,
                          generation=source.fingerprint, clock=clock,
+                         phase_generation=source.fingerprint,
                          phase_collector=source.collect_bound,
                          source_lock=lambda: source.lock)
     with job2:
@@ -340,6 +342,7 @@ def test_phase_collector_requires_source_update_lock(tmp_path):
             tmp_path / "b3", source.collect,
             configured=source.configured,
             generation=source.fingerprint, clock=clock,
+            phase_generation=source.fingerprint,
             phase_collector=source.collect_bound,
             # Missing source_lock must fail closed instead of allowing
             # a positive receipt to race credential/source updates.
@@ -409,6 +412,7 @@ def test_phase_terminal_lock_order_prevents_daily_store_deadlock(tmp_path):
     with B3ObserverJob(
         tmp_path / "b3", lambda: pytest.fail("no remote collector"),
         configured=configured, generation=generation,
+        phase_generation=generation,
         phase_collector=lambda _: pytest.fail("no phase collector"),
         source_lock=guard_factory, clock=lambda: 1000.0,
     ) as owner:
@@ -490,6 +494,7 @@ def test_phase_receipt_keeps_shared_rotation_lock_through_sqlite_write(tmp_path)
     with B3ObserverJob(
         tmp_path / "b3", lambda: pytest.fail("no provider I/O"),
         configured=configured, generation=generation,
+        phase_generation=generation,
         phase_collector=lambda _: pytest.fail("no provider I/O"),
         source_lock=daily.phase_receipt_guard,
         clock=lambda: 1000.0,
@@ -566,6 +571,7 @@ def test_source_guard_factory_rejects_context_instance(tmp_path):
         B3ObserverJob(
             tmp_path / "b3", source.collect,
             configured=source.configured, generation=source.fingerprint,
+            phase_generation=source.fingerprint,
             phase_collector=source.collect_bound, clock=clock,
             source_lock=source.lock,
         )

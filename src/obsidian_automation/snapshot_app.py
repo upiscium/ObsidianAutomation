@@ -111,6 +111,7 @@ def main() -> int:
             lambda: collect_b3_read_only(daily_setup, state_root=b3_state),
             configured=daily_setup.configured,
             generation=daily_setup.source_fingerprint,
+            phase_generation=daily_setup.phase_source_fingerprint,
             phase_collector=lambda expected: collect_b3_read_only(
                 daily_setup, state_root=b3_state,
                 expected_generation=expected,

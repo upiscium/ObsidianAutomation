@@ -66,7 +66,7 @@ class B3PhaseRuntime:
         """Pure local read and phase preview, never a collection or write."""
         with self.job._lock:
             row = self._row()
-            current = self.job._generation()
+            current = self.job._phase_generation()
             configured = current is not None
             bound = row[6]
             valid = configured and current == bound
@@ -118,7 +118,7 @@ class B3PhaseRuntime:
             old = self._row()
             if old[4] != payload["expectedRevision"]:
                 raise Invalid("stale_b3_phase_revision")
-            current = self.job._generation()
+            current = self.job._phase_generation()
             if phase.enabled:
                 if current is None:
                     raise Invalid("b3_source_not_configured")
@@ -148,7 +148,7 @@ class B3PhaseRuntime:
             row = self._row()
             if not row[0]:
                 return False
-            current = job._generation()
+            current = job._phase_generation()
             if current is None:
                 return False  # temporary source outage: preserve desired On
             if current != row[6]:

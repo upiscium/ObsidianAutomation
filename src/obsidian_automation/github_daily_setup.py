@@ -7,11 +7,13 @@ from __future__ import annotations
 
 from contextlib import contextmanager, nullcontext
 import hashlib
+import hmac
 from dataclasses import replace
 import json
 import os
 from pathlib import Path
 import re
+import secrets
 import subprocess
 import tempfile
 import threading
@@ -72,9 +74,48 @@ class DailySetup:
             return connections, generation
 
     def source_fingerprint(self) -> str | None:
+        # B4 and legacy/manual B3 bind only the existing Nextcloud source.
+        # Do not repurpose this value or change their persisted schedules.
         try:
             return self._shared()[1]
         except (OSError, ValueError):
+            return None
+
+    def _phase_source_binding(self, nextcloud_generation: str, token: str) -> str:
+        """Phase-only opaque source binding; never expose token or its hash.
+
+        The private epoch is minted *before* each successful token replacement.
+        This rejects A->B->A rotations and crashes midway through replacement,
+        even if the final token bytes equal the original bytes. Missing epochs
+        on older installations are deliberately unavailable to phase scheduling
+        until the GitHub connection is explicitly saved again.
+        """
+        raw = daily._private_file(
+            self.state / "phase-credential-epoch", maximum=32,
+        ).decode("ascii")
+        if (re.fullmatch(r"[0-9a-f]{32}", raw) is None
+                or re.fullmatch(r"[0-9a-f]{64}", nextcloud_generation) is None
+                or daily._TOKEN.fullmatch(token) is None):
+            raise DailySetupError("phase_source_unavailable")
+        # A HMAC keyed by the private token avoids exposing a plaintext
+        # credential digest in the durable Phase SQLite binding.
+        return hmac.new(
+            token.encode("ascii"),
+            b"oa-b3-phase-credential-v2\0"
+            + bytes.fromhex(nextcloud_generation) + bytes.fromhex(raw),
+            hashlib.sha256,
+        ).hexdigest()
+
+    def phase_source_fingerprint(self) -> str | None:
+        """Phase admission and positive receipt source; B4 unaffected."""
+        try:
+            with self._lock:
+                if not self.configured():
+                    return None
+                _, nextcloud_generation = self._shared()
+                _, token = daily.load_run_config(self.state)
+                return self._phase_source_binding(nextcloud_generation, token)
+        except (OSError, UnicodeError, ValueError):
             return None
 
     @contextmanager
@@ -168,6 +209,14 @@ class DailySetup:
                 'github_api_base = "https://api.github.com"\n'
                 "request_timeout_seconds = 15\n"
             ).encode("utf-8")
+            # First invalidate every previously admitted phase slot. This
+            # fsynced, private epoch is rotated even when token bytes repeat.
+            # A crash after this write must not leave the old phase admission
+            # authorized under a replacement token; B4 remains unaffected.
+            self._atomic(
+                self.state / "phase-credential-epoch",
+                secrets.token_hex(16).encode("ascii"),
+            )
             self._atomic(self.state / "github.token", (token + "\n").encode("ascii"))
             self._atomic(self.state / "watcher.toml", watcher_config)
             # Commit source-generation last. Changed B2 Connections invalidate
@@ -205,8 +254,16 @@ class DailySetup:
                     with lock if lock is not None else nullcontext():
                         connections, generation = self._shared()
                         config, token = daily.load_run_config(self.state)
+                        try:
+                            phase_binding = self._phase_source_binding(
+                                generation, token,
+                            )
+                        except (OSError, UnicodeError, ValueError):
+                            raise DailySetupError(
+                                "source_connections_changed"
+                            ) from None
                         if (type(expected_generation) is not str
-                                or generation != expected_generation):
+                                or phase_binding != expected_generation):
                             raise DailySetupError("source_connections_changed")
                         try:
                             original = Path(connections.rclone_config)
@@ -241,12 +298,18 @@ class DailySetup:
             projects, _warnings = watcher.scan_projects(root)
             if not projects:
                 raise DailySetupError("no_watched_github_projects")
-            if generation != self.source_fingerprint():
+            if (generation != self.source_fingerprint()
+                    or (expected_generation is not None
+                        and self.phase_source_fingerprint()
+                        != expected_generation)):
                 raise DailySetupError("source_connections_changed")
             yield replace(config, vault_root=root), token
-            # A concurrently replaced B2 connection cannot make old-source
-            # preview_ready look like a successful run under new settings.
-            if generation != self.source_fingerprint():
+            # A replaced GitHub credential or B2 connection invalidates a
+            # phase receipt even if it returns to earlier identical bytes.
+            if (generation != self.source_fingerprint()
+                    or (expected_generation is not None
+                        and self.phase_source_fingerprint()
+                        != expected_generation)):
                 raise DailySetupError("source_connections_changed")
 
 

@@ -381,7 +381,7 @@ def test_setup_does_not_require_real_provider_during_app_start(tmp_path):
 def test_phase_source_binding_refuses_rotated_nextcloud_before_provider_pull(tmp_path):
     shared, setup = make_setup(tmp_path)
     assert setup.save({"github_token": TOKEN})
-    old_generation = setup.source_fingerprint()
+    old_generation = setup.phase_source_fingerprint()
     assert isinstance(old_generation, str) and len(old_generation) == 64
 
     # Simulate a completely valid new B4 setup on a different Nextcloud
@@ -389,7 +389,7 @@ def test_phase_source_binding_refuses_rotated_nextcloud_before_provider_pull(tmp
     shared.source_settings["vault_folder"] = "DifferentVault"
     assert setup.save({"github_token": TOKEN})
     assert setup.configured()
-    assert setup.source_fingerprint() != old_generation
+    assert setup.phase_source_fingerprint() != old_generation
 
     pulls = []
     pinned_paths = []
@@ -409,7 +409,7 @@ def test_phase_source_binding_refuses_rotated_nextcloud_before_provider_pull(tmp
     # A new correctly bound source may still be used by the existing B4
     # reader without changing the default authorization of other jobs.
     with setup.project_source(
-        expected_generation=setup.source_fingerprint()
+        expected_generation=setup.phase_source_fingerprint()
     ) as (config, token):
         assert token == TOKEN
         assert config.vault_root.is_dir()
@@ -421,7 +421,7 @@ def test_phase_source_binding_refuses_rotated_nextcloud_before_provider_pull(tmp
 def test_phase_source_uses_private_config_snapshot_during_concurrent_rotation(tmp_path):
     shared, setup = make_setup(tmp_path)
     assert setup.save({"github_token": TOKEN})
-    expected = setup.source_fingerprint()
+    expected = setup.phase_source_fingerprint()
     previous_rclone = shared.config.read_text()
     snapshots = []
 
@@ -445,4 +445,136 @@ def test_phase_source_uses_private_config_snapshot_during_concurrent_rotation(tm
             pytest.fail("mid-flight source rotation must invalidate result")
 
     assert len(snapshots) == 1 and not snapshots[0].exists()
-    assert setup.source_fingerprint() != expected
+    assert setup.phase_source_fingerprint() != expected
+
+
+def test_phase_generation_rotates_on_token_save_but_legacy_b4_remains_bound(tmp_path):
+    """Even A->A and A->B->A must revoke old phase admissions."""
+    shared, setup = make_setup(tmp_path)
+    assert setup.save({"github_token": TOKEN})
+    b4 = setup.source_fingerprint()
+    phase_a = setup.phase_source_fingerprint()
+    assert type(phase_a) is str and len(phase_a) == 64
+    epoch = setup.state / "phase-credential-epoch"
+    assert epoch.stat().st_mode & 0o777 == 0o600
+
+    assert setup.save({"github_token": TOKEN})
+    phase_a2 = setup.phase_source_fingerprint()
+    assert phase_a2 not in (None, phase_a)
+    token_b = "NEW_GITHUB_FIXTURE_TOKEN_9876543210"
+    assert setup.save({"github_token": token_b})
+    phase_b = setup.phase_source_fingerprint()
+    assert phase_b not in (None, phase_a, phase_a2)
+    assert setup.save({"github_token": TOKEN})
+    phase_again = setup.phase_source_fingerprint()
+    assert phase_again not in (None, phase_a, phase_a2, phase_b)
+    assert setup.source_fingerprint() == b4
+    assert setup.configured()
+
+    calls = []
+    setup.copier = lambda conn, target: calls.append(1) or project_copy(conn, target)
+    with pytest.raises(DailySetupError, match="source_connections_changed"):
+        with setup.project_source(expected_generation=phase_a):
+            pytest.fail("old phase binding must not pull under a re-saved token")
+    assert calls == []
+    with setup.project_source() as (_, token):
+        assert token == TOKEN
+    assert calls == [1]
+    assert TOKEN not in json.dumps(setup.status())
+
+
+def test_phase_generation_requires_private_epoch_without_disabling_b4(tmp_path):
+    """Existing pre-upgrade B4 configurations must keep working, phase OFF."""
+    shared, setup = make_setup(tmp_path)
+    assert setup.save({"github_token": TOKEN})
+    previous_phase = setup.phase_source_fingerprint()
+    epoch = setup.state / "phase-credential-epoch"
+    epoch.unlink()
+    assert setup.phase_source_fingerprint() is None
+    assert setup.configured()
+    with setup.project_source() as (config, token):
+        assert config.vault_root.is_dir() and token == TOKEN
+    pulls = []
+    setup.copier = lambda conn, target: pulls.append(1) or project_copy(conn, target)
+    with pytest.raises(DailySetupError):
+        with setup.project_source(expected_generation=previous_phase):
+            pytest.fail("missing phase epoch should reject pre-provider admission")
+    assert pulls == []
+    assert setup.save({"github_token": TOKEN})
+    assert setup.phase_source_fingerprint() not in (None, previous_phase)
+    assert epoch.stat().st_mode & 0o777 == 0o600
+
+
+def test_phase_epoch_rejects_corruption_and_token_replacement_outside_save(tmp_path):
+    shared, setup = make_setup(tmp_path)
+    assert setup.save({"github_token": TOKEN})
+    before = setup.phase_source_fingerprint()
+    b4 = setup.source_fingerprint()
+    epoch = setup.state / "phase-credential-epoch"
+    epoch.chmod(0o644)
+    assert setup.phase_source_fingerprint() is None
+    assert setup.configured()  # B4 remains independent.
+    epoch.chmod(0o600)
+    assert setup.phase_source_fingerprint() == before
+    # Simulate an operator replacing private credential without save/epoch.
+    newer = "NEW_GITHUB_FIXTURE_TOKEN_9876543210"
+    setup._atomic(setup.state / "github.token", (newer + "\n").encode("ascii"))
+    assert setup.source_fingerprint() == b4
+    assert setup.phase_source_fingerprint() not in (before, None)
+    calls = []
+    setup.copier = lambda conn, target: calls.append(1) or project_copy(conn, target)
+    with pytest.raises(DailySetupError, match="source_connections_changed"):
+        with setup.project_source(expected_generation=before):
+            pytest.fail("out-of-band token rotation must fail before mirror pull")
+    assert calls == []
+
+
+def test_phase_epoch_invalidated_before_token_mutation_on_interrupted_save(tmp_path):
+    shared, setup = make_setup(tmp_path)
+    assert setup.save({"github_token": TOKEN})
+    previous_phase = setup.phase_source_fingerprint()
+    previous_b4 = setup.source_fingerprint()
+    original_atomic = setup._atomic
+    wrote_epoch = []
+
+    def crash_before_token(path, data):
+        if path.name == "github.token":
+            raise OSError("synthetic interruption before token replacement")
+        if path.name == "phase-credential-epoch":
+            wrote_epoch.append(1)
+        return original_atomic(path, data)
+
+    setup._atomic = crash_before_token
+    with pytest.raises(OSError, match="synthetic interruption"):
+        setup.save({"github_token": "NEW_GITHUB_FIXTURE_TOKEN_9876543210"})
+    assert wrote_epoch == [1]
+    assert (setup.state / "github.token").read_text().strip() == TOKEN
+    assert setup.configured() and setup.source_fingerprint() == previous_b4
+    assert setup.phase_source_fingerprint() not in (None, previous_phase)
+
+
+def test_phase_rotated_during_mirror_copy_or_yield_cannot_confirm(tmp_path):
+    for rotate_point in ("copy", "yield"):
+        root = tmp_path / rotate_point
+        root.mkdir()
+        shared, setup = make_setup(root)
+        assert setup.save({"github_token": TOKEN})
+        bound = setup.phase_source_fingerprint()
+        token_b = "NEW_GITHUB_FIXTURE_TOKEN_9876543210"
+        started = []
+        def copy(conn, target):
+            started.append(1)
+            copied = project_copy(conn, target)
+            if rotate_point == "copy":
+                assert setup.save({"github_token": token_b})
+            return copied
+        setup.copier = copy
+        with pytest.raises(DailySetupError, match="source_connections_changed"):
+            with setup.project_source(expected_generation=bound) as (config, old_token):
+                assert old_token == TOKEN
+                if rotate_point == "yield":
+                    assert setup.save({"github_token": token_b})
+                assert config.vault_root.exists()
+        assert started == [1]
+        assert setup.configured()
+        assert setup.phase_source_fingerprint() != bound
