@@ -10,16 +10,59 @@ from .admin_dashboard import make_server
 from .snapshot_adapter import Connections, SnapshotAdapter
 from .snapshot_job import SnapshotJob
 from .snapshot_setup import SetupStore
-from .github_daily_job import DailyJob
+from .github_daily_job import DailyJob, DailyStageFailure
 from .github_b3_observer_job import B3ObserverJob
 from .b3_phase_runtime import B3PhaseRuntime
 from .github_b3_watcher_bridge import collect_b3_read_only
-from .github_daily_setup import DailySetup
+from .github_daily_setup import DailySetup, DailySetupError
 from .github_daily_runonce import run_once
 from .github_daily_deterministic_writer import publish_verified_daily
 from .github_project_watcher import GitHubClient
 from .vault_format_job import FormatterJob
 from .vault_format_source import FormatterSource
+
+
+# Only trusted static source errors may appear in B4 durable diagnostics.
+_B4_SOURCE_ERRORS = {
+    "github_daily_not_configured": ("source_admission", "not_configured"),
+    "project_mirror_pull_failed": ("source_pull", "pull_failed"),
+    "no_watched_github_projects": ("project_selection", "no_watched_projects"),
+    "source_connections_changed": ("source_verification", "source_changed"),
+}
+
+
+def collect_b4_preview(daily_setup: DailySetup, daily_state: Path) -> dict:
+    """Project mirror plus GitHub Preview, with bounded error stage markers.
+
+    GitHub observations and local Preview/CAS processing are both owned by
+    run_once. They cannot reliably be separated here, so the stage name
+    intentionally describes both rather than claiming a specific cause.
+    """
+    try:
+        with daily_setup.project_source() as (config, token):
+            try:
+                client = GitHubClient(
+                    token=token, timeout_seconds=config.request_timeout_seconds,
+                )
+                result = run_once(
+                    config, client, cas_root=daily_state / "cas",
+                    preview_root=daily_state / "preview",
+                )
+            except Exception:
+                raise DailyStageFailure(
+                    "collection_preview", "collection_or_preview_failed",
+                ) from None
+        return result
+    except DailyStageFailure:
+        raise
+    except DailySetupError as exc:
+        reason = exc.args[0] if len(exc.args) == 1 and type(exc.args[0]) is str else None
+        stage, code = _B4_SOURCE_ERRORS.get(
+            reason, ("source_admission", "source_unavailable"),
+        )
+        raise DailyStageFailure(stage, code) from None
+    except Exception:
+        raise DailyStageFailure("source_admission", "source_unavailable") from None
 
 
 def main() -> int:
@@ -68,12 +111,9 @@ def main() -> int:
     daily_setup = DailySetup(daily_state, store) if store is not None else None
 
     def daily_runner():
-        # B4 reuses the already configured B2 Nextcloud account but only
-        # downloads Project notes to a private disposable local mirror.
-        with daily_setup.project_source() as (config, token):
-            client = GitHubClient(token=token, timeout_seconds=config.request_timeout_seconds)
-            return run_once(config, client, cas_root=daily_state / "cas",
-                            preview_root=daily_state / "preview")
+        # Still uses the same B2 read-only Nextcloud mirror and GitHub GET
+        # collection; only bounded diagnosis of failure stages is new.
+        return collect_b4_preview(daily_setup, daily_state)
 
     def daily_publisher(preview_receipt):
         if daily_setup is None or not daily_setup.configured():

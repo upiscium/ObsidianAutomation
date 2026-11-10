@@ -509,6 +509,11 @@ providers. Manual Run Once does not require schedule On.
 
 B2 run keys: `run_id,request_id,trigger,status,created,completed,stage,remote_ref`.
 B4 run keys: `run_id,request_id,trigger,status,created,completed,date_jst,capture_sha256,digest_sha256,original_event_count,rendered_entity_count,publication_outcome`.
+R1 diagnostic extension adds nullable failure_stage and failure_code keys to
+every new DailyJob Run read. The strict workflow-control read adapter accepts
+either the exact legacy set or the exact extended set, validates the bounded
+stage/code pairs without copying them into the common effect projection, and
+never interprets a failure diagnostic as a verified write or a retry permit.
 These private-network typed detail APIs already expose their validated evidence
 fields; do not silently remove them for compatibility. The **new catalog** must
 not copy them. B4 job name remains `github_daily_preview` even when a publisher
