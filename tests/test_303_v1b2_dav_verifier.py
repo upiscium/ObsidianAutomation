@@ -159,12 +159,21 @@ def test_mounted_target_is_unsafe():  # P3-S5
     assert run(FakeNextcloud(), selection("Shared")).reason == "unsafe_target"
 
 
-def test_folder_inside_a_share_is_unsafe():
+def test_descendant_of_a_mount_is_blocked_at_the_mount_root():
     # P3-D2 (2026-11-12, NC 35.0.2): descendants of a received share also
-    # report nc:mount-type "shared" (only the mount root has is-mount-root).
+    # report nc:mount-type "shared"; the walk already stops at the mount root.
     nc = FakeNextcloud()
     nc.nodes["Shared/Inner"] = (31, True, "shared")
     assert run(nc, selection("Shared/Inner")).reason == "unsafe_target"
+    assert [href for href, _ in nc.calls] == [PREFIX]
+
+
+def test_leaf_reporting_a_mount_type_is_unsafe():
+    nc = FakeNextcloud()
+    nc.nodes["Vault/Inner"] = (31, True, "shared")
+    assert run(nc, selection("Vault/Inner")).reason == "unsafe_target"
+    nc.nodes["Vault/Inner"] = (31, True, "")
+    assert run(nc, selection("Vault/Inner")).status == "candidate_valid"
 
 
 def test_mounted_unselected_sibling_is_allowed():

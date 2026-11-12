@@ -116,6 +116,9 @@ still blocks, and the ID chain is withheld unless the result is
 | P3-D2 | X: share to a 2nd synthetic user, then read `nc:mount-type` | user + share |
 | P3-D3 | L: an ACL-hidden child vs. the seeded expected set | share |
 | P3-D4 | C: A→B→A, delete/recreate, change after last read | MOVE/DELETE/MKCOL |
+| P3-D5 | R: rotate the synthetic app password mid-walk | credential rotation |
+
+P3-D4 is expected to confirm NOT_SUPPORTED. It does not unblock C.
 
 ## P3-D1 / P3-D2 results (disposable Nextcloud 35.0.2, 2026-11-12)
 
@@ -162,6 +165,3 @@ existing disposable stack only, with the in-container PHP client.
 - the viewer user and its skeleton files
 - the read share
 - the container `/tmp/oa303_viewer_pass`
-| P3-D5 | R: rotate the synthetic app password mid-walk | credential rotation |
-
-P3-D4 is expected to confirm NOT_SUPPORTED. It does not unblock C.

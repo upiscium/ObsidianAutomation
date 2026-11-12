@@ -288,7 +288,9 @@ def rollback_vault_root(
     data = _read_binding(store.state)
     current = _pin(data.get("current")) if data else None
     previous = _pin(data.get("previous")) if data else None
-    if current is None or previous is None:
+    # One step only: a completed rollback keeps the undone pin as "previous"
+    # (so its identity survives an uncertain write) but cannot be undone.
+    if current is None or previous is None or data.get("outcome") == "rolled_back":
         return ActivationResult("blocked", "nothing_to_roll_back")
     with fence.quiesced() as busy:
         if busy:
@@ -297,7 +299,7 @@ def rollback_vault_root(
         revision = store.nextcloud_revision()
         if saved is None or revision is None or saved["vault_folder"] != current.path:
             return ActivationResult("blocked", "binding_diverged")
-        return _commit(store, fence, previous, None, previous.path, revision,
+        return _commit(store, fence, previous, current, previous.path, revision,
                        "rolled_back", clock)
 
 

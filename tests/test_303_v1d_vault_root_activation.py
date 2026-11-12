@@ -308,6 +308,23 @@ def test_uncertain_write_keeps_previous_identity_for_later_rollback(store, monke
     assert act.check_root_pin(store, lambda _: oc_id(11)) == "ok"
 
 
+def test_uncertain_rollback_keeps_identity_of_root_still_in_config(store, monkeypatch):
+    nc = FakeNextcloud()
+    assert activate(store, nc).status == "activated"           # Other -> Vault/Notes
+    assert act.rollback_vault_root(enabled=True, store=store,
+                                   fence=FakeFence()).status == "rolled_back"
+    assert activate(store, nc, active_resource_id=oc_id(20)).status == "activated"
+    with monkeypatch.context() as m:
+        m.setattr(store, "replace_vault_folder", lambda *a: "uncertain")
+        assert act.rollback_vault_root(enabled=True, store=store,
+                                       fence=FakeFence()).status == "uncertain"
+    # config still holds Vault/Notes; its pin must survive the next activation
+    assert activate(store, nc, requested="Vault", expected_leaf_id=oc_id(10),
+                    active_resource_id=oc_id(11)).status == "activated"
+    data = json.loads((store.state / act.BINDING_FILE).read_text())
+    assert data["previous"]["chain"] == [oc_id(10), oc_id(11)]
+
+
 def test_lost_binding_after_activation_fails_closed(store):
     assert activate(store, FakeNextcloud()).status == "activated"
     (store.state / act.BINDING_FILE).unlink()
