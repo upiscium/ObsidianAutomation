@@ -292,11 +292,14 @@ def rollback_vault_root(
     previous = _pin(data.get("previous")) if data else None
     # One step only: a completed rollback keeps the undone pin as "previous"
     # (so its identity survives an uncertain write) but cannot be undone.
-    if current is None or previous is None or data.get("outcome") == "rolled_back":
-        return ActivationResult("blocked", "nothing_to_roll_back")
-    if data.get("outcome") == "pending_rolled_back":
+    if data and data.get("outcome") == "pending_rolled_back":
         # A retry would swap the roots back. Recover with a new activation.
         return ActivationResult("blocked", "rollback_uncertain")
+    # Allow-list: only an activation (finished, or landed-but-unfinalized)
+    # can be undone; any other or unknown outcome is refused.
+    if (current is None or previous is None
+            or data.get("outcome") not in ("activated", "pending_activated")):
+        return ActivationResult("blocked", "nothing_to_roll_back")
     with fence.quiesced() as busy:
         if busy:
             return ActivationResult("blocked", "jobs_in_flight")

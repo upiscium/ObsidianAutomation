@@ -77,9 +77,16 @@ The options were:
    The local revision CAS changes `vault_folder` only.
 3. **Revalidate before each Job run.** `check_root_pin` must return `ok` or
    `legacy_unpinned`. **Not yet wired into the Jobs.**
-   - The pin is written as `pending` before the config CAS, and only
-     `activated`/`rolled_back` pins are trusted. Every crash point therefore
-     makes the Jobs refuse rather than run unpinned.
+   - The pin is written as `pending_activated` or `pending_rolled_back`
+     before the config CAS. Only `activated`/`rolled_back` pins are trusted,
+     so every crash point makes the Jobs refuse rather than run unpinned.
+   - Rollback is one step. It is allowed only after `activated` or
+     `pending_activated`. After `pending_rolled_back` it answers
+     `rollback_uncertain`, because a retry could swap the roots back.
+     Recovery is a new activation. If that rollback landed, the preview
+     answers `already_selected` for the current root, so recovery means
+     activating another root and then rolling back to it. Jobs stay
+     refused until then.
    - A sticky `vault_root_pinning.enabled` marker turns a lost binding file
      into `mismatch`. Back up and restore it together with
      `vault_root_binding.json`. A `blocked` attempt removes a marker it

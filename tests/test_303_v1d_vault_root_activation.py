@@ -343,6 +343,26 @@ def test_retry_after_uncertain_rollback_that_landed_is_refused(store, monkeypatc
     assert act.check_root_pin(store, lambda _: "unused") == "mismatch"  # pending
 
 
+def test_rollback_after_landed_but_unfinalized_activation(store):
+    class Failing(FakeFence):
+        def after_change(self):
+            raise RuntimeError("daily update failed")
+    assert activate(store, FakeNextcloud(), Failing()).reason == "job_pause_failed"
+    assert act.rollback_vault_root(enabled=True, store=store,
+                                   fence=FakeFence()).status == "rolled_back"
+    assert store.load_nextcloud()["vault_folder"] == "Other"
+
+
+def test_unknown_binding_outcome_is_not_rolled_back(store):
+    assert activate(store, FakeNextcloud()).status == "activated"
+    path = store.state / act.BINDING_FILE
+    data = json.loads(path.read_text())
+    data["outcome"] = "pending"   # legacy / unknown value
+    path.write_text(json.dumps(data))
+    assert act.rollback_vault_root(enabled=True, store=store,
+                                   fence=FakeFence()).reason == "nothing_to_roll_back"
+
+
 def test_lost_binding_after_activation_fails_closed(store):
     assert activate(store, FakeNextcloud()).status == "activated"
     (store.state / act.BINDING_FILE).unlink()
