@@ -325,6 +325,24 @@ def test_uncertain_rollback_keeps_identity_of_root_still_in_config(store, monkey
     assert data["previous"]["chain"] == [oc_id(10), oc_id(11)]
 
 
+def test_retry_after_uncertain_rollback_that_landed_is_refused(store, monkeypatch):
+    assert activate(store, FakeNextcloud()).status == "activated"   # Other -> Vault/Notes
+    real = store.replace_vault_folder
+
+    def landed_but_uncertain(*a):
+        assert real(*a) == "replaced"
+        return "uncertain"
+    with monkeypatch.context() as m:
+        m.setattr(store, "replace_vault_folder", landed_but_uncertain)
+        assert act.rollback_vault_root(enabled=True, store=store,
+                                       fence=FakeFence()).status == "uncertain"
+    assert store.load_nextcloud()["vault_folder"] == "Other"
+    retry = act.rollback_vault_root(enabled=True, store=store, fence=FakeFence())
+    assert retry == act.ActivationResult("blocked", "rollback_uncertain")
+    assert store.load_nextcloud()["vault_folder"] == "Other"
+    assert act.check_root_pin(store, lambda _: "unused") == "mismatch"  # pending
+
+
 def test_lost_binding_after_activation_fails_closed(store):
     assert activate(store, FakeNextcloud()).status == "activated"
     (store.state / act.BINDING_FILE).unlink()
@@ -335,7 +353,7 @@ def test_pending_pin_is_not_trusted(store, monkeypatch):
     real = act._write_binding
 
     def only_pending(state, current, previous, outcome, clock):
-        return real(state, current, previous, outcome, clock) if outcome == "pending" else False
+        return real(state, current, previous, outcome, clock) if outcome.startswith("pending") else False
     monkeypatch.setattr(act, "_write_binding", only_pending)
     result = activate(store, FakeNextcloud())
     assert result == act.ActivationResult("uncertain", "pin_unfinalized")

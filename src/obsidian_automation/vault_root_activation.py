@@ -208,14 +208,16 @@ def _commit(store: SetupStore, fence: JobFence, new: RootPin, previous: RootPin 
                 return ActivationResult("uncertain", "pin_restore_failed")
         return ActivationResult("blocked", reason)
 
-    if not _write_binding(store.state, new, previous, "pending", clock):
+    # The pending outcome names the step, so an uncertain rollback is never
+    # mistaken for an activation that could be rolled back again.
+    if not _write_binding(store.state, new, previous, "pending_" + done, clock):
         return undo("pin_unrecorded")
     outcome = store.replace_vault_folder(folder, revision)
     if outcome == "uncertain":
         return ActivationResult("uncertain", "config_write_uncertain")
     if outcome != "replaced":
         return undo(outcome)
-    # The pin stays "pending" (Jobs refuse) until the schedules are paused.
+    # The pin stays pending (Jobs refuse) until the schedules are paused.
     try:
         fence.after_change()
     except Exception:
@@ -292,6 +294,9 @@ def rollback_vault_root(
     # (so its identity survives an uncertain write) but cannot be undone.
     if current is None or previous is None or data.get("outcome") == "rolled_back":
         return ActivationResult("blocked", "nothing_to_roll_back")
+    if data.get("outcome") == "pending_rolled_back":
+        # A retry would swap the roots back. Recover with a new activation.
+        return ActivationResult("blocked", "rollback_uncertain")
     with fence.quiesced() as busy:
         if busy:
             return ActivationResult("blocked", "jobs_in_flight")
