@@ -281,3 +281,7 @@ def test_restricted_status_is_labelled_and_explained():
     assert service()[0].status()["provider"] == "verified"
     js = JS_PATH.read_text(encoding="utf-8")
     assert 'status.provider === "restricted"' in js and "検出できません" in js
+    # option A (L scoped to Nextcloud's index): the caveat names what is not covered
+    for phrase in ("他の端末でフォルダが変更", "サーバーに直接置かれたファイル",
+                   "再スキャン前の外部ストレージ"):
+        assert phrase in js

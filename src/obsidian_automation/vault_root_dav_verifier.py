@@ -59,7 +59,8 @@ class ProviderProof:
 
     L is scoped to Nextcloud's index (owner decision 2026-11-12, option A):
     a DAV listing is complete relative to the file cache, not to storage.
-    Files written directly on the server are outside the guarantee."""
+    Outside the guarantee: files written directly on the server, external
+    storage that has not been rescanned, and case twins not yet indexed."""
     A: str
     I: str
     X: str

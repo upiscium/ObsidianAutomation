@@ -2,7 +2,8 @@
 
 - Status: **Accepted by owner on 2026-11-12 (policy only).** Implemented as
   source only. Not activated, not deployed and not published.
-- Base: `main@1248ee85156f`. No provider request was made, and F1/P2 were not re-run.
+- Base: `main@1248ee85156f`. The policy decision itself used no provider request.
+  F1/P2 were not re-run. The P3 runs on the disposable instance are recorded below.
 
 ## Context
 
@@ -47,8 +48,8 @@ counts and hashes only, not property values.
 | Exclusive tree lock held through the CAS | **NOT_SUPPORTED** | WebDAV `LOCK` is per resource, is itself a write, and does not stop other clients' edits in sibling directories |
 | Conditional update (`If-Match`) on the root | **NOT_SUPPORTED** for C | It guards one resource's body, not a directory tree read |
 | Propagated directory ETag | **FEASIBLE_WITH_MORE_EVIDENCE** as a *change signal only* | Misses A→B→A changes and edits made after the last read; it can never prove C |
-| `oc:id` = padded `oc:fileid` + instance ID | **FEASIBLE_WITH_MORE_EVIDENCE** (for I) | Stability across restart and move not measured (P3-D1) |
-| `nc:mount-type` / `nc:is-mount-root` | **FEASIBLE_WITH_MORE_EVIDENCE** (for X) | Not observed with shares or mounts (P3-D2); backend symlinks are not covered |
+| `oc:id` = padded `oc:fileid` + instance ID | **FEASIBLE_WITH_MORE_EVIDENCE** (for I) | P3-D1: stable across move, rename and restart on one instance |
+| `nc:mount-type` / `nc:is-mount-root` | **FEASIBLE_WITH_MORE_EVIDENCE** (for X) | P3-D2: user shares only; group folders, external storage and backend symlinks not covered |
 | Depth:1 completeness | **NOT_SUPPORTED** for storage; **FEASIBLE_WITH_MORE_EVIDENCE** for Nextcloud's index (L) | P3-D3: unscanned on-disk children are silently absent |
 
 ## Gate register (nothing VERIFIED; mirrored in `CURRENT_PROVIDER_PROOF`)
@@ -121,9 +122,9 @@ still blocks, and the ID chain is withheld unless the result is
 | --- | --- | --- |
 | P3-D1 | I: `oc:id` stability over restart and rename/move | MOVE ×2 |
 | P3-D2 | X: share to a 2nd synthetic user, then read `nc:mount-type` | user + share |
-| P3-D3 | L: an ACL-hidden child vs. the seeded expected set | share |
+| P3-D3 | L: as run, unscanned on-disk children vs. the seeded expected set (the planned ACL-hidden child was not tested) | 3 direct disk writes + `files:scan` |
 | P3-D4 | C: A→B→A, delete/recreate, change after last read | MOVE/DELETE/MKCOL |
-| P3-D5 | R: rotate the synthetic app password mid-walk | credential rotation |
+| P3-D5 | R: as run, a user-password reset between two walks (not an app password, not mid-walk) | password reset |
 
 P3-D4 is expected to confirm NOT_SUPPORTED. It does not unblock C.
 
@@ -194,6 +195,7 @@ The owner approved this run ("D3とD5を進めてほしい").
   - `alpha.md` and `ALPHA.md` coexist in one folder with different `oc:id`s.
   - V1/A blocks that level with `casefold_collision`, but only once both
     names are in the index.
+- Not tested: ACL-hidden children, external storage, group folders.
 
 **P3-D5 (R).** Viewer account only.
 - Requests: 1 PROPFIND (207), then `occ user:resetpassword` (rc 0), then 2
@@ -221,7 +223,7 @@ view)**, not the server's storage.
 - external storage that has not been rescanned;
 - case twins that are not yet indexed.
 
-The UI caveat says so.
+The verifier docstring and the UI caveat state the same three points.
 
 **Option (b) rejected.** The alternative was to keep L as storage
 completeness and leave V1/D blocked forever.
