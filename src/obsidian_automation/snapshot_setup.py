@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -22,6 +23,7 @@ NEXTCLOUD_FIELDS = {"webdav_url", "vault_folder", "nextcloud_user", "nextcloud_p
 GITEA_FIELDS = {"git_url", "git_user", "git_token", "branch"}
 FIELDS = NEXTCLOUD_FIELDS | GITEA_FIELDS
 MARKER = "_rclone_sha256"
+_REVISION_KEY = os.urandom(32)
 
 
 @dataclass(frozen=True)
@@ -201,6 +203,50 @@ class SetupStore:
     def generation(self) -> str | None:
         with self._lock:
             return hashlib.sha256(self.path.read_bytes()).hexdigest() if self.load() is not None else None
+
+    def nextcloud_revision(self) -> str | None:
+        """#303 opaque Nextcloud-only revision; never leaves the server.
+
+        Unlike generation(), it exists without Gitea. It is keyed per process
+        so it is not a reusable digest of the secret-bearing record, and a
+        service restart invalidates every outstanding picker handle.
+        """
+        with self._lock:
+            if self.load_nextcloud() is None:
+                return None
+            try:
+                data = self.path.read_bytes()
+            except OSError:
+                return None
+            return "r" + hmac.new(_REVISION_KEY, data, hashlib.sha256).hexdigest()[:48]
+
+    def replace_vault_folder(self, new_folder: str, expected_revision: str) -> str:
+        """#303 V1/D local CAS: change only ``vault_folder``.
+
+        Credentials, URL and the rclone config are byte-identical afterwards.
+        Returns ``replaced``, ``stale_source``, ``invalid`` or ``uncertain``.
+        Callers own Job quiescence; this method never touches Vault data.
+        """
+        with self._lock:
+            if self.nextcloud_revision() != expected_revision:
+                return "stale_source"
+            try:
+                saved = json.loads(self.path.read_text(encoding="utf-8"))
+                current = self.load_nextcloud()
+                if current is None or type(saved) is not dict:
+                    return "invalid"
+                validate_nextcloud({**current, "vault_folder": new_folder})
+            except (OSError, ValueError):
+                return "invalid"
+            saved["vault_folder"] = new_folder
+            try:
+                _atomic(self.path, json.dumps(saved))
+            except OSError:
+                return "uncertain"
+            after = self.load_nextcloud()
+            if after is None or after["vault_folder"] != new_folder:
+                return "uncertain"
+            return "replaced"
 
     def connections(self) -> Connections | None:
         value = self.load()
