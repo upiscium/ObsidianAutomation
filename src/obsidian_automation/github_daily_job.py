@@ -27,6 +27,33 @@ class Busy(RuntimeError):
     pass
 
 
+# Finite diagnostic vocabulary. Never persist a provider error, URL or
+# arbitrary exception message in a public HTTP-visible SQLite receipt.
+_FAILURE_PAIRS = frozenset({
+    ("source_admission", "not_configured"),
+    ("source_admission", "source_unavailable"),
+    ("source_pull", "pull_failed"),
+    ("project_selection", "no_watched_projects"),
+    ("source_verification", "source_changed"),
+    ("collection_preview", "collection_or_preview_failed"),
+    ("runner", "unexpected_exception"),
+    ("preview_validation", "invalid_preview_receipt"),
+    ("publication", "outcome_unconfirmed"),
+    ("publication", "invalid_publication_receipt"),
+})
+
+
+class DailyStageFailure(RuntimeError):
+    """Trusted B4 stage marker; never carry a raw exception message."""
+
+    def __init__(self, stage: str, code: str):
+        if (type(stage) is not str or type(code) is not str
+                or (stage, code) not in _FAILURE_PAIRS):
+            raise Invalid("invalid_daily_failure_diagnostic")
+        self.stage, self.code = stage, code
+        super().__init__("daily_stage_failed")
+
+
 class DailyJob:
     def __init__(self, state: Path, runner: Callable[[], dict],
                  *, configured: Callable[[], bool] = lambda: False,
@@ -57,6 +84,12 @@ class DailyJob:
             columns = {row[1] for row in self.db.execute("PRAGMA table_info(runs)")}
             if "publication_outcome" not in columns:
                 self.db.execute("ALTER TABLE runs ADD COLUMN publication_outcome TEXT")
+            # Old receipts stay NULL: historic failure causes cannot be
+            # reconstructed after the fact.
+            if "failure_stage" not in columns:
+                self.db.execute("ALTER TABLE runs ADD COLUMN failure_stage TEXT")
+            if "failure_code" not in columns:
+                self.db.execute("ALTER TABLE runs ADD COLUMN failure_code TEXT")
             self.db.execute("UPDATE runs SET status='unconfirmed',completed=? "
                             "WHERE status IN ('queued','running')", (clock(),))
             self.db.commit()
@@ -130,11 +163,23 @@ class DailyJob:
             row = self.db.execute(
                 "SELECT run_id,request_id,trigger,status,created,completed,date_jst,"
                 "capture_sha256,digest_sha256,original_event_count,rendered_entity_count,"
-                "publication_outcome FROM runs WHERE run_id=?", (run_id,)).fetchone()
-            return dict(zip(("run_id","request_id","trigger","status","created","completed",
-                             "date_jst","capture_sha256","digest_sha256",
-                             "original_event_count","rendered_entity_count",
-                             "publication_outcome"), row)) if row else None
+                "publication_outcome,failure_stage,failure_code FROM runs WHERE run_id=?",
+                (run_id,)).fetchone()
+            if row is None:
+                return None
+            result = dict(zip((
+                "run_id","request_id","trigger","status","created","completed",
+                "date_jst","capture_sha256","digest_sha256",
+                "original_event_count","rendered_entity_count",
+                "publication_outcome","failure_stage","failure_code",
+            ), row))
+            # Even tampered SQLite text must never become an arbitrary
+            # externally observable diagnostic.
+            pair = (result["failure_stage"], result["failure_code"])
+            if (pair not in _FAILURE_PAIRS or result["status"]
+                    not in ("failed", "publish_failed")):
+                result["failure_stage"] = result["failure_code"] = None
+            return result
 
     def status(self) -> dict:
         with self._lock:
@@ -219,29 +264,65 @@ class DailyJob:
         with self._lock:
             with self.db:
                 self.db.execute("UPDATE runs SET status='running' WHERE run_id=?", (run_id,))
-        publication = None
+        data, publication = {}, None
+        result, failure_stage, failure_code = "failed", None, None
         try:
-            data = self._validate_result(self.runner())
-            result = "preview_ready"
-            if self.publisher is not None:
-                try:
-                    publication = self._validate_publication(self.publisher(data), data)
-                    result = "published"
-                except Exception:
-                    # The local, validated Preview is still useful; do not
-                    # erase its evidence when a remote CAS write fails.
-                    result, publication = "publish_failed", None
+            raw = self.runner()
+        except DailyStageFailure as exc:
+            # A malicious/faulty caller may mutate this exception or override
+            # its attribute accessors. Read each attribute at most once, and
+            # persist ONLY those local immutable, allowlisted string values.
+            try:
+                stage, code = exc.stage, exc.code
+            except Exception:
+                stage, code = None, None
+            if (type(stage) is str and type(code) is str
+                    and (stage, code) in _FAILURE_PAIRS):
+                failure_stage, failure_code = stage, code
+            else:
+                failure_stage, failure_code = "runner", "unexpected_exception"
         except Exception:
-            data, result = {}, "failed"
+            failure_stage, failure_code = "runner", "unexpected_exception"
+        else:
+            try:
+                data = self._validate_result(raw)
+            except Exception:
+                data = {}
+                failure_stage, failure_code = (
+                    "preview_validation", "invalid_preview_receipt",
+                )
+            else:
+                result = "preview_ready"
+                if self.publisher is not None:
+                    try:
+                        output = self.publisher(data)
+                    except Exception:
+                        # A remote write might have happened before the
+                        # exception. Do not interpret this as "no effect".
+                        result = "publish_failed"
+                        failure_stage, failure_code = (
+                            "publication", "outcome_unconfirmed",
+                        )
+                    else:
+                        try:
+                            publication = self._validate_publication(output, data)
+                        except Exception:
+                            result = "publish_failed"
+                            failure_stage, failure_code = (
+                                "publication", "invalid_publication_receipt",
+                            )
+                        else:
+                            result = "published"
         with self._lock:
             with self.db:
                 self.db.execute(
                     "UPDATE runs SET status=?,completed=?,date_jst=?,capture_sha256=?,"
                     "digest_sha256=?,original_event_count=?,rendered_entity_count=?,"
-                    "publication_outcome=? WHERE run_id=?",
+                    "publication_outcome=?,failure_stage=?,failure_code=? WHERE run_id=?",
                     (result,self.clock(),data.get("date_jst"),data.get("capture_sha256"),
                      data.get("digest_sha256"),data.get("original_event_count"),
-                     data.get("rendered_entity_count"),publication,run_id))
+                     data.get("rendered_entity_count"),publication,
+                     failure_stage,failure_code,run_id))
 
     def tick(self) -> bool:
         """The parent Snapshot app invokes this from its one scheduler thread."""

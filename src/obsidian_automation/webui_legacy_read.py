@@ -11,6 +11,7 @@ import math
 import re
 
 from .webui_control_read import SCHEMA_VERSION, compose_read_catalog
+from .github_daily_job import _FAILURE_PAIRS as _DAILY_FAILURE_PAIRS
 
 _HEX32 = re.compile(r"[0-9a-f]{32}\Z")
 _HEX40 = re.compile(r"[0-9a-f]{40}\Z")
@@ -22,6 +23,9 @@ _DAILY_RUN = frozenset(("run_id", "request_id", "trigger", "status",
                         "created", "completed", "date_jst", "capture_sha256",
                         "digest_sha256", "original_event_count",
                         "rendered_entity_count", "publication_outcome"))
+_DAILY_RUN_WITH_DIAGNOSTICS = _DAILY_RUN | frozenset(
+    ("failure_stage", "failure_code")
+)
 _SNAPSHOT_STATUSES = frozenset(("queued", "running", "saved", "no_changes",
                                 "failed", "unconfirmed"))
 _DAILY_STATUSES = frozenset(("queued", "running", "preview_ready", "published",
@@ -95,8 +99,14 @@ def _run(raw: object, identifier: str, observed_at: float) -> tuple[dict, dict |
     neutral = {"state": "unknown", "requestId": None, "startedAt": None}
     if raw is None:
         return neutral, None, None
-    keys = _SNAPSHOT_RUN if identifier == "b2" else _DAILY_RUN
-    if not _plain(raw, keys):
+    # Retain the old exact schema for legacy synthetic/installed B4 jobs,
+    # while accepting the new two *optional* static diagnostic fields.
+    if identifier == "b2":
+        valid_shape = _plain(raw, _SNAPSHOT_RUN)
+    else:
+        valid_shape = (_plain(raw, _DAILY_RUN)
+                       or _plain(raw, _DAILY_RUN_WITH_DIAGNOSTICS))
+    if not valid_shape:
         raise ValueError("invalid_legacy_run")
     run_id, request_id, trigger = raw["run_id"], raw["request_id"], raw["trigger"]
     status, created, completed = raw["status"], raw["created"], raw["completed"]
@@ -116,6 +126,14 @@ def _run(raw: object, identifier: str, observed_at: float) -> tuple[dict, dict |
                 or not _valid_opaque(raw["remote_ref"], _HEX40)):
             raise ValueError("invalid_snapshot_metadata")
     else:
+        if _plain(raw, _DAILY_RUN_WITH_DIAGNOSTICS):
+            stage, code = raw["failure_stage"], raw["failure_code"]
+            if not ((stage is None and code is None)
+                    or (type(stage) is str and type(code) is str
+                        and (stage, code) in _DAILY_FAILURE_PAIRS
+                        and status in ("failed", "publish_failed"))):
+                # No promotion of invalid or unsupported diagnostic codes.
+                raise ValueError("invalid_daily_diagnostics")
         if (not _valid_opaque(raw["date_jst"], _DATE)
                 or not _valid_opaque(raw["capture_sha256"], _HEX64)
                 or not _valid_opaque(raw["digest_sha256"], _HEX64)
