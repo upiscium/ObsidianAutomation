@@ -1,6 +1,7 @@
 """#303 gate A: account enrollment and the trusted picker context (synthetic)."""
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import stat
 
@@ -16,10 +17,11 @@ from test_303_v1d_vault_root_activation import NC, RESTRICTED, activate
 
 class EnrollServer:
     def __init__(self, *, principal="synthetic_user", fileid=1, instance=INSTANCE,
-                 mount="", collection=True, status=207, redirected=False):
+                 mount="", collection=True, status=207, redirected=False, mutate=None):
         self.principal, self.fileid, self.instance = principal, fileid, instance
         self.mount, self.collection = mount, collection
         self.status, self.redirected = status, redirected
+        self.mutate = mutate
         self.calls = []
 
     def propfind(self, origin, href, depth, body, *, timeout, max_bytes):
@@ -37,6 +39,8 @@ class EnrollServer:
                f'<nc:mount-type>{self.mount}</nc:mount-type>'
                '</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>'
                '</d:multistatus>')
+        if self.mutate:
+            xml = self.mutate(xml)
         return v.DavResponse(self.status, "application/xml; charset=utf-8", "",
                              self.redirected, xml.encode())
 
@@ -50,16 +54,16 @@ def store(tmp_path):
 
 def test_enrollment_refused_without_io_while_register_unproven(store):
     server = EnrollServer()
-    assert en.enroll_account(store, server) == ("provider_unproven", None)
-    assert en.enroll_account(store, server, proof=v.CURRENT_PROVIDER_PROOF)[0] == \
-        "provider_unproven"
+    assert en.enroll_account(store, lambda saved: server) == ("provider_unproven", None)
+    assert en.enroll_account(store, lambda saved: server,
+                             proof=replace(RESTRICTED, A="UNKNOWN"))[0] == "provider_unproven"
     assert server.calls == []
     assert not (store.state / en.ENROLLMENT_FILE).exists()
 
 
 def test_enrollment_records_instance_root_and_user(store):
     server = EnrollServer()
-    status, record = en.enroll_account(store, server, proof=RESTRICTED,
+    status, record = en.enroll_account(store, lambda saved: server, proof=RESTRICTED,
                                        clock=lambda: 1_700_000_000)
     assert status == "enrolled"
     assert record.instance_id == INSTANCE and record.root_resource_id == oc_id(1)
@@ -74,13 +78,25 @@ def test_enrollment_records_instance_root_and_user(store):
 @pytest.mark.parametrize("server,reason", [
     (EnrollServer(principal="someone_else"), "account_mismatch"),
     (EnrollServer(instance="BAD!"), "identity_unverified"),
+    (EnrollServer(instance="UPPERCASE1"), "identity_unverified"),   # _INSTANCE regex
+    (EnrollServer(mutate=lambda x: x.replace("<oc:fileid>1<", "<oc:fileid>2<")),
+     "identity_unverified"),
+    (EnrollServer(mutate=lambda x: x.replace(
+        "<d:current-user-principal><d:href>/remote.php/dav/principals/users/synthetic_user/"
+        "</d:href></d:current-user-principal>", "")), "account_unverified"),
+    (EnrollServer(mutate=lambda x: x.replace("</d:multistatus>", x[x.index("<d:response>"):
+                                             x.index("</d:multistatus>")] + "</d:multistatus>")),
+     "account_unverified"),
+    (EnrollServer(mutate=lambda x: x.replace(f"<d:href>{PREFIX}</d:href>",
+                                             "<d:href>/remote.php/dav/files/other/</d:href>")),
+     "account_unverified"),
     (EnrollServer(mount="shared"), "account_unverified"),
     (EnrollServer(collection=False), "account_unverified"),
     (EnrollServer(status=401), "provider_unavailable"),
     (EnrollServer(redirected=True), "provider_unavailable"),
 ])
 def test_enrollment_fails_closed(store, server, reason):
-    assert en.enroll_account(store, server, proof=RESTRICTED) == (reason, None)
+    assert en.enroll_account(store, lambda saved: server, proof=RESTRICTED) == (reason, None)
     assert not (store.state / en.ENROLLMENT_FILE).exists()
 
 
@@ -88,12 +104,12 @@ def test_transport_error_is_unavailable(store):
     class Broken:
         def propfind(self, *a, **k):
             raise v.DavTransportError("timeout")
-    assert en.enroll_account(store, Broken(), proof=RESTRICTED)[0] == "provider_unavailable"
+    assert en.enroll_account(store, lambda saved: Broken(), proof=RESTRICTED)[0] == "provider_unavailable"
 
 
 @pytest.mark.parametrize("change", ["user", "url", "mode", "garbage"])
 def test_record_is_only_valid_for_its_source(store, change):
-    assert en.enroll_account(store, EnrollServer(), proof=RESTRICTED)[0] == "enrolled"
+    assert en.enroll_account(store, lambda saved: EnrollServer(), proof=RESTRICTED)[0] == "enrolled"
     path = store.state / en.ENROLLMENT_FILE
     if change == "user":
         assert store.save_nextcloud({**NC, "nextcloud_user": "other"}, probed=True)
@@ -109,7 +125,7 @@ def test_record_is_only_valid_for_its_source(store, change):
 
 
 def test_credential_only_change_keeps_enrollment(store):
-    assert en.enroll_account(store, EnrollServer(), proof=RESTRICTED)[0] == "enrolled"
+    assert en.enroll_account(store, lambda saved: EnrollServer(), proof=RESTRICTED)[0] == "enrolled"
     assert store.save_nextcloud({**NC, "nextcloud_password": "rotated"}, probed=True)
     assert en.load_enrollment(store) is not None
 
@@ -125,7 +141,7 @@ def test_context_needs_enrollment(store):
 
 
 def test_context_reads_active_root_and_binds_account(store):
-    assert en.enroll_account(store, EnrollServer(), proof=RESTRICTED)[0] == "enrolled"
+    assert en.enroll_account(store, lambda saved: EnrollServer(), proof=RESTRICTED)[0] == "enrolled"
     nc = FakeNextcloud()
     ctx = provider(store, nc)()
     assert ctx.account == v.TrustedDavAccount(ORIGIN, PREFIX, INSTANCE)
@@ -138,7 +154,7 @@ def test_context_reads_active_root_and_binds_account(store):
 
 
 def test_context_uses_pin_when_pinned(store):
-    assert en.enroll_account(store, EnrollServer(), proof=RESTRICTED)[0] == "enrolled"
+    assert en.enroll_account(store, lambda saved: EnrollServer(), proof=RESTRICTED)[0] == "enrolled"
     assert activate(store, FakeNextcloud()).status == "activated"
     nc = FakeNextcloud()
     ctx = provider(store, nc)()
@@ -147,12 +163,12 @@ def test_context_uses_pin_when_pinned(store):
 
 
 def test_context_unavailable_when_active_root_unreadable(store):
-    assert en.enroll_account(store, EnrollServer(), proof=RESTRICTED)[0] == "enrolled"
+    assert en.enroll_account(store, lambda saved: EnrollServer(), proof=RESTRICTED)[0] == "enrolled"
     assert provider(store, FakeNextcloud(), proof=v.CURRENT_PROVIDER_PROOF)() is None
 
 
 def test_picker_end_to_end_with_enrolled_context(store):
-    assert en.enroll_account(store, EnrollServer(), proof=RESTRICTED)[0] == "enrolled"
+    assert en.enroll_account(store, lambda saved: EnrollServer(), proof=RESTRICTED)[0] == "enrolled"
     nc = FakeNextcloud()
     svc = VaultRootSelectionService(context=provider(store, nc), transport=nc,
                                     proof=RESTRICTED, restricted_coherence=True)
@@ -160,3 +176,70 @@ def test_picker_end_to_end_with_enrolled_context(store):
     vault = next(c for c in listing["candidates"] if c["label"] == "Vault")
     assert svc.preview({"candidate": vault["handle"]})[1]["status"] == "candidate_valid"
     assert json.dumps(listing).count(INSTANCE) == 0
+
+
+def test_login_name_must_equal_user_id(tmp_path):
+    s = SetupStore(tmp_path, obscure=lambda _: "encoded")
+    assert s.save_nextcloud({**NC, "nextcloud_user": "login.alias"}, probed=True)
+    assert en.enroll_account(s, lambda saved: EnrollServer(), proof=RESTRICTED) == \
+        ("account_mismatch", None)
+
+
+def test_transport_is_built_from_saved_credentials(store):
+    seen = []
+    assert en.enroll_account(store, lambda saved: seen.append(saved) or EnrollServer(),
+                             proof=RESTRICTED)[0] == "enrolled"
+    assert seen == [store.load_nextcloud()]
+
+
+def test_reenrollment_refuses_a_different_instance(store):
+    assert en.enroll_account(store, lambda saved: EnrollServer(), proof=RESTRICTED)[0] == "enrolled"
+    before = (store.state / en.ENROLLMENT_FILE).read_bytes()
+    assert en.enroll_account(store, lambda saved: EnrollServer(instance="ocother99"),
+                             proof=RESTRICTED) == ("instance_changed", None)
+    assert en.enroll_account(store, lambda saved: EnrollServer(fileid=2),
+                             proof=RESTRICTED) == ("instance_changed", None)
+    assert (store.state / en.ENROLLMENT_FILE).read_bytes() == before
+    assert en.enroll_account(store, lambda saved: EnrollServer(), proof=RESTRICTED)[0] == "enrolled"
+
+
+def test_symlinked_record_is_rejected(store, tmp_path):
+    assert en.enroll_account(store, lambda saved: EnrollServer(), proof=RESTRICTED)[0] == "enrolled"
+    path = store.state / en.ENROLLMENT_FILE
+    target = tmp_path / "elsewhere.json"
+    target.write_bytes(path.read_bytes())
+    target.chmod(0o600)
+    path.unlink()
+    path.symlink_to(target)
+    assert en.load_enrollment(store) is None
+
+
+def test_pin_from_another_source_is_not_trusted(store):
+    assert en.enroll_account(store, lambda saved: EnrollServer(), proof=RESTRICTED)[0] == "enrolled"
+    assert activate(store, FakeNextcloud()).status == "activated"
+    from obsidian_automation import vault_root_activation as act
+    binding = store.state / act.BINDING_FILE
+    data = json.loads(binding.read_text())
+    data["source_sha256"] = "0" * 64
+    binding.write_text(json.dumps(data))
+    nc = FakeNextcloud()
+    ctx = provider(store, nc)()
+    assert nc.calls == [(PREFIX + "Vault/Notes/", "0")]      # re-read, pin ignored
+    assert ctx.active_resource_id == oc_id(11)
+
+
+def test_non_bool_busy_counts_as_busy(store):
+    assert en.enroll_account(store, lambda saved: EnrollServer(), proof=RESTRICTED)[0] == "enrolled"
+    ctx = en.context_provider(store, lambda saved: FakeNextcloud(), jobs_busy=lambda: None,
+                              proof=RESTRICTED)()
+    assert ctx.jobs_in_flight is True
+
+
+def test_connection_saved_during_build_yields_no_context(store):
+    assert en.enroll_account(store, lambda saved: EnrollServer(), proof=RESTRICTED)[0] == "enrolled"
+
+    def factory(saved):
+        assert store.save_nextcloud({**NC, "nextcloud_password": "rotated"}, probed=True)
+        return FakeNextcloud()
+    assert en.context_provider(store, factory, jobs_busy=lambda: False,
+                               proof=RESTRICTED)() is None

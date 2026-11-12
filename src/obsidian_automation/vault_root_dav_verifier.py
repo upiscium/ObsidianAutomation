@@ -86,8 +86,10 @@ class ProviderProof:
         )
 
 
-# Disposable Nextcloud 35.0.2 observations P3-D1..D5 (2026-11-12). One finite
-# instance is never promoted to VERIFIED.
+# Disposable Nextcloud 35.0.2 observations P3-D1..D5 (2026-11-12). A gate is
+# promoted only under the owner criterion in
+# docs/oa303-a-account-binding-and-verified-criterion.md (scoped evidence,
+# independent review, explicit owner acceptance of that gate).
 CURRENT_PROVIDER_PROOF = ProviderProof(
     A="UNKNOWN", I="OBSERVED_WITH_LIMITS", X="OBSERVED_WITH_LIMITS",
     L="OBSERVED_WITH_LIMITS", C="UNKNOWN", R="OBSERVED_WITH_LIMITS",

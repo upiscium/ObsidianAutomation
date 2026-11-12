@@ -27,16 +27,19 @@ Outside the declared scope the gate stays unverified.
 - The user ID matches `[A-Za-z0-9_.-]+` and equals the login name.
 - HTTPS with a certificate that the system trust store accepts.
 
-### Readiness per gate (for owner acceptance; not promoted)
+### Readiness per gate (not promoted)
 
-| Gate | Evidence in scope | Ready to accept? |
+"Evidence ready" means step 1 only. Steps 2 (independent receipt review)
+and 3 (owner acceptance) are still pending for every gate.
+
+| Gate | Evidence in scope | Status |
 | --- | --- | --- |
-| A | P3-A not yet run | **No.** Needs P3-A |
-| I | P3-D1: `oc:id` stable across move, rename and restart; format matches `instanceid` | Yes |
-| X | P3-D2: received share = `mount-type shared` + owner's `oc:id`; local items empty | Yes, within V1-S1 exclusions |
-| L | P3-D3: index-complete; out-of-band files absent until scanned (option A) | Yes, as index completeness |
-| C | — | No. Stays UNKNOWN under the restricted contract |
-| R | P3-D5: old password 401 immediately; synthetic tests for the local revision | Yes |
+| A | P3-A not yet run | Evidence missing (P3-A) |
+| I | P3-D1: `oc:id` stable across move, rename and restart; format matches `instanceid` | Evidence ready; review + acceptance pending |
+| X | P3-D2: received share = `mount-type shared` + owner's `oc:id`; local items empty | Evidence ready within V1-S1; review + acceptance pending |
+| L | P3-D3: index-complete; out-of-band files absent until scanned (option A) | Evidence ready (index completeness); review + acceptance pending |
+| C | — | Not applicable; stays UNKNOWN under the restricted contract |
+| R | P3-D5: old password 401 immediately; synthetic tests for the local revision | Evidence ready; review + acceptance pending |
 
 ## 2. Gate A — what must hold
 
@@ -49,7 +52,10 @@ Outside the declared scope the gate stays unverified.
 
 `enroll_account()` makes one Depth:0 `PROPFIND` of the account root. It
 refuses with no I/O while the register does not admit provider reads. It
-fails closed when:
+uses a transport built from the saved credentials. The saved login must
+equal the principal's user ID (V1-S1). Re-enrolling the same URL + user is
+refused with `instance_changed` when the instance or account root differs
+from the existing record. It fails closed when:
 - the response is not a collection, or carries a mount type;
 - the `oc:id` format or the instance ID is invalid;
 - the principal is a different user;
@@ -60,11 +66,12 @@ fails closed when:
 V1/C picker and V1/D from:
 - the saved connection;
 - the enrollment record;
-- the active root's identity: the pin leaf if pinned, otherwise one Depth:0
-  read;
-- the local revision.
+- the active root's identity: the pin leaf only if the pin is finalized and
+  belongs to the same instance and source, otherwise one Depth:0 read;
+- the local revision, read before and after any I/O.
 
-It returns `None` (`binding_unavailable`) when any of these is missing.
+It returns `None` (`binding_unavailable`) when any of these is missing or
+the saved connection changed while the context was being built.
 
 **Not wired.** No route triggers enrollment, and `main()` still constructs
 neither the picker nor activation. Both remain default OFF.

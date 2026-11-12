@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 import re
 import stat
@@ -25,7 +26,7 @@ from urllib.parse import unquote, urlsplit
 from xml.etree import ElementTree as ET
 
 from .snapshot_setup import SetupStore, _atomic
-from .vault_root_activation import _origin, _source_digest, current_pin
+from .vault_root_activation import _origin, _pin, _read_binding, _source_digest
 from .vault_root_dav_fixture import DAV, OC, _ACCOUNT, _Blocked, _canonical_href, _parse_xml
 from .vault_root_dav_verifier import (
     CURRENT_PROVIDER_PROOF, NC, PER_CALL_TIMEOUT_S, DavResponse, DavTransport,
@@ -99,7 +100,7 @@ def _parse_enrollment(body: bytes, prefix: str) -> tuple[str, str, str]:
 
 def enroll_account(
     store: SetupStore,
-    transport: DavTransport,
+    transport_factory: Callable[[dict], DavTransport],
     *,
     proof: ProviderProof = CURRENT_PROVIDER_PROOF,
     clock: Callable[[], float] = time.time,
@@ -115,7 +116,9 @@ def enroll_account(
     if _ACCOUNT.fullmatch(prefix) is None:
         return "account_unverified", None
     try:
-        response = transport.propfind(origin, prefix, "0", ENROLL_BODY,
+        # The transport carries the SAVED credentials, so the principal check
+        # below binds the login actually used to the URL's user segment.
+        response = transport_factory(saved).propfind(origin, prefix, "0", ENROLL_BODY,
                                       timeout=PER_CALL_TIMEOUT_S, max_bytes=MAX_PAGE_BYTES)
     except DavTransportError:
         return "provider_unavailable", None
@@ -127,7 +130,15 @@ def enroll_account(
         instance, root_id, user = _parse_enrollment(response.body, prefix)
     except _Blocked as err:
         return err.code, None
+    if user != saved["nextcloud_user"]:
+        return "account_mismatch", None  # V1-S1: login name must equal user ID
     record = AccountEnrollment(instance, root_id, user, _source_digest(saved))
+    existing = load_enrollment(store)
+    if existing is not None and (existing.instance_id, existing.root_resource_id) != (
+            instance, root_id):
+        # Same URL + user now answers as another instance or account root
+        # (restore, migration, DNS). Never accept that silently.
+        return "instance_changed", None
     try:
         _atomic(store.state / ENROLLMENT_FILE, json.dumps({
             "version": 1, "instance_id": instance, "root_resource_id": root_id,
@@ -143,11 +154,16 @@ def load_enrollment(store: SetupStore) -> AccountEnrollment | None:
     """The record, only if it was made under the currently saved URL + user."""
     path = store.state / ENROLLMENT_FILE
     try:
-        meta = path.lstat()
-        if not stat.S_ISREG(meta.st_mode) or stat.S_IMODE(meta.st_mode) != 0o600:
-            return None
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            meta = os.fstat(fd)
+            if not stat.S_ISREG(meta.st_mode) or stat.S_IMODE(meta.st_mode) != 0o600:
+                return None
+            with os.fdopen(fd, "rb", closefd=False) as stream:
+                data = json.loads(stream.read(65536).decode("utf-8"))
+        finally:
+            os.close(fd)
+    except (OSError, ValueError, UnicodeError):
         return None
     saved = store.load_nextcloud()
     if (type(data) is not dict or data.get("version") != 1 or saved is None
@@ -176,21 +192,28 @@ def context_provider(
     enrolled for the saved URL + user and the active root's identity is known.
     """
     def build() -> TrustedRootContext | None:
+        # Read the revision first and again after any I/O: every field must
+        # come from one saved connection, never a mix across a concurrent save.
+        revision = store.nextcloud_revision()
         saved = store.load_nextcloud()
         enrollment = load_enrollment(store)
-        revision = store.nextcloud_revision()
         if saved is None or enrollment is None or revision is None:
             return None
         account = TrustedDavAccount(_origin(saved["webdav_url"]),
                                     urlsplit(saved["webdav_url"]).path,
                                     enrollment.instance_id)
-        pin = current_pin(store.state)
-        if pin is not None and pin.chain and pin.path == saved["vault_folder"]:
+        data = _read_binding(store.state)
+        pin = _pin(data.get("current")) if data else None
+        if (pin is not None and pin.chain and pin.path == saved["vault_folder"]
+                and pin.instance_id == enrollment.instance_id
+                and pin.chain[-1].endswith(enrollment.instance_id)
+                and data.get("outcome") in ("activated", "rolled_back")
+                and data.get("source_sha256") == _source_digest(saved)):
             active_id = pin.chain[-1]
         else:
             active_id = read_root_identity(account, transport_factory(saved),
                                            saved["vault_folder"], proof=proof)
-        if active_id is None:
+        if active_id is None or store.nextcloud_revision() != revision:
             return None
         busy = jobs_busy()
         return TrustedRootContext(
