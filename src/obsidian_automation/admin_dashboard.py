@@ -60,6 +60,7 @@ HTML = """<!doctype html>
   <script defer src="/static/workflow-control/model.js"></script>
   <script defer src="/static/status-manager.js"></script>
   <script defer src="/static/setup-readiness.js"></script>
+  <script defer src="/static/vault-root.js"></script>
 </head>
 <body>
   <main class="frame">
@@ -1356,6 +1357,8 @@ class _CapabilitiesSingleFlight:
 
 # Exact request targets and resource names only. No URL decoding, directory
 # traversal, generic static handler, demo entrypoint, or runtime initialization.
+VAULT_ROOT_POST_PATHS = ("/api/v1/vault-root/candidates", "/api/v1/vault-root/previews")
+
 WORKFLOW_UI_ASSETS = {
     "/workflow-control": ("live.html", "text/html; charset=utf-8"),
     "/static/workflow-control/model.js": ("model.js", "text/javascript; charset=utf-8"),
@@ -1363,6 +1366,7 @@ WORKFLOW_UI_ASSETS = {
     "/static/workflow-control/styles.css": ("styles.css", "text/css; charset=utf-8"),
     "/static/status-manager.js": ("status_manager.js", "text/javascript; charset=utf-8"),
     "/static/setup-readiness.js": ("setup_readiness.js", "text/javascript; charset=utf-8"),
+    "/static/vault-root.js": ("vault_root.js", "text/javascript; charset=utf-8"),
     "/static/status-manager.css": ("status_manager.css", "text/css; charset=utf-8"),
 }
 
@@ -1564,6 +1568,16 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._reply(200, body, "application/json; charset=utf-8")
             return
+        if self.path == "/api/v1/vault-root":
+            # #303 V1/C is OFF unless a service was constructed explicitly;
+            # the disabled route is indistinguishable from an unknown path.
+            service = getattr(self.server, "vault_root_selection", None)
+            if service is None:
+                self._reply(404, b"Not found")
+            else:
+                self._reply(200, json.dumps(service.status()).encode(),
+                            "application/json; charset=utf-8")
+            return
         if self.path == "/api/v1/nextcloud/connections":
             store = self.server.snapshot_setup
             self._reply(200 if store else 503, json.dumps(
@@ -1685,6 +1699,30 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.do_GET()
 
+    def _vault_root_post(self, service) -> None:
+        """Read-only #303 V1/C candidate listing and preview; never saves."""
+        if not self._write_origin_allowed():
+            self._reply(403, b'{"error":"origin_rejected"}', "application/json")
+            return
+        tokens = self.headers.get_all("X-Obsidian-CSRF", [])
+        if len(tokens) != 1 or not self.server.preview_csrf.consume(tokens[0]):
+            self._reply(403, b'{"error":"csrf_rejected"}', "application/json")
+            return
+        try:
+            payload = json.loads(self._read_bounded_json())
+        except (PreviewRequestRejected, ValueError, UnicodeError):
+            self._reply(400, b'{"error":"invalid_request"}', "application/json")
+            return
+        try:
+            code, body = (service.candidates(payload)
+                          if self.path == "/api/v1/vault-root/candidates"
+                          else service.preview(payload))
+        except Exception:
+            self._reply(503, b'{"error":"vault_root_unavailable"}', "application/json")
+            return
+        self._reply(code, json.dumps(body, ensure_ascii=False).encode("utf-8"),
+                    "application/json; charset=utf-8")
+
     def _write_origin_allowed(self) -> bool:
         """Mutating HTTP verb policy is stricter than read-only GET."""
         if not self._origin_allowed():
@@ -1738,6 +1776,10 @@ class Handler(BaseHTTPRequestHandler):
         return b"".join(chunks)
 
     def do_POST(self) -> None:
+        vault_root = getattr(self.server, "vault_root_selection", None)
+        if vault_root is not None and self.path in VAULT_ROOT_POST_PATHS:
+            self._vault_root_post(vault_root)
+            return
         if self.path not in (
             "/api/v1/operation-previews", "/api/v1/operations",
             "/api/v1/snapshot/settings", "/api/v1/snapshot/runs",
@@ -2164,6 +2206,7 @@ def make_server(
     daily_setup: DailySetup | None = None,
     formatter_job: FormatterJob | None = None,
     b3_observer_job: B3ObserverJob | None = None,
+    vault_root_selection=None,
 ) -> ThreadingHTTPServer:
     # Reject ambiguous injection and invalid ports BEFORE opening a listener.
     # Empty explicitly supplied maps count as supplied; None retains defaults.
@@ -2199,6 +2242,8 @@ def make_server(
     server.daily_setup = daily_setup
     server.formatter_job = formatter_job
     server.b3_observer_job = b3_observer_job
+    # #303 V1/C read-only picker: default OFF (None) and not enabled by main().
+    server.vault_root_selection = vault_root_selection
     server.daemon_threads = True
     return server
 
