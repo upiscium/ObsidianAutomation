@@ -49,18 +49,18 @@ counts and hashes only, not property values.
 | Propagated directory ETag | **FEASIBLE_WITH_MORE_EVIDENCE** as a *change signal only* | Misses A→B→A changes and edits made after the last read; it can never prove C |
 | `oc:id` = padded `oc:fileid` + instance ID | **FEASIBLE_WITH_MORE_EVIDENCE** (for I) | Stability across restart and move not measured (P3-D1) |
 | `nc:mount-type` / `nc:is-mount-root` | **FEASIBLE_WITH_MORE_EVIDENCE** (for X) | Not observed with shares or mounts (P3-D2); backend symlinks are not covered |
-| Depth:1 completeness | **UNKNOWN** (for L) | Behaviour for children hidden by ACLs not measured (P3-D3) |
+| Depth:1 completeness | **NOT_SUPPORTED** for storage; **FEASIBLE_WITH_MORE_EVIDENCE** for Nextcloud's index (L) | P3-D3: unscanned on-disk children are silently absent |
 
-## Gate register (nothing promoted)
+## Gate register (nothing VERIFIED; mirrored in `CURRENT_PROVIDER_PROOF`)
 
 | Gate | State |
 | --- | --- |
 | A | UNKNOWN |
 | I | **OBSERVED_WITH_LIMITS** (P3-D1) |
 | X | **OBSERVED_WITH_LIMITS** for user shares only (P3-D2); group folders, external storage and symlinks UNKNOWN |
-| L | UNKNOWN |
+| L | **OBSERVED_WITH_LIMITS** for Nextcloud's index (P3-D3); **FAILED** for storage completeness |
 | C | UNKNOWN; expected NOT_SUPPORTED |
-| R | UNKNOWN (synthetic PASS for our own code only) |
+| R | **OBSERVED_WITH_LIMITS** (P3-D5; plus synthetic tests for our own revision) |
 
 ## Decision
 
@@ -102,8 +102,8 @@ The options were:
    or after it. New collisions or aliases created inside the root later.
    The UI must say this.
 
-Even under (b), A/I/X/L/R must be VERIFIED. While the register is all
-UNKNOWN, (b) still makes zero provider calls. The code never writes
+Even under (b), A/I/X/L/R must be VERIFIED. While no gate is VERIFIED,
+(b) still makes zero provider calls. The code never writes
 `C=VERIFIED` and never sets a coherence flag in restricted mode.
 
 ## P3 experiments
@@ -172,3 +172,59 @@ existing disposable stack only, with the in-container PHP client.
 - the viewer user and its skeleton files
 - the read share
 - the container `/tmp/oa303_viewer_pass`
+
+## P3-D3 / P3-D5 results (disposable Nextcloud 35.0.2, 2026-11-12)
+
+The owner approved this run ("D3とD5を進めてほしい").
+- Same stack and boundaries as above. The D2 viewer user and share were reused.
+- The PROPFIND-only client is SHA-256 `30db07a9…31bd95`.
+- Receipts: `p3-20261112/d3.jsonl` and `d5.jsonl`, owner-private.
+- The admin secret was not touched.
+
+**P3-D3 (L).**
+- Writes: as www-data, wrote `disk-only.md`, `ALPHA.md` and `disk-only-dir/`
+  directly into the data dir under `10-Project`.
+- Requests: 4 PROPFIND (all 207) around one path-limited `occ files:scan`.
+- **Before the scan,** both the admin and viewer listings showed only the 2
+  seeded files.
+  - The 3 entries that existed on disk were silently absent. The self row,
+    the IDs and the ETag gave no sign of this.
+  - The cause is that `filesystem_check_changes` is unset (never).
+- **After the scan,** all 5 appeared.
+  - `alpha.md` and `ALPHA.md` coexist in one folder with different `oc:id`s.
+  - V1/A blocks that level with `casefold_collision`, but only once both
+    names are in the index.
+
+**P3-D5 (R).** Viewer account only.
+- Requests: 1 PROPFIND (207), then `occ user:resetpassword` (rc 0), then 2
+  more PROPFIND.
+- The old password got **401** immediately, and no listing was recorded.
+- The new password got 207. All 11 rows had the same paths and `oc:id`.
+- Not tested: app passwords/tokens, session cookies, or a rotation during
+  one verifier walk under load.
+
+**Left in place** (no cleanup, by owner decision):
+- the 3 scanned entries
+- the viewer user and share
+- `/tmp/oa303_viewer_pass` and `/tmp/oa303_viewer_pass.old` in the container
+
+## Decision on L scope (owner, 2026-11-12, option A)
+
+L means **complete with respect to Nextcloud's index (the authorized
+view)**, not the server's storage.
+
+**Assumption.** The Vault is written only through Nextcloud clients
+(desktop/mobile/WebDAV). Those writes update the index.
+
+**Not guaranteed:**
+- files placed directly on the server's disk;
+- external storage that has not been rescanned;
+- case twins that are not yet indexed.
+
+The UI caveat says so.
+
+**Option (b) rejected.** The alternative was to keep L as storage
+completeness and leave V1/D blocked forever.
+
+This decision changes what L must prove. It does not mark L VERIFIED.
+Activation still needs A/I/X/L/R VERIFIED.

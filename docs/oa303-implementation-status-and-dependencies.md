@@ -16,7 +16,7 @@ Legend: **merged** = on main · **PR #578** = Draft, unmerged ·
 | V1/B0 parser | `vault_root_dav_fixture` | merged #563 | no | synthetic only |
 | V1/B0 assembler | `vault_root_dav_adapter` | merged #563 | no | synthetic only |
 | V1/B1 oracle/plans | `vault_root_proof_oracle`, docs, catalogs | merged #566/#568/#570 | no | finite synthetic oracle |
-| Disposable provider | Adam rootless Nextcloud 35.0.2 | running (owner host) | — | P1-B/F1/P2 receipts, digests pinned |
+| Disposable provider | Adam rootless Nextcloud 35.0.2 | running (owner host) | — | P1-B/F1/P2 receipts (digests pinned); P3-D1..D5 receipts (see ADR) |
 | V1/B2 verifier | `vault_root_dav_verifier` | **PR #578** | no | mock-transport tests |
 | V1/B2 transport | `vault_root_dav_transport.HttpsDavTransport` | **PR #578** | no | fake-connection tests, no sockets |
 | Nextcloud-only revision | `SetupStore.nextcloud_revision` | **PR #578** | no | tests |

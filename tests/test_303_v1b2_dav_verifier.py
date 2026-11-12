@@ -112,8 +112,11 @@ def test_unproven_provider_makes_zero_transport_calls(proof):  # P3-S8
     assert nc.calls == []
 
 
-def test_production_default_is_all_unknown():
+def test_production_register_has_no_verified_gate():
+    from dataclasses import astuple
+    assert "VERIFIED" not in astuple(v.CURRENT_PROVIDER_PROOF)
     assert v.CURRENT_PROVIDER_PROOF.all_verified() is False
+    assert v.CURRENT_PROVIDER_PROOF.admits(restricted_coherence=True) is False
     nc = FakeNextcloud()
     result = v.verify_root_candidate(selection(), ACCOUNT, nc, source_revision=lambda: "rev1")
     assert result.reason == "provider_unproven" and nc.calls == []

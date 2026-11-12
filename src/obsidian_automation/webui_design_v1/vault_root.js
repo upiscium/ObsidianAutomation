@@ -71,7 +71,7 @@
     state.textContent = status.provider === "verified"
       ? "候補を表示できます。"
       : status.provider === "restricted"
-        ? "候補を表示できます。ただし確認後に他の端末でフォルダが変更された場合は検出できません。"
+        ? "候補を表示できます。ただし確認後に他の端末でフォルダが変更された場合や、サーバーに直接置かれたファイルは検出できません。"
         : message("provider_unproven");
     let generation = 0;
 

@@ -5,7 +5,7 @@ It has no HTTP client, credential loader, persistence or activation path.
 Provider capability is NOT assumed: unless every A/I/X/L/C/R gate in the
 supplied ``ProviderProof`` is ``VERIFIED``, the verifier refuses before any
 transport call.  ``CURRENT_PROVIDER_PROOF`` records the real register state
-(all UNKNOWN, see docs/oa303-p3-0-provider-feasibility-register.md), so the
+(docs/oa303-p3-coherence-feasibility-adr.md). No gate is VERIFIED, so the
 production default can never reach the provider.
 """
 from __future__ import annotations
@@ -55,7 +55,11 @@ _REQUIRED = (
 
 @dataclass(frozen=True)
 class ProviderProof:
-    """Provider gate register. Only the literal ``VERIFIED`` admits a gate."""
+    """Provider gate register. Only the literal ``VERIFIED`` admits a gate.
+
+    L is scoped to Nextcloud's index (owner decision 2026-11-12, option A):
+    a DAV listing is complete relative to the file cache, not to storage.
+    Files written directly on the server are outside the guarantee."""
     A: str
     I: str
     X: str
@@ -81,8 +85,11 @@ class ProviderProof:
         )
 
 
+# Disposable Nextcloud 35.0.2 observations P3-D1..D5 (2026-11-12). One finite
+# instance is never promoted to VERIFIED.
 CURRENT_PROVIDER_PROOF = ProviderProof(
-    A="UNKNOWN", I="UNKNOWN", X="UNKNOWN", L="UNKNOWN", C="UNKNOWN", R="UNKNOWN",
+    A="UNKNOWN", I="OBSERVED_WITH_LIMITS", X="OBSERVED_WITH_LIMITS",
+    L="OBSERVED_WITH_LIMITS", C="UNKNOWN", R="OBSERVED_WITH_LIMITS",
 )
 
 
