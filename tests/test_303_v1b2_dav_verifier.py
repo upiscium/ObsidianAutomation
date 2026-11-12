@@ -159,6 +159,14 @@ def test_mounted_target_is_unsafe():  # P3-S5
     assert run(FakeNextcloud(), selection("Shared")).reason == "unsafe_target"
 
 
+def test_folder_inside_a_share_is_unsafe():
+    # P3-D2 (2026-11-12, NC 35.0.2): descendants of a received share also
+    # report nc:mount-type "shared" (only the mount root has is-mount-root).
+    nc = FakeNextcloud()
+    nc.nodes["Shared/Inner"] = (31, True, "shared")
+    assert run(nc, selection("Shared/Inner")).reason == "unsafe_target"
+
+
 def test_mounted_unselected_sibling_is_allowed():
     assert run(FakeNextcloud(), selection("Vault")).status == "candidate_valid"
 

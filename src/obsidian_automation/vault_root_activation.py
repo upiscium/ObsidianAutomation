@@ -134,6 +134,18 @@ def _pin_json(pin: RootPin | None) -> dict | None:
             "instance_id": pin.instance_id}
 
 
+def _pin_for(state: Path, folder: str) -> RootPin | None:
+    """Pin that describes ``folder``. After an uncertain write the config may
+    still hold the *previous* root, so keep its identity rather than
+    downgrading it to an unpinned legacy root."""
+    data = _read_binding(state)
+    for key in ("current", "previous"):
+        pin = _pin(data.get(key)) if data else None
+        if pin is not None and pin.path == folder:
+            return pin
+    return None
+
+
 def current_pin(state: Path) -> RootPin | None:
     data = _read_binding(state)
     return _pin(data.get("current")) if data else None
@@ -259,9 +271,8 @@ def activate_vault_root(
         )
         if preview.status != "candidate_valid" or chain is None:
             return ActivationResult("blocked", preview.reason)
-        pinned = current_pin(store.state)
-        previous = (pinned if pinned and pinned.path == saved["vault_folder"]
-                    else RootPin(saved["vault_folder"], None, None))
+        previous = (_pin_for(store.state, saved["vault_folder"])
+                    or RootPin(saved["vault_folder"], None, None))
         return _commit(store, fence, RootPin(requested, chain, account.instance_id),
                        previous, requested, expected_revision, "activated", clock)
 
