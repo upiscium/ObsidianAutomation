@@ -56,8 +56,8 @@ counts and hashes only, not property values.
 | Gate | State |
 | --- | --- |
 | A | UNKNOWN |
-| I | UNKNOWN (observed with limits) |
-| X | UNKNOWN |
+| I | **OBSERVED_WITH_LIMITS** (P3-D1) |
+| X | **OBSERVED_WITH_LIMITS** for user shares only (P3-D2); group folders, external storage and symlinks UNKNOWN |
 | L | UNKNOWN |
 | C | UNKNOWN; expected NOT_SUPPORTED |
 | R | UNKNOWN (synthetic PASS for our own code only) |
@@ -86,6 +86,11 @@ The options were:
      created itself.
    - A rollback to a root that was never pinned returns `legacy_unpinned`,
      the same as before any activation.
+   - **Prerequisite before wiring `check_root_pin` into Jobs.** After an
+     activation, a folder change through the existing
+     `POST /api/v1/nextcloud/connections` leaves the pin stale. Every Job then
+     refuses (fail-closed), and rollback answers `binding_diverged`. That
+     save must clear or rewrite the binding under the same locks.
 4. **Not guaranteed.** Remote edits made between the final read and the CAS,
    or after it. New collisions or aliases created inside the root later.
    The UI must say this.
@@ -111,6 +116,52 @@ still blocks, and the ID chain is withheld unless the result is
 | P3-D2 | X: share to a 2nd synthetic user, then read `nc:mount-type` | user + share |
 | P3-D3 | L: an ACL-hidden child vs. the seeded expected set | share |
 | P3-D4 | C: A→B→A, delete/recreate, change after last read | MOVE/DELETE/MKCOL |
+
+## P3-D1 / P3-D2 results (disposable Nextcloud 35.0.2, 2026-11-12)
+
+The owner approved this run ("Docker環境でテストを進めて"). It used the
+existing disposable stack only, with the in-container PHP client.
+- Plan and client SHA-256 `0b179b9c…f6befa`: owner-local
+  `oa303-p3-d1-d2-plan-20261112.md`.
+- Receipts: `~/.local/state/oa303-nextcloud-disposable/p3-20261112/`.
+- No new image, container, network or port. No retry.
+
+**P3-D1 (I).**
+- Requests: 8 PROPFIND (all 207), 4 MOVE (all 201), 1 container restart.
+- `oc:fileid` and `oc:id` of the moved file stayed the same across:
+  - a cross-parent MOVE (`10-Project/alpha.md` → `11-Knowledge/`)
+  - a directory rename (`98-Empty` → `98-Empty-renamed`)
+  - a container restart
+  - the moves back
+- The same held for every other row: no path's `oc:id` changed.
+- `oc:id` equals the 8-digit zero-padded `oc:fileid` + `instanceid` on every
+  row, matching `occ config:system:get instanceid`.
+- The F1 layout was restored.
+
+**P3-D2 (X).**
+- Steps: created a synthetic user `oa303_test_viewer`, made 1 read share of
+  `10-Project` (OCS 200), and ran 4 PROPFIND (all 207).
+- Viewer side:
+  - The received share appears as `nc:mount-type=shared` with
+    `is-mount-root=true`.
+  - Its children are also `shared` with `is-mount-root=false`.
+- **Both accounts see the same `oc:id`** for the shared folder. A share is
+  therefore an alias of one resource, which is exactly what V1/A's
+  duplicate-ID and alias checks guard against.
+- The owner side shows no mount marker for an outgoing share.
+- Local folders and files are `""` / `false`.
+
+**Limits.**
+- One instance, one version, one storage backend.
+- Not tested: group folders (not installed), external storage (app on, no
+  mount), backend symlinks, ACL-hidden children (L), races (C), credential
+  rotation (R).
+- Hence OBSERVED_WITH_LIMITS, not VERIFIED.
+
+**Left in place** (cleanup needs a separate G6 approval):
+- the viewer user and its skeleton files
+- the read share
+- the container `/tmp/oa303_viewer_pass`
 | P3-D5 | R: rotate the synthetic app password mid-walk | credential rotation |
 
 P3-D4 is expected to confirm NOT_SUPPORTED. It does not unblock C.
