@@ -16,17 +16,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-import os
 from pathlib import Path
 import re
-import stat
 import time
 from typing import Callable
 from urllib.parse import unquote, urlsplit
 from xml.etree import ElementTree as ET
 
 from .snapshot_setup import SetupStore, _atomic
-from .vault_root_activation import _origin, _pin, _read_binding, _source_digest
+from .vault_root_activation import (
+    _origin, _pin, _read_binding, _source_digest, read_private_json,
+)
 from .vault_root_dav_fixture import DAV, OC, _ACCOUNT, _Blocked, _canonical_href, _parse_xml
 from .vault_root_dav_verifier import (
     CURRENT_PROVIDER_PROOF, NC, PER_CALL_TIMEOUT_S, DavResponse, DavTransport,
@@ -152,19 +152,7 @@ def enroll_account(
 
 def load_enrollment(store: SetupStore) -> AccountEnrollment | None:
     """The record, only if it was made under the currently saved URL + user."""
-    path = store.state / ENROLLMENT_FILE
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-        try:
-            meta = os.fstat(fd)
-            if not stat.S_ISREG(meta.st_mode) or stat.S_IMODE(meta.st_mode) != 0o600:
-                return None
-            with os.fdopen(fd, "rb", closefd=False) as stream:
-                data = json.loads(stream.read(65536).decode("utf-8"))
-        finally:
-            os.close(fd)
-    except (OSError, ValueError, UnicodeError):
-        return None
+    data = read_private_json(store.state / ENROLLMENT_FILE)
     saved = store.load_nextcloud()
     if (type(data) is not dict or data.get("version") != 1 or saved is None
             or data.get("source_sha256") != _source_digest(saved)):

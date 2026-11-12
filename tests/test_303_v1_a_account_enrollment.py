@@ -243,3 +243,22 @@ def test_connection_saved_during_build_yields_no_context(store):
         return FakeNextcloud()
     assert en.context_provider(store, factory, jobs_busy=lambda: False,
                                proof=RESTRICTED)() is None
+
+
+def test_fifo_records_are_rejected_without_blocking(store):
+    import os
+    import threading
+    from obsidian_automation import vault_root_activation as act
+    assert en.enroll_account(store, lambda saved: EnrollServer(), proof=RESTRICTED)[0] == "enrolled"
+    for name in (en.ENROLLMENT_FILE, act.BINDING_FILE):
+        path = store.state / name
+        path.unlink(missing_ok=True)
+        os.mkfifo(path, 0o600)
+    results = []
+    worker = threading.Thread(daemon=True, target=lambda: results.append((
+        en.load_enrollment(store), act.current_pin(store.state),
+        act.check_root_pin(store, lambda _: "x"))))
+    worker.start()
+    worker.join(5)
+    assert not worker.is_alive(), "reading a FIFO record blocked"
+    assert results == [(None, None, "mismatch")]

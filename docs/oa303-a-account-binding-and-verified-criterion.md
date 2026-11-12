@@ -73,6 +73,18 @@ V1/C picker and V1/D from:
 It returns `None` (`binding_unavailable`) when any of these is missing or
 the saved connection changed while the context was being built.
 
+**Operator notes.**
+- **Recovery after a real migration (`instance_changed`).** Remove the
+  private `vault_root_account.json` from the service state directory while
+  the service is stopped, then enroll again. This deliberately needs host
+  access: a different instance behind the same URL is never accepted from
+  the UI.
+- **Login name.** Logins by email or alias, or with different letter case,
+  fail with `account_mismatch`. That is the V1-S1 limit.
+- **Concurrent saves.** Two shared saves that restore identical bytes within
+  one context build (A→B→A) are not detected. The window is one build; the
+  CAS at activation and the Job pin check still apply.
+
 **Not wired.** No route triggers enrollment, and `main()` still constructs
 neither the picker nor activation. Both remain default OFF.
 
