@@ -393,6 +393,7 @@ def reset_pin_after_connection_save(store: SetupStore,
     data = _read_binding(state)
     pin = _pin(data.get("current")) if data else None
     if (pin is not None and pin.path == saved["vault_folder"]
+            and data.get("outcome") in ("activated", "rolled_back")
             and data.get("source_sha256") == _source_digest(saved)):
         return True  # credential-only change: same server, user and root
     return _write_binding(store.state, RootPin(saved["vault_folder"], None, None),

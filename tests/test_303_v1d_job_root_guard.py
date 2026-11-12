@@ -226,10 +226,23 @@ def test_daily_refusal_never_reaches_publisher(tmp_path):
 def test_snapshot_app_main_uses_every_guard():
     src = inspect.getsource(snapshot_app.main)
     tree = ast.parse(src)
-    calls = {ast.unparse(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
-    assert {"JobRootGuard", "guard_snapshot_runner", "guard_daily_runner",
-            "guard_formatter_runner", "root_guard.wrap"} <= calls
-    assert "FormatterJob(formatter_state, formatter_runner," in src
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)]
+
+    def args_of(name):
+        found = [[ast.unparse(a) for a in c.args] for c in calls
+                 if ast.unparse(c.func) == name]
+        assert len(found) == 1, name
+        return found[0]
+    assert args_of("guard_snapshot_runner") == ["root_guard", "unguarded_runner"]
+    assert args_of("guard_daily_runner") == ["root_guard", "unguarded_daily_runner"]
+    assert args_of("guard_formatter_runner") == ["root_guard", "formatter_source"]
+    # Every Job receives the guarded callable, never the unguarded one.
+    assert args_of("_job_context")[:2] == ["state", "runner"]
+    assert args_of("DailyJob")[:2] == ["daily_state", "daily_runner"]
+    assert args_of("FormatterJob")[:2] == ["formatter_state", "formatter_runner"]
+    assert "unguarded_" not in "".join(ast.unparse(c) for c in calls
+                                       if ast.unparse(c.func) in (
+                                           "_job_context", "DailyJob", "FormatterJob"))
     wraps = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
              and ast.unparse(n.func) == "root_guard.wrap"]
     assert len(wraps) == 2  # B3 normal and phase collectors
@@ -324,3 +337,29 @@ def test_full_snapshot_save_route_also_resets_pin(tmp_path):
             server.server_close()
     data = json.loads((s.state / act.BINDING_FILE).read_text())
     assert data["outcome"] == "connection_saved" and data["current"]["path"] == "Typed"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("nextcloud_user", "other_user"),
+    ("webdav_url", "https://nextcloud.invalid/remote.php/dav/files/other_user/"),
+])
+def test_server_or_user_change_with_same_folder_resets(store, field, value):
+    assert activate(store, FakeNextcloud()).status == "activated"
+    assert store.save_nextcloud({**store.load_nextcloud(), field: value}, probed=True)
+    assert act.reset_pin_after_connection_save(store) is True
+    assert json.loads((store.state / act.BINDING_FILE).read_text())["outcome"] == \
+        "connection_saved"
+
+
+def test_credential_only_save_clears_an_unfinalized_pin(store, monkeypatch):
+    real = act._write_binding
+    monkeypatch.setattr(act, "_write_binding",
+                        lambda st, c, p, outcome, clock, source=None:
+                        real(st, c, p, outcome, clock, source)
+                        if outcome.startswith("pending") else False)
+    assert activate(store, FakeNextcloud()).reason == "pin_unfinalized"
+    monkeypatch.setattr(act, "_write_binding", real)
+    assert store.save_nextcloud({**store.load_nextcloud(), "nextcloud_password": "rot"},
+                                probed=True)
+    assert act.reset_pin_after_connection_save(store) is True
+    assert act.check_root_pin(store, lambda _: "x") == "legacy_unpinned"
