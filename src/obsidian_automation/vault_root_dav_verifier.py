@@ -494,3 +494,33 @@ def _verify(selection, account, transport, source_revision, proof, clock,
                       for e in page.rows),
     ) for page in pages)
     return preview_root(selection, evidence), chain
+
+
+def read_root_identity(
+    account: TrustedDavAccount,
+    transport: DavTransport,
+    path: str,
+    *,
+    proof: ProviderProof = CURRENT_PROVIDER_PROOF,
+    clock: Callable[[], float] = time.monotonic,
+) -> str | None:
+    """One Depth:0 ``PROPFIND`` of a pinned root for the Job pre-run check.
+
+    Returns the root's ``oc:id``, or ``None`` when the provider is unproven,
+    the account binding is invalid, or the root is not a plain directory of
+    the bound instance. ``None`` must stop the Job (fail-closed).
+    """
+    if (type(proof) is not ProviderProof
+            or not proof.admits(restricted_coherence=True)
+            or not _account_ok(account)
+            or type(path) is not str or _parts(path, new_candidate=False) is None):
+        return None
+    try:
+        rows, _ = _Walk(account, transport, clock).propfind(path, "0")
+    except _Blocked:
+        return None
+    if (len(rows) != 1 or not rows[0].collection or rows[0].is_alias
+            or _canonical_href(rows[0].href)
+            != _expected_parent_href(account.account_prefix, path)):
+        return None
+    return rows[0].resource_id

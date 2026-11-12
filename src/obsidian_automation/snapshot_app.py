@@ -19,7 +19,10 @@ from .github_daily_runonce import run_once
 from .github_daily_deterministic_writer import publish_verified_daily
 from .github_project_watcher import GitHubClient
 from .vault_format_job import FormatterJob
-from .vault_format_source import FormatterSource
+from .vault_format_source import FormatterSource, FormatterSourceError
+from .vault_root_activation import (
+    JobRootGuard, RootPinRefused, https_transport_factory,
+)
 
 
 # Only trusted static source errors may appear in B4 durable diagnostics.
@@ -100,7 +103,15 @@ def main() -> int:
                         policy=Path(data["policy"]), rclone_config=Path(data["rclone_config"]))
         c.validate()
         state = c.state
+    # #303 V1/D: every Job checks the pinned Vault root before it reads or
+    # writes. With no activation ever made this allows without provider I/O.
+    root_guard = (JobRootGuard(store, transport_factory=https_transport_factory)
+                  if store is not None else None)
+
     def runner(run_id):
+        if root_guard is not None and root_guard.status() not in (
+                "ok", "legacy_unpinned"):
+            return ("failed", "sync", None)
         current = store.connections() if store else c
         return SnapshotAdapter(current, settle_seconds=10)(run_id) if current else ("failed", "sync", None)
 
@@ -113,6 +124,11 @@ def main() -> int:
     def daily_runner():
         # Still uses the same B2 read-only Nextcloud mirror and GitHub GET
         # collection; only bounded diagnosis of failure stages is new.
+        # The root pin is checked here, before both Preview and publication.
+        try:
+            root_guard()
+        except RootPinRefused:
+            raise DailyStageFailure("source_admission", "source_unavailable") from None
         return collect_b4_preview(daily_setup, daily_state)
 
     def daily_publisher(preview_receipt):
@@ -126,8 +142,16 @@ def main() -> int:
     # Source-side deployment is always read-only, irrespective of UI state.
     formatter_state = state / "vault-formatter" if store else None
     formatter_source = FormatterSource(formatter_state, store) if store else None
+
+    def formatter_runner():
+        try:
+            root_guard()
+        except RootPinRefused:
+            raise FormatterSourceError("formatter_root_pin_refused") from None
+        return formatter_source()
+
     formatter_context = (
-        FormatterJob(formatter_state, formatter_source,
+        FormatterJob(formatter_state, formatter_runner,
                      configured=formatter_source.configured,
                      source_generation=formatter_source.generation)
         if formatter_source is not None else nullcontext(None)
@@ -148,14 +172,15 @@ def main() -> int:
     b3_context = (
         B3ObserverJob(
             b3_state,
-            lambda: collect_b3_read_only(daily_setup, state_root=b3_state),
+            root_guard.wrap(
+                lambda: collect_b3_read_only(daily_setup, state_root=b3_state)),
             configured=daily_setup.configured,
             generation=daily_setup.source_fingerprint,
             phase_generation=daily_setup.phase_source_fingerprint,
-            phase_collector=lambda expected: collect_b3_read_only(
+            phase_collector=root_guard.wrap(lambda expected: collect_b3_read_only(
                 daily_setup, state_root=b3_state,
                 expected_generation=expected,
-            ),
+            )),
             source_lock=daily_setup.phase_receipt_guard,
         )
         if daily_setup is not None else nullcontext(None)

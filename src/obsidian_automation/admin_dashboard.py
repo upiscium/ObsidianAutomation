@@ -35,6 +35,7 @@ from .admin_ai_status import load_ai_health
 from .snapshot_job import SnapshotJob, Invalid as SnapshotInvalid
 from .snapshot_setup import validate_nextcloud, GITEA_FIELDS
 from .github_daily_job import DailyJob, Invalid as DailyInvalid
+from .vault_root_activation import reset_pin_after_connection_save
 from .github_b3_observer_job import (
     B3ObserverJob, Invalid as B3ObserverInvalid,
     parse_request as parse_b3_observer_request,
@@ -1866,6 +1867,13 @@ class Handler(BaseHTTPRequestHandler):
                             self._reply(503, b'{"error":"nextcloud_connection_unavailable"}',
                                         "application/json")
                             return
+                        # #303: an operator-entered root replaces any pinned
+                        # root under the same locks; a failed reset leaves
+                        # every Job refusing (fail-closed), never pinned-stale.
+                        try:
+                            reset_pin_after_connection_save(store)
+                        except Exception:
+                            pass  # stale pin stays: every Job keeps refusing
                         # Only the completed provider change invalidates the
                         # Formatter schedule. A failed save cannot stop it.
                         if formatter:

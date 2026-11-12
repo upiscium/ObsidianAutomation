@@ -12,8 +12,8 @@ guarantee is limited to identity pinning. An activation:
    binding for one-step rollback.
 
 Not guaranteed: edits by other Nextcloud clients between the final read and
-the CAS, or after it. Each Job must call ``check_root_pin`` before acting
-(not yet wired into the Jobs). Nothing here reads, moves, writes or deletes
+the CAS, or after it. Each Job calls ``check_root_pin`` through
+``JobRootGuard`` before acting (wired in ``snapshot_app``). Nothing here reads, moves, writes or deletes
 Vault contents. Disabled unless ``enabled=True`` is passed explicitly, and
 blocked with zero provider I/O while the proof register is unproven.
 """
@@ -26,11 +26,13 @@ from pathlib import Path
 import stat
 import time
 from typing import Callable, ContextManager, Iterator, Protocol
+from urllib.parse import urlsplit
 
 from .snapshot_setup import SetupStore, _atomic
+
 from .vault_root_dav_verifier import (
     CURRENT_PROVIDER_PROOF, DavTransport, ProviderProof, TrustedDavAccount,
-    verify_root_chain,
+    read_root_identity, verify_root_chain,
 )
 from .vault_root_preview import RootSelection, _identifier, _parts
 
@@ -319,17 +321,24 @@ def check_root_pin(store: SetupStore, read_leaf_id: Callable[[str], object]) -> 
     root still resolves to the pinned ``oc:id``. Anything else, including a
     ``pending`` pin or a lost binding after activation, must stop the Job.
     """
-    saved = store.load_nextcloud()
-    if saved is None:
-        return "unavailable"
     path = store.state / BINDING_FILE
     marker = store.state / PINNING_MARKER
     if not path.exists() and not path.is_symlink():
+        # Never activated: today's behaviour, whatever the Job's own source
+        # configuration is. Once pinning started, a lost binding refuses.
         return "mismatch" if marker.exists() or marker.is_symlink() else "legacy_unpinned"
+    saved = store.load_nextcloud()
+    if saved is None:
+        return "unavailable"
     data = _read_binding(store.state)
     pin = _pin(data.get("current")) if data else None
-    if (pin is None or pin.path != saved["vault_folder"]
-            or data.get("outcome") not in ("activated", "rolled_back")):
+    if pin is None or pin.path != saved["vault_folder"]:
+        return "mismatch"
+    if data.get("outcome") == "connection_saved":
+        # The shared connection form replaced the root by explicit text input:
+        # back to today's unpinned behaviour, never a pinned chain.
+        return "legacy_unpinned" if pin.chain is None else "mismatch"
+    if data.get("outcome") not in ("activated", "rolled_back"):
         return "mismatch"
     if pin.chain is None:
         return "legacy_unpinned"
@@ -340,3 +349,84 @@ def check_root_pin(store: SetupStore, read_leaf_id: Callable[[str], object]) -> 
     if type(observed) is not str:
         return "unavailable"
     return "ok" if observed == pin.chain[-1] else "mismatch"
+
+
+def reset_pin_after_connection_save(store: SetupStore,
+                                    clock: Callable[[], float] = time.time) -> bool:
+    """Called by the shared Nextcloud save, under the same Job locks.
+
+    That form sets ``vault_folder`` (and credentials) by explicit operator
+    input after its own probe. A pin for the old root would block every Job
+    forever, so record the saved folder as an unpinned root. No-op (True)
+    when no activation ever happened. False leaves Jobs fail-closed.
+    """
+    state = getattr(store, "state", None)
+    if state is None:
+        return True  # a store without private state cannot hold a pin
+    marker = state / PINNING_MARKER
+    binding = state / BINDING_FILE
+    if not (marker.exists() or marker.is_symlink() or binding.exists()
+            or binding.is_symlink()):
+        return True
+    saved = store.load_nextcloud()
+    if saved is None:
+        return False
+    return _write_binding(store.state, RootPin(saved["vault_folder"], None, None),
+                          None, "connection_saved", clock)
+
+
+class RootPinRefused(RuntimeError):
+    """The Job must not touch the Vault: the saved root failed its pin check."""
+
+
+class JobRootGuard:
+    """Pre-run check shared by Snapshot, Daily, Formatter and B3.
+
+    With no activation ever made (today's state) it allows without any
+    provider I/O. Once a root is pinned, it re-reads the root's ``oc:id``
+    and raises ``RootPinRefused`` on anything but an exact match.
+    """
+
+    def __init__(self, store: SetupStore, *,
+                 transport_factory: Callable[[dict], DavTransport] | None = None,
+                 proof: ProviderProof = CURRENT_PROVIDER_PROOF):
+        self._store = store
+        self._transport_factory = transport_factory
+        self._proof = proof
+
+    def _read_leaf(self, path: str) -> str | None:
+        saved = self._store.load_nextcloud()
+        pin = current_pin(self._store.state)
+        if saved is None or pin is None or pin.instance_id is None:
+            return None
+        if self._transport_factory is None:
+            return None
+        url = urlsplit(saved["webdav_url"])
+        account = TrustedDavAccount(f"{url.scheme}://{url.netloc}", url.path,
+                                    pin.instance_id)
+        return read_root_identity(account, self._transport_factory(saved), path,
+                                  proof=self._proof)
+
+    def status(self) -> str:
+        try:
+            return check_root_pin(self._store, self._read_leaf)
+        except Exception:
+            return "unavailable"
+
+    def __call__(self) -> None:
+        if self.status() not in ("ok", "legacy_unpinned"):
+            raise RootPinRefused("vault_root_pin_refused")
+
+    def wrap(self, function: Callable) -> Callable:
+        def guarded(*args, **kwargs):
+            self()
+            return function(*args, **kwargs)
+        return guarded
+
+
+def https_transport_factory(saved: dict) -> DavTransport:
+    """Production reader transport from the saved shared connection."""
+    from .vault_root_dav_transport import HttpsDavTransport
+    url = urlsplit(saved["webdav_url"])
+    return HttpsDavTransport(f"{url.scheme}://{url.netloc}", saved["nextcloud_user"],
+                             saved["nextcloud_password"])

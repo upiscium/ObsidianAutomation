@@ -25,7 +25,8 @@ Legend: **merged** = on main · **PR #578** = Draft, unmerged ·
 | V1/C UI | `webui_design_v1/vault_root.js` | **PR #578** | script loads, inert when OFF | static tests |
 | V1/D CAS | `SetupStore.replace_vault_folder` | **PR #578** | no | tests |
 | V1/D activation/rollback | `vault_root_activation` | **PR #578** | no route, disabled by default | tests |
-| V1/D Job pre-run pin | `vault_root_activation.check_root_pin` | **PR #578** | **not called by any Job** | tests |
+| V1/D Job pre-run pin | `vault_root_activation.JobRootGuard` / `check_root_pin` | **PR #578** | **yes**: `snapshot_app` guards Snapshot, B4, Formatter, B3; allows with no I/O until an activation exists | tests |
+| V1/D shared-save reset | `reset_pin_after_connection_save` in `POST /api/v1/nextcloud/connections` | **PR #578** | yes (no-op until an activation exists) | HTTP test |
 | Trusted context builder | SetupStore → `TrustedRootContext` (needs pinned instance ID + account-root `oc:id`) | **not implemented** | — | blocked on A |
 | Phase 2 `vault_bindings` | — | not started | — | deferred |
 

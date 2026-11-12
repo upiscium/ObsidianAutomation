@@ -77,7 +77,24 @@ The options were:
    order. The root is re-walked. The previewed leaf `oc:id` must still match.
    The local revision CAS changes `vault_folder` only.
 3. **Revalidate before each Job run.** `check_root_pin` must return `ok` or
-   `legacy_unpinned`. **Not yet wired into the Jobs.**
+   `legacy_unpinned`.
+   - **Wired** in `snapshot_app` through `JobRootGuard`, before every Vault
+     read:
+     - the Snapshot runner;
+     - the B4 runner (which also gates publication, since publication
+       follows the Preview in the same run);
+     - the Formatter source;
+     - both B3 collectors.
+   - Each refusal is recorded through the Job's existing failure path:
+     - Snapshot: `failed/sync`;
+     - B4: `source_admission/source_unavailable`;
+     - Formatter: `source_or_plan_failed`;
+     - B3: `unknown/collector_unavailable`.
+   - When nothing was ever activated (today), the guard allows the run with
+     no provider I/O, whatever the Job's own configuration.
+   - Once a root is pinned, the guard sends one Depth:0 `PROPFIND` of the
+     root per run and compares its `oc:id`. If the register does not admit
+     that read, the Job refuses.
    - The pin is written as `pending_activated` or `pending_rolled_back`
      before the config CAS. Only `activated`/`rolled_back` pins are trusted,
      so every crash point makes the Jobs refuse rather than run unpinned.
@@ -94,11 +111,12 @@ The options were:
      created itself.
    - A rollback to a root that was never pinned returns `legacy_unpinned`,
      the same as before any activation.
-   - **Prerequisite before wiring `check_root_pin` into Jobs.** After an
-     activation, a folder change through the existing
-     `POST /api/v1/nextcloud/connections` leaves the pin stale. Every Job then
-     refuses (fail-closed), and rollback answers `binding_diverged`. That
-     save must clear or rewrite the binding under the same locks.
+   - **Shared connection save.** `POST /api/v1/nextcloud/connections` sets
+     the folder by explicit operator input after its own probe. Under the
+     same Job locks it now records that folder as an unpinned root (outcome
+     `connection_saved`, returning to today's behaviour). The record is
+     never a pinned chain, and rollback is refused afterwards. If writing it
+     fails, the stale pin stays and every Job keeps refusing.
 4. **Not guaranteed.** Remote edits made between the final read and the CAS,
    or after it. New collisions or aliases created inside the root later.
    The UI must say this.
