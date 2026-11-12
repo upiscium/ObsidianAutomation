@@ -1873,7 +1873,9 @@ class Handler(BaseHTTPRequestHandler):
                         try:
                             reset_pin_after_connection_save(store)
                         except Exception:
-                            pass  # stale pin stays: every Job keeps refusing
+                            # The old pin stays. Jobs refuse if the folder or
+                            # server changed; otherwise it still matches.
+                            pass
                         # Only the completed provider change invalidates the
                         # Formatter schedule. A failed save cannot stop it.
                         if formatter:
@@ -2072,6 +2074,11 @@ class Handler(BaseHTTPRequestHandler):
                     if not store.save(payload):
                         self._reply(422, b'{"error":"connection_probe_failed"}', "application/json")
                         return
+                    try:
+                        # #303: same pin rule as the Nextcloud-only save.
+                        reset_pin_after_connection_save(store)
+                    except Exception:
+                        pass
                     try:
                         job.connections_saved(store.generation())
                         # B4 and Formatter follow only the canonical Nextcloud

@@ -111,12 +111,20 @@ The options were:
      created itself.
    - A rollback to a root that was never pinned returns `legacy_unpinned`,
      the same as before any activation.
-   - **Shared connection save.** `POST /api/v1/nextcloud/connections` sets
-     the folder by explicit operator input after its own probe. Under the
-     same Job locks it now records that folder as an unpinned root (outcome
-     `connection_saved`, returning to today's behaviour). The record is
-     never a pinned chain, and rollback is refused afterwards. If writing it
-     fails, the stale pin stays and every Job keeps refusing.
+   - **Shared connection saves.** `POST /api/v1/nextcloud/connections` and
+     `POST /api/v1/snapshot/connections` set the folder by explicit operator
+     input after their own probe.
+     - When the WebDAV URL, folder or user changes, they record the saved
+       folder as an unpinned root (outcome `connection_saved`), under the
+       same Job locks. This returns to today's behaviour. The record is never
+       a pinned chain, and rollback is refused afterwards.
+     - A credential-only change keeps the existing pin.
+     - If writing the record fails, the old pin stays. Jobs then refuse
+       when the folder or server changed. Otherwise the old pin still
+       matches and Jobs run.
+   - An origin is built from the saved URL with the host lowercased.
+     Account names that the strict DAV path grammar rejects (for example
+     containing `@`) make a pinned Job refuse. This fails closed, never open.
 4. **Not guaranteed.** Remote edits made between the final read and the CAS,
    or after it. New collisions or aliases created inside the root later.
    The UI must say this.

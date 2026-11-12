@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass
+import hashlib
 import json
 from pathlib import Path
 import stat
@@ -153,13 +154,24 @@ def current_pin(state: Path) -> RootPin | None:
     return _pin(data.get("current")) if data else None
 
 
+def _source_digest(saved: dict | None) -> str | None:
+    """Server + user the pin was made under (no password). Lets a shared
+    save tell a credential-only change from a source change without a
+    second read of the saved connection."""
+    if saved is None:
+        return None
+    raw = (saved["webdav_url"] + "\n" + saved["nextcloud_user"]).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
 def _write_binding(state: Path, current: RootPin, previous: RootPin | None,
-                   outcome: str, clock: Callable[[], float]) -> bool:
+                   outcome: str, clock: Callable[[], float],
+                   source: str | None = None) -> bool:
     try:
         _atomic(state / BINDING_FILE, json.dumps({
             "version": 1, "current": _pin_json(current),
             "previous": _pin_json(previous), "outcome": outcome,
-            "recorded_at": int(clock()),
+            "recorded_at": int(clock()), "source_sha256": source,
         }, sort_keys=True))
         return True
     except OSError:
@@ -212,7 +224,8 @@ def _commit(store: SetupStore, fence: JobFence, new: RootPin, previous: RootPin 
 
     # The pending outcome names the step, so an uncertain rollback is never
     # mistaken for an activation that could be rolled back again.
-    if not _write_binding(store.state, new, previous, "pending_" + done, clock):
+    source = _source_digest(store.load_nextcloud())
+    if not _write_binding(store.state, new, previous, "pending_" + done, clock, source):
         return undo("pin_unrecorded")
     outcome = store.replace_vault_folder(folder, revision)
     if outcome == "uncertain":
@@ -224,7 +237,7 @@ def _commit(store: SetupStore, fence: JobFence, new: RootPin, previous: RootPin 
         fence.after_change()
     except Exception:
         return ActivationResult("uncertain", "job_pause_failed")
-    if not _write_binding(store.state, new, previous, done, clock):
+    if not _write_binding(store.state, new, previous, done, clock, source):
         return ActivationResult("uncertain", "pin_unfinalized")
     return ActivationResult(done, "requires_job_reenable")
 
@@ -351,6 +364,12 @@ def check_root_pin(store: SetupStore, read_leaf_id: Callable[[str], object]) -> 
     return "ok" if observed == pin.chain[-1] else "mismatch"
 
 
+def _origin(webdav_url: str) -> str:
+    # Hostnames are case-insensitive; the strict origin grammar is lowercase.
+    url = urlsplit(webdav_url)
+    return f"{url.scheme}://{url.netloc.lower()}"
+
+
 def reset_pin_after_connection_save(store: SetupStore,
                                     clock: Callable[[], float] = time.time) -> bool:
     """Called by the shared Nextcloud save, under the same Job locks.
@@ -371,6 +390,11 @@ def reset_pin_after_connection_save(store: SetupStore,
     saved = store.load_nextcloud()
     if saved is None:
         return False
+    data = _read_binding(state)
+    pin = _pin(data.get("current")) if data else None
+    if (pin is not None and pin.path == saved["vault_folder"]
+            and data.get("source_sha256") == _source_digest(saved)):
+        return True  # credential-only change: same server, user and root
     return _write_binding(store.state, RootPin(saved["vault_folder"], None, None),
                           None, "connection_saved", clock)
 
@@ -401,9 +425,8 @@ class JobRootGuard:
             return None
         if self._transport_factory is None:
             return None
-        url = urlsplit(saved["webdav_url"])
-        account = TrustedDavAccount(f"{url.scheme}://{url.netloc}", url.path,
-                                    pin.instance_id)
+        account = TrustedDavAccount(_origin(saved["webdav_url"]),
+                                    urlsplit(saved["webdav_url"]).path, pin.instance_id)
         return read_root_identity(account, self._transport_factory(saved), path,
                                   proof=self._proof)
 
@@ -427,6 +450,5 @@ class JobRootGuard:
 def https_transport_factory(saved: dict) -> DavTransport:
     """Production reader transport from the saved shared connection."""
     from .vault_root_dav_transport import HttpsDavTransport
-    url = urlsplit(saved["webdav_url"])
-    return HttpsDavTransport(f"{url.scheme}://{url.netloc}", saved["nextcloud_user"],
+    return HttpsDavTransport(_origin(saved["webdav_url"]), saved["nextcloud_user"],
                              saved["nextcloud_password"])

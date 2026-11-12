@@ -164,21 +164,75 @@ def test_dashboard_shared_save_resets_pin_under_locks(store, tmp_path):
     assert act.check_root_pin(store, lambda _: "x") == "legacy_unpinned"
 
 
-def test_snapshot_app_guards_every_vault_reader():
-    tree = ast.parse(inspect.getsource(snapshot_app.main))
+class StubGuard:
+    def __init__(self, verdict):
+        self.verdict = verdict
+        self.checks = 0
+
+    def status(self):
+        self.checks += 1
+        return self.verdict
+
+    def __call__(self):
+        if self.status() not in ("ok", "legacy_unpinned"):
+            raise act.RootPinRefused("vault_root_pin_refused")
+
+
+@pytest.mark.parametrize("verdict", ["legacy_unpinned", "ok"])
+def test_guarded_runners_reach_the_source_when_allowed(verdict):
+    g = StubGuard(verdict)
+    assert snapshot_app.guard_snapshot_runner(g, lambda rid: ("ok", rid, None))("r1") == \
+        ("ok", "r1", None)
+    assert snapshot_app.guard_daily_runner(g, lambda: {"d": 1})() == {"d": 1}
+    assert snapshot_app.guard_formatter_runner(g, lambda: {"p": 1})() == {"p": 1}
+    assert g.checks == 3
+
+
+@pytest.mark.parametrize("verdict", ["mismatch", "unavailable"])
+def test_guarded_runners_refuse_before_the_source(verdict):
+    from obsidian_automation.github_daily_job import DailyStageFailure
+    from obsidian_automation.vault_format_source import FormatterSourceError
+    g = StubGuard(verdict)
+    touched = []
+    assert snapshot_app.guard_snapshot_runner(g, lambda rid: touched.append(rid))("r1") == \
+        ("failed", "sync", None)
+    with pytest.raises(DailyStageFailure) as daily:
+        snapshot_app.guard_daily_runner(g, lambda: touched.append("daily"))()
+    assert (daily.value.stage, daily.value.code) == ("source_admission", "source_unavailable")
+    with pytest.raises(FormatterSourceError):
+        snapshot_app.guard_formatter_runner(g, lambda: touched.append("fmt"))()
+    assert touched == []
+    snapshot_app.guard_snapshot_runner(None, lambda rid: touched.append(rid))("legacy-config")
+    assert touched == ["legacy-config"]
+
+
+def test_daily_refusal_never_reaches_publisher(tmp_path):
+    import uuid
+    from obsidian_automation.github_daily_job import DailyJob
+    published = []
+    runner = snapshot_app.guard_daily_runner(StubGuard("mismatch"), lambda: pytest.fail("ran"))
+    with DailyJob(tmp_path / "daily", runner, configured=lambda: True,
+                  publisher=lambda data: published.append(data)) as job:
+        kind, receipt = job.submit(uuid.uuid4().hex)
+        assert kind == "accepted"
+        job._worker.join(3)
+        row = job.run(receipt["run_id"])
+    assert row["status"] == "failed"
+    assert (row["failure_stage"], row["failure_code"]) == (
+        "source_admission", "source_unavailable")
+    assert published == []
+
+
+def test_snapshot_app_main_uses_every_guard():
     src = inspect.getsource(snapshot_app.main)
-    assert "JobRootGuard(store, transport_factory=https_transport_factory)" in src
-    funcs = {n.name: ast.get_source_segment(src, n) for n in ast.walk(tree)
-             if isinstance(n, ast.FunctionDef)}
-    # Snapshot, B4 and Formatter check before their source read.
-    assert funcs["runner"].index("root_guard") < funcs["runner"].index("SnapshotAdapter")
-    assert funcs["daily_runner"].index("root_guard()") < funcs["daily_runner"].index(
-        "collect_b4_preview")
-    assert funcs["formatter_runner"].index("root_guard()") < funcs[
-        "formatter_runner"].index("formatter_source()")
+    tree = ast.parse(src)
+    calls = {ast.unparse(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
+    assert {"JobRootGuard", "guard_snapshot_runner", "guard_daily_runner",
+            "guard_formatter_runner", "root_guard.wrap"} <= calls
     assert "FormatterJob(formatter_state, formatter_runner," in src
-    # B3 normal and phase collectors are both wrapped.
-    assert src.count("root_guard.wrap(") == 2
+    wraps = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+             and ast.unparse(n.func) == "root_guard.wrap"]
+    assert len(wraps) == 2  # B3 normal and phase collectors
 
 
 def test_never_activated_allows_even_without_saved_connection(tmp_path):
@@ -193,3 +247,80 @@ def test_reset_tolerates_store_without_private_state():
     class Duck:
         pass
     assert act.reset_pin_after_connection_save(Duck()) is True
+
+
+def test_credential_only_save_keeps_a_valid_pin(store):
+    assert activate(store, FakeNextcloud()).status == "activated"
+    previous = store.load_nextcloud()
+    assert store.save_nextcloud({**previous, "nextcloud_password": "rotated"}, probed=True)
+    assert act.reset_pin_after_connection_save(store) is True
+    data = json.loads((store.state / act.BINDING_FILE).read_text())
+    assert data["outcome"] == "activated" and data["current"]["chain"]
+
+
+def test_uppercase_host_is_read_with_a_lowercase_origin(store):
+    nc = FakeNextcloud()
+    upper = NC["webdav_url"].replace("nextcloud.invalid", "NextCloud.INVALID")
+    assert store.save_nextcloud({**NC, "webdav_url": upper}, probed=True)
+    assert activate(store, nc).status == "activated"
+    g, _ = guard(store, nc)          # FakeNextcloud asserts the lowercase origin
+    assert g.status() == "ok"
+    assert act.https_transport_factory(store.load_nextcloud())._origin == \
+        "https://nextcloud.invalid"
+
+
+@pytest.mark.parametrize("fault", ["transport_error", "wrong_instance"])
+def test_pinned_read_faults_refuse(store, fault):
+    nc = FakeNextcloud()
+    assert activate(store, nc).status == "activated"
+    if fault == "transport_error":
+        def boom(n):
+            raise v.DavTransportError("timeout")
+        nc.on_call = boom
+    else:
+        nc.row_hook = lambda path, t: t.replace(oc_id(11), "00000011ocother")
+    g, _ = guard(store, nc)
+    with pytest.raises(act.RootPinRefused):
+        g()
+
+
+def test_full_snapshot_save_route_also_resets_pin(tmp_path):
+    full = dict(NC, git_url="https://git.invalid/user/repo.git", git_user="user",
+                git_token="GIT-PRIVATE", branch="main")
+    s = SetupStore(tmp_path / "app", probe=lambda _: True, obscure=lambda _: "encoded")
+    assert s.save(dict(full))
+    assert activate(s, FakeNextcloud()).status == "activated"
+    with closing(SnapshotJob(tmp_path / "snap", lambda _: ("no_changes", "verify", "c" * 40),
+                             configured=True)) as snapshot:
+        server = make_server(port=0, snapshot_job=snapshot, snapshot_setup=s,
+                             observer=lambda: [], ai_observer=lambda: {})
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        port = server.server_address[1]
+
+        def request(method, path, data=None, csrf=None):
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=4)
+            headers = {"Host": f"127.0.0.1:{port}", "Origin": f"http://127.0.0.1:{port}"}
+            if csrf:
+                headers["X-Obsidian-CSRF"] = csrf
+            if data is not None:
+                headers["Content-Type"] = "application/json"
+            conn.request(method, path, json.dumps(data) if data is not None else None, headers)
+            r = conn.getresponse()
+            body = r.read()
+            conn.close()
+            return r.status, body
+        try:
+            token = json.loads(request("GET", "/api/v1/operation-session")[1])["csrf_token"]
+            # credential-only change: the pin survives
+            assert request("POST", "/api/v1/snapshot/connections",
+                           {**full, "vault_folder": "Vault/Notes",
+                            "git_token": "GIT-ROTATED"}, csrf=token)[0] == 200
+            assert json.loads((s.state / act.BINDING_FILE).read_text())["outcome"] == "activated"
+            token = json.loads(request("GET", "/api/v1/operation-session")[1])["csrf_token"]
+            assert request("POST", "/api/v1/snapshot/connections",
+                           {**full, "vault_folder": "Typed"}, csrf=token)[0] == 200
+        finally:
+            server.shutdown()
+            server.server_close()
+    data = json.loads((s.state / act.BINDING_FILE).read_text())
+    assert data["outcome"] == "connection_saved" and data["current"]["path"] == "Typed"

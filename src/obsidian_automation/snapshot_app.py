@@ -68,6 +68,36 @@ def collect_b4_preview(daily_setup: DailySetup, daily_state: Path) -> dict:
         raise DailyStageFailure("source_admission", "source_unavailable") from None
 
 
+def guard_snapshot_runner(guard, runner):
+    """#303: refuse a Snapshot run before any Vault read when the pin fails."""
+    def guarded(run_id):
+        if guard is not None and guard.status() not in ("ok", "legacy_unpinned"):
+            return ("failed", "sync", None)
+        return runner(run_id)
+    return guarded
+
+
+def guard_daily_runner(guard, runner):
+    """B4 Preview and its publication (same run) are both behind this check."""
+    def guarded():
+        try:
+            guard()
+        except RootPinRefused:
+            raise DailyStageFailure("source_admission", "source_unavailable") from None
+        return runner()
+    return guarded
+
+
+def guard_formatter_runner(guard, source):
+    def guarded():
+        try:
+            guard()
+        except RootPinRefused:
+            raise FormatterSourceError("formatter_root_pin_refused") from None
+        return source()
+    return guarded
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Nonroot snapshot dashboard; opt-in deployment only")
     parser.add_argument("--config", type=Path, help="Legacy provisioned connection file")
@@ -108,12 +138,11 @@ def main() -> int:
     root_guard = (JobRootGuard(store, transport_factory=https_transport_factory)
                   if store is not None else None)
 
-    def runner(run_id):
-        if root_guard is not None and root_guard.status() not in (
-                "ok", "legacy_unpinned"):
-            return ("failed", "sync", None)
+    def unguarded_runner(run_id):
         current = store.connections() if store else c
         return SnapshotAdapter(current, settle_seconds=10)(run_id) if current else ("failed", "sync", None)
+
+    runner = guard_snapshot_runner(root_guard, unguarded_runner)
 
     # The fresh one-user app owns both B2 and B4. B4 is opt-in and Off until
     # GitHub credentials and a pull-only local Project mirror are configured.
@@ -121,15 +150,12 @@ def main() -> int:
 
     daily_setup = DailySetup(daily_state, store) if store is not None else None
 
-    def daily_runner():
+    def unguarded_daily_runner():
         # Still uses the same B2 read-only Nextcloud mirror and GitHub GET
         # collection; only bounded diagnosis of failure stages is new.
-        # The root pin is checked here, before both Preview and publication.
-        try:
-            root_guard()
-        except RootPinRefused:
-            raise DailyStageFailure("source_admission", "source_unavailable") from None
         return collect_b4_preview(daily_setup, daily_state)
+
+    daily_runner = guard_daily_runner(root_guard, unguarded_daily_runner)
 
     def daily_publisher(preview_receipt):
         if daily_setup is None or not daily_setup.configured():
@@ -143,13 +169,8 @@ def main() -> int:
     formatter_state = state / "vault-formatter" if store else None
     formatter_source = FormatterSource(formatter_state, store) if store else None
 
-    def formatter_runner():
-        try:
-            root_guard()
-        except RootPinRefused:
-            raise FormatterSourceError("formatter_root_pin_refused") from None
-        return formatter_source()
-
+    formatter_runner = (guard_formatter_runner(root_guard, formatter_source)
+                        if formatter_source is not None else None)
     formatter_context = (
         FormatterJob(formatter_state, formatter_runner,
                      configured=formatter_source.configured,

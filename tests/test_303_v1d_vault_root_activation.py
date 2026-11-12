@@ -372,8 +372,9 @@ def test_lost_binding_after_activation_fails_closed(store):
 def test_pending_pin_is_not_trusted(store, monkeypatch):
     real = act._write_binding
 
-    def only_pending(state, current, previous, outcome, clock):
-        return real(state, current, previous, outcome, clock) if outcome.startswith("pending") else False
+    def only_pending(state, current, previous, outcome, clock, source=None):
+        return (real(state, current, previous, outcome, clock, source)
+                if outcome.startswith("pending") else False)
     monkeypatch.setattr(act, "_write_binding", only_pending)
     result = activate(store, FakeNextcloud())
     assert result == act.ActivationResult("uncertain", "pin_unfinalized")
