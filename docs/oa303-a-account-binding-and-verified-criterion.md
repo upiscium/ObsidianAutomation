@@ -61,8 +61,12 @@ refused.
 - **Federated or unknown owners are refused** (owner decision 2026-11-13,
   option A). A share's `oc:owner-id` must be a plain local user ID
   (`[A-Za-z0-9_.-]{1,64}`); `user@host` and anything else is an alias.
-- A row missing `nc:is-mount-root`, `oc:permissions` or `oc:owner-id` is
-  refused (`alias_unverified` / `identity_unverified`).
+  Local user IDs containing `@`, spaces or quotes (allowed by Nextcloud,
+  e.g. e-mail style or LDAP) are therefore refused as well (fail-closed).
+- A row missing `nc:is-mount-root` or `oc:permissions` is refused
+  (`alias_unverified` / `identity_unverified`). `oc:owner-id` is required
+  only on shared rows: a share without it is an alias, while local rows
+  are unaffected.
 - The identity pin, the Job guard, and the collision and duplicate-ID checks
   are unchanged. The pinned ID of a share root is the owner's folder ID.
 

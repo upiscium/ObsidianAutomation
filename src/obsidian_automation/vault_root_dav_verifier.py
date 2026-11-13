@@ -50,16 +50,21 @@ PROPFIND_BODY = (
 )
 _REQUIRED = (
     DAV + "resourcetype", DAV + "getetag", OC + "fileid", OC + "id",
-    NC + "mount-type", NC + "is-mount-root", OC + "permissions", OC + "owner-id",
+    NC + "mount-type", NC + "is-mount-root", OC + "permissions",
 )
+# Requested for every row but required only where it decides something: a
+# shared row without a plain local owner is an alias (see _LOCAL_OWNER).
+_OPTIONAL = (OC + "owner-id",)
 # Scope V1-S2 (owner-accepted 2026-11-13, P3-SR): a received share
 # (mount-type "shared") may hold the Vault root. Every other mount type stays
 # an alias. With False the verifier behaves exactly as under V1-S1.
 SHARE_ROOTS_ACCEPTED = True
 _PERMS = re.compile(r"[A-Z]{0,16}\Z", re.ASCII)
 # A share's owner must be a user of THIS server. A federated owner (e.g.
-# "user@remote") or anything else is refused: its content lives elsewhere and
-# identity/completeness were never shown for it (owner decision 2026-11-13).
+# "user@remote"), a missing owner or anything else is refused: its content
+# may live elsewhere and identity/completeness were never shown for it
+# (owner decision 2026-11-13). Local user IDs with "@", spaces or quotes
+# (allowed by Nextcloud, e.g. e-mail style or LDAP) are refused too.
 _LOCAL_OWNER = re.compile(r"[A-Za-z0-9_.-]{1,64}\Z", re.ASCII)
 
 
@@ -212,7 +217,7 @@ def _parse_row(row: ET.Element, instance_id: str) -> _Row:
             ok = props[0]
         else:
             missing.update(child.tag for child in props[0])
-    if ok is None or any(child.tag not in _REQUIRED for child in ok):
+    if ok is None or any(child.tag not in _REQUIRED + _OPTIONAL for child in ok):
         raise _Blocked("invalid_dav_response")
     present = {child.tag for child in ok}
     if missing & present:
@@ -246,7 +251,8 @@ def _parse_row(row: ET.Element, instance_id: str) -> _Row:
     permissions = _text(ok, OC + "permissions", allow_empty=True)
     if _PERMS.fullmatch(permissions) is None:
         raise _Blocked("invalid_dav_response")
-    owner = _text(ok, OC + "owner-id", allow_empty=True)
+    owner = (_text(ok, OC + "owner-id", allow_empty=True)
+             if ok.find(OC + "owner-id") is not None else "")
     etag = _text(ok, DAV + "getetag")
     share = _share_class(mount_type, mount_root)
     if not SHARE_ROOTS_ACCEPTED and share != "local":

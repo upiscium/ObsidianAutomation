@@ -219,8 +219,16 @@ def test_share_with_non_local_owner_is_refused(owner):
         (None, "unsupported_mount")
 
 
-def test_missing_owner_id_is_unverified():
+def test_missing_owner_id_refuses_a_share_but_not_a_local_folder():
     nc = share_nc()
     nc.row_hook = lambda path, t: t.replace("<oc:owner-id>owner_user</oc:owner-id>", "") \
-        if path == "ObsidianVault" else t
-    assert preview(nc, "ObsidianVault")[0].reason == "identity_unverified"
+        .replace("<oc:owner-id>synthetic_user</oc:owner-id>", "")
+    assert preview(nc, "ObsidianVault")[0].reason == "unsafe_target"
+    assert preview(nc, "Vault/Notes")[0].status == "candidate_valid"   # local rows unaffected
+
+
+def test_non_local_owner_inside_a_share_is_refused():
+    nc = share_nc()
+    nc.owners["ObsidianVault/Notes"] = "alice@remote.example"
+    assert preview(nc, "ObsidianVault")[0].status == "candidate_valid"
+    assert preview(nc, "ObsidianVault/Notes")[0].reason == "unsafe_target"
