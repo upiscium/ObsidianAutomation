@@ -32,7 +32,8 @@
     job_pause_failed: "定期実行の停止に失敗しました。ジョブは安全のため実行されません。",
     pin_unfinalized: "記録が完了していません。ジョブは安全のため実行されません。",
     pin_unrecorded: "記録を書き込めなかったため、変更していません。",
-    activation_disabled: "切り替え機能は無効です。"
+    activation_disabled: "切り替え機能は無効です。",
+    preview_required: "先にPreviewで確認してください。"
   });
   const message = reason => Object.hasOwn(REASONS, reason)
     ? REASONS[reason] : "確認できませんでした（" + String(reason).slice(0, 40) + "）。";
@@ -95,6 +96,7 @@
                    current, state, enroll, top, rollback, path, list, result, apply);
     anchor.after(section);
     let generation = 0;
+    let previewSeq = 0;
     let previewed = null;
 
     function render() {
@@ -151,11 +153,12 @@
     }
     async function preview(handle, trail) {
       const mine = generation;
+      const seq = ++previewSeq;  // only the latest Preview may arm the switch
       clearPreview();
       result.textContent = "確認中…";
       try {
         const data = await post("/api/v1/vault-root/previews", {candidate: handle});
-        if (mine !== generation) return;
+        if (mine !== generation || seq !== previewSeq) return;
         if (data.writes_vault !== false || data.activation_allowed !== false) {
           result.textContent = "想定外の応答のため表示を中止しました。";
           return;
@@ -166,7 +169,7 @@
           apply.hidden = false;
         }
       } catch {
-        if (mine === generation) result.textContent = "Previewを取得できませんでした。";
+        if (mine === generation && seq === previewSeq) result.textContent = "Previewを取得できませんでした。";
       }
     }
 

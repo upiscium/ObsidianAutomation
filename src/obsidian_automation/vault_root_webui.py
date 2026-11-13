@@ -68,9 +68,14 @@ class VaultRootActions:
         return saved["vault_folder"] if saved else None
 
     def can_rollback(self) -> bool:
+        # Mirrors rollback_vault_root: offered only when it can succeed.
         data = _read_binding(self.store.state)
-        return bool(data and data.get("previous")
-                    and data.get("outcome") in ("activated", "pending_activated"))
+        saved = self.store.load_nextcloud()
+        current = data.get("current") if data else None
+        return bool(data and data.get("previous") and saved
+                    and data.get("outcome") in ("activated", "pending_activated")
+                    and type(current) is dict
+                    and current.get("path") == saved["vault_folder"])
 
     def enroll(self) -> str:
         return enroll_account(self.store, self.transport_factory, proof=self.proof)[0]

@@ -128,6 +128,8 @@ def test_switch_refused_while_a_job_runs(app):
     request, store, nc, jobs = app
     assert request("POST", "/api/v1/vault-root/enrollment", {})[1]["status"] == "enrolled"
     handles = labels(request("POST", "/api/v1/vault-root/candidates", {})[1])
+    assert request("POST", "/api/v1/vault-root/previews",
+                   {"candidate": handles["Vault"]})[1]["status"] == "candidate_valid"
     jobs["daily_job"].db.execute("INSERT INTO runs VALUES ('running')")
     result = request("POST", "/api/v1/vault-root/activations",
                      {"candidate": handles["Vault"], "confirm": True})[1]
@@ -180,3 +182,59 @@ def test_app_flag_requires_state(monkeypatch, capsys):
     with pytest.raises(SystemExit):
         snapshot_app.main()
     assert "--vault-root-ui requires" in capsys.readouterr().err
+
+
+def _enroll_and_list(request):
+    assert request("POST", "/api/v1/vault-root/enrollment", {})[1]["status"] == "enrolled"
+    return labels(request("POST", "/api/v1/vault-root/candidates", {})[1])
+
+
+def test_handle_from_before_a_credential_save_is_stale(app):
+    request, store, nc, jobs = app
+    handles = _enroll_and_list(request)
+    assert request("POST", "/api/v1/vault-root/previews",
+                   {"candidate": handles["Vault"]})[1]["status"] == "candidate_valid"
+    assert store.save_nextcloud({**NC, "nextcloud_password": "rotated"}, probed=True)
+    result = request("POST", "/api/v1/vault-root/activations",
+                     {"candidate": handles["Vault"], "confirm": True})[1]
+    assert (result["status"], result["reason"]) == ("blocked", "stale_source")
+    assert store.load_nextcloud()["vault_folder"] == "Other"
+
+
+def test_preview_reports_running_jobs(app):
+    request, store, nc, jobs = app
+    handles = _enroll_and_list(request)
+    jobs["snapshot_job"].db.execute("INSERT INTO runs VALUES ('queued')")
+    assert request("POST", "/api/v1/vault-root/previews",
+                   {"candidate": handles["Vault"]})[1]["reason"] == "jobs_in_flight"
+
+
+def test_switch_requires_a_server_side_preview(app):
+    request, store, nc, jobs = app
+    handles = _enroll_and_list(request)
+    result = request("POST", "/api/v1/vault-root/activations",
+                     {"candidate": handles["Vault"], "confirm": True})[1]
+    assert result["reason"] == "preview_required"
+    # a failed Preview does not arm it either
+    nc.nodes["Vault/x"] = (60, True, "")
+    nc.nodes["vault"] = (61, True, "")           # casefold collision at the top level
+    assert request("POST", "/api/v1/vault-root/previews",
+                   {"candidate": handles["Vault"]})[1]["status"] == "blocked"
+    assert request("POST", "/api/v1/vault-root/activations",
+                   {"candidate": handles["Vault"], "confirm": True})[1]["reason"] == \
+        "preview_required"
+    assert store.load_nextcloud()["vault_folder"] == "Other"
+
+
+def test_rollback_not_offered_when_config_diverged(app):
+    request, store, nc, jobs = app
+    handles = _enroll_and_list(request)
+    request("POST", "/api/v1/vault-root/previews", {"candidate": handles["Vault"]})
+    assert request("POST", "/api/v1/vault-root/activations",
+                   {"candidate": handles["Vault"], "confirm": True})[1]["status"] == "activated"
+    assert request("GET", "/api/v1/vault-root")[1]["can_rollback"] is True
+    from obsidian_automation import vault_root_activation as act
+    data = json.loads((store.state / act.BINDING_FILE).read_text())
+    data["current"]["path"] = "Elsewhere"
+    (store.state / act.BINDING_FILE).write_text(json.dumps(data))
+    assert request("GET", "/api/v1/vault-root")[1]["can_rollback"] is False

@@ -8,7 +8,7 @@ Account binding, resource IDs and revisions stay on the server.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import secrets
 import threading
 import time
@@ -44,6 +44,7 @@ class _Handle:
     resource_id: str
     revision: str
     expires: float
+    previewed: bool = False  # set only by a candidate_valid Preview
 
 
 class VaultRootSelectionService:
@@ -178,6 +179,10 @@ class VaultRootSelectionService:
         if found.revision != ctx.source_revision:
             return 200, {"version": 1, "status": "blocked", "reason": "stale_source",
                          "writes_vault": False}
+        if found.previewed is not True:
+            # Server-side: only a folder that passed Preview can be switched to.
+            return 200, {"version": 1, "status": "blocked", "reason": "preview_required",
+                         "writes_vault": False}
         result = self._actions.activate(found.path, found.resource_id, found.revision, ctx)
         with self._lock:
             self._handles.clear()  # every handle predates the new binding
@@ -286,4 +291,8 @@ class VaultRootSelectionService:
             expected_resource_id=found.resource_id,
             restricted_coherence=self._restricted,
         )
+        if result.status == "candidate_valid":
+            with self._lock:
+                if self._handles.get(payload["candidate"]) is found:
+                    self._handles[payload["candidate"]] = replace(found, previewed=True)
         return 200, asdict(result)

@@ -36,9 +36,12 @@ activated pin would make every Job send one read-only `PROPFIND` per run.
    refused. Labels are shown as text. Each candidate handle is
    short-lived.
 3. **このフォルダに切り替える.** This appears only after a `candidate_valid`
-   Preview and needs a confirmation dialog. The server then:
-   - takes the same Job locks as the connection save, and refuses while any
-     Snapshot, B4, Formatter or B3 run is queued or running;
+   Preview and needs a confirmation dialog. The server enforces the Preview
+   too: a handle that has not passed Preview gets `preview_required`. The
+   server then:
+   - takes the connection save's Job locks in the same order, plus the B3
+     lock last. It refuses while any Snapshot, B4, Formatter or B3 run is
+     queued or running. The scheduler tick waits during the short re-walk;
    - re-walks the root and requires the previewed folder's `oc:id`;
    - writes a pending pin, then changes **only** `vault_folder` (local CAS);
    - pauses the schedules, then finalizes the pin.
@@ -47,7 +50,8 @@ activated pin would make every Job send one read-only `PROPFIND` per run.
 4. **Re-enable the schedules** you want in the Dashboard. Every Job checks
    the pinned root's `oc:id` before each run and refuses on any mismatch.
 5. **直前の切り替えを元に戻す** (one step) restores the previous
-   `vault_folder`.
+   `vault_folder`. The button is shown only when the rollback can succeed,
+   i.e. the saved folder is still the one last switched to.
 
 No action reads, writes, moves or deletes any file in the Vault.
 
@@ -74,7 +78,7 @@ No action reads, writes, moves or deletes any file in the Vault.
 | Message | What to do |
 | --- | --- |
 | `instance_changed` | After a real server migration: stop the service, remove `vault_root_account.json` from the state directory, start it again and re-confirm the account |
-| `rollback_uncertain`, `config_write_uncertain`, `pin_unfinalized`, `job_pause_failed` | Jobs refuse to run (fail-closed). Check `vault_folder` in the Nextcloud form. A new switch to the intended folder re-pins it |
+| `rollback_uncertain`, `config_write_uncertain`, `pin_unfinalized`, `job_pause_failed` | Jobs refuse to run (fail-closed), and rollback may not be offered. Check `vault_folder` in the Nextcloud form. A new switch to the intended folder re-pins it. Saving the Nextcloud form also clears the pin (unpinned root) |
 | A folder typed into the Nextcloud form | The root becomes unpinned again (today's behaviour). Use the picker to pin it again |
 
 ## Not verified here
@@ -82,4 +86,4 @@ No action reads, writes, moves or deletes any file in the Vault.
 - Rendering in a real browser (PC/Android): there is no browser in the
   development environment. The script has syntax checks, static contract
   tests and an HTTP end-to-end test.
-- Deployment on obsidian-control. That needs a separate approval.
+- Deployment on obsidian-control: owner-approved (2026-11-13); pending connection details and the read-only precheck.
