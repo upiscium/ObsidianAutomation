@@ -14,7 +14,7 @@ Nextcloud account. It never touches the production Vault or obsidian-control.
 | Host | New Debian 13 LXC, private IPv4 only, no port-forwarding |
 | Source | The reviewed `main` commit; the wheel is built from a clean `git archive` and its sha256 is recorded |
 | Nextcloud | A **test** account on a disposable or test instance (35.x, HTTPS). Never the production account |
-| Test data | In that account: one local folder tree, and one received **user** share and one received **group** share (full permissions), each with a few notes. One external-storage mount, if available |
+| Test data | In that account: one local folder tree, and these received shares with a few notes each: a **user** share and a **group** share (full permissions); a **read-only** share; a share whose owner also shares a subfolder of it separately, giving a **nested** share root. One external-storage mount, if available |
 | Install | `tools/install_snapshot_lxc.py --bind-address <ip> --vault-root-ui`, plan first, then `--apply` |
 
 ## Cases
@@ -41,7 +41,7 @@ Nextcloud account. It never touches the production Vault or obsidian-control.
 | E6 | Preview a read-only share; preview a nested share | Refused (`unsafe_target`) |
 | E7 | Switch to a folder inside the user share, cancelling the dialog first | Cancel: nothing changes. Confirm: `activated`; schedules paused; the binding file holds the `oc:id` chain |
 | E8 | Re-enable Snapshot and run it once | The Job runs. The guard reads `ok` |
-| E9 | Owner deletes and recreates that folder (same name), then Run Once | The Job refuses (`mismatch`). No Vault effect |
+| E9 | Owner deletes and recreates that folder (same name), then Run Once | The run fails with the root-pin refusal: Snapshot `failed/sync`, B4 `source_admission/source_unavailable`. Internally the guard reports `mismatch`. No Vault effect |
 | E10 | Switch while a Job is queued or running | `jobs_in_flight`; nothing changes |
 
 ### Recovery and persistence
@@ -49,7 +49,7 @@ Nextcloud account. It never touches the production Vault or obsidian-control.
 | # | Case | Pass criterion |
 | --- | --- | --- |
 | E11 | Roll back | The previous folder is restored and the rollback button disappears |
-| E12 | Change the folder in the Nextcloud form, then run a Job | The pin is reset to unpinned (`connection_saved`). Jobs run as before |
+| E12 | Change the folder in the Nextcloud form, then Run Once | The pin is reset to unpinned (`connection_saved`). Run Once works as before. The save pauses schedules (existing behaviour), so re-enable them |
 | E13 | Rotate the app password in the form | The enrollment stays valid (same URL and user). Old picker handles return `stale_source` |
 | E14 | Restart the service | The state persists; outstanding handles expire; nothing is pinned automatically |
 

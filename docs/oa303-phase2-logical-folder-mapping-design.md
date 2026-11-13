@@ -16,8 +16,9 @@ Inside the Vault root, each role lives at a fixed relative folder:
 | knowledge | `11-Knowledge` |
 | system | `98-System` |
 
-These names are hard-coded in 36 source modules (2026-11-13 inventory) and
-in configs, schemas and examples:
+These names are hard-coded in 36 source files, 35 Python modules plus
+`status_manager.js` (2026-11-13 inventory), and in configs, schemas and
+examples:
 
 - `10-Project`: 18 modules
 - `11-Knowledge`: 13 modules
