@@ -38,6 +38,7 @@ class FakeNextcloud:
         }
         self.etag = "root-etag-1"
         self.perms: dict[str, str] = {}
+        self.owners: dict[str, str] = {}
         self.calls: list[tuple[str, str]] = []
         self.on_call = None
         self.row_hook = None
@@ -61,11 +62,13 @@ class FakeNextcloud:
         # is-mount-root true, everything inside it false.
         mount_root = "true" if mount and parent_mount != mount else "false"
         perms = self.perms.get(path, "SGDNVCK" if mount else "RGDNVCK")
+        owner = self.owners.get(path, "owner_user" if mount else "synthetic_user")
         props = (f"<d:resourcetype>{rtype}</d:resourcetype><d:getetag>&quot;{etag}&quot;</d:getetag>"
                  f"<oc:fileid>{fileid}</oc:fileid><oc:id>{oc_id(fileid)}</oc:id>"
                  f"<nc:mount-type>{mount}</nc:mount-type>"
                  f"<nc:is-mount-root>{mount_root}</nc:is-mount-root>"
-                 f"<oc:permissions>{perms}</oc:permissions>")
+                 f"<oc:permissions>{perms}</oc:permissions>"
+                 f"<oc:owner-id>{owner}</oc:owner-id>")
         text = (f"<d:response><d:href>{href}</d:href><d:propstat><d:prop>{props}</d:prop>"
                 f"<d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>")
         return self.row_hook(path, text) if self.row_hook else text

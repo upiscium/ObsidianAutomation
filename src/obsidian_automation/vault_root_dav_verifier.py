@@ -46,17 +46,21 @@ PROPFIND_BODY = (
     b'<d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns"'
     b' xmlns:nc="http://nextcloud.org/ns"><d:prop>'
     b"<d:resourcetype/><d:getetag/><oc:fileid/><oc:id/><nc:mount-type/>"
-    b"<nc:is-mount-root/><oc:permissions/></d:prop></d:propfind>"
+    b"<nc:is-mount-root/><oc:permissions/><oc:owner-id/></d:prop></d:propfind>"
 )
 _REQUIRED = (
     DAV + "resourcetype", DAV + "getetag", OC + "fileid", OC + "id",
-    NC + "mount-type", NC + "is-mount-root", OC + "permissions",
+    NC + "mount-type", NC + "is-mount-root", OC + "permissions", OC + "owner-id",
 )
 # Scope V1-S2 (owner-accepted 2026-11-13, P3-SR): a received share
 # (mount-type "shared") may hold the Vault root. Every other mount type stays
 # an alias. With False the verifier behaves exactly as under V1-S1.
 SHARE_ROOTS_ACCEPTED = True
 _PERMS = re.compile(r"[A-Z]{0,16}\Z", re.ASCII)
+# A share's owner must be a user of THIS server. A federated owner (e.g.
+# "user@remote") or anything else is refused: its content lives elsewhere and
+# identity/completeness were never shown for it (owner decision 2026-11-13).
+_LOCAL_OWNER = re.compile(r"[A-Za-z0-9_.-]{1,64}\Z", re.ASCII)
 
 
 @dataclass(frozen=True)
@@ -242,10 +246,13 @@ def _parse_row(row: ET.Element, instance_id: str) -> _Row:
     permissions = _text(ok, OC + "permissions", allow_empty=True)
     if _PERMS.fullmatch(permissions) is None:
         raise _Blocked("invalid_dav_response")
+    owner = _text(ok, OC + "owner-id", allow_empty=True)
     etag = _text(ok, DAV + "getetag")
     share = _share_class(mount_type, mount_root)
     if not SHARE_ROOTS_ACCEPTED and share != "local":
         share = "other"
+    if share in ("share_root", "in_share") and _LOCAL_OWNER.fullmatch(owner) is None:
+        share = "other"   # federated or unknown owner
     return _Row(hrefs[0].text, collection, kind, etag, fileid, resource_id,
                 share == "other", share, "C" in permissions and "K" in permissions)
 

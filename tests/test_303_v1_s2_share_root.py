@@ -200,3 +200,27 @@ def test_folder_that_describes_itself_differently_is_refused():
         return response
     nc.propfind = propfind
     assert preview(nc, "ObsidianVault/Notes")[0].reason == "identity_unverified"
+
+
+
+@pytest.mark.parametrize("owner", ["alice@remote.example", "alice@remote.example/sub", "", "a b"])
+def test_share_with_non_local_owner_is_refused(owner):
+    # P3-OW (2026-11-13): local shares report the sharing user's plain ID; a
+    # federated owner looks like "user@host" and is refused.
+    nc = share_nc()
+    for path in ("ObsidianVault", "ObsidianVault/Notes"):
+        nc.owners[path] = owner
+    assert preview(nc, "ObsidianVault")[0].reason == "unsafe_target"
+    top = v.list_candidate_directories(ACCOUNT, nc, parent="", parent_resource_id=oc_id(1),
+                                       expected_revision="rev1", source_revision=lambda: "rev1",
+                                       proof=RESTRICTED, restricted_coherence=True)
+    assert "ObsidianVault" not in [n for n, _ in top.directories]
+    assert v.read_root_status(ACCOUNT, nc, "ObsidianVault", proof=RESTRICTED) == \
+        (None, "unsupported_mount")
+
+
+def test_missing_owner_id_is_unverified():
+    nc = share_nc()
+    nc.row_hook = lambda path, t: t.replace("<oc:owner-id>owner_user</oc:owner-id>", "") \
+        if path == "ObsidianVault" else t
+    assert preview(nc, "ObsidianVault")[0].reason == "identity_unverified"

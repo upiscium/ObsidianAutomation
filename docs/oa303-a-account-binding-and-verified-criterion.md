@@ -58,8 +58,11 @@ refused.
   `C` and `K` (create files and folders).
 - Any other mount type (external storage, group folder, …) is refused as
   before.
-- A row missing `nc:is-mount-root` or `oc:permissions` is refused
-  (`alias_unverified` / `identity_unverified`).
+- **Federated or unknown owners are refused** (owner decision 2026-11-13,
+  option A). A share's `oc:owner-id` must be a plain local user ID
+  (`[A-Za-z0-9_.-]{1,64}`); `user@host` and anything else is an alias.
+- A row missing `nc:is-mount-root`, `oc:permissions` or `oc:owner-id` is
+  refused (`alias_unverified` / `identity_unverified`).
 - The identity pin, the Job guard, and the collision and duplicate-ID checks
   are unchanged. The pinned ID of a share root is the owner's folder ID.
 
@@ -73,11 +76,22 @@ each of:
 
 The share root reports `is-mount-root=true` and items inside it `false`.
 
-**Not tested, and indistinguishable from a user share by `mount-type`:**
-- group shares;
-- federated shares;
-- expiring shares;
-- a permission downgrade while in use.
+**P3-OW (read-only, 2026-11-13).**
+- On the disposable instance, every local row reported the account itself
+  as owner, and the 2 received shares reported the sharing user in plain
+  local-ID form.
+- On obsidian-control, `ObsidianVault` reported an owner that is present,
+  in local-ID form, and not the account.
+- No values were recorded.
+
+**Accepted but not tested:** group shares. They look identical to a user
+share and live on the same server.
+
+**Refused by the owner-ID rule:** federated shares. Their real owner format
+was not observed, so the rule fails closed on anything that is not a plain
+local ID.
+
+**Not tested:** expiring shares, and a permission downgrade while in use.
 
 **Behaviour on change.** While a share is removed, Jobs refuse because the
 root is gone. If the owner recreates the folder, the ID changes and Jobs

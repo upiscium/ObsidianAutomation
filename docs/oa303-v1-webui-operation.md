@@ -71,7 +71,8 @@ No action reads, writes, moves or deletes any file in the Vault.
 - one shared account, Nextcloud 35.x;
 - the Vault may be a local folder, or **one received share / a folder
   inside it**, if the account can create files and folders there;
-- no external storage, group folders or a share nested in a share;
+- no external storage, group folders, federated shares (from another
+  server) or a share nested in a share;
 - writes only through Nextcloud clients;
 - served at the host root path, with a user ID equal to the login name.
 
