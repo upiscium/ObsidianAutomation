@@ -88,14 +88,33 @@ The share root reports `is-mount-root=true` and items inside it `false`.
   in local-ID form, and not the account.
 - No values were recorded.
 
-**Accepted but not tested:** group shares. They look identical to a user
-share and live on the same server.
+**P3-GX (2026-11-13, disposable).** Observed, properties only (one
+recipient Depth:1 listing before and after a downgrade):
+- A **group share** has the same properties as a user share: `shared`,
+  mount root, `SRGDNVCK`, local-form owner, and the owner's `oc:id`.
+- An **expiring share** (expiry +7 days) has the same properties too.
+  Nothing marks it as expiring.
+- A **permission downgrade** to read-only shows at once as `SGDNV`. Every
+  `oc:id` is unchanged. The permission was then restored (OCS 200), but not
+  re-read.
+
+Derived from the code, not exercised in this run:
+- The verifier accepts a group share like a user share.
+- On expiry the share should disappear like an unshare, and Jobs would
+  refuse (P3-SR showed the folder is absent while unshared).
+- For a downgraded share, the picker refuses because `SGDNV` lacks C and K
+  (`unsafe_target`). The Job guard checks identity only, so it would still
+  read `ok`, and writes would then fail on the server.
+
+Receipts: `p3-20261112/gx.jsonl` (r1) and `gx2.jsonl` (r2). r1 stopped
+before any HTTP request because of a client bug. Only the `occ group:add`
+and `occ group:adduser` steps had run, and both returned 0.
 
 **Refused by the owner-ID rule:** federated shares. Their real owner format
 was not observed, so the rule fails closed on anything that is not a plain
 local ID.
 
-**Not tested:** expiring shares, and a permission downgrade while in use.
+**Not tested:** an actual expiry event (only the share's properties were observed).
 
 **Behaviour on change.** While a share is removed, Jobs refuse because the
 root is gone. If the owner recreates the folder, the ID changes and Jobs
