@@ -23,6 +23,7 @@ from .core_promotion_transport import (
 )
 from .vault_formatter import DEFAULT_MAX_BYTES, PLAN_VERSION, POLICY_VERSION, SCOPE, format_markdown
 from .webdav_create import WebDAVCreateError, build_target_url
+from .vault_layout import role_folder
 
 MAX_TARGETS = 32
 MAX_PLAN_BYTES = 8 * 1024 * 1024
@@ -76,7 +77,7 @@ def _target(path: object) -> str:
         parsed.as_posix() != path
         or parsed.is_absolute()
         or len(parsed.parts) < 2
-        or parsed.parts[0] != "98-System"
+        or parsed.parts[0] != role_folder("system")
         or any(part in ("", ".", "..") or part.startswith(".") for part in parsed.parts[1:])
         or parsed.suffix.lower() not in (".md", ".markdown")
         or any(ord(ch) < 32 or ord(ch) == 127 for ch in path)

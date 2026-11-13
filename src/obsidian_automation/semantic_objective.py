@@ -47,6 +47,7 @@ from .semantic_selection import (
     SemanticSelectionError,
     load_semantic_selection,
 )
+from .vault_layout import role_folder
 
 
 OBJECTIVE_CONTEXT_VERSION = 1
@@ -549,13 +550,9 @@ def parse_objective_context(data: bytes) -> SemanticObjectiveContext:
             raise SemanticObjectiveError("semantic objective Context source path is unsafe")
         if source_kind not in {"daily", "idea", "project", "project-note", "knowledge"}:
             raise SemanticObjectiveError("semantic objective Context source kind is invalid")
-        expected_root = {
-            "daily": "00-DailyNote",
-            "idea": "05-Idea",
-            "project": "10-Project",
-            "project-note": "10-Project",
-            "knowledge": "11-Knowledge",
-        }[source_kind]
+        expected_root = role_folder(
+            "project" if source_kind == "project-note" else source_kind
+        )
         if not path.startswith(expected_root + "/"):
             raise SemanticObjectiveError(
                 "semantic objective Context source path/source kind mismatch"

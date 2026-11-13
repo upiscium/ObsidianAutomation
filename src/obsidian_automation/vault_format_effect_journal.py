@@ -20,6 +20,8 @@ from pathlib import Path
 from urllib.parse import quote
 from typing import Iterator
 
+from .vault_layout import role_folder
+
 _ID = re.compile(r"[a-f0-9]{32}\Z")
 _SHA = re.compile(r"[a-f0-9]{64}\Z")
 _TERMINAL = ("verified_remote_effect", "verified_no_effect")
@@ -106,7 +108,7 @@ def _seal(attempt: EffectAttempt) -> EffectAttempt:
             or str(Path(root)) != root):
         raise JournalDenied("attempt_invalid")
     path = record.target_path
-    if (type(path) is not str or not path.startswith("98-System/")
+    if (type(path) is not str or not path.startswith(role_folder("system") + "/")
             or len(path) > 1024 or "\\" in path or "\x00" in path
             or "\n" in path or "\r" in path or path.endswith("/")
             or any(x in ("", ".", "..") for x in path.split("/"))):

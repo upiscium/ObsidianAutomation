@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Mapping, Sequence
 
+from .vault_layout import role_folder
+
 VERSION = "github-pipeline-evidence/v0"
 MAX_RECEIPT_BYTES = 8192
 MAX_RECEIPTS_PER_KIND = 2048
@@ -84,7 +86,7 @@ def _safe_path(value: object, *, status_note: bool = False) -> bool:
     except UnicodeEncodeError:
         return False
     pieces = value.split("/")
-    return (len(pieces) >= 2 and pieces[0] == "10-Project"
+    return (len(pieces) >= 2 and pieces[0] == role_folder("project")
             and all(p not in ("", ".", "..") for p in pieces)
             and (pieces[-1] == "Status.md" if status_note
                  else pieces[-1].endswith(".md")))

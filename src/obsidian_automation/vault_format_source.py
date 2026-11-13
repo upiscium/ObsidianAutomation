@@ -20,6 +20,7 @@ from typing import Callable
 from .vault_formatter import (
     DEFAULT_MAX_BYTES, DEFAULT_MAX_FILES, DEFAULT_MAX_TOTAL_BYTES, create_plan,
 )
+from .vault_layout import role_folder
 
 MAX_LIST_OUTPUT = 8 * 1024 * 1024
 MAX_REMOTE_TIMEOUT = 120
@@ -156,7 +157,7 @@ def pull_system_markdown(source, target: Path) -> bool:
     source.validate()
     if target.is_symlink() or not target.is_dir():
         return False
-    remote = source.rclone_remote + "/98-System"
+    remote = source.rclone_remote + "/" + role_folder("system")
     filters = ["--include", "*.md", "--include", "*.markdown"]
     args = ["rclone", "--config", str(source.rclone_config)]
     listing_args = (
@@ -289,7 +290,7 @@ class FormatterSource:
         source, generation = self._shared()
         with tempfile.TemporaryDirectory(prefix=".formatter-mirror-", dir=self.state) as directory:
             root = Path(directory)
-            target = root / "98-System"
+            target = root / role_folder("system")
             target.mkdir(mode=0o700)
             if not self.copier(source, target):
                 raise FormatterSourceError("formatter_source_pull_failed")

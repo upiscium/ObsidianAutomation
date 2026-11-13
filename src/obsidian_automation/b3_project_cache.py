@@ -21,6 +21,7 @@ from .github_project_watch_view import (
     project_watch_projection,
 )
 from .github_project_watcher import _frontmatter_scalars
+from .vault_layout import role_folder
 
 _VERSION = "b3-project-cache/v1"
 _FILENAME = "project-watch-cache.json"
@@ -92,7 +93,7 @@ def _bounded_markdown_files(root: Path):
 
 
 def _read_all_projects(vault_root: Path) -> tuple[ProjectWatchConfig, ...]:
-    root = vault_root / "10-Project"
+    root = vault_root / role_folder("project")
     if not root.is_dir() or root.is_symlink():
         raise CacheUnavailable()
     rows: list[ProjectWatchConfig] = []

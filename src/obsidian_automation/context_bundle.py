@@ -20,11 +20,12 @@ from .artifact_lifecycle import (
     _utc_now,
     sha256_bytes,
 )
+from .vault_layout import role_folder
 
 
 CONTEXT_STAGE = "05-Context"
-KNOWLEDGE_ROOT = "11-Knowledge"
-PROJECT_ROOT = "10-Project"
+KNOWLEDGE_ROOT = role_folder("knowledge")
+PROJECT_ROOT = role_folder("project")
 GENERATION_SOURCE_ROOTS = frozenset({KNOWLEDGE_ROOT, PROJECT_ROOT})
 MAX_QUERY_CHARS = 4096
 MAX_SOURCES = 16

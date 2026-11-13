@@ -4,9 +4,10 @@ import re
 from dataclasses import dataclass
 
 from .canonical_mutation import CreateNoteMutation, MutationValidationError
+from .vault_layout import role_folder
 
 
-KNOWLEDGE_ROOT = "11-Knowledge"
+KNOWLEDGE_ROOT = role_folder("knowledge")
 POLICY_NAME = "knowledge-note-v0"
 MAX_CONTENT_BYTES = 256 * 1024
 

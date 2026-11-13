@@ -15,6 +15,7 @@ from .core_promotion_transport import (
     _strong_etag,
 )
 from .webdav_create import WebDAVCreateError, build_target_url
+from .vault_layout import role_folder
 
 
 OVERVIEW_RECORD_VERSION = 1
@@ -115,7 +116,7 @@ def _safe_project_path(value: object) -> str:
     parts = value.split("/")
     if any(part in {"", ".", ".."} for part in parts):
         raise ProjectOverviewError("project contains an unsafe path component")
-    if len(parts) < 2 or parts[0] != "10-Project":
+    if len(parts) < 2 or parts[0] != role_folder("project"):
         raise ProjectOverviewError("project must be below 10-Project")
     if PurePosixPath(value).name == "Status.md":
         raise ProjectOverviewError("Project note itself cannot be Status.md")

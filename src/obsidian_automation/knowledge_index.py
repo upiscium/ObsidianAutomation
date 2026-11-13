@@ -31,10 +31,11 @@ from .context_bundle import (
     store_context_bundle,
 )
 from .production_io import ProductionIOError, mirror_read_lock
+from .vault_layout import role_folder
 
 
 INDEX_STAGE = "04-Index"
-KNOWLEDGE_ROOT = "11-Knowledge"
+KNOWLEDGE_ROOT = role_folder("knowledge")
 TOKENIZER_VERSION = "nfkc-ascii-cjk-bigram-v0"
 RANKER_VERSION = "bm25-fieldboost-v0"
 MAX_DOCUMENTS = 4096

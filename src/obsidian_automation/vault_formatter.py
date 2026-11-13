@@ -20,9 +20,12 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Sequence
 
+from .vault_layout import role_folder
+
 POLICY_VERSION = "system-blank-lines-v3"
 PLAN_VERSION = 1
-SCOPE = "98-System/**"
+_SYSTEM = role_folder("system")
+SCOPE = _SYSTEM + "/**"
 DEFAULT_MAX_FILES = 10000
 DEFAULT_MAX_BYTES = 2 * 1024 * 1024
 DEFAULT_MAX_TOTAL_BYTES = 64 * 1024 * 1024
@@ -618,11 +621,11 @@ def _enumerate_system_files(vault: Path, max_files: int) -> list[tuple[str, Path
         raise ValueError("unsafe-vault-root") from exc
     try:
         try:
-            system_fd = os.open("98-System", dirflags, dir_fd=root_fd)
+            system_fd = os.open(_SYSTEM, dirflags, dir_fd=root_fd)
         except OSError as exc:
             raise ValueError("98-System directory is absent, symlinked or not a directory") from exc
         try:
-            walk(system_fd, "98-System", 0)
+            walk(system_fd, _SYSTEM, 0)
         finally:
             os.close(system_fd)
     finally:
@@ -633,7 +636,7 @@ def _enumerate_system_files(vault: Path, max_files: int) -> list[tuple[str, Path
 def _snapshot_file(vault: Path, relative: str, max_bytes: int) -> tuple[bytes | None, str | None]:
     """Read with O_NOFOLLOW on every component; never open through a symlink."""
     parts = PurePosixPath(relative).parts
-    if len(parts) < 2 or parts[0] != "98-System" or any(
+    if len(parts) < 2 or parts[0] != _SYSTEM or any(
         part in ("", ".", "..") for part in parts
     ):
         return None, "unsafe-path"

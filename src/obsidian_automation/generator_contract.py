@@ -23,6 +23,7 @@ from .knowledge_note_policy import (
     MAX_CONTENT_BYTES,
     validate_knowledge_note_v0,
 )
+from .vault_layout import role_folder
 
 
 OUTPUT_CONTRACT_VERSION = "knowledge-note-semantic-output-v0"
@@ -565,7 +566,7 @@ def assemble_knowledge_note_proposal(
         + normalized.to_json_bytes()
     )
     mutation_id = f"knowledge-gen-v0-{semantic_digest}"
-    target_path = f"11-Knowledge/{normalized.title}.md"
+    target_path = f"{role_folder('knowledge')}/{normalized.title}.md"
 
     mutation = CreateNoteMutation(
         contract_version=1,
