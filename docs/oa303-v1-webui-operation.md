@@ -67,11 +67,16 @@ No action reads, writes, moves or deletes any file in the Vault.
 - files placed directly on the server's disk;
 - external storage that has not been rescanned.
 
-**Scope V1-S1:**
-- one shared account, Nextcloud 35.x, local storage;
-- no group folders or external storage in the Vault;
+**Scope V1-S2** (V1-S1 plus received shares):
+- one shared account, Nextcloud 35.x;
+- the Vault may be a local folder, or **one received share / a folder
+  inside it**, if the account can create files and folders there;
+- no external storage, group folders or a share nested in a share;
 - writes only through Nextcloud clients;
 - served at the host root path, with a user ID equal to the login name.
+
+If the owner of a shared Vault deletes and recreates the folder, its ID
+changes and every Job refuses until you switch to it again from the picker.
 
 ## Recovery
 
