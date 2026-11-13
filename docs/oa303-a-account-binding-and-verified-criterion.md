@@ -40,6 +40,67 @@ Outside the declared scope the gate stays unverified.
 - The user ID matches `[A-Za-z0-9_.-]+` and equals the login name.
 - HTTPS with a certificate that the system trust store accepts.
 
+### Declared scope V1-S2 (owner-accepted 2026-11-13, "両方とも承認する")
+
+V1-S2 is everything in V1-S1, plus one addition: the Vault root may be **a
+received share** or a folder inside it.
+
+**Why:** on obsidian-control the saved Vault `ObsidianVault` is a received
+share (`mount-type=shared`, `is-mount-root=true`, `SGDNVCK`), which V1-S1
+refused.
+
+**Rules** (`SHARE_ROOTS_ACCEPTED = True` in `vault_root_dav_verifier`):
+- A selected path may enter one share, at its mount root
+  (`mount-type=shared`, `is-mount-root=true`). Every level below must be
+  inside that share (`is-mount-root=false`). A second share root nested
+  inside it is refused.
+- When the target lies inside a share, its `oc:permissions` must contain
+  `C` and `K` (create files and folders).
+- Any other mount type (external storage, group folder, …) is refused as
+  before.
+- **Federated or unknown owners are refused** (owner decision 2026-11-13,
+  option A). A share's `oc:owner-id` must be a plain local user ID
+  (`[A-Za-z0-9_.-]{1,64}`); `user@host` and anything else is an alias.
+  Local user IDs containing `@`, spaces or quotes (allowed by Nextcloud,
+  e.g. e-mail style or LDAP) are therefore refused as well (fail-closed).
+- A row missing `nc:is-mount-root` or `oc:permissions` is refused
+  (`alias_unverified` / `identity_unverified`). `oc:owner-id` is required
+  only on shared rows: a share without it is an alias, while local rows
+  are unaffected.
+- The identity pin, the Job guard, and the collision and duplicate-ID checks
+  are unchanged. The pinned ID of a share root is the owner's folder ID.
+
+**Evidence (P3-SR, disposable Nextcloud 35.0.2, 2026-11-13).** The share
+root's `oc:id` equalled the owner's folder ID and stayed the same after
+each of:
+- an owner rename;
+- a recipient rename of its mount point;
+- an unshare and reshare;
+- a restart.
+
+The share root reports `is-mount-root=true` and items inside it `false`.
+
+**P3-OW (read-only, 2026-11-13).**
+- On the disposable instance, every local row reported the account itself
+  as owner, and the 2 received shares reported the sharing user in plain
+  local-ID form.
+- On obsidian-control, `ObsidianVault` reported an owner that is present,
+  in local-ID form, and not the account.
+- No values were recorded.
+
+**Accepted but not tested:** group shares. They look identical to a user
+share and live on the same server.
+
+**Refused by the owner-ID rule:** federated shares. Their real owner format
+was not observed, so the rule fails closed on anything that is not a plain
+local ID.
+
+**Not tested:** expiring shares, and a permission downgrade while in use.
+
+**Behaviour on change.** While a share is removed, Jobs refuse because the
+root is gone. If the owner recreates the folder, the ID changes and Jobs
+refuse (`mismatch`).
+
 ### State per gate
 
 Steps: (1) disposable evidence, (2) independent receipt review, (3) owner

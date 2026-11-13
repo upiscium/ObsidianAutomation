@@ -204,8 +204,8 @@ def context_provider(
 
     When no context can be built it returns a reason string instead, so the
     UI can say why: ``binding_unavailable`` (no saved connection),
-    ``not_enrolled``, ``source_changed``, ``active_root_shared`` (the current
-    Vault is a received share or mount, outside V1-S1) or
+    ``not_enrolled``, ``source_changed``, ``active_root_unsupported_mount`` (the
+    current Vault is a mount type outside the accepted scope) or
     ``active_root_unreadable``.
     """
     def build() -> TrustedRootContext | str:
@@ -235,7 +235,7 @@ def context_provider(
             if active_id is None:
                 if store.nextcloud_revision() != revision:
                     return "source_changed"
-                return {"shared_root": "active_root_shared",
+                return {"unsupported_mount": "active_root_unsupported_mount",
                         "provider_unproven": "provider_unproven"}.get(
                             why, "active_root_unreadable")
         if store.nextcloud_revision() != revision:

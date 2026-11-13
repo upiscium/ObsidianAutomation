@@ -324,16 +324,16 @@ def test_ocs_is_not_called_when_the_root_read_fails(store, server):
     assert server.calls == [PREFIX]
 
 
-def test_context_reports_a_shared_active_root(store):
+def test_context_reports_an_unsupported_mount_active_root(store):
     # Production finding (2026-11-13): the saved Vault is a received share.
     assert en.enroll_account(store, lambda saved: EnrollServer(), proof=RESTRICTED)[0] == "enrolled"
     nc = FakeNextcloud()
-    nc.nodes["Other"] = (20, True, "shared")
-    assert provider(store, nc)() == "active_root_shared"
+    nc.nodes["Other"] = (20, True, "external")
+    assert provider(store, nc)() == "active_root_unsupported_mount"
     svc = VaultRootSelectionService(context=provider(store, nc), transport=nc,
                                     proof=RESTRICTED, restricted_coherence=True)
-    assert svc.candidates({})[1]["reason"] == "active_root_shared"
-    assert svc.preview({"candidate": "x"})[1]["reason"] == "active_root_shared"
+    assert svc.candidates({})[1]["reason"] == "active_root_unsupported_mount"
+    assert svc.preview({"candidate": "x"})[1]["reason"] == "active_root_unsupported_mount"
 
 
 def test_context_without_saved_connection(tmp_path):

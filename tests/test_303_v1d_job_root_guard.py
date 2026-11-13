@@ -74,7 +74,7 @@ def test_pinned_root_unreadable_refuses(store, change):
     g = act.JobRootGuard(store, transport_factory=None if change == "no_factory"
                          else Factory(nc), proof=proof)
     if change == "alias":
-        nc.nodes["Vault/Notes"] = (11, True, "shared")
+        nc.nodes["Vault/Notes"] = (11, True, "external")
     if change == "gone":
         del nc.nodes["Vault/Notes"]
     with pytest.raises(act.RootPinRefused):
@@ -439,7 +439,7 @@ def test_production_register_unpinned_bindings_do_no_io(store, outcome, chain):
 
 
 @pytest.mark.parametrize("change,reason", [
-    ("ok", "ok"), ("shared", "shared_root"), ("file", "not_a_folder"),
+    ("ok", "ok"), ("shared", "unsupported_mount"), ("file", "not_a_folder"),
     ("gone", "unreadable"), ("bad_path", "invalid_root"),
 ])
 def test_read_root_status_reasons(change, reason):
@@ -447,7 +447,7 @@ def test_read_root_status_reasons(change, reason):
     nc = FakeNextcloud()
     path = "Vault"
     if change == "shared":
-        nc.nodes["Vault"] = (10, True, "shared")
+        nc.nodes["Vault"] = (10, True, "external")
     elif change == "file":
         path = "a.md"
     elif change == "gone":

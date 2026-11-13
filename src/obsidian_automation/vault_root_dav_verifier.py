@@ -4,9 +4,10 @@ This module issues only ``PROPFIND`` through a caller-supplied transport.
 It has no HTTP client, credential loader, persistence or activation path.
 Provider capability is NOT assumed. The full contract needs every
 A/I/X/L/C/R gate VERIFIED; the owner-approved restricted contract needs every
-gate except C. Otherwise the verifier refuses before any transport call.  ``CURRENT_PROVIDER_PROOF`` records the real register state
+gate except C. Otherwise the verifier refuses before any transport call.
+``CURRENT_PROVIDER_PROOF`` records the real register state
 (docs/oa303-p3-coherence-feasibility-adr.md): A/I/X/L/R are VERIFIED for
-scope V1-S1 only and C is not, so only the restricted contract admits reads.
+the owner-accepted scope (V1-S1, extended to received shares as V1-S2) only and C is not, so only the restricted contract admits reads.
 """
 from __future__ import annotations
 
@@ -45,12 +46,26 @@ PROPFIND_BODY = (
     b'<d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns"'
     b' xmlns:nc="http://nextcloud.org/ns"><d:prop>'
     b"<d:resourcetype/><d:getetag/><oc:fileid/><oc:id/><nc:mount-type/>"
-    b"</d:prop></d:propfind>"
+    b"<nc:is-mount-root/><oc:permissions/><oc:owner-id/></d:prop></d:propfind>"
 )
 _REQUIRED = (
     DAV + "resourcetype", DAV + "getetag", OC + "fileid", OC + "id",
-    NC + "mount-type",
+    NC + "mount-type", NC + "is-mount-root", OC + "permissions",
 )
+# Requested for every row but required only where it decides something: a
+# shared row without a plain local owner is an alias (see _LOCAL_OWNER).
+_OPTIONAL = (OC + "owner-id",)
+# Scope V1-S2 (owner-accepted 2026-11-13, P3-SR): a received share
+# (mount-type "shared") may hold the Vault root. Every other mount type stays
+# an alias. With False the verifier behaves exactly as under V1-S1.
+SHARE_ROOTS_ACCEPTED = True
+_PERMS = re.compile(r"[A-Z]{0,16}\Z", re.ASCII)
+# A share's owner must be a user of THIS server. A federated owner (e.g.
+# "user@remote"), a missing owner or anything else is refused: its content
+# may live elsewhere and identity/completeness were never shown for it
+# (owner decision 2026-11-13). Local user IDs with "@", spaces or quotes
+# (allowed by Nextcloud, e.g. e-mail style or LDAP) are refused too.
+_LOCAL_OWNER = re.compile(r"[A-Za-z0-9_.-]{1,64}\Z", re.ASCII)
 
 
 @dataclass(frozen=True)
@@ -142,6 +157,16 @@ class _Row:
     fileid: str
     resource_id: str
     is_alias: bool
+    share: str = "local"      # local | share_root | in_share | other
+    writable: bool = False    # oc:permissions has C (create) and K (mkdir)
+
+
+def _share_class(mount_type: str, mount_root: str) -> str:
+    if not mount_type.strip():
+        return "local"
+    if mount_type == "shared" and mount_root in ("true", "false"):
+        return "share_root" if mount_root == "true" else "in_share"
+    return "other"
 
 
 def _deny(reason: str) -> RootPreview:
@@ -192,13 +217,13 @@ def _parse_row(row: ET.Element, instance_id: str) -> _Row:
             ok = props[0]
         else:
             missing.update(child.tag for child in props[0])
-    if ok is None or any(child.tag not in _REQUIRED for child in ok):
+    if ok is None or any(child.tag not in _REQUIRED + _OPTIONAL for child in ok):
         raise _Blocked("invalid_dav_response")
     present = {child.tag for child in ok}
     if missing & present:
         raise _Blocked("invalid_dav_response")
     absent = set(_REQUIRED) - present
-    if NC + "mount-type" in absent:
+    if {NC + "mount-type", NC + "is-mount-root"} & absent:
         raise _Blocked("alias_unverified")
     if absent:
         raise _Blocked("identity_unverified")
@@ -222,9 +247,30 @@ def _parse_row(row: ET.Element, instance_id: str) -> _Row:
     if resource_id != fileid.zfill(8) + instance_id or not _identifier(resource_id):
         raise _Blocked("identity_unverified")
     mount_type = _text(ok, NC + "mount-type", allow_empty=True)
+    mount_root = _text(ok, NC + "is-mount-root", allow_empty=True)
+    permissions = _text(ok, OC + "permissions", allow_empty=True)
+    if _PERMS.fullmatch(permissions) is None:
+        raise _Blocked("invalid_dav_response")
+    owner = (_text(ok, OC + "owner-id", allow_empty=True)
+             if ok.find(OC + "owner-id") is not None else "")
     etag = _text(ok, DAV + "getetag")
+    share = _share_class(mount_type, mount_root)
+    if not SHARE_ROOTS_ACCEPTED and share != "local":
+        share = "other"
+    if share in ("share_root", "in_share") and _LOCAL_OWNER.fullmatch(owner) is None:
+        share = "other"   # federated or unknown owner
     return _Row(hrefs[0].text, collection, kind, etag, fileid, resource_id,
-                bool(mount_type.strip()))
+                share == "other", share, "C" in permissions and "K" in permissions)
+
+
+def _step_allowed(inside_share: bool, row: _Row) -> bool:
+    """May the selected path step into ``row``? Enter one share at its root;
+    below it, stay inside that share (no nested share root)."""
+    if row.share == "other":
+        return False
+    if inside_share:
+        return row.share == "in_share"
+    return row.share in ("local", "share_root")
 
 
 def _etag_token(etag: str) -> str:
@@ -325,6 +371,7 @@ def list_candidate_directories(
         if (len(selves) != 1 or not selves[0].collection or selves[0].is_alias
                 or selves[0].resource_id != parent_resource_id):
             raise _Blocked("identity_unverified")
+        inside_share = selves[0].share in ("share_root", "in_share")
         found = []
         for row in rows:
             if row is selves[0]:
@@ -335,7 +382,7 @@ def list_candidate_directories(
             leaf = href[len(parent_href):].rstrip("/")
             if not leaf or "/" in leaf:
                 raise _Blocked("unsafe_href")
-            if row.kind != "directory" or row.is_alias:
+            if row.kind != "directory" or not _step_allowed(inside_share, row):
                 continue
             if _parts(leaf, new_candidate=True) is None:
                 continue
@@ -425,6 +472,9 @@ def _verify(selection, account, transport, source_revision, proof, clock,
     parent_id = selection.container_resource_id
     root_etag: str | None = None
     page_chain: list[str] = []
+    inside_share = False
+    target_row: _Row | None = None
+    expected_self = "local"   # the account root describes itself as local
     try:
         for component in selected:
             rows, size = walk.propfind(parent, "1")
@@ -434,9 +484,13 @@ def _verify(selection, account, transport, source_revision, proof, clock,
                 raise _Blocked("identity_unverified")
             if selves[0].resource_id != parent_id or selves[0].is_alias:
                 raise _Blocked("identity_unverified")
+            # Each folder must describe itself as the parent listing did.
+            if selves[0].share != expected_self:
+                raise _Blocked("identity_unverified")
             if root_etag is None:
                 root_etag = selves[0].etag
             entries = []
+            by_name: dict[str, _Row] = {}
             for row in rows:
                 if row is selves[0]:
                     continue
@@ -449,6 +503,7 @@ def _verify(selection, account, transport, source_revision, proof, clock,
                         or len(leaf) > MAX_SIBLING_NAME_CHARS
                         or remainder.endswith("/") != row.collection):
                     raise _Blocked("unsafe_href")
+                by_name[leaf] = row
                 entries.append(VerifiedDavEntry(
                     name=leaf, resource_id=row.resource_id, kind=row.kind,
                     is_alias=row.is_alias, canonical_identity_verified=True,
@@ -470,11 +525,18 @@ def _verify(selection, account, transport, source_revision, proof, clock,
                 raise _Blocked("candidate_missing")
             if chosen.kind != "directory" or chosen.is_alias:
                 raise _Blocked("unsafe_target")
+            target_row = by_name[component]
+            if not _step_allowed(inside_share, target_row):
+                raise _Blocked("unsafe_target")
+            inside_share = inside_share or target_row.share == "share_root"
+            expected_self = target_row.share
             parent_id = chosen.resource_id
             page_chain.append(parent_id)
             parent = component if not parent else parent + "/" + component
         if expected_resource_id is not None and parent_id != expected_resource_id:
             raise _Blocked("identity_unverified")
+        if inside_share and (target_row is None or not target_row.writable):
+            raise _Blocked("unsafe_target")  # a share the account cannot write to
         # Change signal only (C is a provider gate, not proven by this check):
         # the account root ETag propagates on descendant change.
         after, _ = walk.propfind("", "0")
@@ -513,9 +575,14 @@ def read_root_status(
 ) -> tuple[str | None, str]:
     """One Depth:0 ``PROPFIND`` of a root: ``(oc:id, "ok")`` or ``(None, reason)``.
 
+    Identity only: a pinned root inside a share that later became read-only
+    or nested still reads ``ok`` (same object; reads keep working, writes fail
+    on the server). The walk, not this check, enforces those rules.
+
     Reasons: ``provider_unproven``, ``invalid_root`` (bad account/path),
-    ``unreadable`` (transport, status or parse failure), ``shared_root`` (the
-    folder is a share or mount, outside scope V1-S1), ``not_a_folder``.
+    ``unreadable`` (transport, status or parse failure), ``unsupported_mount`` (a
+    mount outside the accepted scope: under V1-S2 any mount type other than a
+    received share), ``not_a_folder``.
     """
     if (type(proof) is not ProviderProof
             or not proof.admits(restricted_coherence=True)):
@@ -537,7 +604,7 @@ def read_root_status(
     if href != expected:  # a folder must answer at its exact collection href
         return None, "unreadable"
     if rows[0].is_alias:
-        return None, "shared_root"
+        return None, "unsupported_mount"
     return rows[0].resource_id, "ok"
 
 

@@ -332,7 +332,7 @@ def test_service_refuses_stale_handle_before_calling_actions():
 
 
 
-def test_script_explains_a_shared_active_root():
+def test_script_explains_an_unsupported_mount_active_root():
     js = JS_PATH.read_text(encoding="utf-8")
-    assert "active_root_shared:" in js and "共有されたフォルダ" in js
+    assert "active_root_unsupported_mount:" in js and "対応していない種類" in js
     assert 'state.textContent = message("not_enrolled")' in js
