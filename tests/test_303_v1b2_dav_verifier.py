@@ -16,6 +16,7 @@ PREFIX = "/remote.php/dav/files/synthetic_user/"
 ORIGIN = "https://nextcloud.invalid"
 ACCOUNT = v.TrustedDavAccount(ORIGIN, PREFIX, INSTANCE)
 VERIFIED = v.ProviderProof(*(["VERIFIED"] * 6))
+UNPROVEN = v.ProviderProof(*(["UNKNOWN"] * 6))
 
 
 def oc_id(fileid: int) -> str:
@@ -101,7 +102,8 @@ def test_valid_candidate_walks_each_level_then_rechecks_root():
 
 
 @pytest.mark.parametrize("proof", [
-    v.CURRENT_PROVIDER_PROOF,
+    UNPROVEN,
+    v.CURRENT_PROVIDER_PROOF,   # C unproven: the full contract still refuses
     replace(VERIFIED, C="UNKNOWN"),
     replace(VERIFIED, X="OBSERVED_WITH_LIMITS"),
     None,
@@ -112,11 +114,15 @@ def test_unproven_provider_makes_zero_transport_calls(proof):  # P3-S8
     assert nc.calls == []
 
 
-def test_production_register_has_no_verified_gate():
-    from dataclasses import astuple
-    assert "VERIFIED" not in astuple(v.CURRENT_PROVIDER_PROOF)
-    assert v.CURRENT_PROVIDER_PROOF.all_verified() is False
-    assert v.CURRENT_PROVIDER_PROOF.admits(restricted_coherence=True) is False
+def test_production_register_matches_owner_acceptance():
+    # 2026-11-13: owner accepted A/I/X/L/R for scope V1-S1; C is never claimed.
+    # Only the owner-approved restricted contract admits provider reads.
+    p = v.CURRENT_PROVIDER_PROOF
+    assert (p.A, p.I, p.X, p.L, p.R) == ("VERIFIED",) * 5
+    assert p.C != "VERIFIED"
+    assert p.all_verified() is False
+    assert p.admits(restricted_coherence=True) is True
+    assert p.admits(restricted_coherence=False) is False
     nc = FakeNextcloud()
     result = v.verify_root_candidate(selection(), ACCOUNT, nc, source_revision=lambda: "rev1")
     assert result.reason == "provider_unproven" and nc.calls == []
@@ -339,7 +345,7 @@ def test_restricted_mode_needs_owner_flag_and_other_gates():
             proof=replace(RESTRICTED, **{gate: "UNKNOWN"}), restricted_coherence=True)
         assert result.reason == "provider_unproven"
     assert nc.calls == []
-    assert v.CURRENT_PROVIDER_PROOF.admits(restricted_coherence=True) is False
+    assert UNPROVEN.admits(restricted_coherence=True) is False
 
 
 def test_restricted_mode_uses_v1a_without_coherence_claim(monkeypatch):

@@ -1,9 +1,10 @@
-"""#303 V1/B2: bounded HTTPS ``PROPFIND``-only transport.
+"""#303 V1/B2: bounded HTTPS transport: ``PROPFIND`` plus one fixed OCS GET.
 
 Not constructed by any running service. It only becomes reachable through
 ``vault_root_dav_verifier`` and therefore only after every provider gate is
 VERIFIED. HTTPS only, fixed origin, no proxy, no redirect following, no
-retry, no compression, and the byte cap is enforced while reading.
+retry, no compression, and the byte cap is enforced while reading. The only
+other request is a GET of ``OCS_USER_PATH`` (gate A enrollment, P3-A).
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ from urllib.parse import urlsplit
 from .vault_root_dav_verifier import DavResponse, DavTransportError
 
 _READ_CHUNK = 16 * 1024
+OCS_USER_PATH = "/ocs/v1.php/cloud/user?format=json"
 
 
 class HttpsDavTransport:
@@ -46,6 +48,21 @@ class HttpsDavTransport:
             raise DavTransportError("origin_mismatch")
         if depth not in ("0", "1") or not href.startswith("/") or not href.isascii():
             raise DavTransportError("invalid_request")
+        return self._exchange("PROPFIND", href, body, {
+            "Depth": depth, "Content-Type": "application/xml; charset=utf-8",
+        }, timeout, max_bytes)
+
+    def ocs_current_user(self, origin: str, *, timeout: float,
+                         max_bytes: int) -> DavResponse:
+        """GET of the fixed OCS current-user endpoint; nothing else."""
+        if origin != self._origin:
+            raise DavTransportError("origin_mismatch")
+        return self._exchange("GET", OCS_USER_PATH, None, {
+            "OCS-APIRequest": "true", "Accept": "application/json",
+        }, timeout, max_bytes)
+
+    def _exchange(self, method: str, href: str, body: bytes | None,
+                  headers: dict, timeout: float, max_bytes: int) -> DavResponse:
         # Socket timeouts apply per operation; also bound the whole exchange
         # so a slow trickle cannot hold the caller's Job locks indefinitely.
         deadline = time.monotonic() + timeout
@@ -60,11 +77,9 @@ class HttpsDavTransport:
         conn = self._factory(self._host, self._port, timeout=timeout,
                              context=self._context)
         try:
-            conn.request("PROPFIND", href, body=body, headers={
+            conn.request(method, href, body=body, headers={
                 "Authorization": self._authorization,
-                "Depth": depth,
-                "Content-Type": "application/xml; charset=utf-8",
-                "Accept-Encoding": "identity",
+                "Accept-Encoding": "identity", **headers,
             })
             shrink_timeout()
             response = conn.getresponse()

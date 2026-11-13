@@ -2,11 +2,11 @@
 
 This module issues only ``PROPFIND`` through a caller-supplied transport.
 It has no HTTP client, credential loader, persistence or activation path.
-Provider capability is NOT assumed: unless every A/I/X/L/C/R gate in the
-supplied ``ProviderProof`` is ``VERIFIED``, the verifier refuses before any
-transport call.  ``CURRENT_PROVIDER_PROOF`` records the real register state
-(docs/oa303-p3-coherence-feasibility-adr.md). No gate is VERIFIED, so the
-production default can never reach the provider.
+Provider capability is NOT assumed. The full contract needs every
+A/I/X/L/C/R gate VERIFIED; the owner-approved restricted contract needs every
+gate except C. Otherwise the verifier refuses before any transport call.  ``CURRENT_PROVIDER_PROOF`` records the real register state
+(docs/oa303-p3-coherence-feasibility-adr.md): A/I/X/L/R are VERIFIED for
+scope V1-S1 only and C is not, so only the restricted contract admits reads.
 """
 from __future__ import annotations
 
@@ -86,11 +86,18 @@ class ProviderProof:
         )
 
 
-# Disposable Nextcloud 35.0.2 observations P3-D1..D5 (2026-11-12). One finite
-# instance is never promoted to VERIFIED.
+# Disposable Nextcloud 35.0.2 observations P3-D1..D5 (2026-11-12). A gate is
+# promoted only under the owner criterion in
+# docs/oa303-a-account-binding-and-verified-criterion.md (scoped evidence,
+# independent review, explicit owner acceptance of that gate).
+# Owner accepted I/X/L/R (2026-11-13) and A after P3-A (2026-11-13) as
+# VERIFIED for scope V1-S1 only. C stays unproven: only the owner-approved
+# restricted contract (identity pin, no coherence claim) admits provider reads.
+# Production still performs none until a picker/enrollment/activation is wired
+# or a root is pinned.
 CURRENT_PROVIDER_PROOF = ProviderProof(
-    A="UNKNOWN", I="OBSERVED_WITH_LIMITS", X="OBSERVED_WITH_LIMITS",
-    L="OBSERVED_WITH_LIMITS", C="UNKNOWN", R="OBSERVED_WITH_LIMITS",
+    A="VERIFIED", I="VERIFIED", X="VERIFIED",
+    L="VERIFIED", C="UNKNOWN", R="VERIFIED",
 )
 
 

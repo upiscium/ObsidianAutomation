@@ -1,11 +1,11 @@
 # #303 implementation status and dependencies (R0)
 
-Base `main@1248ee85156f` (2026-11-12). #298, #301, #302, #303 and #304 are OPEN.
+Base `main@1248ee85156f` (2026-11-12); B2/C/D merged as #578 (`def40466`). #298, #301, #302, #303 and #304 are OPEN.
 The newer #298 product contract (2026-10-24) applies: one fresh LXC, one
 non-root service, one shared Nextcloud account. The 2026-10-11 #311
 integration-branch rule at the top of #303 is historical and is not reused.
 
-Legend: **merged** = on main · **PR #578** = Draft, unmerged ·
+Legend: **merged** = on main · **PR #578** = merged 2026-11-12 (`def40466`) ·
 **wired** = reachable from the running Dashboard (`main()`).
 
 ## Components
@@ -27,7 +27,7 @@ Legend: **merged** = on main · **PR #578** = Draft, unmerged ·
 | V1/D activation/rollback | `vault_root_activation` | **PR #578** | no route, disabled by default | tests |
 | V1/D Job pre-run pin | `vault_root_activation.JobRootGuard` / `check_root_pin` | **PR #578** | **yes**: `snapshot_app` guards Snapshot, B4, Formatter, B3; allows with no I/O until an activation exists | tests |
 | V1/D shared-save reset | `reset_pin_after_connection_save` in `POST /api/v1/nextcloud/connections` and `/api/v1/snapshot/connections` | **PR #578** | yes (no-op until an activation exists; credential-only changes keep the pin) | HTTP tests |
-| Trusted context builder | SetupStore → `TrustedRootContext` (needs pinned instance ID + account-root `oc:id`) | **not implemented** | — | blocked on A |
+| Account enrollment (gate A) + trusted context builder | `vault_root_enrollment.enroll_account` / `context_provider` | this branch (A PR) | no route; refused without I/O until the register admits | synthetic tests; P3-A run 2026-11-13 (OCS user ID, not principal); gate A VERIFIED (V1-S1) |
 | Phase 2 `vault_bindings` | — | not started | — | deferred |
 
 ## Who reads the Vault root

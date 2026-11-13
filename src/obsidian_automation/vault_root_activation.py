@@ -23,6 +23,7 @@ from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 from pathlib import Path
 import stat
 import time
@@ -102,15 +103,29 @@ class DashboardJobFence:
             self._snapshot.connections_saved(self._store.generation())
 
 
-def _read_binding(state: Path) -> dict | None:
-    path = state / BINDING_FILE
+def read_private_json(path: Path, limit: int = 65536) -> object:
+    """A 0600 regular file only: no symlink (O_NOFOLLOW), no FIFO/device
+    (O_NONBLOCK + fstat before reading), bounded size. None otherwise."""
     try:
-        meta = path.lstat()
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        meta = os.fstat(fd)
         if not stat.S_ISREG(meta.st_mode) or stat.S_IMODE(meta.st_mode) != 0o600:
             return None
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        raw = os.read(fd, limit + 1)
+        if len(raw) > limit:
+            return None
+        return json.loads(raw.decode("utf-8"))
+    except (OSError, ValueError, UnicodeError):
         return None
+    finally:
+        os.close(fd)
+
+
+def _read_binding(state: Path) -> dict | None:
+    data = read_private_json(state / BINDING_FILE)
     return data if type(data) is dict and data.get("version") == 1 else None
 
 
