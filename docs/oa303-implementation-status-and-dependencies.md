@@ -27,7 +27,7 @@ Legend: **merged** = on main · **PR #578** = merged 2026-11-12 (`def40466`) ·
 | V1/D activation/rollback | `vault_root_activation` | **PR #578** | no route, disabled by default | tests |
 | V1/D Job pre-run pin | `vault_root_activation.JobRootGuard` / `check_root_pin` | **PR #578** | **yes**: `snapshot_app` guards Snapshot, B4, Formatter, B3; allows with no I/O until an activation exists | tests |
 | V1/D shared-save reset | `reset_pin_after_connection_save` in `POST /api/v1/nextcloud/connections` and `/api/v1/snapshot/connections` | **PR #578** | yes (no-op until an activation exists; credential-only changes keep the pin) | HTTP tests |
-| Account enrollment (gate A) + trusted context builder | `vault_root_enrollment.enroll_account` / `context_provider` | this branch (A PR) | no route; refused without I/O until the register admits | synthetic tests; P3-A planned |
+| Account enrollment (gate A) + trusted context builder | `vault_root_enrollment.enroll_account` / `context_provider` | this branch (A PR) | no route; refused without I/O until the register admits | synthetic tests; P3-A run 2026-11-13 (OCS user ID, not principal) |
 | Phase 2 `vault_bindings` | — | not started | — | deferred |
 
 ## Who reads the Vault root

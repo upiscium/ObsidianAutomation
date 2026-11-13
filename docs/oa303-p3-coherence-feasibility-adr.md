@@ -52,16 +52,16 @@ counts and hashes only, not property values.
 | `nc:mount-type` / `nc:is-mount-root` | **FEASIBLE_WITH_MORE_EVIDENCE** (for X) | P3-D2: user shares only; group folders, external storage and backend symlinks not covered |
 | Depth:1 completeness | **NOT_SUPPORTED** for storage; **FEASIBLE_WITH_MORE_EVIDENCE** for Nextcloud's index (L) | P3-D3: unscanned on-disk children are silently absent |
 
-## Gate register (nothing VERIFIED; mirrored in `CURRENT_PROVIDER_PROOF`)
+## Gate register (mirrored in `CURRENT_PROVIDER_PROOF`; VERIFIED only under the owner criterion)
 
 | Gate | State |
 | --- | --- |
-| A | UNKNOWN |
-| I | **OBSERVED_WITH_LIMITS** (P3-D1) |
-| X | **OBSERVED_WITH_LIMITS** for user shares only (P3-D2); group folders, external storage and symlinks UNKNOWN |
-| L | **OBSERVED_WITH_LIMITS** for Nextcloud's index (P3-D3); **FAILED** for storage completeness |
+| A | **OBSERVED_WITH_LIMITS** (P3-A, see the gate-A ADR) |
+| I | **VERIFIED** for V1-S1 (P3-D1; owner 2026-11-13) |
+| X | **VERIFIED** for V1-S1, user shares only (P3-D2; owner 2026-11-13); group folders, external storage and symlinks outside scope |
+| L | **VERIFIED** for V1-S1 as index completeness (P3-D3; owner 2026-11-13); **FAILED** for storage completeness |
 | C | UNKNOWN; expected NOT_SUPPORTED |
-| R | **OBSERVED_WITH_LIMITS** (P3-D5; plus synthetic tests for our own revision) |
+| R | **VERIFIED** for V1-S1 (P3-D5 + synthetic tests; owner 2026-11-13) |
 
 ## Decision
 
@@ -193,7 +193,7 @@ existing disposable stack only, with the in-container PHP client.
 - Not tested: group folders (not installed), external storage (app on, no
   mount), backend symlinks, ACL-hidden children (L), races (C), credential
   rotation (R).
-- Hence OBSERVED_WITH_LIMITS, not VERIFIED.
+- Hence OBSERVED_WITH_LIMITS at the time. On 2026-11-13 the owner accepted I and X as VERIFIED for scope V1-S1 only.
 
 **Left in place** (cleanup needs a separate G6 approval):
 - the viewer user and its skeleton files

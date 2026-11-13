@@ -90,9 +90,12 @@ class ProviderProof:
 # promoted only under the owner criterion in
 # docs/oa303-a-account-binding-and-verified-criterion.md (scoped evidence,
 # independent review, explicit owner acceptance of that gate).
+# Owner accepted I/X/L/R as VERIFIED for scope V1-S1 on 2026-11-13. A awaits
+# owner acceptance after P3-A; C stays unproven (restricted contract). With A
+# not VERIFIED, admits() is still False: no provider I/O in production.
 CURRENT_PROVIDER_PROOF = ProviderProof(
-    A="UNKNOWN", I="OBSERVED_WITH_LIMITS", X="OBSERVED_WITH_LIMITS",
-    L="OBSERVED_WITH_LIMITS", C="UNKNOWN", R="OBSERVED_WITH_LIMITS",
+    A="OBSERVED_WITH_LIMITS", I="VERIFIED", X="VERIFIED",
+    L="VERIFIED", C="UNKNOWN", R="VERIFIED",
 )
 
 

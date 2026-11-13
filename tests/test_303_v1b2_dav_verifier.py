@@ -112,11 +112,14 @@ def test_unproven_provider_makes_zero_transport_calls(proof):  # P3-S8
     assert nc.calls == []
 
 
-def test_production_register_has_no_verified_gate():
-    from dataclasses import astuple
-    assert "VERIFIED" not in astuple(v.CURRENT_PROVIDER_PROOF)
-    assert v.CURRENT_PROVIDER_PROOF.all_verified() is False
-    assert v.CURRENT_PROVIDER_PROOF.admits(restricted_coherence=True) is False
+def test_production_register_matches_owner_acceptance():
+    # 2026-11-13: owner accepted I/X/L/R (scope V1-S1). A and C are not VERIFIED,
+    # so neither the full nor the restricted contract admits provider I/O.
+    p = v.CURRENT_PROVIDER_PROOF
+    assert (p.I, p.X, p.L, p.R) == ("VERIFIED",) * 4
+    assert p.A != "VERIFIED" and p.C != "VERIFIED"
+    assert p.all_verified() is False
+    assert p.admits(restricted_coherence=True) is False
     nc = FakeNextcloud()
     result = v.verify_root_candidate(selection(), ACCOUNT, nc, source_revision=lambda: "rev1")
     assert result.reason == "provider_unproven" and nc.calls == []
