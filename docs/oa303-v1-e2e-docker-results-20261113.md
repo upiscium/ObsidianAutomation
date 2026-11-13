@@ -17,16 +17,16 @@ obsidian-control.
 | Case | Result | Notes |
 | --- | --- | --- |
 | E1 OFF by default | PASS | `GET` 404, `POST` 405 without `--vault-root-ui` |
-| E2 connection saved, section enabled | PASS | The first attempt hit the obscure-charset bug (503); see Findings |
+| E2 connection saved, section enabled | PASS (rerun, `f3cff10` build) | The first attempt returned 503 with no log captured. A manual retry returned 200. The cause is likely the obscure-charset bug (finding 1) |
 | E3 enrollment | PASS | `enrolled`; account record 0600 |
 | E4 top-level candidates | PASS | Local folders and the user, group, read-only and expiring shares are listed; no external storage was configured |
 | E5 previews | PASS | Local, group-share and inside-share folders are valid; the current root is `already_selected`. The first run failed; see Findings |
-| E6 refusals | PASS | Read-only share → `unsafe_target`. The nested-share case was not determined: while the subfolder was shared separately, the duplicate-ID check refused every folder in the parent first (finding 2). After that share was removed, `Sub` previews as valid |
+| E6 refusals | PASS (partial) | Read-only share → `unsafe_target`. The nested-share case was not determined: while the subfolder was shared separately, the duplicate-ID check refused every folder in the parent first (finding 2). After that share was removed, `Sub` previews as valid |
 | E7 switch | PASS | Without confirmation: 400. With confirmation: `activated`, `oc:id` chain of 2 |
 | E8 Formatter dry-run after the switch | PASS | `no_changes`; guard `ok` |
 | E9 owner recreates the folder | PASS | Guard `mismatch`; Formatter run `failed` / `source_or_plan_failed`; no Vault effect |
 | E10 switch while a Job runs | not run live | Covered by the HTTP/unit tests |
-| E11 rollback | PASS | Previous folder restored; rollback no longer offered |
+| E11 rollback | PASS | `rolled_back`; the previous folder (`11-Knowledge`) is active again |
 | E12 folder changed in the Nextcloud form | PASS (on the #586 build) | `connection_saved`; guard `legacy_unpinned` |
 | E13 password rotation saved in the form | PASS | Enrollment kept; old handle → `stale_source` |
 | E14 container and app restart | PASS | State kept; old handle → `handle_expired` |
@@ -39,8 +39,11 @@ obsidian-control.
 **1. The connection save failed at random (existing bug, fixed in #586).**
 - `rclone obscure` prints URL-safe base64, but `SetupStore` accepted only
   `[A-Za-z0-9+/=]`.
-- 167 of 200 obscure outputs were rejected, so the save returned 503
+- In a separate measurement inside the E2E container, 167 of 200 obscure
+  outputs were rejected. A rejected save returns 503
   `nextcloud_connection_unavailable`.
+- Identified at E12. E12 failed on the `f3cff10` build and passed on the
+  #586 build.
 - Production runs the old check until #586 is deployed.
 
 **2. A separately shared subfolder blocks its whole parent share
@@ -53,9 +56,11 @@ obsidian-control.
 - To continue, the separate share was removed.
 
 **Run notes:**
-- E2 and E12 were rerun after finding 1.
-- E2's pass criterion was relaxed on the rerun ("enrolled" was already
-  true).
+- E2 was rerun twice on the `f3cff10` build, before finding 1 was
+  identified.
+- On the second rerun, E2's pass criterion was relaxed ("enrolled" was
+  already true).
+- E12 was rerun on the #586 build.
 - Diagnostic wrappers ran only in the E2E container.
 - All new Docker resources are kept until a cleanup approval:
   - containers `oa303-e2e-app` and `oa303-e2e-tls`;

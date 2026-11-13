@@ -84,11 +84,12 @@ read-only share.
 
 **Separately shared subfolder.** Suppose the owner shares both a folder and
 a subfolder of it with the same account. The subfolder then appears twice
-with one ID: once at the top level and once inside the parent share. Every
-switch to **any** folder inside that parent share is then refused as
-`identity_alias` (fail-closed), because the check looks for duplicate IDs
-across all levels. Confirmed by the E2E run on 2026-11-13. To use the parent
-share, have the owner remove the separate subfolder share.
+with one ID: once at the top level and once inside the parent share. Folders
+inside that parent share are then refused as `identity_alias` (fail-closed),
+because the check looks for duplicate IDs across all levels of the walk. In
+the 2026-11-13 E2E run, previews of every inner folder tested were refused.
+A switch re-runs the same walk. To use the parent share, have the owner
+remove the separate subfolder share.
 
 ## Recovery
 
