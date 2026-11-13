@@ -117,7 +117,7 @@ needs a configuration change, so it is outside V1-S1 and is not tested.
 | 2 | Same for the viewer. Principal empty |
 | 3 | **207 (not 403/404)**: a stub collection at the viewer's files href, **without `oc:fileid`/`oc:id`**. Its principal is the *requester* (admin) |
 | 4 | Same in the other direction: stub, no file identity, principal = viewer |
-| 5 | HTTP 200, OCS status 100, `id` = admin |
+| 5 | HTTP 200, OCS status 100, `id` = the admin account's user ID (equal to the URL user of step 1) |
 
 **Consequences.**
 - The planned principal check would have refused every legitimate account

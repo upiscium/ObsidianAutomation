@@ -129,7 +129,7 @@ The options were:
    or after it. New collisions or aliases created inside the root later.
    The UI must say this.
 
-Even under (b), A/I/X/L/R must be VERIFIED. While no gate is VERIFIED,
+Even under (b), A/I/X/L/R must be VERIFIED. While A is not VERIFIED,
 (b) still makes zero provider calls. The code never writes
 `C=VERIFIED` and never sets a coherence flag in restricted mode.
 

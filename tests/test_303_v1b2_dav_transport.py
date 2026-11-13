@@ -171,5 +171,7 @@ def test_ocs_current_user_is_one_fixed_get():
     ((method, href, body, headers),) = FakeConnection.instances[0].requests
     assert (method, href, body) == ("GET", OCS_USER_PATH, None)
     assert headers["OCS-APIRequest"] == "true" and response.status == 200
+    assert headers["Accept-Encoding"] == "identity"
+    assert "Depth" not in headers and "Content-Type" not in headers
     with pytest.raises(DavTransportError):
         transport().ocs_current_user("https://other.invalid", timeout=2.0, max_bytes=100)

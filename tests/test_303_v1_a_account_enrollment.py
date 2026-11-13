@@ -305,3 +305,13 @@ def test_ocs_user_must_match_the_url_user_segment(tmp_path):
     assert s.save_nextcloud({**NC, "webdav_url": other}, probed=True)
     server = EnrollServer(mutate=lambda x: x.replace(PREFIX, "/remote.php/dav/files/other_user/"))
     assert en.enroll_account(s, lambda saved: server, proof=RESTRICTED) == ("account_mismatch", None)
+
+
+@pytest.mark.parametrize("server", [
+    EnrollServer(status=401),
+    EnrollServer(mutate=lambda x: x.replace("<oc:fileid>1</oc:fileid>", "<oc:fileid/>")
+                 .replace(f"<oc:id>00000001{INSTANCE}</oc:id>", "<oc:id/>")),
+])
+def test_ocs_is_not_called_when_the_root_read_fails(store, server):
+    assert en.enroll_account(store, lambda saved: server, proof=RESTRICTED)[1] is None
+    assert server.calls == [PREFIX]
