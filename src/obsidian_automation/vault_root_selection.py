@@ -1,13 +1,14 @@
 """#303 V1/C: read-only Vault root candidate picker and preview service.
 
 Disabled unless the Dashboard is constructed with an instance of this class.
-There is no save, activation or credential path here. Browsers receive only
+Activation, rollback and enrollment exist only when ``actions`` is supplied
+(``vault_root_webui``); this class never touches credentials itself. Browsers receive only
 folder labels, short-lived opaque handles and the redacted V1/A preview.
 Account binding, resource IDs and revisions stay on the server.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import secrets
 import threading
 import time
@@ -43,6 +44,7 @@ class _Handle:
     resource_id: str
     revision: str
     expires: float
+    previewed: bool = False  # set only by a candidate_valid Preview
 
 
 class VaultRootSelectionService:
@@ -53,7 +55,11 @@ class VaultRootSelectionService:
         proof: ProviderProof = CURRENT_PROVIDER_PROOF,
         clock: Callable[[], float] = time.monotonic,
         restricted_coherence: bool = False,
+        actions=None,
+        revision: Callable[[], object] | None = None,
     ):
+        self._actions = actions
+        self._revision_source = revision
         self._context = context
         self._restricted = restricted_coherence is True
         self._requests: list[float] = []
@@ -71,6 +77,11 @@ class VaultRootSelectionService:
         return ctx if type(ctx) is TrustedRootContext else None
 
     def _revision(self) -> object:
+        if self._revision_source is not None:
+            try:
+                return self._revision_source()
+            except Exception:
+                return None
         ctx = self._current()
         return ctx.source_revision if ctx else None
 
@@ -99,15 +110,98 @@ class VaultRootSelectionService:
         return ctx, None
 
     def status(self) -> dict:
-        return {
+        out = {
             "version": 1, "enabled": True,
             # "restricted": C (tree coherence) is not guaranteed; the UI says so.
             "provider": ("unproven" if not self._admitted() else
                          "restricted" if self._restricted and not self._proof.all_verified()
                          else "verified"),
-            "binding": "available" if self._current() else "unavailable",
             "activation": "not_available", "writes_vault": False,
         }
+        if self._actions is None:
+            out["binding"] = "available" if self._current() else "unavailable"
+            return out
+        # With actions, status is local only: no provider read on a GET.
+        try:
+            enrolled = self._actions.enrolled() is True
+            label = self._actions.active_label()
+            can_rollback = self._actions.can_rollback() is True
+        except Exception:
+            enrolled, label, can_rollback = False, None, False
+        out.update({
+            "binding": "available" if enrolled else "unavailable",
+            "enrolled": enrolled,
+            "active_label": label if type(label) is str else None,
+            "activation": "available" if self._admitted() and enrolled else "not_available",
+            "can_rollback": can_rollback,
+        })
+        return out
+
+    def _no_actions(self) -> tuple[int, dict] | None:
+        if self._actions is None:
+            return 405, {"error": "activation_not_available"}
+        return None
+
+    @staticmethod
+    def _confirmed(payload: object, keys: set) -> bool:
+        return (type(payload) is dict and set(payload) == keys | {"confirm"}
+                and payload["confirm"] is True)
+
+    def enroll(self, payload: object) -> tuple[int, dict]:
+        if (refused := self._no_actions()) is not None:
+            return refused
+        if type(payload) is not dict or payload:
+            return 400, {"error": "invalid_request"}
+        if not self._admitted():
+            return 200, {"version": 1, "status": "blocked", "reason": "provider_unproven"}
+        if self._rate_limited():
+            return 200, {"version": 1, "status": "blocked", "reason": "rate_limited"}
+        reason = self._actions.enroll()
+        return 200, {"version": 1, "status": "enrolled" if reason == "enrolled" else "blocked",
+                     "reason": reason if type(reason) is str else "enrollment_failed"}
+
+    def activate(self, payload: object) -> tuple[int, dict]:
+        """Switch ``vault_folder`` to a previewed candidate. Requires
+        ``confirm: true``; the activation itself re-walks and re-pins."""
+        if (refused := self._no_actions()) is not None:
+            return refused
+        if not self._confirmed(payload, {"candidate"}):
+            return 400, {"error": "confirmation_required"}
+        ctx, reason = self._ready()
+        if ctx is None:
+            return 200, {"version": 1, "status": "blocked", "reason": reason,
+                         "writes_vault": False}
+        with self._lock:
+            found = self._resolve(payload["candidate"], self._clock())
+        if found is None:
+            return 200, {"version": 1, "status": "blocked", "reason": "handle_expired",
+                         "writes_vault": False}
+        if found.revision != ctx.source_revision:
+            return 200, {"version": 1, "status": "blocked", "reason": "stale_source",
+                         "writes_vault": False}
+        if found.previewed is not True:
+            # Server-side: only a folder that passed Preview can be switched to.
+            return 200, {"version": 1, "status": "blocked", "reason": "preview_required",
+                         "writes_vault": False}
+        result = self._actions.activate(found.path, found.resource_id, found.revision, ctx)
+        with self._lock:
+            self._handles.clear()  # every handle predates the new binding
+        return 200, {"version": 1, "status": result.status, "reason": result.reason,
+                     "writes_vault": False}
+
+    def rollback(self, payload: object) -> tuple[int, dict]:
+        if (refused := self._no_actions()) is not None:
+            return refused
+        if not self._confirmed(payload, set()):
+            return 400, {"error": "confirmation_required"}
+        if self._rate_limited():
+            return 200, {"version": 1, "status": "blocked", "reason": "rate_limited",
+                         "writes_vault": False}
+        result = self._actions.rollback()
+        with self._lock:
+            self._handles.clear()
+        return 200, {"version": 1, "status": result.status, "reason": result.reason,
+                     "writes_vault": False}
 
     def _resolve(self, handle: object, now: float) -> _Handle | None:
         if type(handle) is not str or not 1 <= len(handle) <= 64:
@@ -197,4 +291,8 @@ class VaultRootSelectionService:
             expected_resource_id=found.resource_id,
             restricted_coherence=self._restricted,
         )
+        if result.status == "candidate_valid":
+            with self._lock:
+                if self._handles.get(payload["candidate"]) is found:
+                    self._handles[payload["candidate"]] = replace(found, previewed=True)
         return 200, asdict(result)

@@ -377,9 +377,18 @@ def test_production_entry_points_wire_no_provider_reader_besides_the_guard():
         for name in ("enroll_account", "context_provider", "activate_vault_root",
                      "rollback_vault_root", "VaultRootSelectionService",
                      "verify_root_candidate", "verify_root_chain",
-                     "list_candidate_directories", "read_root_identity",
-                     "vault_root_selection"):
+                     "list_candidate_directories", "read_root_identity"):
             assert name not in src, (module.__name__, name)
+    assert "vault_root_selection" not in inspect.getsource(admin_dashboard.main)
+    # snapshot_app: exactly one assignment, and only under --vault-root-ui.
+    tree = ast.parse(inspect.getsource(snapshot_app.main))
+    assigns = [n for n in ast.walk(tree) if isinstance(n, ast.Assign)
+               and any(ast.unparse(t) == "server.vault_root_selection" for t in n.targets)]
+    assert len(assigns) == 1
+    assert ast.unparse(assigns[0].value) == "build_vault_root_ui(store, server)"
+    guards = [n for n in ast.walk(tree) if isinstance(n, ast.If)
+              and ast.unparse(n.test) == "args.vault_root_ui" and assigns[0] in n.body]
+    assert len(guards) == 1
 
 
 def test_snapshot_app_main_builds_server_without_picker(tmp_path, monkeypatch):

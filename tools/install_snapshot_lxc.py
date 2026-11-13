@@ -111,9 +111,11 @@ def _validate_bind_address(value: str) -> str:
     return value
 
 
-def _service_unit(bind_address: str = "127.0.0.1") -> str:
+def _service_unit(bind_address: str = "127.0.0.1", vault_root_ui: bool = False) -> str:
     address = _validate_bind_address(bind_address)
     suffix = f" --bind {address}" if address != "127.0.0.1" else ""
+    if vault_root_ui is True:
+        suffix += " --vault-root-ui"
     return f"""[Unit]
 Description=Obsidian Snapshot application
 After=network-online.target
@@ -166,6 +168,7 @@ def build_plan(
     *,
     target_root: Path = Path("/"),
     bind_address: str = "127.0.0.1",
+    vault_root_ui: bool = False,
 ) -> InstallPlan:
     """Build the install actions without invoking a command or writing files.
 
@@ -234,7 +237,7 @@ def build_plan(
         ),
         Step(
             "write_file", "install the single Snapshot systemd service",
-            path=UNIT_PATH, content=_service_unit(bind_address), mode=0o644,
+            path=UNIT_PATH, content=_service_unit(bind_address, vault_root_ui), mode=0o644,
         ),
         Step(
             "command", "reload systemd unit inventory",
@@ -353,6 +356,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Explicit RFC1918 address for a private LAN Dashboard; default loopback",
     )
     parser.add_argument(
+        "--vault-root-ui",
+        action="store_true",
+        help="#303: start the app with the Vault root WebUI (default OFF)",
+    )
+    parser.add_argument(
         "--apply",
         action="store_true",
         help="perform the host mutations described by the generated plan",
@@ -363,7 +371,8 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
-        plan = build_plan(args.source_root, bind_address=args.bind_address)
+        plan = build_plan(args.source_root, bind_address=args.bind_address,
+                          vault_root_ui=args.vault_root_ui)
         if not args.apply:
             sys.stdout.write(plan.to_json())
             return 0
