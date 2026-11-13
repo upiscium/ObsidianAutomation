@@ -46,7 +46,8 @@ def guard(store, nc, proof=RESTRICTED):
 
 def test_no_activation_allows_without_any_provider_io(store):
     nc = FakeNextcloud()
-    g, factory = guard(store, nc, proof=v.CURRENT_PROVIDER_PROOF)
+    factory = Factory(nc)
+    g = act.JobRootGuard(store, transport_factory=factory)  # production register
     assert g.status() == "legacy_unpinned"
     g()  # does not raise
     assert factory.calls == 0 and nc.calls == []
@@ -68,7 +69,8 @@ def test_pinned_root_is_rechecked_and_mismatch_refuses(store):
 def test_pinned_root_unreadable_refuses(store, change):
     nc = FakeNextcloud()
     assert activate(store, nc).status == "activated"
-    proof = v.CURRENT_PROVIDER_PROOF if change == "unproven" else RESTRICTED
+    from test_303_v1b2_dav_verifier import UNPROVEN
+    proof = UNPROVEN if change == "unproven" else RESTRICTED
     g = act.JobRootGuard(store, transport_factory=None if change == "no_factory"
                          else Factory(nc), proof=proof)
     if change == "alias":
@@ -96,8 +98,9 @@ def test_read_root_identity_contract():
     assert v.read_root_identity(ACCOUNT, nc, "Shared", proof=RESTRICTED) is None
     assert v.read_root_identity(ACCOUNT, nc, "a.md", proof=RESTRICTED) is None
     assert v.read_root_identity(ACCOUNT, nc, "../x", proof=RESTRICTED) is None
+    from test_303_v1b2_dav_verifier import UNPROVEN
     calls = len(nc.calls)
-    assert v.read_root_identity(ACCOUNT, nc, "Vault") is None   # production register
+    assert v.read_root_identity(ACCOUNT, nc, "Vault", proof=UNPROVEN) is None
     assert len(nc.calls) == calls
 
 
@@ -363,3 +366,15 @@ def test_credential_only_save_clears_an_unfinalized_pin(store, monkeypatch):
                                 probed=True)
     assert act.reset_pin_after_connection_save(store) is True
     assert act.check_root_pin(store, lambda _: "x") == "legacy_unpinned"
+
+
+def test_production_entry_points_wire_no_provider_reader_besides_the_guard():
+    # With A/I/X/L/R VERIFIED the register admits restricted reads, so the only
+    # thing keeping production I/O-free is that nothing else is wired in.
+    from obsidian_automation import admin_dashboard
+    for module in (snapshot_app, admin_dashboard):
+        src = inspect.getsource(module.main)
+        for name in ("enroll_account", "context_provider", "activate_vault_root",
+                     "rollback_vault_root", "VaultRootSelectionService",
+                     "verify_root_candidate", "list_candidate_directories"):
+            assert name not in src, (module.__name__, name)

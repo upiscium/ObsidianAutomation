@@ -61,7 +61,9 @@ def store(tmp_path):
 
 def test_enrollment_refused_without_io_while_register_unproven(store):
     server = EnrollServer()
-    assert en.enroll_account(store, lambda saved: server) == ("provider_unproven", None)
+    from test_303_v1b2_dav_verifier import UNPROVEN
+    assert en.enroll_account(store, lambda saved: server, proof=UNPROVEN) == (
+        "provider_unproven", None)
     assert en.enroll_account(store, lambda saved: server,
                              proof=replace(RESTRICTED, A="UNKNOWN"))[0] == "provider_unproven"
     assert server.calls == []
@@ -172,7 +174,8 @@ def test_context_uses_pin_when_pinned(store):
 
 def test_context_unavailable_when_active_root_unreadable(store):
     assert en.enroll_account(store, lambda saved: EnrollServer(), proof=RESTRICTED)[0] == "enrolled"
-    assert provider(store, FakeNextcloud(), proof=v.CURRENT_PROVIDER_PROOF)() is None
+    from test_303_v1b2_dav_verifier import UNPROVEN
+    assert provider(store, FakeNextcloud(), proof=UNPROVEN)() is None
 
 
 def test_picker_end_to_end_with_enrolled_context(store):

@@ -5,9 +5,8 @@ It has no HTTP client, credential loader, persistence or activation path.
 Provider capability is NOT assumed: unless every A/I/X/L/C/R gate in the
 supplied ``ProviderProof`` is ``VERIFIED``, the verifier refuses before any
 transport call.  ``CURRENT_PROVIDER_PROOF`` records the real register state
-(docs/oa303-p3-coherence-feasibility-adr.md): I/X/L/R are VERIFIED for scope
-V1-S1 only, while A and C are not. admits() is therefore False and the
-production default can never reach the provider.
+(docs/oa303-p3-coherence-feasibility-adr.md): A/I/X/L/R are VERIFIED for
+scope V1-S1 only and C is not, so only the restricted contract admits reads.
 """
 from __future__ import annotations
 
@@ -91,11 +90,13 @@ class ProviderProof:
 # promoted only under the owner criterion in
 # docs/oa303-a-account-binding-and-verified-criterion.md (scoped evidence,
 # independent review, explicit owner acceptance of that gate).
-# Owner accepted I/X/L/R as VERIFIED for scope V1-S1 on 2026-11-13. A awaits
-# owner acceptance after P3-A; C stays unproven (restricted contract). With A
-# not VERIFIED, admits() is still False: no provider I/O in production.
+# Owner accepted I/X/L/R (2026-11-13) and A after P3-A (2026-11-13) as
+# VERIFIED for scope V1-S1 only. C stays unproven: only the owner-approved
+# restricted contract (identity pin, no coherence claim) admits provider reads.
+# Production still performs none until a picker/enrollment/activation is wired
+# or a root is pinned.
 CURRENT_PROVIDER_PROOF = ProviderProof(
-    A="OBSERVED_WITH_LIMITS", I="VERIFIED", X="VERIFIED",
+    A="VERIFIED", I="VERIFIED", X="VERIFIED",
     L="VERIFIED", C="UNKNOWN", R="VERIFIED",
 )
 

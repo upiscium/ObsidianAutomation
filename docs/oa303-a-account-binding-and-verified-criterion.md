@@ -3,8 +3,12 @@
 - Status: criterion **accepted by the owner on 2026-11-13** ("例示のもので進めて").
 - **I, X, L and R accepted as VERIFIED for V1-S1 by the owner on 2026-11-13**
   ("I/X/L/RをVERIFIEDとして承認する"). `CURRENT_PROVIDER_PROOF` reflects this.
-- A awaits owner acceptance after P3-A. C stays UNKNOWN (restricted contract).
-  Because A is not VERIFIED, the register still admits no provider I/O.
+- **A accepted as VERIFIED for V1-S1 by the owner on 2026-11-13** after P3-A
+  ("両方とも承認する"). C stays UNKNOWN, so only the restricted contract
+  admits provider reads.
+- Production still performs no provider I/O. Enrollment, the picker and
+  activation are not wired into `main()`, and the Job guard reads only once
+  a root is pinned, which needs an activation.
 - Base: `main@def40466` (after #578).
 
 ## 1. VERIFIED criterion
@@ -37,7 +41,7 @@ acceptance.
 
 | Gate | Evidence in scope | Status |
 | --- | --- | --- |
-| A | P3-A (2026-11-13), see §3 | Steps 1 done; 2 and 3 pending. **OBSERVED_WITH_LIMITS** |
+| A | P3-A (2026-11-13), see §3; receipt reviewed | **VERIFIED** (V1-S1: OCS user id binding), owner 2026-11-13 |
 | I | P3-D1: `oc:id` stable across move, rename and restart; format matches `instanceid` | **VERIFIED** (V1-S1), owner 2026-11-13 |
 | X | P3-D2: received share = `mount-type shared` + owner's `oc:id`; local items empty | **VERIFIED** (V1-S1: user shares only), owner 2026-11-13 |
 | L | P3-D3: index-complete; out-of-band files absent until scanned (option A) | **VERIFIED** as index completeness (V1-S1), owner 2026-11-13 |
@@ -130,5 +134,5 @@ needs a configuration change, so it is outside V1-S1 and is not tested.
   The guarantee rests on the missing identity, not on the status code.
 
 **Limits.** One instance and version. OCS was observed for admin only.
-Login ≠ user ID and app-password scope were not tested. A remains
-OBSERVED_WITH_LIMITS until steps 2 and 3.
+Login ≠ user ID and app-password scope were not tested; both are outside
+V1-S1. The owner accepted A for V1-S1 with these limits.

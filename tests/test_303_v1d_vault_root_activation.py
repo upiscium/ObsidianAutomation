@@ -12,7 +12,7 @@ import pytest
 
 from obsidian_automation import vault_root_activation as act
 from obsidian_automation.snapshot_setup import SetupStore
-from obsidian_automation.vault_root_dav_verifier import CURRENT_PROVIDER_PROOF
+from test_303_v1b2_dav_verifier import UNPROVEN
 from test_303_v1b2_dav_verifier import ACCOUNT, VERIFIED, FakeNextcloud, oc_id
 
 RESTRICTED = replace(VERIFIED, C="UNKNOWN")
@@ -65,7 +65,7 @@ def test_disabled_and_unproven_do_nothing(store):
     nc = FakeNextcloud()
     before = snapshot(store)
     assert activate(store, nc, enabled=False).reason == "activation_disabled"
-    assert activate(store, nc, proof=CURRENT_PROVIDER_PROOF).reason == "provider_unproven"
+    assert activate(store, nc, proof=UNPROVEN).reason == "provider_unproven"
     assert activate(store, nc, proof=replace(RESTRICTED, R="UNKNOWN")).reason == \
         "provider_unproven"
     assert nc.calls == [] and snapshot(store) == before

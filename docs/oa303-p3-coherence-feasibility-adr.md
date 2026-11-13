@@ -56,7 +56,7 @@ counts and hashes only, not property values.
 
 | Gate | State |
 | --- | --- |
-| A | **OBSERVED_WITH_LIMITS** (P3-A, see the gate-A ADR) |
+| A | **VERIFIED** for V1-S1 (P3-A, OCS user id binding; owner 2026-11-13) |
 | I | **VERIFIED** for V1-S1 (P3-D1; owner 2026-11-13) |
 | X | **VERIFIED** for V1-S1, user shares only (P3-D2; owner 2026-11-13); group folders, external storage and symlinks outside scope |
 | L | **VERIFIED** for V1-S1 as index completeness (P3-D3; owner 2026-11-13); **FAILED** for storage completeness |
@@ -129,8 +129,9 @@ The options were:
    or after it. New collisions or aliases created inside the root later.
    The UI must say this.
 
-Even under (b), A/I/X/L/R must be VERIFIED. While A is not VERIFIED,
-(b) still makes zero provider calls. The code never writes
+Even under (b), A/I/X/L/R must be VERIFIED. Since 2026-11-13 they are, for
+V1-S1 only, so (b) admits provider reads. Nothing calls them in production
+until a picker, enrollment or activation is wired, or a root is pinned. The code never writes
 `C=VERIFIED` and never sets a coherence flag in restricted mode.
 
 ## P3 experiments
