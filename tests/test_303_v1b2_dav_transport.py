@@ -162,3 +162,14 @@ def test_total_deadline_bounds_a_slow_trickle(monkeypatch):
     # each socket wait is shrunk to the time left, so one read cannot overrun
     assert conn.sock.timeouts == [1.5, 1.0, 0.5]
     assert FakeConnection.response.reads == 2
+
+
+def test_ocs_current_user_is_one_fixed_get():
+    from obsidian_automation.vault_root_dav_transport import OCS_USER_PATH
+    FakeConnection.response = FakeResponse(status=200, body=b"{}")
+    response = transport().ocs_current_user(ORIGIN, timeout=2.0, max_bytes=100)
+    ((method, href, body, headers),) = FakeConnection.instances[0].requests
+    assert (method, href, body) == ("GET", OCS_USER_PATH, None)
+    assert headers["OCS-APIRequest"] == "true" and response.status == 200
+    with pytest.raises(DavTransportError):
+        transport().ocs_current_user("https://other.invalid", timeout=2.0, max_bytes=100)

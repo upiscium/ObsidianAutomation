@@ -16,9 +16,10 @@ from test_303_v1d_vault_root_activation import NC, RESTRICTED, activate
 
 
 class EnrollServer:
-    def __init__(self, *, principal="synthetic_user", fileid=1, instance=INSTANCE,
+    def __init__(self, *, ocs_id="synthetic_user", fileid=1, instance=INSTANCE,
                  mount="", collection=True, status=207, redirected=False, mutate=None):
-        self.principal, self.fileid, self.instance = principal, fileid, instance
+        self.ocs_id, self.fileid, self.instance = ocs_id, fileid, instance
+        self.ocs_status, self.ocs_body = 200, None
         self.mount, self.collection = mount, collection
         self.status, self.redirected = status, redirected
         self.mutate = mutate
@@ -32,8 +33,6 @@ class EnrollServer:
                'xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns">'
                f'<d:response><d:href>{PREFIX}</d:href><d:propstat><d:prop>'
                f'<d:resourcetype>{rtype}</d:resourcetype>'
-               '<d:current-user-principal><d:href>/remote.php/dav/principals/users/'
-               f'{self.principal}/</d:href></d:current-user-principal>'
                f'<oc:fileid>{self.fileid}</oc:fileid>'
                f'<oc:id>{str(self.fileid).zfill(8)}{self.instance}</oc:id>'
                f'<nc:mount-type>{self.mount}</nc:mount-type>'
@@ -43,6 +42,14 @@ class EnrollServer:
             xml = self.mutate(xml)
         return v.DavResponse(self.status, "application/xml; charset=utf-8", "",
                              self.redirected, xml.encode())
+
+    def ocs_current_user(self, origin, *, timeout, max_bytes):
+        assert origin == ORIGIN
+        self.calls.append("ocs")
+        body = self.ocs_body if self.ocs_body is not None else json.dumps(
+            {"ocs": {"meta": {"status": "ok", "statuscode": 100},
+                     "data": {"id": self.ocs_id}}}).encode()
+        return v.DavResponse(self.ocs_status, "application/json", "", False, body)
 
 
 @pytest.fixture
@@ -67,7 +74,7 @@ def test_enrollment_records_instance_root_and_user(store):
                                        clock=lambda: 1_700_000_000)
     assert status == "enrolled"
     assert record.instance_id == INSTANCE and record.root_resource_id == oc_id(1)
-    assert record.user_id == "synthetic_user" and server.calls == [PREFIX]
+    assert record.user_id == "synthetic_user" and server.calls == [PREFIX, "ocs"]
     path = store.state / en.ENROLLMENT_FILE
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     text = path.read_text()
@@ -76,14 +83,15 @@ def test_enrollment_records_instance_root_and_user(store):
 
 
 @pytest.mark.parametrize("server,reason", [
-    (EnrollServer(principal="someone_else"), "account_mismatch"),
+    (EnrollServer(ocs_id="someone_else"), "account_mismatch"),
+    # P3-A: another user's files root answers 207 with no oc:fileid / oc:id
+    (EnrollServer(mutate=lambda x: x.replace("<oc:fileid>1</oc:fileid>", "<oc:fileid/>")
+                  .replace(f"<oc:id>00000001{INSTANCE}</oc:id>", "<oc:id/>")),
+     "identity_unverified"),
     (EnrollServer(instance="BAD!"), "identity_unverified"),
     (EnrollServer(instance="UPPERCASE1"), "identity_unverified"),   # _INSTANCE regex
     (EnrollServer(mutate=lambda x: x.replace("<oc:fileid>1<", "<oc:fileid>2<")),
      "identity_unverified"),
-    (EnrollServer(mutate=lambda x: x.replace(
-        "<d:current-user-principal><d:href>/remote.php/dav/principals/users/synthetic_user/"
-        "</d:href></d:current-user-principal>", "")), "account_unverified"),
     (EnrollServer(mutate=lambda x: x.replace("</d:multistatus>", x[x.index("<d:response>"):
                                              x.index("</d:multistatus>")] + "</d:multistatus>")),
      "account_unverified"),
@@ -262,3 +270,38 @@ def test_fifo_records_are_rejected_without_blocking(store):
     worker.join(5)
     assert not worker.is_alive(), "reading a FIFO record blocked"
     assert results == [(None, None, "mismatch")]
+
+
+@pytest.mark.parametrize("body,status,reason", [
+    (b'{"ocs":{"meta":{"statuscode":997},"data":{}}}', 200, "account_unverified"),
+    (b'{"ocs":{"meta":{"statuscode":997},"data":{"id":"synthetic_user"}}}', 200,
+     "account_unverified"),
+    (b'{"ocs":{"meta":{"statuscode":100},"data":{"id":"a/b"}}}', 200, "account_unverified"),
+    (b'not json', 200, "account_unverified"),
+    (b'{}', 401, "provider_unavailable"),
+])
+def test_ocs_user_must_be_a_clean_ok_answer(store, body, status, reason):
+    server = EnrollServer()
+    server.ocs_body, server.ocs_status = body, status
+    assert en.enroll_account(store, lambda saved: server, proof=RESTRICTED) == (reason, None)
+
+
+def test_transport_without_ocs_read_cannot_enroll(store):
+    class PropfindOnly:
+        def propfind(self, *a, **k):
+            pytest.fail("no I/O expected")
+    assert en.enroll_account(store, lambda saved: PropfindOnly(), proof=RESTRICTED) == (
+        "provider_unavailable", None)
+
+
+def test_enroll_body_no_longer_asks_for_principal():
+    assert b"current-user-principal" not in en.ENROLL_BODY
+
+
+def test_ocs_user_must_match_the_url_user_segment(tmp_path):
+    # Login equals the OCS ID, but the saved URL names another user's files root.
+    other = "https://nextcloud.invalid/remote.php/dav/files/other_user/"
+    s = SetupStore(tmp_path, obscure=lambda _: "encoded")
+    assert s.save_nextcloud({**NC, "webdav_url": other}, probed=True)
+    server = EnrollServer(mutate=lambda x: x.replace(PREFIX, "/remote.php/dav/files/other_user/"))
+    assert en.enroll_account(s, lambda saved: server, proof=RESTRICTED) == ("account_mismatch", None)

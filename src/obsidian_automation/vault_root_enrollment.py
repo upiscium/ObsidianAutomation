@@ -4,8 +4,13 @@ One read-only ``PROPFIND Depth:0`` of the account's DAV files root records:
 - the instance ID (suffix of ``oc:id``), so a different Nextcloud behind the
   same URL is refused later;
 - the account root's ``oc:id``, the trusted container for every walk;
-- the authenticated user ID (``DAV:current-user-principal``), which must equal
-  the user segment of the saved ``/remote.php/dav/files/<user>/`` URL.
+- the authenticated user ID from OCS ``cloud/user``, which must equal the user
+  segment of the saved ``/remote.php/dav/files/<user>/`` URL and the saved login.
+
+P3-A (Nextcloud 35.0.2, 2026-11-13): ``DAV:current-user-principal`` is empty
+on a user's own files root, so it cannot bind the account. A PROPFIND of
+another user's files root returns a 207 stub without ``oc:fileid``/``oc:id``,
+which this parser rejects.
 
 The record is private (0600), holds no secret and is valid only for the saved
 WebDAV URL + user it was made under. Like every provider read in #303 it is
@@ -41,11 +46,11 @@ ENROLL_BODY = (
     b'<?xml version="1.0" encoding="utf-8"?>'
     b'<d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns"'
     b' xmlns:nc="http://nextcloud.org/ns"><d:prop>'
-    b"<d:resourcetype/><d:current-user-principal/><oc:fileid/><oc:id/>"
-    b"<nc:mount-type/></d:prop></d:propfind>"
+    b"<d:resourcetype/><oc:fileid/><oc:id/><nc:mount-type/></d:prop></d:propfind>"
 )
 _INSTANCE = re.compile(r"[a-z0-9]{3,64}\Z", re.ASCII)
-_PRINCIPAL = re.compile(r"/remote\.php/dav/principals/users/([^/]+)/\Z", re.ASCII)
+_USER_ID = re.compile(r"[A-Za-z0-9_.-]{1,64}\Z", re.ASCII)
+MAX_OCS_BYTES = 64 * 1024
 
 
 @dataclass(frozen=True)
@@ -60,7 +65,22 @@ def _account_user(prefix: str) -> str:
     return unquote(prefix.rstrip("/").rsplit("/", 1)[-1])
 
 
-def _parse_enrollment(body: bytes, prefix: str) -> tuple[str, str, str]:
+def _parse_ocs_user(body: bytes) -> str:
+    """OCS v1 ``cloud/user`` JSON: ``ocs.meta.statuscode == 100`` and a
+    plain ``ocs.data.id``. Anything else is ``account_unverified``."""
+    try:
+        data = json.loads(body.decode("utf-8"))
+        meta, payload = data["ocs"]["meta"], data["ocs"]["data"]
+        status, user = meta["statuscode"], payload["id"]
+    except (ValueError, UnicodeError, KeyError, TypeError):
+        raise _Blocked("account_unverified") from None
+    if type(status) is not int or status != 100 or type(user) is not str \
+            or _USER_ID.fullmatch(user) is None:
+        raise _Blocked("account_unverified")
+    return user
+
+
+def _parse_enrollment(body: bytes, prefix: str) -> tuple[str, str]:
     rows = _parse_xml(body)
     if len(rows) != 1:
         raise _Blocked("account_unverified")
@@ -90,12 +110,13 @@ def _parse_enrollment(body: bytes, prefix: str) -> tuple[str, str, str]:
     instance = resource_id[len(padded):]
     if _INSTANCE.fullmatch(instance) is None:
         raise _Blocked("identity_unverified")
-    principal = one(DAV + "current-user-principal").findall(DAV + "href")
-    match = (_PRINCIPAL.fullmatch(principal[0].text or "")
-             if len(principal) == 1 else None)
-    if match is None or unquote(match.group(1)) != _account_user(prefix):
-        raise _Blocked("account_mismatch")
-    return instance, resource_id, unquote(match.group(1))
+    return instance, resource_id
+
+
+def _ok(response: object, status: int, limit: int) -> bool:
+    return (type(response) is DavResponse and response.redirected is False
+            and response.status == status and type(response.body) is bytes
+            and len(response.body) <= limit)
 
 
 def enroll_account(
@@ -115,22 +136,27 @@ def enroll_account(
     origin, prefix = _origin(saved["webdav_url"]), urlsplit(saved["webdav_url"]).path
     if _ACCOUNT.fullmatch(prefix) is None:
         return "account_unverified", None
+    # The transport carries the SAVED credentials, so the OCS user check binds
+    # the login actually used to the URL's user segment.
+    transport = transport_factory(saved)
+    if not callable(getattr(transport, "ocs_current_user", None)):
+        return "provider_unavailable", None  # cannot bind the account
     try:
-        # The transport carries the SAVED credentials, so the principal check
-        # below binds the login actually used to the URL's user segment.
-        response = transport_factory(saved).propfind(origin, prefix, "0", ENROLL_BODY,
+        response = transport.propfind(origin, prefix, "0", ENROLL_BODY,
                                       timeout=PER_CALL_TIMEOUT_S, max_bytes=MAX_PAGE_BYTES)
+        if not _ok(response, 207, MAX_PAGE_BYTES):
+            return "provider_unavailable", None
+        instance, root_id = _parse_enrollment(response.body, prefix)
+        who = transport.ocs_current_user(origin, timeout=PER_CALL_TIMEOUT_S,
+                                         max_bytes=MAX_OCS_BYTES)
+        if not _ok(who, 200, MAX_OCS_BYTES):
+            return "provider_unavailable", None
+        user = _parse_ocs_user(who.body)
     except DavTransportError:
         return "provider_unavailable", None
-    if (type(response) is not DavResponse or response.redirected is not False
-            or response.status != 207 or type(response.body) is not bytes
-            or len(response.body) > MAX_PAGE_BYTES):
-        return "provider_unavailable", None
-    try:
-        instance, root_id, user = _parse_enrollment(response.body, prefix)
     except _Blocked as err:
         return err.code, None
-    if user != saved["nextcloud_user"]:
+    if user != _account_user(prefix) or user != saved["nextcloud_user"]:
         return "account_mismatch", None  # V1-S1: login name must equal user ID
     record = AccountEnrollment(instance, root_id, user, _source_digest(saved))
     existing = load_enrollment(store)
