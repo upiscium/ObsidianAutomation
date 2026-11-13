@@ -33,10 +33,11 @@ class FakeNextcloud:
             "Vault/Notes": (11, True, ""),
             "Vault/readme.md": (12, False, ""),
             "Other": (20, True, ""),
-            "Shared": (30, True, "shared"),
+            "Shared": (30, True, "external"),
             "a.md": (40, False, ""),
         }
         self.etag = "root-etag-1"
+        self.perms: dict[str, str] = {}
         self.calls: list[tuple[str, str]] = []
         self.on_call = None
         self.row_hook = None
@@ -54,9 +55,17 @@ class FakeNextcloud:
             href += "/"
         rtype = "<d:collection/>" if is_dir else ""
         etag = self.etag if path == "" else f"etag-{fileid}"
+        parent = path.rsplit("/", 1)[0] if "/" in path else ""
+        parent_mount = self.nodes[parent][2] if path else ""
+        # As observed on Nextcloud 35 (P3-D2/P3-SR): a share's root reports
+        # is-mount-root true, everything inside it false.
+        mount_root = "true" if mount and parent_mount != mount else "false"
+        perms = self.perms.get(path, "SGDNVCK" if mount else "RGDNVCK")
         props = (f"<d:resourcetype>{rtype}</d:resourcetype><d:getetag>&quot;{etag}&quot;</d:getetag>"
                  f"<oc:fileid>{fileid}</oc:fileid><oc:id>{oc_id(fileid)}</oc:id>"
-                 f"<nc:mount-type>{mount}</nc:mount-type>")
+                 f"<nc:mount-type>{mount}</nc:mount-type>"
+                 f"<nc:is-mount-root>{mount_root}</nc:is-mount-root>"
+                 f"<oc:permissions>{perms}</oc:permissions>")
         text = (f"<d:response><d:href>{href}</d:href><d:propstat><d:prop>{props}</d:prop>"
                 f"<d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>")
         return self.row_hook(path, text) if self.row_hook else text
@@ -172,14 +181,14 @@ def test_descendant_of_a_mount_is_blocked_at_the_mount_root():
     # P3-D2 (2026-11-12, NC 35.0.2): descendants of a received share also
     # report nc:mount-type "shared"; the walk already stops at the mount root.
     nc = FakeNextcloud()
-    nc.nodes["Shared/Inner"] = (31, True, "shared")
+    nc.nodes["Shared/Inner"] = (31, True, "external")
     assert run(nc, selection("Shared/Inner")).reason == "unsafe_target"
     assert [href for href, _ in nc.calls] == [PREFIX]
 
 
 def test_leaf_reporting_a_mount_type_is_unsafe():
     nc = FakeNextcloud()
-    nc.nodes["Vault/Inner"] = (31, True, "shared")
+    nc.nodes["Vault/Inner"] = (31, True, "external")
     assert run(nc, selection("Vault/Inner")).reason == "unsafe_target"
     nc.nodes["Vault/Inner"] = (31, True, "")
     assert run(nc, selection("Vault/Inner")).status == "candidate_valid"
