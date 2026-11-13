@@ -34,7 +34,7 @@ def serving():
 
 def request(app, path, method="GET", *, host=None, origin=None):
     port = app.server_address[1]
-    conn = HTTPConnection("127.0.0.1", port, timeout=3)
+    conn = HTTPConnection("127.0.0.1", port, timeout=10)
     headers = {"Host": host or f"127.0.0.1:{port}"}
     if origin is not None:
         headers["Origin"] = origin

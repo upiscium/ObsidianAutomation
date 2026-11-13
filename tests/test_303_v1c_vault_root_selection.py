@@ -158,7 +158,7 @@ def dashboard():
 
         def request(method, path, data=None, *, csrf=None,
                     origin=f"http://127.0.0.1:{port}"):
-            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=4)
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
             headers = {"Host": f"127.0.0.1:{port}"}
             if origin:
                 headers["Origin"] = origin

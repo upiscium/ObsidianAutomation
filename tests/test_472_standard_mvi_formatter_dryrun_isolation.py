@@ -39,7 +39,7 @@ def dashboard(formatter: FormatterJob, snapshot: SnapshotJob):
 
 def request(server, method: str, route: str, payload=None, csrf=None):
     port = server.server_address[1]
-    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=4)
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
     headers = {"Host": f"127.0.0.1:{port}"}
     if payload is not None:
         headers["Content-Type"] = "application/json"

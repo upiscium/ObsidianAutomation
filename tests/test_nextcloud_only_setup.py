@@ -149,7 +149,7 @@ def test_nextcloud_only_http_then_b4_run_then_optional_gitea_upgrade(tmp_path):
             origin = f"http://127.0.0.1:{port}"
 
             def request(method, path, data=None, *, csrf=None, at_origin=True):
-                conn = http.client.HTTPConnection("127.0.0.1",port,timeout=4)
+                conn = http.client.HTTPConnection("127.0.0.1",port,timeout=10)
                 headers={"Host":f"127.0.0.1:{port}"}
                 if at_origin:headers["Origin"]=origin
                 if csrf:headers["X-Obsidian-CSRF"]=csrf

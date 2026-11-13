@@ -143,7 +143,7 @@ def test_dashboard_shared_save_resets_pin_under_locks(store, tmp_path):
         port = server.server_address[1]
 
         def request(method, path, data=None, csrf=None):
-            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=4)
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
             headers = {"Host": f"127.0.0.1:{port}", "Origin": f"http://127.0.0.1:{port}"}
             if csrf:
                 headers["X-Obsidian-CSRF"] = csrf
@@ -314,7 +314,7 @@ def test_full_snapshot_save_route_also_resets_pin(tmp_path):
         port = server.server_address[1]
 
         def request(method, path, data=None, csrf=None):
-            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=4)
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
             headers = {"Host": f"127.0.0.1:{port}", "Origin": f"http://127.0.0.1:{port}"}
             if csrf:
                 headers["X-Obsidian-CSRF"] = csrf

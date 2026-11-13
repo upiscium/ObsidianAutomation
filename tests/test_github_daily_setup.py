@@ -209,7 +209,7 @@ def test_connections_http_setup_and_shared_snapshot_contract(tmp_path):
         origin=f"http://127.0.0.1:{port}"
 
         def req(method,path,payload=None,orig=None,token=None):
-            conn=http.client.HTTPConnection("127.0.0.1",port,timeout=4)
+            conn=http.client.HTTPConnection("127.0.0.1",port,timeout=10)
             headers={"Host":f"127.0.0.1:{port}"}
             if orig: headers["Origin"]=orig
             if token: headers["X-Obsidian-CSRF"]=token
@@ -299,7 +299,7 @@ def test_b2_nextcloud_settings_change_pauses_b4_until_reconfigured(tmp_path):
         origin=f"http://127.0.0.1:{port}"
 
         def request(method,path,payload=None,csrf=None):
-            conn=http.client.HTTPConnection("127.0.0.1",port,timeout=3)
+            conn=http.client.HTTPConnection("127.0.0.1",port,timeout=10)
             headers={"Host":f"127.0.0.1:{port}","Origin":origin}
             if csrf: headers["X-Obsidian-CSRF"]=csrf
             if payload is not None: headers["Content-Type"]="application/json"

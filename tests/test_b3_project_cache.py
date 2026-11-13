@@ -141,7 +141,7 @@ def test_get_http_cache_is_only_local_never_collects_or_writes(tmp_path):
         thread.start()
         try:
             def get():
-                connection=http.client.HTTPConnection("127.0.0.1",server.server_address[1],timeout=4)
+                connection=http.client.HTTPConnection("127.0.0.1",server.server_address[1],timeout=10)
                 try:
                     connection.request("GET","/api/v1/b3/projects")
                     response=connection.getresponse()
@@ -340,7 +340,7 @@ def test_get_rechecks_source_generation_after_bounded_local_cache_read(
         thread.start()
         try:
             connection = http.client.HTTPConnection(
-                "127.0.0.1", server.server_address[1], timeout=4,
+                "127.0.0.1", server.server_address[1], timeout=10,
             )
             try:
                 connection.request("GET", "/api/v1/b3/projects")

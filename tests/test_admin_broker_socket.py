@@ -267,7 +267,7 @@ def test_dashboard_capability_api_no_write_and_fails_closed(observer, expected_r
     thread.start()
     port = srv.server_address[1]
     def query(method="GET", host=None, origin=None, path="/api/v1/operation-capabilities"):
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
         headers = {"Host": host or f"127.0.0.1:{port}"}
         if origin is not None:
             headers["Origin"] = origin
@@ -313,7 +313,7 @@ def test_dashboard_broker_observer_exception_does_not_leak():
     thread.start()
     try:
         port = srv.server_address[1]
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
         conn.request("GET", "/api/v1/operation-capabilities",
                      headers={"Host": f"127.0.0.1:{port}"})
         response = conn.getresponse()

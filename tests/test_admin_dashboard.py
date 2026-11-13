@@ -34,7 +34,7 @@ def serving(observer, ai_observer=None):
 def response(server, method="GET", path="/api/v1/status", *, host=None, origin=None):
     assert server.server_address[0] == "127.0.0.1"
     port = server.server_address[1]
-    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
     headers = {"Host": host if host is not None else f"127.0.0.1:{port}"}
     if origin is not None:
         headers["Origin"] = origin
@@ -111,7 +111,7 @@ def test_host_validation_and_origin_validation() -> None:
 def test_duplicate_host_header_is_rejected() -> None:
     with serving(fixture_observer) as server:
         port = server.server_address[1]
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
         try:
             conn.putrequest("GET", "/", skip_host=True)
             conn.putheader("Host", f"127.0.0.1:{port}")

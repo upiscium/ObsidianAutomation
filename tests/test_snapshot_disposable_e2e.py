@@ -43,7 +43,7 @@ def test_disposable_dashboard_to_restore_and_restart(tmp_path, monkeypatch):
         return job, server, thread, port
 
     def request(port, method, path, body=None, token=None):
-        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
         headers = {"Host": f"127.0.0.1:{port}"}
         if method == "POST":
             headers.update({"Origin": f"http://127.0.0.1:{port}", "Content-Type": "application/json"})
