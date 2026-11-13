@@ -22,6 +22,7 @@ from .github_project_watcher import GitHubClient, WatcherConfig, run_once
 from .b3_project_cache import (
     CacheUnavailable, build_project_snapshot, persist_project_snapshot,
 )
+from .vault_layout import role_folder
 
 VERSION = "github-b3-watcher-bridge/v1"
 _LOCK = "watcher.lock"
@@ -33,7 +34,7 @@ _MAX_WARNING_LINE_BYTES = 4096
 # relative 10-Project paths. Its unreadable-note warnings use absolute paths;
 # those and all error diagnostics must remain fail-closed.
 _METADATA_WARNING = re.compile(
-    r"10-Project/(?:[^/\x00-\x1f]+/)*[^/\x00-\x1f]+\.md: "
+    re.escape(role_folder("project")) + r"/(?:[^/\x00-\x1f]+/)*[^/\x00-\x1f]+\.md: "
     r"invalid (?:github_repo|Project status): .+\Z"
 )
 _SHA = re.compile(r"[0-9a-f]{64}\Z")

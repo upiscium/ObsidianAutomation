@@ -23,6 +23,7 @@ from urllib.parse import unquote, urlsplit
 from .github_b3_job import B3JobConfig
 from .github_b3_request_binding import B3RegisteredScope
 from .webdav_create import build_target_url
+from .vault_layout import role_folder
 
 ROOT = Path("/etc/obsidian-b3-registered")
 TRUST_ANCHOR = Path("/")
@@ -162,7 +163,7 @@ def _registration(record: dict[str, object], secret: bytes) -> B3RegisteredScope
                    for k in ("source_generation", "binding_ref", "revision"))
             or type(record["project_path"]) is not str
             or len(record["project_path"]) > 512
-            or not record["project_path"].startswith("10-Project/")
+            or not record["project_path"].startswith(role_folder("project") + "/")
             or not record["project_path"].endswith(".md")
             or type(record["repository"]) is not str
             or not _REPO.fullmatch(record["repository"])

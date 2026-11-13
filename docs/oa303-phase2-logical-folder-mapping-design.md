@@ -95,5 +95,7 @@ exactly today's behaviour.
 ## Open questions for the owner
 
 - Should the AI-derived state (`04-AI`) leave the Vault entirely, as the
-  #303 issue text suggests, instead of being mapped?
-- Is the role list complete? Inventory P2-0 will confirm it.
+  #303 issue text suggests, instead of being mapped? Decided 2026-11-13:
+  keep it in the mapping for now (#584).
+- Is the role list complete? Yes for `src/`; see
+  `docs/oa303-phase2-path-inventory.md` (P2-0).

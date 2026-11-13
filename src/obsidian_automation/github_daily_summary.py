@@ -28,6 +28,7 @@ from .artifact_lifecycle import (
     sha256_bytes,
 )
 from .generation_artifact import validate_model_config
+from .vault_layout import role_folder
 
 
 RECORD_VERSION = 1
@@ -558,7 +559,7 @@ def parse_evidence_bundle(data: bytes) -> EvidenceBundle:
             not isinstance(item, dict)
             or set(item) != {"project_path", "repository"}
             or not isinstance(item["project_path"], str)
-            or not item["project_path"].startswith("10-Project/")
+            or not item["project_path"].startswith(role_folder("project") + "/")
             or not item["project_path"].endswith(".md")
             or not isinstance(item["repository"], str)
             or _REPOSITORY_RE.fullmatch(item["repository"]) is None

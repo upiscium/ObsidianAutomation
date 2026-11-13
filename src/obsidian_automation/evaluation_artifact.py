@@ -37,6 +37,9 @@ from .knowledge_index import (
     verify_index_current,
 )
 from .production_io import ProductionIOError, mirror_read_lock
+from .vault_layout import role_folder
+
+_KNOWLEDGE = role_folder("knowledge")
 
 
 EVALUATION_REQUEST_STAGE = "12-Evaluation-Request"
@@ -369,7 +372,7 @@ def parse_evaluation_request(data: bytes) -> EvaluationRequest:
     mutation = _require_sha256(value["mutation_sha256"], label="mutation_sha256")
     target = value["target_path"]
     query = value["query"]
-    if not isinstance(target, str) or not target.startswith("11-Knowledge/") or not target.endswith(".md"):
+    if not isinstance(target, str) or not target.startswith(_KNOWLEDGE + "/") or not target.endswith(".md"):
         raise ArtifactLifecycleError("evaluation request target_path is invalid")
     if not isinstance(query, str) or not query.strip() or len(query) > MAX_EVALUATION_QUERY_CHARS:
         raise ArtifactLifecycleError("evaluation request query is invalid")
@@ -588,7 +591,7 @@ def _validated_knowledge_path(value: object, *, label: str = "candidate_path") -
         or not value
         or value != value.strip()
         or len(value) > MAX_EVALUATION_CANDIDATE_PATH_CHARS
-        or not value.startswith("11-Knowledge/")
+        or not value.startswith(_KNOWLEDGE + "/")
         or not value.endswith(".md")
         or "\\" in value
         or value.startswith("/")
@@ -600,7 +603,7 @@ def _validated_knowledge_path(value: object, *, label: str = "candidate_path") -
         raise ArtifactLifecycleError(f"evaluation {label} must be UTF-8 encodable") from exc
 
     parts = value.split("/")
-    if len(parts) < 2 or parts[0] != "11-Knowledge":
+    if len(parts) < 2 or parts[0] != _KNOWLEDGE:
         raise ArtifactLifecycleError(f"evaluation {label} is invalid")
     for component in parts[1:]:
         if (

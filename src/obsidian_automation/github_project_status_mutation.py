@@ -20,6 +20,7 @@ from .core_promotion_transport import (
 )
 from .production_io import ProductionIOError, canonical_io_lock
 from .webdav_create import WebDAVCreateError, _read_password, build_target_url
+from .vault_layout import role_folder
 
 
 TRANSPORT_RESULT_VERSION = 1
@@ -168,7 +169,7 @@ def _safe_project_path(value: object) -> str:
     parts = value.split("/")
     if any(part in {"", ".", ".."} for part in parts):
         raise ProjectStatusMutationError("project contains an unsafe path component")
-    if len(parts) < 2 or parts[0] != "10-Project":
+    if len(parts) < 2 or parts[0] != role_folder("project"):
         raise ProjectStatusMutationError("project must be below 10-Project")
     return value
 

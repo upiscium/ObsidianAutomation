@@ -28,6 +28,7 @@ from .retrieval_coverage import (
     QueryCoverage,
     coverage_by_path,
 )
+from .vault_layout import role_folder
 
 
 EVAL_VERSION = 1
@@ -61,7 +62,7 @@ def _round_metric(value: float) -> float:
 def _safe_eval_path(path: object) -> str:
     if (
         not isinstance(path, str)
-        or not path.startswith("11-Knowledge/")
+        or not path.startswith(role_folder("knowledge") + "/")
         or not path.endswith(".md")
     ):
         raise ArtifactLifecycleError(

@@ -55,6 +55,7 @@ from .semantic_index import (
     load_embedding_request,
     load_semantic_index_manifest,
 )
+from .vault_layout import role_folder
 
 
 QUERY_REQUEST_VERSION = 1
@@ -532,7 +533,7 @@ def _safe_relevant_path(value: object) -> str:
     parts = PurePosixPath(value).parts
     if (
         not parts
-        or parts[0] not in {"00-DailyNote", "05-Idea", "10-Project", "11-Knowledge"}
+        or parts[0] not in {role_folder(r) for r in ("daily", "idea", "project", "knowledge")}
         or any(part in {"", ".", ".."} or part.startswith(".") for part in parts)
         or not value.endswith(".md")
     ):

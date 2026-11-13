@@ -42,6 +42,7 @@ from .webdav_create import (
     _read_password,
     build_target_url,
 )
+from .vault_layout import role_folder
 
 
 PROJECTION_VERSION = 1
@@ -51,7 +52,7 @@ TRANSPORT_SUFFIX = "github-daily-progress.transport-result"
 PROJECTION_STAGE = "github_daily_progress_projection"
 TRANSPORT_STAGE = "github_daily_progress_transport"
 PROJECT_PROGRESS_HEADING = "Project Progress"
-DAILY_ROOT = "00-DailyNote"
+DAILY_ROOT = role_folder("daily")
 
 MAX_SECTION_BYTES = 2 * 1024 * 1024
 MAX_DAILY_BYTES = 4 * 1024 * 1024

@@ -22,6 +22,7 @@ from . import github_daily_runonce as daily
 from . import github_project_watcher as watcher
 from . import github_daily_deterministic_preview as preview
 from .snapshot_setup import NextcloudSource
+from .vault_layout import role_folder
 
 
 class DailySetupError(ValueError):
@@ -205,7 +206,7 @@ class DailySetup:
                 "[watcher]\n"
                 "vault_root = " + json.dumps(str(self.state / "mirror")) + "\n"
                 "state_db = " + json.dumps(str(self.state / "watcher.sqlite3")) + "\n"
-                'project_folder = "10-Project"\n'
+                "project_folder = " + json.dumps(role_folder("project")) + "\n"
                 'github_api_base = "https://api.github.com"\n'
                 "request_timeout_seconds = 15\n"
             ).encode("utf-8")
@@ -291,7 +292,7 @@ class DailySetup:
             # The remote copier uses a private immutable config snapshot for
             # phase-admitted runs. No Connections/UI lock is held across
             # remote rclone or GitHub GETs.
-            project_dir = root / "10-Project"
+            project_dir = root / role_folder("project")
             project_dir.mkdir(mode=0o700)
             if not self.copier(connections, project_dir):
                 raise DailySetupError("project_mirror_pull_failed")
@@ -330,7 +331,7 @@ def pull_project_notes(connections, target: Path) -> bool:
     connections.validate()
     if not target.is_dir() or target.is_symlink():
         return False
-    source = connections.rclone_remote + "/10-Project"
+    source = connections.rclone_remote + "/" + role_folder("project")
     argv = ["rclone", "--config", str(connections.rclone_config), "copy",
             source, str(target), "--include", "*.md",
             "--retries", "1", "--low-level-retries", "1"]

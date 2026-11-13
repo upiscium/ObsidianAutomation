@@ -16,6 +16,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, TextIO
 
+from .vault_layout import role_folder
+
 
 VALID_STATUSES = frozenset({"planning", "running", "stopped", "stable", "done", "cancelled"})
 TERMINAL_STATUSES = frozenset({"done", "cancelled"})
@@ -64,7 +66,7 @@ def _is_empty_repository_response(exc: GitHubAPIHTTPError) -> bool:
 class WatcherConfig:
     vault_root: Path
     state_db: Path
-    project_folder: str = "10-Project"
+    project_folder: str = role_folder("project")
     active_window_days: int = 7
     github_api_base: str = "https://api.github.com"
     github_token_env: str = "GITHUB_TOKEN"
@@ -166,7 +168,7 @@ def _watch_enabled(value: str) -> bool:
     return value.strip().lower() in {"true", "yes", "1", "on"}
 
 
-def scan_projects(vault_root: Path, project_folder: str = "10-Project") -> tuple[list[ProjectBinding], list[str]]:
+def scan_projects(vault_root: Path, project_folder: str = role_folder("project")) -> tuple[list[ProjectBinding], list[str]]:
     root = (vault_root / project_folder).resolve()
     try:
         root.relative_to(vault_root.resolve())
@@ -226,7 +228,7 @@ def load_config(path: Path) -> WatcherConfig:
     return WatcherConfig(
         vault_root=vault_root,
         state_db=state_db,
-        project_folder=str(raw.get("project_folder", "10-Project")),
+        project_folder=str(raw.get("project_folder", role_folder("project"))),
         active_window_days=active_window_days,
         github_api_base=str(raw.get("github_api_base", "https://api.github.com")).rstrip("/"),
         github_token_env=str(raw.get("github_token_env", "GITHUB_TOKEN")),

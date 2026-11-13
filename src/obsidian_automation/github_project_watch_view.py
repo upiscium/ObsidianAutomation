@@ -16,8 +16,10 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from .vault_layout import role_folder
+
 _SCHEMA = "b3-project-watch-list/v1"
-_PATH = re.compile(r"10-Project/(?:[^/\\\x00-\x1f]+/)*[^/\\\x00-\x1f]+\.md\Z")
+_PATH = re.compile(re.escape(role_folder("project")) + r"/(?:[^/\\\x00-\x1f]+/)*[^/\\\x00-\x1f]+\.md\Z")
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 _PROJECT_STATES = frozenset({
     "planning", "running", "stopped", "stable", "done", "cancelled",

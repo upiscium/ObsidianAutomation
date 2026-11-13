@@ -20,6 +20,9 @@ from .evaluator_conflict import (
     ConsistencyConflictProposal,
     ConsistencyVerification,
 )
+from .vault_layout import role_folder
+
+_KNOWLEDGE = role_folder("knowledge")
 
 
 EVALUATOR_OUTPUT_CONTRACT_VERSION = "knowledge-note-evaluator-output-v7"
@@ -366,7 +369,7 @@ def _validated_candidate_path(value: object) -> str:
         or not value
         or value != value.strip()
         or len(value) > MAX_EVALUATOR_CANDIDATE_PATH_CHARS
-        or not value.startswith("11-Knowledge/")
+        or not value.startswith(_KNOWLEDGE + "/")
         or not value.endswith(".md")
         or "\\" in value
         or value.startswith("/")
@@ -377,7 +380,7 @@ def _validated_candidate_path(value: object) -> str:
     except UnicodeEncodeError as exc:
         raise ArtifactLifecycleError("evaluator candidate path must be UTF-8 encodable") from exc
     parts = value.split("/")
-    if len(parts) < 2 or parts[0] != "11-Knowledge":
+    if len(parts) < 2 or parts[0] != _KNOWLEDGE:
         raise ArtifactLifecycleError("evaluator candidate path is invalid")
     for component in parts[1:]:
         if (
@@ -1637,7 +1640,7 @@ def _candidate_payload(candidate: EvaluationCandidate) -> dict[str, str]:
 def _proposal_payload(target_path: str, proposal_content: str) -> dict[str, str]:
     if (
         not isinstance(target_path, str)
-        or not target_path.startswith("11-Knowledge/")
+        or not target_path.startswith(_KNOWLEDGE + "/")
         or not target_path.endswith(".md")
     ):
         raise ArtifactLifecycleError("evaluator target_path is invalid")

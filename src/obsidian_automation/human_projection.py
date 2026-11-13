@@ -46,11 +46,12 @@ from .webdav_create import (
     observe_remote,
     _read_password,
 )
+from .vault_layout import role_folder
 
 
 REQUEST_STAGE = "16-Human-Projection"
 RESULT_STAGE = "17-Human-Projection-Result"
-PROJECTION_ROOT = "04-AI"
+PROJECTION_ROOT = role_folder("ai")
 RECORD_VERSION = 1
 POST_REVIEW_BINDING_SUFFIX = ".projection-binding.json"
 MAX_MARKDOWN_BYTES = 512 * 1024

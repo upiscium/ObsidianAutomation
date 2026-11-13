@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 from . import github_daily_deterministic_preview as preview
 from . import github_daily_standard_source as standard
 from . import github_project_watcher as watcher
+from .vault_layout import role_folder
 
 
 class DailyPreviewRunError(ValueError):
@@ -66,7 +67,7 @@ def load_run_config(state: Path) -> tuple[watcher.WatcherConfig, str]:
         if (cfg.github_api_base != 'https://api.github.com'
                 or cfg.vault_root != state / 'mirror'
                 or cfg.state_db != state / 'watcher.sqlite3'
-                or cfg.project_folder != '10-Project'):
+                or cfg.project_folder != role_folder('project')):
             raise DailyPreviewRunError('unsupported B4 source configuration')
         preview._private_root(cfg.vault_root)
         standard._stages(state / 'cas')

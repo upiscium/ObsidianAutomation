@@ -98,11 +98,12 @@ from .semantic_selection import (
     build_semantic_selection,
     store_semantic_selection,
 )
+from .vault_layout import role_folder
 
 
 RECORD_VERSION = 1
-KNOWLEDGE_ROOT = "11-Knowledge"
-PROJECT_ROOT = "10-Project"
+KNOWLEDGE_ROOT = role_folder("knowledge")
+PROJECT_ROOT = role_folder("project")
 SELECTION_DIR = "input-selections"
 STATE_FILE = "input-planner-state.json"
 PENDING_FILE = "input-planner-pending.json"

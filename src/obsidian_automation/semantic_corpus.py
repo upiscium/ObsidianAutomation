@@ -21,6 +21,7 @@ from .artifact_lifecycle import (
     sha256_bytes,
 )
 from .production_io import ProductionIOError, mirror_read_lock
+from .vault_layout import role_folder
 
 
 INDEX_STAGE = "04-Index"
@@ -34,10 +35,10 @@ CHUNK_POLICY_VERSION = "heading-section-lf-v2"
 SUPPORTED_CHUNK_POLICY_VERSIONS = frozenset(
     {*LEGACY_CHUNK_POLICY_VERSIONS, CHUNK_POLICY_VERSION}
 )
-DAILY_ROOT = "00-DailyNote"
-IDEA_ROOT = "05-Idea"
-PROJECT_ROOT = "10-Project"
-KNOWLEDGE_ROOT = "11-Knowledge"
+DAILY_ROOT = role_folder("daily")
+IDEA_ROOT = role_folder("idea")
+PROJECT_ROOT = role_folder("project")
+KNOWLEDGE_ROOT = role_folder("knowledge")
 SOURCE_ROOTS = (DAILY_ROOT, IDEA_ROOT, PROJECT_ROOT, KNOWLEDGE_ROOT)
 DAILY_ALWAYS_EXCLUDED_H1 = frozenset({"Project Progress"})
 MAX_DOCUMENTS = 8192

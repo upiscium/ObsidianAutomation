@@ -55,6 +55,7 @@ from .pre_review_worker import (
     run_validator_worker,
 )
 from .production_io import mirror_read_lock
+from .vault_layout import role_folder
 
 
 GENERATOR_INFERENCE_OPTIONS = {**dict(DEFAULT_OPTIONS), "reasoning_effort": "none"}
@@ -97,7 +98,7 @@ def _area(root: Path, name: str) -> tuple[Path, Path]:
     area = root / name
     vault = area / "vault"
     state = area / "state"
-    (vault / "11-Knowledge").mkdir(parents=True)
+    (vault / role_folder("knowledge")).mkdir(parents=True)
     state.mkdir()
     for stage in (
         "00-Untrusted",
