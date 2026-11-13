@@ -175,7 +175,11 @@ def test_context_uses_pin_when_pinned(store):
 def test_context_unavailable_when_active_root_unreadable(store):
     assert en.enroll_account(store, lambda saved: EnrollServer(), proof=RESTRICTED)[0] == "enrolled"
     from test_303_v1b2_dav_verifier import UNPROVEN
-    assert provider(store, FakeNextcloud(), proof=UNPROVEN)() == "active_root_unreadable"
+    assert provider(store, FakeNextcloud(), proof=UNPROVEN)() == "provider_unproven"
+    nc = FakeNextcloud()
+    from dataclasses import replace as _replace
+    nc.response_hook = lambda r: _replace(r, status=503)
+    assert provider(store, nc)() == "active_root_unreadable"
 
 
 def test_picker_end_to_end_with_enrolled_context(store):

@@ -71,7 +71,7 @@ class VaultRootSelectionService:
 
     _CONTEXT_REASONS = frozenset({
         "binding_unavailable", "not_enrolled", "source_changed",
-        "active_root_shared", "active_root_unreadable",
+        "active_root_shared", "active_root_unreadable", "provider_unproven",
     })
 
     def _load(self) -> tuple[TrustedRootContext | None, str]:

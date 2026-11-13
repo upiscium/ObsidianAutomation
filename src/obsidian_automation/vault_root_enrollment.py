@@ -233,8 +233,11 @@ def context_provider(
             active_id, why = read_root_status(account, transport_factory(saved),
                                               saved["vault_folder"], proof=proof)
             if active_id is None:
-                return "active_root_shared" if why == "shared_root" else \
-                    "active_root_unreadable"
+                if store.nextcloud_revision() != revision:
+                    return "source_changed"
+                return {"shared_root": "active_root_shared",
+                        "provider_unproven": "provider_unproven"}.get(
+                            why, "active_root_unreadable")
         if store.nextcloud_revision() != revision:
             return "source_changed"
         busy = jobs_busy()

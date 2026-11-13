@@ -527,12 +527,15 @@ def read_root_status(
         rows, _ = _Walk(account, transport, clock).propfind(path, "0")
     except _Blocked:
         return None, "unreadable"
-    # Compare without the trailing slash: a file's href has none.
-    if (len(rows) != 1 or _canonical_href(rows[0].href).rstrip("/")
-            != _expected_parent_href(account.account_prefix, path).rstrip("/")):
+    if len(rows) != 1:
         return None, "unreadable"
+    href = _canonical_href(rows[0].href)
+    expected = _expected_parent_href(account.account_prefix, path)
     if not rows[0].collection:
-        return None, "not_a_folder"
+        # Only to classify a file (its href has no trailing slash).
+        return (None, "not_a_folder") if href == expected.rstrip("/") else (None, "unreadable")
+    if href != expected:  # a folder must answer at its exact collection href
+        return None, "unreadable"
     if rows[0].is_alias:
         return None, "shared_root"
     return rows[0].resource_id, "ok"

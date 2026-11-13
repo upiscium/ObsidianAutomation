@@ -458,3 +458,15 @@ def test_read_root_status_reasons(change, reason):
     value, why = v.read_root_status(ACCOUNT, nc, path, proof=RESTRICTED)
     assert why == reason and (value is not None) == (reason == "ok")
     assert v.read_root_status(ACCOUNT, nc, "Vault", proof=UNPROVEN) == (None, "provider_unproven")
+
+
+
+def test_read_root_identity_keeps_exact_collection_href():
+    # Regression (PR #581 review): a folder answering without its trailing
+    # slash is refused, as before the reason plumbing was added.
+    nc = FakeNextcloud()
+    nc.row_hook = lambda path, t: t.replace(
+        "/remote.php/dav/files/synthetic_user/Vault/<", "/remote.php/dav/files/synthetic_user/Vault<") \
+        if path == "Vault" else t
+    assert v.read_root_status(ACCOUNT, nc, "Vault", proof=RESTRICTED) == (None, "unreadable")
+    assert v.read_root_identity(ACCOUNT, nc, "Vault", proof=RESTRICTED) is None
