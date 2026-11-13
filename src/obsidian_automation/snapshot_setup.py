@@ -23,10 +23,11 @@ NEXTCLOUD_FIELDS = {"webdav_url", "vault_folder", "nextcloud_user", "nextcloud_p
 GITEA_FIELDS = {"git_url", "git_user", "git_token", "branch"}
 FIELDS = NEXTCLOUD_FIELDS | GITEA_FIELDS
 MARKER = "_rclone_sha256"
-# `rclone obscure` prints URL-safe base64 ("-" and "_"); standard base64
-# characters are kept for older outputs. Single line, nothing that could end
+# `rclone obscure` prints unpadded URL-safe base64 ("-" and "_"). "+/=" stay
+# accepted as before. No length cap beyond the input's own bound: a 512-char
+# password yields up to ~2.8k characters. One token, nothing that could end
 # or extend the rclone config value.
-_OBSCURED = re.compile(r"[A-Za-z0-9+/=_-]{1,512}")
+_OBSCURED = re.compile(r"[A-Za-z0-9+/=_-]+")
 _REVISION_KEY = os.urandom(32)
 
 
