@@ -324,7 +324,7 @@ def test_ocs_is_not_called_when_the_root_read_fails(store, server):
     assert server.calls == [PREFIX]
 
 
-def test_context_reports_a_shared_active_root(store):
+def test_context_reports_an_unsupported_mount_active_root(store):
     # Production finding (2026-11-13): the saved Vault is a received share.
     assert en.enroll_account(store, lambda saved: EnrollServer(), proof=RESTRICTED)[0] == "enrolled"
     nc = FakeNextcloud()

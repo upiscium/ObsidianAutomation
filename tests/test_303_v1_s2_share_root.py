@@ -155,3 +155,48 @@ def test_production_shape_end_to_end(tmp_path):
     # Owner deletes and recreates the shared folder: the Job refuses.
     nc.nodes["ObsidianVault/Notes"] = (99, True, "shared")
     assert guard.status() == "mismatch"
+
+
+def test_in_share_row_at_a_local_level_is_refused():
+    nc = share_nc()
+    nc.nodes["Loose"] = (90, True, "shared")
+    nc.row_hook = lambda path, t: t.replace("<nc:is-mount-root>true<", "<nc:is-mount-root>false<") \
+        if path == "Loose" else t
+    assert preview(nc, "Loose")[0].reason == "unsafe_target"
+    top = v.list_candidate_directories(ACCOUNT, nc, parent="", parent_resource_id=oc_id(1),
+                                       expected_revision="rev1", source_revision=lambda: "rev1",
+                                       proof=RESTRICTED, restricted_coherence=True)
+    assert "Loose" not in [n for n, _ in top.directories]
+
+
+def test_local_folder_inside_a_share_is_refused():
+    nc = share_nc()
+    nc.nodes["ObsidianVault/Local"] = (74, True, "")
+    assert preview(nc, "ObsidianVault/Local")[0].reason == "unsafe_target"
+
+
+@pytest.mark.parametrize("perms", ["SGDNV", ""])
+def test_read_only_inner_folder_under_writable_share_is_refused(perms):
+    nc = share_nc()
+    nc.perms["ObsidianVault/Notes"] = perms
+    assert preview(nc, "ObsidianVault/Notes")[0].reason == "unsafe_target"
+
+
+def test_folder_that_describes_itself_differently_is_refused():
+    nc = share_nc()
+    # The listing says share root, but the folder's own row says local.
+    nc.row_hook = lambda path, t, depth=None: t
+    original = nc.propfind
+
+    def propfind(origin, href, depth, body, **kw):
+        response = original(origin, href, depth, body, **kw)
+        if href.endswith("/ObsidianVault/") and depth == "1":
+            from dataclasses import replace as _replace
+            text = response.body.decode()
+            first = text.index("<nc:mount-type>shared</nc:mount-type>")
+            text = text[:first] + "<nc:mount-type></nc:mount-type>" + \
+                text[first + len("<nc:mount-type>shared</nc:mount-type>"):]
+            return _replace(response, body=text.encode())
+        return response
+    nc.propfind = propfind
+    assert preview(nc, "ObsidianVault/Notes")[0].reason == "identity_unverified"

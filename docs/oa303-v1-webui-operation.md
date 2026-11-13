@@ -55,7 +55,7 @@ activated pin would make every Job send one read-only `PROPFIND` per run.
 
 No action reads, writes, moves or deletes any file in the Vault.
 
-## Guarantee and its limits (restricted contract, scope V1-S1)
+## Guarantee and its limits (restricted contract, scope V1-S2)
 
 **Guaranteed:**
 - a Job never runs against a root whose identity changed since activation;
@@ -77,6 +77,11 @@ No action reads, writes, moves or deletes any file in the Vault.
 
 If the owner of a shared Vault deletes and recreates the folder, its ID
 changes and every Job refuses until you switch to it again from the picker.
+If the owner later makes the share read-only, Jobs that only read (Snapshot)
+keep running; writes fail on the server. The picker refuses to switch to a
+read-only share. If the owner shares both a folder and a subfolder of it, the
+subfolder appears twice with one ID; switching to it from inside the parent
+share is refused as an alias (fail-closed).
 
 ## Recovery
 

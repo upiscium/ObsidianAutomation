@@ -58,7 +58,7 @@ counts and hashes only, not property values.
 | --- | --- |
 | A | **VERIFIED** for V1-S1 (P3-A, OCS user id binding; owner 2026-11-13) |
 | I | **VERIFIED** for V1-S1 (P3-D1; owner 2026-11-13) |
-| X | **VERIFIED** for V1-S1, user shares only (P3-D2; owner 2026-11-13); group folders, external storage and symlinks outside scope |
+| X | **VERIFIED** for V1-S1/V1-S2 (P3-D2, P3-SR; owner 2026-11-13): received shares are classified and may hold the root under V1-S2; external storage, group folders and symlinks outside scope |
 | L | **VERIFIED** for V1-S1 as index completeness (P3-D3; owner 2026-11-13); **FAILED** for storage completeness |
 | C | UNKNOWN; expected NOT_SUPPORTED |
 | R | **VERIFIED** for V1-S1 (P3-D5 + synthetic tests; owner 2026-11-13) |

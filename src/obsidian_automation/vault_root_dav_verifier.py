@@ -4,9 +4,10 @@ This module issues only ``PROPFIND`` through a caller-supplied transport.
 It has no HTTP client, credential loader, persistence or activation path.
 Provider capability is NOT assumed. The full contract needs every
 A/I/X/L/C/R gate VERIFIED; the owner-approved restricted contract needs every
-gate except C. Otherwise the verifier refuses before any transport call.  ``CURRENT_PROVIDER_PROOF`` records the real register state
+gate except C. Otherwise the verifier refuses before any transport call.
+``CURRENT_PROVIDER_PROOF`` records the real register state
 (docs/oa303-p3-coherence-feasibility-adr.md): A/I/X/L/R are VERIFIED for
-scope V1-S1 only and C is not, so only the restricted contract admits reads.
+the owner-accepted scope (V1-S1, extended to received shares as V1-S2) only and C is not, so only the restricted contract admits reads.
 """
 from __future__ import annotations
 
@@ -460,6 +461,7 @@ def _verify(selection, account, transport, source_revision, proof, clock,
     page_chain: list[str] = []
     inside_share = False
     target_row: _Row | None = None
+    expected_self = "local"   # the account root describes itself as local
     try:
         for component in selected:
             rows, size = walk.propfind(parent, "1")
@@ -468,6 +470,9 @@ def _verify(selection, account, transport, source_revision, proof, clock,
             if len(selves) != 1 or not selves[0].collection:
                 raise _Blocked("identity_unverified")
             if selves[0].resource_id != parent_id or selves[0].is_alias:
+                raise _Blocked("identity_unverified")
+            # Each folder must describe itself as the parent listing did.
+            if selves[0].share != expected_self:
                 raise _Blocked("identity_unverified")
             if root_etag is None:
                 root_etag = selves[0].etag
@@ -511,6 +516,7 @@ def _verify(selection, account, transport, source_revision, proof, clock,
             if not _step_allowed(inside_share, target_row):
                 raise _Blocked("unsafe_target")
             inside_share = inside_share or target_row.share == "share_root"
+            expected_self = target_row.share
             parent_id = chosen.resource_id
             page_chain.append(parent_id)
             parent = component if not parent else parent + "/" + component
@@ -555,6 +561,10 @@ def read_root_status(
     clock: Callable[[], float] = time.monotonic,
 ) -> tuple[str | None, str]:
     """One Depth:0 ``PROPFIND`` of a root: ``(oc:id, "ok")`` or ``(None, reason)``.
+
+    Identity only: a pinned root inside a share that later became read-only
+    or nested still reads ``ok`` (same object; reads keep working, writes fail
+    on the server). The walk, not this check, enforces those rules.
 
     Reasons: ``provider_unproven``, ``invalid_root`` (bad account/path),
     ``unreadable`` (transport, status or parse failure), ``unsupported_mount`` (a
