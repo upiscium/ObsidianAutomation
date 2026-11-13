@@ -69,12 +69,25 @@ class VaultRootSelectionService:
         self._lock = threading.Lock()
         self._handles: dict[str, _Handle] = {}
 
-    def _current(self) -> TrustedRootContext | None:
+    _CONTEXT_REASONS = frozenset({
+        "binding_unavailable", "not_enrolled", "source_changed",
+        "active_root_shared", "active_root_unreadable", "provider_unproven",
+    })
+
+    def _load(self) -> tuple[TrustedRootContext | None, str]:
+        """The context, or a fixed reason why it is unavailable."""
         try:
             ctx = self._context()
         except Exception:
-            return None
-        return ctx if type(ctx) is TrustedRootContext else None
+            return None, "binding_unavailable"
+        if type(ctx) is TrustedRootContext:
+            return ctx, "ok"
+        if type(ctx) is str and ctx in self._CONTEXT_REASONS:
+            return None, ctx
+        return None, "binding_unavailable"
+
+    def _current(self) -> TrustedRootContext | None:
+        return self._load()[0]
 
     def _revision(self) -> object:
         if self._revision_source is not None:
@@ -104,9 +117,11 @@ class VaultRootSelectionService:
             return None, "provider_unproven"
         if self._rate_limited():
             return None, "rate_limited"
-        ctx = self._current()
-        if ctx is None or self._transport is None:
+        if self._transport is None:
             return None, "binding_unavailable"
+        ctx, why = self._load()
+        if ctx is None:
+            return None, why
         return ctx, None
 
     def status(self) -> dict:

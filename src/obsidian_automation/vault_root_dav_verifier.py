@@ -503,6 +503,44 @@ def _verify(selection, account, transport, source_revision, proof, clock,
     return preview_root(selection, evidence), chain
 
 
+def read_root_status(
+    account: TrustedDavAccount,
+    transport: DavTransport,
+    path: str,
+    *,
+    proof: ProviderProof = CURRENT_PROVIDER_PROOF,
+    clock: Callable[[], float] = time.monotonic,
+) -> tuple[str | None, str]:
+    """One Depth:0 ``PROPFIND`` of a root: ``(oc:id, "ok")`` or ``(None, reason)``.
+
+    Reasons: ``provider_unproven``, ``invalid_root`` (bad account/path),
+    ``unreadable`` (transport, status or parse failure), ``shared_root`` (the
+    folder is a share or mount, outside scope V1-S1), ``not_a_folder``.
+    """
+    if (type(proof) is not ProviderProof
+            or not proof.admits(restricted_coherence=True)):
+        return None, "provider_unproven"
+    if (not _account_ok(account)
+            or type(path) is not str or _parts(path, new_candidate=False) is None):
+        return None, "invalid_root"
+    try:
+        rows, _ = _Walk(account, transport, clock).propfind(path, "0")
+    except _Blocked:
+        return None, "unreadable"
+    if len(rows) != 1:
+        return None, "unreadable"
+    href = _canonical_href(rows[0].href)
+    expected = _expected_parent_href(account.account_prefix, path)
+    if not rows[0].collection:
+        # Only to classify a file (its href has no trailing slash).
+        return (None, "not_a_folder") if href == expected.rstrip("/") else (None, "unreadable")
+    if href != expected:  # a folder must answer at its exact collection href
+        return None, "unreadable"
+    if rows[0].is_alias:
+        return None, "shared_root"
+    return rows[0].resource_id, "ok"
+
+
 def read_root_identity(
     account: TrustedDavAccount,
     transport: DavTransport,
@@ -517,17 +555,4 @@ def read_root_identity(
     the account binding is invalid, or the root is not a plain directory of
     the bound instance. ``None`` must stop the Job (fail-closed).
     """
-    if (type(proof) is not ProviderProof
-            or not proof.admits(restricted_coherence=True)
-            or not _account_ok(account)
-            or type(path) is not str or _parts(path, new_candidate=False) is None):
-        return None
-    try:
-        rows, _ = _Walk(account, transport, clock).propfind(path, "0")
-    except _Blocked:
-        return None
-    if (len(rows) != 1 or not rows[0].collection or rows[0].is_alias
-            or _canonical_href(rows[0].href)
-            != _expected_parent_href(account.account_prefix, path)):
-        return None
-    return rows[0].resource_id
+    return read_root_status(account, transport, path, proof=proof, clock=clock)[0]

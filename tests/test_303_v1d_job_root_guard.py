@@ -435,3 +435,38 @@ def test_production_register_unpinned_bindings_do_no_io(store, outcome, chain):
     g = act.JobRootGuard(store, transport_factory=factory)
     g.status()
     assert factory.calls == 0
+
+
+
+@pytest.mark.parametrize("change,reason", [
+    ("ok", "ok"), ("shared", "shared_root"), ("file", "not_a_folder"),
+    ("gone", "unreadable"), ("bad_path", "invalid_root"),
+])
+def test_read_root_status_reasons(change, reason):
+    from test_303_v1b2_dav_verifier import UNPROVEN
+    nc = FakeNextcloud()
+    path = "Vault"
+    if change == "shared":
+        nc.nodes["Vault"] = (10, True, "shared")
+    elif change == "file":
+        path = "a.md"
+    elif change == "gone":
+        from dataclasses import replace as _replace
+        nc.response_hook = lambda r: _replace(r, status=404)
+    elif change == "bad_path":
+        path = "../x"
+    value, why = v.read_root_status(ACCOUNT, nc, path, proof=RESTRICTED)
+    assert why == reason and (value is not None) == (reason == "ok")
+    assert v.read_root_status(ACCOUNT, nc, "Vault", proof=UNPROVEN) == (None, "provider_unproven")
+
+
+
+def test_read_root_identity_keeps_exact_collection_href():
+    # Regression (PR #581 review): a folder answering without its trailing
+    # slash is refused, as before the reason plumbing was added.
+    nc = FakeNextcloud()
+    nc.row_hook = lambda path, t: t.replace(
+        "/remote.php/dav/files/synthetic_user/Vault/<", "/remote.php/dav/files/synthetic_user/Vault<") \
+        if path == "Vault" else t
+    assert v.read_root_status(ACCOUNT, nc, "Vault", proof=RESTRICTED) == (None, "unreadable")
+    assert v.read_root_identity(ACCOUNT, nc, "Vault", proof=RESTRICTED) is None
