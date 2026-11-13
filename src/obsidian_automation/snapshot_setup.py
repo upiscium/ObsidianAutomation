@@ -23,6 +23,11 @@ NEXTCLOUD_FIELDS = {"webdav_url", "vault_folder", "nextcloud_user", "nextcloud_p
 GITEA_FIELDS = {"git_url", "git_user", "git_token", "branch"}
 FIELDS = NEXTCLOUD_FIELDS | GITEA_FIELDS
 MARKER = "_rclone_sha256"
+# `rclone obscure` prints unpadded URL-safe base64 ("-" and "_"). "+/=" stay
+# accepted as before. No length cap beyond the input's own bound: a 512-char
+# password yields up to ~2.8k characters. One token, nothing that could end
+# or extend the rclone config value.
+_OBSCURED = re.compile(r"[A-Za-z0-9+/=_-]+")
 _REVISION_KEY = os.urandom(32)
 
 
@@ -264,7 +269,7 @@ class SetupStore:
             if not probed and not self.nextcloud_probe(value):
                 return False
             obscured = self.obscure(value["nextcloud_password"])
-            if not re.fullmatch(r"[A-Za-z0-9+/=]+", obscured):
+            if not _OBSCURED.fullmatch(obscured):
                 return False
             config = _rclone_config(value, obscured)
             old = self.rclone.read_text() if self.rclone.exists() else None
@@ -287,7 +292,7 @@ class SetupStore:
             if not probed and not self.probe(value):
                 return False
             obscured = self.obscure(value["nextcloud_password"])
-            if not re.fullmatch(r"[A-Za-z0-9+/=]+", obscured):
+            if not _OBSCURED.fullmatch(obscured):
                 return False
             config = _rclone_config(value, obscured)
             # Policy is a fixed local default; no HTTP input reaches it.

@@ -7,6 +7,8 @@ import threading
 import uuid
 from dataclasses import replace
 
+import pytest
+
 from obsidian_automation.admin_dashboard import make_server
 from obsidian_automation.snapshot_job import SnapshotJob
 from obsidian_automation.snapshot_setup import SetupStore, git_askpass, probe_connections, obscure_password, private_repo
@@ -311,3 +313,18 @@ def test_git_refuses_http_redirect_from_private_to_public_repo(tmp_path):
         server.shutdown()
         thread.join(3)
         server.server_close()
+
+
+@pytest.mark.parametrize("obscured,ok", [
+    ("abcDEF012-_xyz", True),          # rclone URL-safe base64 output
+    ("abc+/=", True),                  # standard base64 characters
+    ("A" * 2752, True),                # obscure output of a 2048-byte password
+    ("abc\nother = x", False),         # would inject a config line
+    ("", False),
+])
+def test_obscured_password_charset(tmp_path, obscured, ok):
+    from obsidian_automation.snapshot_setup import NEXTCLOUD_FIELDS
+    store = SetupStore(tmp_path, probe=lambda _: True, obscure=lambda _: obscured)
+    nextcloud = {k: sample()[k] for k in NEXTCLOUD_FIELDS}
+    assert store.save_nextcloud(nextcloud, probed=True) is ok
+    assert store.save(sample(), probed=True) is ok
