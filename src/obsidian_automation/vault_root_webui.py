@@ -19,7 +19,7 @@ from typing import Callable
 
 from .snapshot_setup import SetupStore
 from .vault_root_activation import (
-    ActivationResult, DashboardJobFence, _read_binding, activate_vault_root,
+    ActivationResult, DashboardJobFence, _pin, _read_binding, activate_vault_root,
     https_transport_factory, rollback_vault_root,
 )
 from .vault_root_dav_verifier import (
@@ -72,7 +72,7 @@ class VaultRootActions:
         data = _read_binding(self.store.state)
         saved = self.store.load_nextcloud()
         current = data.get("current") if data else None
-        return bool(data and data.get("previous") and saved
+        return bool(data and _pin(data.get("previous")) is not None and saved
                     and data.get("outcome") in ("activated", "pending_activated")
                     and type(current) is dict
                     and current.get("path") == saved["vault_folder"])

@@ -308,3 +308,24 @@ def test_restricted_status_is_labelled_and_explained():
     for phrase in ("他の端末でフォルダが変更", "サーバーに直接置かれたファイル",
                    "再スキャン前の外部ストレージ"):
         assert phrase in js
+
+
+
+def test_service_refuses_stale_handle_before_calling_actions():
+    calls = []
+
+    class Actions:
+        def enrolled(self): return True
+        def active_label(self): return "Other"
+        def can_rollback(self): return False
+        def activate(self, *a): calls.append(a)
+
+    nc = FakeNextcloud()
+    holder = {"ctx": context()}
+    svc = VaultRootSelectionService(context=lambda: holder["ctx"], transport=nc,
+                                    proof=VERIFIED, clock=Clock(), actions=Actions())
+    vault = next(c for c in svc.candidates({})[1]["candidates"] if c["label"] == "Vault")
+    assert svc.preview({"candidate": vault["handle"]})[1]["status"] == "candidate_valid"
+    holder["ctx"] = context(source_revision="rev2")
+    result = svc.activate({"candidate": vault["handle"], "confirm": True})[1]
+    assert result["reason"] == "stale_source" and calls == []
