@@ -35,7 +35,7 @@ from .vault_root_activation import (
 from .vault_root_dav_fixture import DAV, OC, _ACCOUNT, _Blocked, _canonical_href, _parse_xml
 from .vault_root_dav_verifier import (
     CURRENT_PROVIDER_PROOF, NC, PER_CALL_TIMEOUT_S, DavResponse, DavTransport,
-    DavTransportError, ProviderProof, TrustedDavAccount, read_root_identity,
+    DavTransportError, ProviderProof, TrustedDavAccount, read_root_status,
 )
 from .vault_root_dav_adapter import MAX_PAGE_BYTES
 from .vault_root_preview import _identifier
@@ -199,20 +199,25 @@ def context_provider(
     *,
     jobs_busy: Callable[[], bool],
     proof: ProviderProof = CURRENT_PROVIDER_PROOF,
-) -> Callable[[], TrustedRootContext | None]:
+) -> Callable[[], TrustedRootContext | str]:
     """Server-side ``TrustedRootContext`` for the V1/C picker and V1/D.
 
-    ``None`` (picker shows ``binding_unavailable``) unless the account is
-    enrolled for the saved URL + user and the active root's identity is known.
+    When no context can be built it returns a reason string instead, so the
+    UI can say why: ``binding_unavailable`` (no saved connection),
+    ``not_enrolled``, ``source_changed``, ``active_root_shared`` (the current
+    Vault is a received share or mount, outside V1-S1) or
+    ``active_root_unreadable``.
     """
-    def build() -> TrustedRootContext | None:
+    def build() -> TrustedRootContext | str:
         # Read the revision first and again after any I/O: every field must
         # come from one saved connection, never a mix across a concurrent save.
         revision = store.nextcloud_revision()
         saved = store.load_nextcloud()
+        if saved is None or revision is None:
+            return "binding_unavailable"
         enrollment = load_enrollment(store)
-        if saved is None or enrollment is None or revision is None:
-            return None
+        if enrollment is None:
+            return "not_enrolled"
         account = TrustedDavAccount(_origin(saved["webdav_url"]),
                                     urlsplit(saved["webdav_url"]).path,
                                     enrollment.instance_id)
@@ -225,10 +230,13 @@ def context_provider(
                 and data.get("source_sha256") == _source_digest(saved)):
             active_id = pin.chain[-1]
         else:
-            active_id = read_root_identity(account, transport_factory(saved),
-                                           saved["vault_folder"], proof=proof)
-        if active_id is None or store.nextcloud_revision() != revision:
-            return None
+            active_id, why = read_root_status(account, transport_factory(saved),
+                                              saved["vault_folder"], proof=proof)
+            if active_id is None:
+                return "active_root_shared" if why == "shared_root" else \
+                    "active_root_unreadable"
+        if store.nextcloud_revision() != revision:
+            return "source_changed"
         busy = jobs_busy()
         return TrustedRootContext(
             account=account, active=saved["vault_folder"], active_resource_id=active_id,

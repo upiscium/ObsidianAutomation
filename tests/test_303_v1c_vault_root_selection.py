@@ -329,3 +329,10 @@ def test_service_refuses_stale_handle_before_calling_actions():
     holder["ctx"] = context(source_revision="rev2")
     result = svc.activate({"candidate": vault["handle"], "confirm": True})[1]
     assert result["reason"] == "stale_source" and calls == []
+
+
+
+def test_script_explains_a_shared_active_root():
+    js = JS_PATH.read_text(encoding="utf-8")
+    assert "active_root_shared:" in js and "共有されたフォルダ" in js
+    assert 'state.textContent = message("not_enrolled")' in js

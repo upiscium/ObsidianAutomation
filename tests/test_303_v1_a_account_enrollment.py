@@ -146,7 +146,7 @@ def provider(store, nc, busy=False, proof=RESTRICTED):
 
 def test_context_needs_enrollment(store):
     nc = FakeNextcloud()
-    assert provider(store, nc)() is None
+    assert provider(store, nc)() == "not_enrolled"
     assert nc.calls == []
 
 
@@ -175,7 +175,7 @@ def test_context_uses_pin_when_pinned(store):
 def test_context_unavailable_when_active_root_unreadable(store):
     assert en.enroll_account(store, lambda saved: EnrollServer(), proof=RESTRICTED)[0] == "enrolled"
     from test_303_v1b2_dav_verifier import UNPROVEN
-    assert provider(store, FakeNextcloud(), proof=UNPROVEN)() is None
+    assert provider(store, FakeNextcloud(), proof=UNPROVEN)() == "active_root_unreadable"
 
 
 def test_picker_end_to_end_with_enrolled_context(store):
@@ -253,7 +253,7 @@ def test_connection_saved_during_build_yields_no_context(store):
         assert store.save_nextcloud({**NC, "nextcloud_password": "rotated"}, probed=True)
         return FakeNextcloud()
     assert en.context_provider(store, factory, jobs_busy=lambda: False,
-                               proof=RESTRICTED)() is None
+                               proof=RESTRICTED)() == "source_changed"
 
 
 def test_fifo_records_are_rejected_without_blocking(store):
@@ -318,3 +318,27 @@ def test_ocs_user_must_match_the_url_user_segment(tmp_path):
 def test_ocs_is_not_called_when_the_root_read_fails(store, server):
     assert en.enroll_account(store, lambda saved: server, proof=RESTRICTED)[1] is None
     assert server.calls == [PREFIX]
+
+
+def test_context_reports_a_shared_active_root(store):
+    # Production finding (2026-11-13): the saved Vault is a received share.
+    assert en.enroll_account(store, lambda saved: EnrollServer(), proof=RESTRICTED)[0] == "enrolled"
+    nc = FakeNextcloud()
+    nc.nodes["Other"] = (20, True, "shared")
+    assert provider(store, nc)() == "active_root_shared"
+    svc = VaultRootSelectionService(context=provider(store, nc), transport=nc,
+                                    proof=RESTRICTED, restricted_coherence=True)
+    assert svc.candidates({})[1]["reason"] == "active_root_shared"
+    assert svc.preview({"candidate": "x"})[1]["reason"] == "active_root_shared"
+
+
+def test_context_without_saved_connection(tmp_path):
+    empty = SetupStore(tmp_path / "empty")
+    assert en.context_provider(empty, lambda s: FakeNextcloud(), jobs_busy=lambda: False,
+                               proof=RESTRICTED)() == "binding_unavailable"
+
+
+def test_unknown_context_value_is_not_trusted():
+    svc = VaultRootSelectionService(context=lambda: "made_up", transport=FakeNextcloud(),
+                                    proof=RESTRICTED, restricted_coherence=True)
+    assert svc.candidates({})[1]["reason"] == "binding_unavailable"

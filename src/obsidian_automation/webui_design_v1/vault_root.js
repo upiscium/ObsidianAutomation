@@ -6,7 +6,11 @@
 (function () {
   const REASONS = Object.freeze({
     provider_unproven: "Nextcloud側の前提が未証明のため、この機能は使えません。",
-    binding_unavailable: "Nextcloudアカウントの確認が必要です。",
+    binding_unavailable: "保存済みのNextcloud接続を確認できません。",
+    not_enrolled: "Nextcloudアカウントの確認が必要です。",
+    source_changed: "Nextcloud接続が変更されました。もう一度お試しください。",
+    active_root_shared: "現在のVaultは他のアカウントから共有されたフォルダのため、この機能の対象外です（対応は検討中です）。",
+    active_root_unreadable: "現在のVaultフォルダを確認できませんでした。",
     handle_expired: "候補の有効期限が切れました。もう一度一覧を表示してください。",
     stale_source: "Nextcloud接続が変更されました。もう一度一覧を表示してください。",
     jobs_in_flight: "実行中のジョブがあります。完了後に再度お試しください。",
@@ -107,7 +111,7 @@
       top.hidden = !usable || status.enrolled !== true;
       rollback.hidden = status.can_rollback !== true;
       if (!usable) state.textContent = message("provider_unproven");
-      else if (status.enrolled !== true) state.textContent = message("binding_unavailable");
+      else if (status.enrolled !== true) state.textContent = message("not_enrolled");
     }
     async function refresh() {
       try { status = (await getStatus()) || status; } catch { /* keep last */ }
