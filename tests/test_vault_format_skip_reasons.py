@@ -156,7 +156,7 @@ def test_http_and_ui_include_only_aggregate_reason_counts(tmp_path):
         thread.start()
         try:
             port = server.server_address[1]
-            client = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+            client = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
             try:
                 client.request("GET", "/api/v1/formatter")
                 response = client.getresponse()

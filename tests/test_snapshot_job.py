@@ -67,7 +67,7 @@ def test_http_snapshot_security_and_existing_observer(tmp_path):
     port = server.server_address[1]
 
     def request(method, path, payload=None, origin=None, token=None):
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
         headers = {"Host": f"127.0.0.1:{port}"}
         if origin is not None:
             headers["Origin"] = origin

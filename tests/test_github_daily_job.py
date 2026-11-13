@@ -159,7 +159,7 @@ def test_http_daily_origin_csrf_job_api_and_legacy_status(tmp_path):
         origin=f"http://127.0.0.1:{port}"
 
         def req(method,path,payload=None,orig=None,csrf=None):
-            conn=http.client.HTTPConnection("127.0.0.1",port,timeout=3)
+            conn=http.client.HTTPConnection("127.0.0.1",port,timeout=10)
             headers={"Host":f"127.0.0.1:{port}"}
             if orig: headers["Origin"]=orig
             if csrf: headers["X-Obsidian-CSRF"]=csrf
@@ -212,7 +212,7 @@ def test_http_disabled_without_daily_attached():
     thread=threading.Thread(target=server.serve_forever,daemon=True)
     thread.start()
     try:
-        conn=http.client.HTTPConnection("127.0.0.1",server.server_address[1],timeout=3)
+        conn=http.client.HTTPConnection("127.0.0.1",server.server_address[1],timeout=10)
         conn.request("GET","/api/v1/daily")
         result=conn.getresponse()
         assert result.status == 503

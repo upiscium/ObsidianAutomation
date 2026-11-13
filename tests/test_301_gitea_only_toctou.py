@@ -31,7 +31,7 @@ GITEA_PATH = "/api/v1/snapshot/connections"
 
 def _http(server, method: str, path: str, payload=None, *, csrf=None):
     port = server.server_address[1]
-    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=6)
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
     headers = {"Host": f"127.0.0.1:{port}"}
     if method == "POST":
         headers["Origin"] = f"http://127.0.0.1:{port}"

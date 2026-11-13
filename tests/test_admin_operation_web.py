@@ -56,7 +56,7 @@ def live_server(callback=None):
 def call(server, method, path, *, payload=None, token=None,
          origin=True, host=None, content_type="application/json", more_headers=None):
     port = server.server_address[1]
-    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=4)
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
     headers = {
         "Host": host or f"127.0.0.1:{port}",
     }

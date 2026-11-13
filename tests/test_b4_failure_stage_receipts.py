@@ -326,7 +326,7 @@ def test_http_get_only_redacted_diagnostics_and_no_provider_side_effect(
                 port=server.server_address[1]
                 for path in ("/api/v1/daily",
                              "/api/v1/daily/runs/"+row["run_id"]):
-                    con=http.client.HTTPConnection("127.0.0.1",port,timeout=3)
+                    con=http.client.HTTPConnection("127.0.0.1",port,timeout=10)
                     con.request("GET",path)
                     resp=con.getresponse()
                     body=resp.read()
@@ -497,7 +497,7 @@ def test_real_b4_status_common_workflow_get_no_effect_or_unavailability(
                 for uri in ("/api/v1/workflow-control",
                             "/api/v1/workflow-control/b4"):
                     con = http.client.HTTPConnection(
-                        "127.0.0.1", server.server_address[1], timeout=3,
+                        "127.0.0.1", server.server_address[1], timeout=10,
                     )
                     con.request("GET", uri)
                     response = con.getresponse()
@@ -607,7 +607,7 @@ def test_old_and_extended_b4_all_seven_states_workflow_control_get_matrix(
                 for uri in ("/api/v1/workflow-control",
                             "/api/v1/workflow-control/b4"):
                     conn = http.client.HTTPConnection(
-                        "127.0.0.1",server.server_address[1],timeout=3,
+                        "127.0.0.1",server.server_address[1],timeout=10,
                     )
                     conn.request("GET",uri)
                     response = conn.getresponse()

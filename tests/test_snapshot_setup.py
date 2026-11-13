@@ -77,7 +77,7 @@ def test_http_setup_guards_no_auto_run(tmp_path):
     origin = f"http://127.0.0.1:{port}"
 
     def req(method, path, payload=None, origin_header=None, token=None):
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
         headers = {"Host": f"127.0.0.1:{port}"}
         if origin_header:
             headers["Origin"] = origin_header

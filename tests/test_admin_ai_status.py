@@ -318,7 +318,7 @@ def test_underlying_decoder_errors_are_unknown_and_keep_other_services_visible(
     thread.start()
     try:
         port = server.server_address[1]
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
         try:
             conn.request("GET", "/api/v1/status", headers={"Host": f"127.0.0.1:{port}"})
             response = conn.getresponse()

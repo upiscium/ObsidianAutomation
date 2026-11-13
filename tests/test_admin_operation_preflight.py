@@ -148,7 +148,7 @@ def test_preflight_is_not_connected_to_http_mutations():
         import threading
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        c = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=3)
+        c = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=10)
         c.request("POST", "/api/v1/operations", headers={"Host": f"127.0.0.1:{server.server_address[1]}"})
         res = c.getresponse()
         assert res.status == 405

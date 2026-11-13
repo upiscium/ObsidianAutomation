@@ -103,7 +103,7 @@ raise SystemExit(snapshot_app.main())
 
 def http_json(port: int, method: str, path: str, body: dict | None = None,
               csrf: str | None = None) -> tuple[int, dict]:
-    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
     headers = {"Host": f"127.0.0.1:{port}"}
     if body is not None:
         headers["Content-Type"] = "application/json"

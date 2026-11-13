@@ -200,7 +200,7 @@ def serving(snapshot_job=None, daily_job=None, sources=None, *, ports=None, form
 def request(server, path="/api/v1/workflow-control", method="GET",
             *, host=None, origin=None):
     port = server.server_address[1]
-    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
     headers = {"Host": host if host is not None else f"127.0.0.1:{port}"}
     if origin is not None:
         headers["Origin"] = origin

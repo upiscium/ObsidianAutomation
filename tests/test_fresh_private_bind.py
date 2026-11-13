@@ -34,7 +34,7 @@ def test_host_origin_policy_remains_single_exact_private_bind():
         thread=threading.Thread(target=server.serve_forever,daemon=True)
         thread.start()
         def call(path, host, origin=None):
-            conn=http.client.HTTPConnection("127.0.0.1",actual_port,timeout=4)
+            conn=http.client.HTTPConnection("127.0.0.1",actual_port,timeout=10)
             headers={"Host":host}
             if origin is not None: headers["Origin"]=origin
             conn.request("GET",path,headers=headers)

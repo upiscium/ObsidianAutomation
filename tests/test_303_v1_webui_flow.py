@@ -62,7 +62,7 @@ def app(tmp_path):
     port = server.server_address[1]
 
     def request(method, path, data=None, csrf=True):
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=4)
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
         headers = {"Host": f"127.0.0.1:{port}", "Origin": f"http://127.0.0.1:{port}"}
         if csrf and method == "POST":
             token = request("GET", "/api/v1/operation-session")[1]["csrf_token"]

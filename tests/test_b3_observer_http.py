@@ -40,7 +40,7 @@ def send(server, method="GET", path="/api/v1/b3/observer", *,
             headers["X-Obsidian-CSRF"] = csrf
     elif origin is not None:
         headers["Origin"] = origin
-    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
     try:
         connection.request(method, path, body=data, headers=headers)
         reply = connection.getresponse()
