@@ -346,3 +346,15 @@ def test_unknown_context_value_is_not_trusted():
     svc = VaultRootSelectionService(context=lambda: "made_up", transport=FakeNextcloud(),
                                     proof=RESTRICTED, restricted_coherence=True)
     assert svc.candidates({})[1]["reason"] == "binding_unavailable"
+
+
+def test_failed_active_read_during_a_save_reports_source_changed(store):
+    assert en.enroll_account(store, lambda saved: EnrollServer(), proof=RESTRICTED)[0] == "enrolled"
+    nc = FakeNextcloud()
+
+    def save_then_fail(response):
+        assert store.save_nextcloud({**NC, "nextcloud_password": "rotated"}, probed=True)
+        from dataclasses import replace as _replace
+        return _replace(response, status=503)
+    nc.response_hook = save_then_fail
+    assert provider(store, nc)() == "source_changed"
