@@ -133,9 +133,16 @@ def test_jobs_in_flight_blocks_preview():
     assert svc.preview({"candidate": handle})[1]["reason"] == "jobs_in_flight"
 
 
-def test_service_has_no_save_or_activation_surface():
+def test_service_without_actions_has_no_effectful_surface():
     public = {n for n in dir(VaultRootSelectionService) if not n.startswith("_")}
-    assert public == {"status", "candidates", "preview"}
+    assert public == {"status", "candidates", "preview", "enroll", "activate", "rollback"}
+    nc = FakeNextcloud()
+    svc, _ = service(nc)
+    for call, payload in ((svc.enroll, {}), (svc.activate, {"candidate": "x", "confirm": True}),
+                          (svc.rollback, {"confirm": True})):
+        assert call(payload) == (405, {"error": "activation_not_available"})
+    assert nc.calls == []
+    assert svc.status()["activation"] == "not_available"
 
 
 @pytest.fixture
@@ -230,13 +237,27 @@ def test_static_script_is_served_and_page_references_it(dashboard):
     assert code == 200 and body == JS_PATH.read_bytes()
 
 
-def test_script_renders_labels_as_text_and_has_no_save_path():
+def test_script_renders_labels_as_text_and_switches_only_after_confirm():
     js = JS_PATH.read_text(encoding="utf-8")
     assert "innerHTML" not in js and "insertAdjacentHTML" not in js
     assert "/api/v1/nextcloud/connections" not in js
-    assert "if (!r.ok) return;" in js  # OFF: 404 leaves the page unchanged
-    posts = {line.split('"')[1] for line in js.splitlines() if 'post("/api/' in line}
-    assert posts == {"/api/v1/vault-root/candidates", "/api/v1/vault-root/previews"}
+    assert "if (!r.ok) return null;" in js and "if (!status) return;" in js  # OFF: inert
+    posts = set()
+    for line in js.splitlines():
+        if 'post("/api/' in line:
+            posts.add(line.split('post("', 1)[1].split('"', 1)[0])
+    assert posts == {"/api/v1/vault-root/candidates", "/api/v1/vault-root/previews",
+                     "/api/v1/vault-root/enrollment", "/api/v1/vault-root/activations",
+                     "/api/v1/vault-root/rollbacks"}
+    # effectful POSTs come after an explicit confirmation dialog in the same handler
+    for path in ("/api/v1/vault-root/activations", "/api/v1/vault-root/rollbacks"):
+        at = js.index('"' + path + '"')
+        handler = js[js.rindex("addEventListener", 0, at):at]
+        assert "window.confirm(" in handler and "if (!ok) return;" in handler or \
+            "if (!window.confirm(" in handler
+    assert "confirm: true" in js
+    # the switch button appears only for a candidate_valid preview
+    assert 'data.status === "candidate_valid" && status.activation === "available"' in js
 
 
 def test_rate_limit_bounds_provider_reads():
@@ -269,7 +290,9 @@ def test_restricted_service_requires_explicit_flag():
 
 def test_script_guards_double_click():
     js = JS_PATH.read_text(encoding="utf-8")
-    assert "if (check.disabled) return;" in js and "rate_limited" in js
+    assert "if (button.disabled) return;" in js and "rate_limited" in js
+    for name in ("check", "enroll", "apply", "rollback"):
+        assert f"once({name}," in js
 
 
 def test_restricted_status_is_labelled_and_explained():
@@ -280,7 +303,7 @@ def test_restricted_status_is_labelled_and_explained():
     assert svc.status()["provider"] == "restricted"
     assert service()[0].status()["provider"] == "verified"
     js = JS_PATH.read_text(encoding="utf-8")
-    assert 'status.provider === "restricted"' in js and "検出できません" in js
+    assert "検出できません" in js and 'status.provider !== "unproven"' in js
     # option A (L scoped to Nextcloud's index): the caveat names what is not covered
     for phrase in ("他の端末でフォルダが変更", "サーバーに直接置かれたファイル",
                    "再スキャン前の外部ストレージ"):

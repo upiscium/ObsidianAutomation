@@ -1358,7 +1358,11 @@ class _CapabilitiesSingleFlight:
 
 # Exact request targets and resource names only. No URL decoding, directory
 # traversal, generic static handler, demo entrypoint, or runtime initialization.
-VAULT_ROOT_POST_PATHS = ("/api/v1/vault-root/candidates", "/api/v1/vault-root/previews")
+VAULT_ROOT_POST_PATHS = (
+    "/api/v1/vault-root/candidates", "/api/v1/vault-root/previews",
+    "/api/v1/vault-root/enrollment", "/api/v1/vault-root/activations",
+    "/api/v1/vault-root/rollbacks",
+)
 
 WORKFLOW_UI_ASSETS = {
     "/workflow-control": ("live.html", "text/html; charset=utf-8"),
@@ -1701,7 +1705,8 @@ class Handler(BaseHTTPRequestHandler):
         self.do_GET()
 
     def _vault_root_post(self, service) -> None:
-        """Read-only #303 V1/C candidate listing and preview; never saves."""
+        """#303 picker: listing/preview are read-only; enrollment, activation and
+        rollback exist only when the app was started with --vault-root-ui."""
         if not self._write_origin_allowed():
             self._reply(403, b'{"error":"origin_rejected"}', "application/json")
             return
@@ -1714,10 +1719,18 @@ class Handler(BaseHTTPRequestHandler):
         except (PreviewRequestRejected, ValueError, UnicodeError):
             self._reply(400, b'{"error":"invalid_request"}', "application/json")
             return
+        handler = {
+            "/api/v1/vault-root/candidates": service.candidates,
+            "/api/v1/vault-root/previews": service.preview,
+            "/api/v1/vault-root/enrollment": getattr(service, "enroll", None),
+            "/api/v1/vault-root/activations": getattr(service, "activate", None),
+            "/api/v1/vault-root/rollbacks": getattr(service, "rollback", None),
+        }.get(self.path)
+        if handler is None:
+            self._reply(405, b"Method not allowed")
+            return
         try:
-            code, body = (service.candidates(payload)
-                          if self.path == "/api/v1/vault-root/candidates"
-                          else service.preview(payload))
+            code, body = handler(payload)
         except Exception:
             self._reply(503, b'{"error":"vault_root_unavailable"}', "application/json")
             return
