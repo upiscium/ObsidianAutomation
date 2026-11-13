@@ -80,9 +80,15 @@ If the owner of a shared Vault deletes and recreates the folder, its ID
 changes and every Job refuses until you switch to it again from the picker.
 If the owner later makes the share read-only, Jobs that only read (Snapshot)
 keep running; writes fail on the server. The picker refuses to switch to a
-read-only share. If the owner shares both a folder and a subfolder of it, the
-subfolder appears twice with one ID; switching to it from inside the parent
-share is refused as an alias (fail-closed).
+read-only share.
+
+**Separately shared subfolder.** Suppose the owner shares both a folder and
+a subfolder of it with the same account. The subfolder then appears twice
+with one ID: once at the top level and once inside the parent share. Every
+switch to **any** folder inside that parent share is then refused as
+`identity_alias` (fail-closed), because the check looks for duplicate IDs
+across all levels. Confirmed by the E2E run on 2026-11-13. To use the parent
+share, have the owner remove the separate subfolder share.
 
 ## Recovery
 
