@@ -9,6 +9,12 @@
 - Production still performs no provider I/O. Enrollment, the picker and
   activation are not wired into `main()`, and the Job guard reads only once
   a root is pinned, which needs an activation.
+- **Deploy precondition.** Before deploying this, confirm that the production
+  state directory contains neither `vault_root_binding.json` nor
+  `vault_root_pinning.enabled`. A leftover *activated* pin with a chain would
+  now make every Job send one Depth:0 `PROPFIND` with the saved credentials.
+  Before this change, such a pin made every Job refuse. A `connection_saved`
+  binding, or a pin without a chain, still causes no I/O.
 - Base: `main@def40466` (after #578).
 
 ## 1. VERIFIED criterion

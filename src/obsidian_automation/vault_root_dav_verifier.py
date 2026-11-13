@@ -2,9 +2,9 @@
 
 This module issues only ``PROPFIND`` through a caller-supplied transport.
 It has no HTTP client, credential loader, persistence or activation path.
-Provider capability is NOT assumed: unless every A/I/X/L/C/R gate in the
-supplied ``ProviderProof`` is ``VERIFIED``, the verifier refuses before any
-transport call.  ``CURRENT_PROVIDER_PROOF`` records the real register state
+Provider capability is NOT assumed. The full contract needs every
+A/I/X/L/C/R gate VERIFIED; the owner-approved restricted contract needs every
+gate except C. Otherwise the verifier refuses before any transport call.  ``CURRENT_PROVIDER_PROOF`` records the real register state
 (docs/oa303-p3-coherence-feasibility-adr.md): A/I/X/L/R are VERIFIED for
 scope V1-S1 only and C is not, so only the restricted contract admits reads.
 """

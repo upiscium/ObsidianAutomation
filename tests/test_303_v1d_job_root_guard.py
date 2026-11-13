@@ -376,5 +376,53 @@ def test_production_entry_points_wire_no_provider_reader_besides_the_guard():
         src = inspect.getsource(module.main)
         for name in ("enroll_account", "context_provider", "activate_vault_root",
                      "rollback_vault_root", "VaultRootSelectionService",
-                     "verify_root_candidate", "list_candidate_directories"):
+                     "verify_root_candidate", "verify_root_chain",
+                     "list_candidate_directories", "read_root_identity",
+                     "vault_root_selection"):
             assert name not in src, (module.__name__, name)
+
+
+def test_snapshot_app_main_builds_server_without_picker(tmp_path, monkeypatch):
+    import sys
+    seen = {}
+
+    class Stop(Exception):
+        pass
+
+    def fake_make_server(**kwargs):
+        seen.update(kwargs)
+        raise Stop
+    monkeypatch.setattr(snapshot_app, "make_server", fake_make_server)
+    monkeypatch.setattr(sys, "argv", ["obsidian-snapshot-app", "--state",
+                                      str(tmp_path / "state"), "--port", "0"])
+    with pytest.raises(Stop):
+        snapshot_app.main()
+    assert "vault_root_selection" not in seen
+
+
+def test_production_register_with_activated_pin_reads_exactly_once(store):
+    # Intended behaviour since gate A was accepted: a pinned root is re-checked
+    # with one Depth:0 PROPFIND per Job run using the production register.
+    nc = FakeNextcloud()
+    assert activate(store, nc).status == "activated"
+    nc.calls.clear()
+    factory = Factory(nc)
+    g = act.JobRootGuard(store, transport_factory=factory)   # production register
+    assert g.status() == "ok"
+    assert factory.calls == 1
+    assert nc.calls == [("/remote.php/dav/files/synthetic_user/Vault/Notes/", "0")]
+
+
+@pytest.mark.parametrize("outcome,chain", [("connection_saved", None), ("activated", None)])
+def test_production_register_unpinned_bindings_do_no_io(store, outcome, chain):
+    assert activate(store, FakeNextcloud()).status == "activated"
+    path = store.state / act.BINDING_FILE
+    data = json.loads(path.read_text())
+    data["outcome"], data["current"]["chain"] = outcome, chain
+    data["current"]["instance_id"] = None
+    data["current"]["path"] = store.load_nextcloud()["vault_folder"]
+    path.write_text(json.dumps(data))
+    factory = Factory(FakeNextcloud())
+    g = act.JobRootGuard(store, transport_factory=factory)
+    g.status()
+    assert factory.calls == 0
