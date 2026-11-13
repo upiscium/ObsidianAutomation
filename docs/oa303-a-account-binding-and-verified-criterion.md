@@ -88,14 +88,23 @@ The share root reports `is-mount-root=true` and items inside it `false`.
   in local-ID form, and not the account.
 - No values were recorded.
 
-**Accepted but not tested:** group shares. They look identical to a user
-share and live on the same server.
+**P3-GX (2026-11-13, disposable).**
+- A **group share** looks exactly like a user share: `shared`, mount root,
+  local owner, and the owner's `oc:id`. It is accepted.
+- An **expiring share** has no distinguishing property. When it expires it
+  disappears like an unshare, so Jobs refuse.
+- A **permission downgrade** to read-only shows at once as `SGDNV`, with the
+  same `oc:id`. The picker refuses it; the Job guard (identity only) still
+  reads `ok`; writes fail on the server.
+- The receipts are `p3-20261112/gx.jsonl` and `gx2.jsonl`. r1 stopped
+  before any HTTP request because of a client bug; only `occ group:add`
+  ran.
 
 **Refused by the owner-ID rule:** federated shares. Their real owner format
 was not observed, so the rule fails closed on anything that is not a plain
 local ID.
 
-**Not tested:** expiring shares, and a permission downgrade while in use.
+**Not tested:** an actual expiry event (only the share's properties were observed).
 
 **Behaviour on change.** While a share is removed, Jobs refuse because the
 root is gone. If the owner recreates the folder, the ID changes and Jobs
