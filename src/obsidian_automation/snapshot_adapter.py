@@ -215,7 +215,14 @@ class SnapshotAdapter:
                 args = rclone + [action, c.rclone_remote, str(mirror),
                                  "--retries", "1", "--low-level-retries", "2"]
                 if action == "sync":
-                    args += ["--delete-after"]  # only disposable local mirror
+                    # Force transfers even when rclone's metadata comparison
+                    # considers same-sized files unchanged. This target is a
+                    # disposable local mirror; no remote-write authority is added.
+                    args += ["--ignore-times", "--delete-after"]
+                else:
+                    # Compare file contents, not only metadata/checksums that
+                    # may be unavailable or insufficient on WebDAV.
+                    args += ["--download"]
                 detail: dict[str, int | str] = {}
                 ok, _ = _command(args, cwd=directory, env=env,
                                  timeout=min(_RCLONE_IO_TIMEOUT_SECONDS, remaining),

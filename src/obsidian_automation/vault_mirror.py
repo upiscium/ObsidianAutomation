@@ -5,6 +5,7 @@ import json
 import stat
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
@@ -14,6 +15,10 @@ from .production_io import ProductionIOError, canonical_io_lock, mirror_read_loc
 
 class MirrorRefreshError(RuntimeError):
     """Raised when the pull-only production mirror cannot be refreshed safely."""
+
+
+_RCLONE_COMMAND_TIMEOUT_SECONDS = 600.0
+_MIRROR_REFRESH_TIMEOUT_SECONDS = 900.0
 
 
 @dataclass(frozen=True)
@@ -78,22 +83,72 @@ def refresh_pull_only_mirror(
         str(config),
         "--filter-from",
         str(filters),
+        "--ignore-times",
         "--delete-after",
         "--delete-excluded",
+    ]
+    verification_command = [
+        "rclone",
+        "check",
+        source,
+        str(destination),
+        "--config",
+        str(config),
+        "--filter-from",
+        str(filters),
+        "--download",
     ]
 
     # Lock order is canonical I/O -> mirror read-view. Reader never acquires
     # canonical I/O, so the two-lock refresh path cannot form a cycle with
     # Reader operations. The read-view lock prevents rclone from mutating local
-    # mirror bytes while Reader derives an Index/Context from them.
+    # mirror bytes while Reader derives an Index/Context from them. Keep both
+    # the refresh and content verification in this same locked interval.
     with canonical_io_lock(ai_root):
         with mirror_read_lock(ai_root):
+            # Start the shared I/O budget only after both locks are held. Lock
+            # acquisition itself is intentionally not bounded by this deadline.
+            deadline = time.monotonic() + _MIRROR_REFRESH_TIMEOUT_SECONDS
+            sync_remaining = deadline - time.monotonic()
+            if sync_remaining <= 0:
+                raise MirrorRefreshError(
+                    "rclone pull-only mirror refresh budget exhausted before sync"
+                )
             try:
-                completed = runner(command, check=False)
+                completed = runner(
+                    command,
+                    check=False,
+                    timeout=min(_RCLONE_COMMAND_TIMEOUT_SECONDS, sync_remaining),
+                )
+            except subprocess.TimeoutExpired:
+                raise MirrorRefreshError("rclone pull-only mirror sync timed out") from None
             except OSError as exc:
                 raise MirrorRefreshError(f"cannot execute rclone: {exc}") from exc
             if completed.returncode != 0:
-                raise MirrorRefreshError(f"rclone pull-only mirror refresh failed with exit code {completed.returncode}")
+                raise MirrorRefreshError(
+                    "rclone pull-only mirror refresh failed with exit code "
+                    f"{completed.returncode}"
+                )
+            verification_remaining = deadline - time.monotonic()
+            if verification_remaining <= 0:
+                raise MirrorRefreshError(
+                    "rclone pull-only mirror refresh budget exhausted before verification"
+                )
+            try:
+                verified = runner(
+                    verification_command,
+                    check=False,
+                    timeout=min(_RCLONE_COMMAND_TIMEOUT_SECONDS, verification_remaining),
+                )
+            except subprocess.TimeoutExpired:
+                raise MirrorRefreshError("rclone pull-only mirror verification timed out") from None
+            except OSError as exc:
+                raise MirrorRefreshError(f"cannot execute rclone check: {exc}") from exc
+            if verified.returncode != 0:
+                raise MirrorRefreshError(
+                    "rclone pull-only mirror verification failed with exit code "
+                    f"{verified.returncode}"
+                )
 
     return MirrorRefreshResult(remote=source, vault_root=destination)
 
