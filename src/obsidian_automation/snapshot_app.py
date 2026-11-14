@@ -24,7 +24,7 @@ from .vault_root_activation import (
     JobRootGuard, RootPinRefused, https_transport_factory,
 )
 from .vault_bindings import RoleGuard, physical_folder, record_generation, run_verified
-from .vault_root_webui import build_vault_root_ui
+from .vault_root_webui import build_vault_bindings_ui, build_vault_root_ui
 
 
 # Only trusted static source errors may appear in B4 durable diagnostics.
@@ -154,9 +154,16 @@ def main() -> int:
         help="#303: enable the WebUI to confirm the Nextcloud account, preview and "
              "explicitly switch the Vault root (restricted contract); default OFF",
     )
+    parser.add_argument(
+        "--vault-bindings-ui", action="store_true",
+        help="#584: enable the WebUI to preview, save, reset and roll back the "
+             "role folder mapping (daily, project, system); default OFF",
+    )
     args = parser.parse_args()
     if args.vault_root_ui and args.state is None:
         parser.error("--vault-root-ui requires the fresh shared --state app")
+    if args.vault_bindings_ui and args.state is None:
+        parser.error("--vault-bindings-ui requires the fresh shared --state app")
     if (args.config is None) == (args.state is None):
         parser.error("select exactly one of --config and --state")
     if args.daily_publish and args.state is None:
@@ -269,6 +276,9 @@ def main() -> int:
         if args.vault_root_ui:
             # Opt-in only. Without the flag the routes stay 404/405.
             server.vault_root_selection = build_vault_root_ui(store, server)
+        if args.vault_bindings_ui:
+            # Opt-in only (#584 P2-4). Without the flag the routes stay 404/405.
+            server.vault_bindings_editor = build_vault_bindings_ui(store, server)
         # Phase scheduling is an independent, durable, OFF-by-default B3
         # observer-only admission. There is deliberately no public control
         # route or UI activation in this source slice.
