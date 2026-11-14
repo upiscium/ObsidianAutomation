@@ -36,6 +36,24 @@ from .snapshot_job import SnapshotJob, Invalid as SnapshotInvalid
 from .snapshot_setup import validate_nextcloud, GITEA_FIELDS
 from .github_daily_job import DailyJob, Invalid as DailyInvalid
 from .vault_root_activation import reset_pin_after_connection_save
+
+# #584 O1-A: while a role mapping exists, the connection forms may not change
+# what the mapping is bound to (server, account, Vault folder). A password
+# change is still allowed. Reset the mapping first.
+_ROOT_IDENTITY_FIELDS = ("webdav_url", "nextcloud_user", "vault_folder")
+
+
+def _mapping_blocks_change(store, payload) -> bool:
+    from pathlib import Path
+    from .vault_bindings_editor import mapping_present
+    state = getattr(store, "state", None)
+    if not isinstance(state, Path) or not mapping_present(state):
+        return False  # a store without a state directory has no mapping
+    current = store.load_nextcloud()
+    if current is None:
+        return True   # cannot compare: refuse while a mapping exists
+    return any(key in payload and payload[key] != current.get(key)
+               for key in _ROOT_IDENTITY_FIELDS)
 from .github_b3_observer_job import (
     B3ObserverJob, Invalid as B3ObserverInvalid,
     parse_request as parse_b3_observer_request,
@@ -62,6 +80,7 @@ HTML = """<!doctype html>
   <script defer src="/static/status-manager.js"></script>
   <script defer src="/static/setup-readiness.js"></script>
   <script defer src="/static/vault-root.js"></script>
+  <script defer src="/static/vault-bindings.js"></script>
 </head>
 <body>
   <main class="frame">
@@ -562,8 +581,10 @@ $("nextcloud-form").addEventListener("submit", async event => {
     await snapshotPost("/api/v1/nextcloud/connections", Object.fromEntries(new FormData(form)));
     $("nextcloud-message").textContent = "Nextcloud接続を検証して保存しました。GiteaなしでGitHub Dailyを設定できます。";
     form.reset();
-  } catch {
-    $("nextcloud-message").textContent = "Nextcloud接続を保存できませんでした。定期実行の状態を確認してください。";
+  } catch (error) {
+    $("nextcloud-message").textContent = error && error.message === "mapping_present"
+      ? MAPPING_PRESENT_MESSAGE
+      : "Nextcloud接続を保存できませんでした。定期実行の状態を確認してください。";
   }
   submit.disabled = false;
   await nextcloudRefresh();
@@ -598,7 +619,10 @@ $("connections-form").addEventListener("submit", async (event) => {
     await snapshotPost("/api/v1/snapshot/connections", body);
     $("connection-message").textContent = "接続を確認して保存しました。定期実行を Off にしました。Git 書き込みは初回の保存成功まで未検証です。";
     form.reset();
-  } catch { $("connection-message").textContent = "検証または保存に失敗しました。以前の設定は変更されていません。"; }
+  } catch (error) {
+    $("connection-message").textContent = error && error.message === "mapping_present"
+      ? MAPPING_PRESENT_MESSAGE : "検証または保存に失敗しました。以前の設定は変更されていません。";
+  }
   giteaSaving = false;
   renderGiteaPrerequisite(nextcloudReady ? "configured" : "unavailable");
   await nextcloudRefresh();
@@ -653,9 +677,14 @@ async function snapshotPost(path, body) {
   const token = await newCsrfToken();
   const response = await fetch(path, {method:"POST", cache:"no-store", credentials:"same-origin",
     headers:{"Content-Type":"application/json", "X-Obsidian-CSRF":token}, body:JSON.stringify(body)});
-  if (!response.ok) throw Error("request_failed");
+  if (!response.ok) {
+    let code = "request_failed";
+    try { const body = await response.json(); if (body.error === "mapping_present") code = body.error; } catch {}
+    throw Error(code);
+  }
   return response.json();
 }
+const MAPPING_PRESENT_MESSAGE = "役割フォルダの割り当てがあるため、接続先・ユーザー・Vault folderは変更できません。先に「役割フォルダの割り当て」で「今の名前に戻す」を行ってください（パスワードだけの変更はできます）。";
 $("snapshot-save").addEventListener("click", async () => {
   if (!snapshotSettings) return;
   $("snapshot-save").disabled = true;
@@ -1363,6 +1392,10 @@ VAULT_ROOT_POST_PATHS = (
     "/api/v1/vault-root/enrollment", "/api/v1/vault-root/activations",
     "/api/v1/vault-root/rollbacks",
 )
+VAULT_BINDINGS_POST_PATHS = (
+    "/api/v1/vault-bindings/previews", "/api/v1/vault-bindings/saves",
+    "/api/v1/vault-bindings/resets", "/api/v1/vault-bindings/rollbacks",
+)
 
 WORKFLOW_UI_ASSETS = {
     "/workflow-control": ("live.html", "text/html; charset=utf-8"),
@@ -1372,6 +1405,7 @@ WORKFLOW_UI_ASSETS = {
     "/static/status-manager.js": ("status_manager.js", "text/javascript; charset=utf-8"),
     "/static/setup-readiness.js": ("setup_readiness.js", "text/javascript; charset=utf-8"),
     "/static/vault-root.js": ("vault_root.js", "text/javascript; charset=utf-8"),
+    "/static/vault-bindings.js": ("vault_bindings.js", "text/javascript; charset=utf-8"),
     "/static/status-manager.css": ("status_manager.css", "text/css; charset=utf-8"),
 }
 
@@ -1573,6 +1607,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._reply(200, body, "application/json; charset=utf-8")
             return
+        if self.path == "/api/v1/vault-bindings":
+            # #584 P2-4 is OFF unless the app was started with the flag.
+            service = getattr(self.server, "vault_bindings_editor", None)
+            if service is None:
+                self._reply(404, b"Not found")
+            else:
+                self._reply(200, json.dumps(service.status(), ensure_ascii=False).encode(),
+                            "application/json; charset=utf-8")
+            return
         if self.path == "/api/v1/vault-root":
             # #303 V1/C is OFF unless a service was constructed explicitly;
             # the disabled route is indistinguishable from an unknown path.
@@ -1706,7 +1749,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _vault_root_post(self, service) -> None:
         """#303 picker: listing/preview are read-only; enrollment, activation and
-        rollback exist only when the app was started with --vault-root-ui."""
+        rollback exist only when the app was started with --vault-root-ui.
+        #584 P2-4 role mapping routes share the same Origin/CSRF checks."""
         if not self._write_origin_allowed():
             self._reply(403, b'{"error":"origin_rejected"}', "application/json")
             return
@@ -1719,13 +1763,18 @@ class Handler(BaseHTTPRequestHandler):
         except (PreviewRequestRejected, ValueError, UnicodeError):
             self._reply(400, b'{"error":"invalid_request"}', "application/json")
             return
-        handler = {
+        handler = ({
+            "/api/v1/vault-bindings/previews": getattr(service, "preview", None),
+            "/api/v1/vault-bindings/saves": getattr(service, "save", None),
+            "/api/v1/vault-bindings/resets": getattr(service, "reset", None),
+            "/api/v1/vault-bindings/rollbacks": getattr(service, "rollback", None),
+        } if self.path in VAULT_BINDINGS_POST_PATHS else {
             "/api/v1/vault-root/candidates": service.candidates,
             "/api/v1/vault-root/previews": service.preview,
             "/api/v1/vault-root/enrollment": getattr(service, "enroll", None),
             "/api/v1/vault-root/activations": getattr(service, "activate", None),
             "/api/v1/vault-root/rollbacks": getattr(service, "rollback", None),
-        }.get(self.path)
+        }).get(self.path)
         if handler is None:
             self._reply(405, b"Method not allowed")
             return
@@ -1794,6 +1843,10 @@ class Handler(BaseHTTPRequestHandler):
         if vault_root is not None and self.path in VAULT_ROOT_POST_PATHS:
             self._vault_root_post(vault_root)
             return
+        bindings = getattr(self.server, "vault_bindings_editor", None)
+        if bindings is not None and self.path in VAULT_BINDINGS_POST_PATHS:
+            self._vault_root_post(bindings)
+            return
         if self.path not in (
             "/api/v1/operation-previews", "/api/v1/operations",
             "/api/v1/snapshot/settings", "/api/v1/snapshot/runs",
@@ -1855,6 +1908,9 @@ class Handler(BaseHTTPRequestHandler):
                         "SELECT 1 FROM runs WHERE status IN ('queued','running') LIMIT 1"
                     ).fetchone():
                         self._reply(409, b'{"error":"connection_busy"}', "application/json")
+                        return
+                    if _mapping_blocks_change(store, payload):
+                        self._reply(409, b'{"error":"mapping_present"}', "application/json")
                         return
                     current = store.load_nextcloud()
                     if current != payload:
@@ -2079,6 +2135,9 @@ class Handler(BaseHTTPRequestHandler):
                         if nextcloud is None:
                             raise ValueError("nextcloud_missing")
                         payload = {**nextcloud, **payload}
+                    if type(payload) is dict and _mapping_blocks_change(store, payload):
+                        self._reply(409, b'{"error":"mapping_present"}', "application/json")
+                        return
                     github_setup = self.server.daily_setup
                     previous_source = (github_setup.source_fingerprint()
                                        if github_setup is not None else None)
@@ -2235,6 +2294,7 @@ def make_server(
     formatter_job: FormatterJob | None = None,
     b3_observer_job: B3ObserverJob | None = None,
     vault_root_selection=None,
+    vault_bindings_editor=None,
 ) -> ThreadingHTTPServer:
     # Reject ambiguous injection and invalid ports BEFORE opening a listener.
     # Empty explicitly supplied maps count as supplied; None retains defaults.
@@ -2272,6 +2332,7 @@ def make_server(
     server.b3_observer_job = b3_observer_job
     # #303 V1/C read-only picker: default OFF (None) and not enabled by main().
     server.vault_root_selection = vault_root_selection
+    server.vault_bindings_editor = vault_bindings_editor
     server.daemon_threads = True
     return server
 

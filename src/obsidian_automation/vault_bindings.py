@@ -35,6 +35,9 @@ from .vault_root_preview import MAX_COMPONENTS, RootSelection, _fold, _identifie
 from .vault_root_selection import TrustedRootContext
 
 BINDINGS_FILE = "vault_bindings.json"
+# P2-4: present while a mapping change is being written; every RoleGuard
+# refuses until it is gone (vault_bindings_editor).
+PENDING_FILE = "vault_bindings.pending"
 SCHEMA_VERSION = 1
 _KEYS = frozenset({"version", "root_pin", "roles", "role_ids"})
 MAX_PATH_CHARS = 100  # the V1 path grammar bound (vault_root_preview._ROOT)
@@ -148,8 +151,12 @@ def preview_bindings(
     proof: ProviderProof = CURRENT_PROVIDER_PROOF,
     clock: Callable[[], float] = time.monotonic,
     restricted_coherence: bool = False,
+    repin: frozenset = frozenset(),
 ) -> tuple[dict, VaultBindings | None]:
     """Check a proposed mapping against the live Vault, read-only.
+
+    ``repin`` (P2-4) lists roles whose recreated folder the owner explicitly
+    accepts: for those only, a changed ``oc:id`` is not ``identity_changed``.
 
     Every role must resolve to an existing plain directory below the pinned
     active root (or inside the same accepted share), by the V1 walk. Returns
@@ -215,7 +222,8 @@ def preview_bindings(
             reason = "root_changed"  # the root was recreated or moved
         elif len(chain) <= len(pin):
             reason = "outside_root"
-        elif (current.role_ids is not None and roles[role] == current.roles[role]
+        elif (current.role_ids is not None and role not in repin
+              and roles[role] == current.roles[role]
               and chain[-1] != current.role_ids[role]):
             reason = "identity_changed"  # same name, recreated folder
         else:
@@ -336,6 +344,9 @@ def _check_role_pins(state, roles, root_status, root_pin, read_identity,
     """
     if root_status not in ("ok", "legacy_unpinned"):
         return root_status, None
+    pending = state / PENDING_FILE
+    if pending.exists() or pending.is_symlink():
+        return "mismatch", None  # a mapping change is unfinished
     if (type(roles) is not tuple or not all(r in ROLES for r in roles)
             or type(unmapped) is not tuple or not all(r in roles for r in unmapped)):
         return "mismatch", None

@@ -113,6 +113,28 @@ def jobs_busy(server) -> bool:
         return True
 
 
+def build_vault_bindings_ui(store: SetupStore, server, *,
+                            proof: ProviderProof = CURRENT_PROVIDER_PROOF,
+                            transport_factory=https_transport_factory):
+    """#584 P2-4: the service behind ``/api/v1/vault-bindings*``."""
+    from .vault_bindings_editor import VaultBindingsService
+
+    def fence():
+        return DashboardJobFence(
+            store, snapshot_job=server.snapshot_job,
+            daily_job=getattr(server, "daily_job", None),
+            formatter_job=getattr(server, "formatter_job", None),
+            b3_observer_job=getattr(server, "b3_observer_job", None),
+        )
+    return VaultBindingsService(
+        store,
+        context=context_provider(store, transport_factory,
+                                 jobs_busy=lambda: jobs_busy(server), proof=proof),
+        transport=StoreTransport(store, transport_factory), fence_factory=fence,
+        proof=proof,
+    )
+
+
 def build_vault_root_ui(store: SetupStore, server, *,
                         proof: ProviderProof = CURRENT_PROVIDER_PROOF,
                         transport_factory=https_transport_factory,
