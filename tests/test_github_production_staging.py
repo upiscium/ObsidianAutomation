@@ -12,6 +12,23 @@ from obsidian_automation.github_production_update import CommandResult, Producti
 from test_github_production_update import FakeRunner, PREVIOUS, TARGET, _layout
 
 
+def _debian_system_python() -> bool:
+    try:
+        target = Path("/usr/bin/python3").resolve(strict=True)
+    except OSError:
+        return False
+    return target.parent == Path("/usr/bin") and target.stat().st_uid == 0
+
+
+# The Stage build-venv check trusts only a root-owned /usr/bin/python3.X, as
+# on the Debian/Ubuntu production host. Hosts without one (NixOS under
+# `nix develop`) skip these tests; CI (CI=true) always runs them.
+needs_debian_system_python = pytest.mark.skipif(
+    not os.environ.get("CI") and not _debian_system_python(),
+    reason="needs a Debian-style root-owned /usr/bin/python3 (runs in CI)",
+)
+
+
 class Runner(FakeRunner):
     def __init__(self, app: Path, venv: Path, *, allow_fast_forward=True,
                  active_extra_services=(), extra_loaded_timers=(),
@@ -1474,6 +1491,7 @@ def _trusted_build_venv_fixture(tmp_path, *, venv=None, python_version="python3.
     return venv, site
 
 
+@needs_debian_system_python
 def test_stage_trusted_local_pip_backend_preflight_accepts_private_fixture(tmp_path):
     venv, site = _trusted_build_venv_fixture(tmp_path)
     manifest = staged._assert_trusted_stage_build_venv(
@@ -1494,6 +1512,7 @@ def test_stage_trusted_local_pip_backend_preflight_accepts_private_fixture(tmp_p
     assert changed["digest_sha256"] != manifest["digest_sha256"]
 
 
+@needs_debian_system_python
 @pytest.mark.parametrize("corruption", (
     "world_writable_pip", "symlinked_pip", "world_writable_backend",
     "symlinked_backend", "hardlinked_module", "writable_pth",
@@ -1552,6 +1571,7 @@ def test_untrusted_local_stage_build_source_is_rejected(tmp_path, corruption):
         staged._assert_trusted_stage_build_venv(venv, trusted_uid=os.geteuid())
 
 
+@needs_debian_system_python
 def test_trusted_build_manifest_excludes_only_reinstalled_app(tmp_path):
     venv, site = _trusted_build_venv_fixture(tmp_path)
     before = staged._assert_trusted_stage_build_venv(
