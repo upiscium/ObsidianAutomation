@@ -61,11 +61,13 @@ The remote path used by the service should point only at the shared Vault folder
 
 The remote fetch stage writes only to a local mirror. A conservative v0 transaction is:
 
-1. `rclone sync` the read-only Nextcloud Vault into the local mirror.
+1. `rclone sync --ignore-times` the read-only Nextcloud Vault into the local mirror, forcing file transfers even when metadata comparison would skip same-sized changes.
 2. Wait a short settle interval.
-3. Run the same `rclone sync` again so changes that happened during the first traversal converge locally.
-4. Run `rclone check` between the remote Vault and the local mirror.
+3. Run the same `rclone sync --ignore-times` again so changes that happened during the first traversal converge locally.
+4. Run `rclone check --download` between the remote Vault and the local mirror to compare file contents.
 5. Only after the check succeeds, run `obsidian-vault-snapshot` against the local mirror.
+
+The settle wait is only an opportunity for in-flight edits to finish; elapsed time is not evidence that bytes are current. The forced sync transfers and download-based check provide content-level freshness evidence, at the cost of additional remote bandwidth and local/remote I/O because files are read or transferred again. These traversals still do **not** make the mutable Nextcloud Vault an atomic point-in-time snapshot: files can change while the walks are in progress, and a successful check does not prove every file came from one common instant.
 
 Example:
 
@@ -76,10 +78,10 @@ remote="nextcloud-vault:ObsidianVault"
 live="/var/lib/obsidian-snapshot/live-mirror"
 
 mkdir -p "$live"
-rclone sync "$remote" "$live"
+rclone sync "$remote" "$live" --ignore-times
 sleep 10
-rclone sync "$remote" "$live"
-rclone check "$remote" "$live"
+rclone sync "$remote" "$live" --ignore-times
+rclone check "$remote" "$live" --download
 ```
 
 If the remote changes during this process and the check does not converge, the run fails and the private Git repository is not modified. A later timer run retries from the current Nextcloud state.
@@ -157,10 +159,10 @@ cleanup() {
 trap cleanup EXIT
 
 # Serialize the complete fetch + snapshot + push transaction with flock.
-rclone sync "$remote" "$live"
+rclone sync "$remote" "$live" --ignore-times
 sleep 10
-rclone sync "$remote" "$live"
-rclone check "$remote" "$live"
+rclone sync "$remote" "$live" --ignore-times
+rclone check "$remote" "$live" --download
 
 git --git-dir="$bare" fetch origin +refs/heads/main:refs/heads/main
 git --git-dir="$bare" worktree add --detach "$work" refs/heads/main

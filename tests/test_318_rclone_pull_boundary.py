@@ -49,8 +49,9 @@ def test_canonical_mirror_sync_is_remote_to_local_only(tmp_path: Path) -> None:
     filters.write_text("+ **\n")
     calls: list[list[str]] = []
 
-    def fake_run(argv, *, check):
+    def fake_run(argv, *, check, timeout):
         assert check is False
+        assert 0 < timeout <= vault_mirror._RCLONE_COMMAND_TIMEOUT_SECONDS
         calls.append(list(argv))
         return SimpleNamespace(returncode=0)
 
@@ -59,9 +60,19 @@ def test_canonical_mirror_sync_is_remote_to_local_only(tmp_path: Path) -> None:
         rclone_config=config, filter_file=filters, runner=fake_run,
     )
     assert result.vault_root == mirror.absolute()
-    assert len(calls) == 1
-    _pull_only(calls[0], remote="nextcloud:Vault", destination=mirror.absolute())
+    assert len(calls) == 2
+    for command in calls:
+        _pull_only(command, remote="nextcloud:Vault", destination=mirror.absolute())
+        assert command[command.index("--config") + 1] == str(config.absolute())
+        assert command[command.index("--filter-from") + 1] == str(filters.absolute())
+    assert [command[1] for command in calls] == ["sync", "check"]
+    assert "--ignore-times" in calls[0]
     assert "--delete-after" in calls[0]  # local mirror deletion remains legitimate
+    assert "--delete-excluded" in calls[0]
+    assert "--download" in calls[1]
+    assert "--delete-after" not in calls[1]
+    assert "--delete-excluded" not in calls[1]
+    assert "--one-way" not in calls[1]
 
 
 def test_snapshot_adapter_three_rclone_operations_never_upload(tmp_path: Path, monkeypatch) -> None:
@@ -92,6 +103,8 @@ def test_snapshot_adapter_three_rclone_operations_never_upload(tmp_path: Path, m
         _pull_only(actual, remote="nextcloud:Vault", destination=mirror)
         assert expected in actual
     assert all("--delete-after" in cmd for cmd in argv[:2])
+    assert all("--ignore-times" in cmd for cmd in argv[:2])
+    assert "--download" in argv[2]
     assert "--delete-after" not in argv[2]
 
 
@@ -157,7 +170,7 @@ def test_vault_formatter_copy_and_check_are_remote_to_local(tmp_path: Path, monk
 # build_plan merely includes rclone as a package; obscure_password is local.
 _APPROVED_RCLONE_OWNER_CALLS = {
     ("src/obsidian_automation/vault_mirror.py", "refresh_pull_only_mirror"):
-        Counter({"runner": 1}),
+        Counter({"runner": 2}),
     ("src/obsidian_automation/snapshot_adapter.py", "__call__"):
         Counter({"_command": 10}),
     ("src/obsidian_automation/github_daily_setup.py", "pull_project_notes"):

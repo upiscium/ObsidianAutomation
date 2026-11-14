@@ -33,14 +33,19 @@ read-view lock:
 canonical_io_lock
   -> mirror_read_lock
       -> rclone sync
+      -> rclone check
 ```
 
 Reader never acquires `canonical_io_lock`. It acquires only
 `24-Locks/read-view/mirror-read.lock` while scanning/verifying local mirror
-bytes. See [Host-local mirror read view](mirror-read-view.md).
+bytes. Both rclone commands run while the canonical and read-view locks are
+held, so Reader does not observe the local mirror during either mutation or
+verification. See [Host-local mirror read view](mirror-read-view.md).
 
-This extra lock does not claim remote freshness; it only prevents this host's
-rclone refresh from changing the local mirror during a Reader operation.
+The locks serialize this host's I/O; they do not freeze the remote. The check
+is a bounded-time observation, not an atomic remote snapshot: the remote can
+change during or after refresh/verification, and independent readers do not
+receive a permanent freshness guarantee.
 
 ## Pull-only helper
 
@@ -55,19 +60,61 @@ obsidian-production-vault-pull \
   --filter-file /etc/obsidian-ai/vault-pull.filters
 ```
 
-The helper intentionally exposes no upload or bidirectional mode. Its rclone invocation is fixed to:
+The helper intentionally exposes no upload or bidirectional mode. After input
+validation, its rclone invocations are fixed to:
 
 ```text
 rclone sync <remote> <local-vault> \
   --config <config> \
   --filter-from <filter-file> \
+  --ignore-times \
   --delete-after \
   --delete-excluded
+
+rclone check <remote> <local-vault> \
+  --config <config> \
+  --filter-from <filter-file> \
+  --download
 ```
 
-The production AI filter includes `00-DailyNote/**`, `05-Idea/**`, `10-Project/**`, and `11-Knowledge/**`; see `examples/ai/vault-pull.filters`. Daily and Idea are Reader-only Semantic Corpus material in v1 and do not change automatic Generation selection yet. Project Notes remain Reader input and are not added to the Evaluation Knowledge corpus.\n\nThe source must be a named rclone remote. Local-path sources are rejected. The local Vault, deployment-private rclone config, and exact-SHA managed filter file must already exist; config/filter symlinks are rejected.
+The sync's `--ignore-times` prevents rclone's default size/modtime comparison
+from skipping same-size content changes. The subsequent `check --download`
+compares content rather than relying on size-only checks. The check uses the
+same named remote, local destination, config, and filter as the sync; it has no
+delete or upload flags. The helper reports success only when both commands
+exit zero.
 
-Filter-excluded destination files are deleted from the local rebuildable mirror so narrowing the reviewed filter converges the local corpus exactly. This does not delete anything from the remote Nextcloud source.\n\nA non-zero rclone exit is a failed refresh and is never reported as success.
+The production AI filter includes `00-DailyNote/**`, `05-Idea/**`,
+`10-Project/**`, and `11-Knowledge/**`; see
+`examples/ai/vault-pull.filters`. Daily and Idea are Reader-only Semantic
+Corpus material in v1 and do not change automatic Generation selection yet.
+Project Notes remain Reader input and are not added to the Evaluation
+Knowledge corpus.
+
+The source must be a named rclone remote. Local-path sources are rejected. The
+local Vault, deployment-private rclone config, and exact-SHA managed filter
+file must already exist; config/filter symlinks are rejected. Filter-excluded
+destination files are deleted from the local rebuildable mirror so narrowing
+the reviewed filter converges the local corpus exactly. This does not delete
+anything from the remote Nextcloud source. A non-zero exit or spawn failure
+from either command is a failed refresh and is never reported as success.
+
+Each rclone subprocess has a 600-second timeout and the sync-plus-check phase
+shares a 900-second deadline. Each subprocess receives the lesser of 600
+seconds and the remaining shared budget. The shared deadline starts only after
+both locks have been acquired; waiting to acquire either lock is not bounded by
+these timeouts. If a command times out or the shared budget expires, the helper
+fails closed without retrying. It does not roll back or clean up the local
+mirror, so a partial refresh may remain and must be handled by a later refresh
+or operator procedure.
+
+This stronger refresh costs additional I/O: `--ignore-times` may transfer
+every included file on each sync, and `check --download` reads remote content
+again to verify it. The check does not make the sequence atomic and cannot
+guarantee that remote content remains unchanged after verification. Neither
+the command timeouts nor shared execution budget bound the time spent waiting
+for locks. This code and its documentation are not a production deployment;
+deployment remains under the private deployment authority.
 
 ## Credential boundary
 
