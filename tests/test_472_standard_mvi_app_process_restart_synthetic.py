@@ -45,7 +45,7 @@ for name in (
 
 
 class DisposableFormatterSource:
-    def __init__(self, state, store):
+    def __init__(self, state, store, **_kwargs):  # layout hooks (#584)
         self.vault = Path(os.environ["OA_TEST_VAULT"])
 
     def configured(self):

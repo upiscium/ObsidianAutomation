@@ -237,8 +237,10 @@ def test_snapshot_app_main_uses_every_guard():
         assert len(found) == 1, name
         return found[0]
     assert args_of("guard_snapshot_runner") == ["root_guard", "unguarded_runner"]
-    assert args_of("guard_daily_runner") == ["root_guard", "unguarded_daily_runner"]
-    assert args_of("guard_formatter_runner") == ["root_guard", "formatter_source"]
+    # #584 P2-2: Daily, Formatter and B3 use RoleGuards built on root_guard.
+    assert args_of("job_guards") == ["root_guard"]
+    assert args_of("guard_daily_runner") == ["daily_guard", "unguarded_daily_runner"]
+    assert args_of("guard_formatter_runner") == ["system_guard", "formatter_source"]
     # Every Job receives the guarded callable, never the unguarded one.
     assert args_of("_job_context")[:2] == ["state", "runner"]
     assert args_of("DailyJob")[:2] == ["daily_state", "daily_runner"]
@@ -247,7 +249,7 @@ def test_snapshot_app_main_uses_every_guard():
                                        if ast.unparse(c.func) in (
                                            "_job_context", "DailyJob", "FormatterJob"))
     wraps = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
-             and ast.unparse(n.func) == "root_guard.wrap"]
+             and ast.unparse(n.func) == "project_guard.wrap"]
     assert len(wraps) == 2  # B3 normal and phase collectors
 
 

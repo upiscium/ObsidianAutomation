@@ -20,7 +20,8 @@ from typing import Callable
 from .vault_formatter import (
     DEFAULT_MAX_BYTES, DEFAULT_MAX_FILES, DEFAULT_MAX_TOTAL_BYTES, create_plan,
 )
-from .vault_layout import role_folder
+from .vault_bindings import fold_generation
+from .vault_layout import remote_folder, role_folder
 
 MAX_LIST_OUTPUT = 8 * 1024 * 1024
 MAX_REMOTE_TIMEOUT = 120
@@ -152,12 +153,15 @@ def _local_capture_matches_inventory(target: Path, initial: tuple[tuple[str, int
     return seen == set(expected)
 
 
-def pull_system_markdown(source, target: Path) -> bool:
-    """Bound source inventory and transfers; use only remote-to-local effects."""
+def pull_system_markdown(source, target: Path, *, folder: str | None = None) -> bool:
+    """Bound source inventory and transfers; use only remote-to-local effects.
+
+    ``folder`` is the system role's physical folder (#584); default today's.
+    """
     source.validate()
     if target.is_symlink() or not target.is_dir():
         return False
-    remote = source.rclone_remote + "/" + role_folder("system")
+    remote = source.rclone_remote + "/" + (role_folder("system") if folder is None else folder)
     filters = ["--include", "*.md", "--include", "*.markdown"]
     args = ["rclone", "--config", str(source.rclone_config)]
     listing_args = (
@@ -252,10 +256,16 @@ def pull_system_markdown(source, target: Path) -> bool:
 class FormatterSource:
     """Independent source reader, sharing B2/B4 Nextcloud credentials only."""
 
-    def __init__(self, state: Path, shared, *, copier: Callable = pull_system_markdown):
+    def __init__(self, state: Path, shared, *, copier: Callable = pull_system_markdown,
+                 layout: Callable[[str], str] | None = None,
+                 layout_generation: Callable[[], str | None] | None = None):
         self.state = state
         self.shared = shared
         self.copier = copier
+        # role -> physical folder (#584). The local mirror keeps the logical
+        # name, so plans and receipts never change with a mapping.
+        self.layout = layout
+        self.layout_generation = layout_generation
 
     def _shared(self):
         source_loader = getattr(self.shared, "source_connections", None)
@@ -275,6 +285,9 @@ class FormatterSource:
             sort_keys=True, ensure_ascii=False, separators=(",", ":"),
         ).encode("utf-8")
         generation = hashlib.sha256(encoded).hexdigest()
+        # #584: bind plans to the mapping record too (unchanged without one).
+        if self.layout_generation is not None:
+            generation = fold_generation(generation, self.layout_generation())
         return source, generation
 
     def generation(self) -> str | None:
@@ -292,7 +305,11 @@ class FormatterSource:
             root = Path(directory)
             target = root / role_folder("system")
             target.mkdir(mode=0o700)
-            if not self.copier(source, target):
+            try:
+                folder = remote_folder(self.layout, "system")
+            except ValueError:  # bad mapping record: stop, never the defaults
+                raise FormatterSourceError("formatter_source_pull_failed") from None
+            if not self.copier(source, target, **folder):
                 raise FormatterSourceError("formatter_source_pull_failed")
             # The source identity must not have changed while scanning.
             plan = create_plan(root)

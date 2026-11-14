@@ -1,6 +1,6 @@
 # #303 Phase 2 — logical folder mapping (design draft)
 
-**Status:** P2-0 and P2-1 implemented (#584); the rest is design. This is a separate gate after V1, which is
+**Status:** P2-0 to P2-2 implemented (#584); the rest is design. This is a separate gate after V1, which is
 live with root selection only. Suggest tracking it in its own issue.
 
 ## Problem
@@ -98,6 +98,64 @@ or changes a Job. Jobs keep the `vault_layout` defaults until P2-2/P2-3.
 - **Record from a valid Preview:** returned to the server only. It grants
   nothing: the P2-4 save must re-check the pins and take the V1 Job fence.
   Jobs may run during a Preview because nothing changes.
+
+## P2-2 implementation (consumers on obsidian-control)
+
+- **Logical and physical paths:**
+  - Inside a Job, role paths stay logical: today's names, in local mirrors,
+    plans, watcher paths and receipts. Stored history therefore never changes
+    with a mapping.
+  - Only the Nextcloud pull maps a role to its physical folder from the
+    record. There are two such pulls:
+    - `vault_format_source.pull_system_markdown` (Formatter, `system`);
+    - `github_daily_setup.pull_project_notes` (B3/B4, `project`).
+  - The copier gets `folder=` only for a mapped folder, so the default call
+    is unchanged.
+- **Per-role pins:** `vault_bindings.RoleGuard` wraps the V1 root guard.
+  - **Without a record:** the root guard's result, with no extra provider I/O.
+  - **With a record:** the root must be pinned to the record's root, and each
+    role folder the Job reads must still have its recorded `oc:id`.
+    Otherwise the Job refuses.
+  - **Roles used per Job** (`snapshot_app.job_guards`):
+    - Formatter: `system`;
+    - B3: `project`;
+    - B4: `project` and `daily`.
+  - **One snapshot per run:** the pull uses the mapping the guard verified
+    for that run, not a second read of the record.
+  - **Root pin:** a root pin that changes during the check gives
+    `unavailable`.
+- **Producers not yet mapped:** the B4 Daily publisher still writes today's
+  Daily folder, and names Project notes by their logical paths (P2-3). B4
+  therefore refuses while a record moves `daily` or `project`.
+- **Generations:** with a record, a digest of it is folded into the
+  Formatter and B3/B4 source generations. Plans and phase receipts admitted
+  under another mapping then stop matching. Without a record, the
+  generations are unchanged.
+- **Still open for P2-4:** the publish PUT runs after the guard in the same
+  B4 run. A mapping save, and a root activation, must therefore hold the V1
+  Job fence for the whole guarded run, pull and publish included.
+- **Bad record:** the pull stops with the existing reason codes
+  `formatter_source_pull_failed` and `project_mirror_pull_failed`. It never
+  falls back to the defaults.
+- **Not on this host (separate decision):** the AI pipeline modules
+  (`knowledge_index`, `context_bundle`, `ai_input_planner`, `semantic_*`) run
+  on the AI host. They read a local mirror whose folders are provisioned by
+  `tools/provision_automation_authority.py`, and that host has no
+  `vault_bindings.json`. Mapping there needs the record delivered to the AI
+  host and the mirror re-provisioned. Their logical paths stay today's names.
+- **Snapshot (B2):** mirrors the whole Vault root and uses no role folder.
+  It keeps the root guard only. This is intended, not a missed consumer.
+- **For P2-3:** every writer that turns a logical path into a remote URL must
+  go through the record, and only after the guard pins that role. This
+  covers:
+  - the Daily writer (`DAILY_ROOT`);
+  - the Project status mutation and worker;
+  - the Formatter writer and effect journal;
+  - B3 WebDAV readback;
+  - the Project links that B4 renders.
+
+  Formatter plans and receipts carry logical `98-System/...` paths. Any
+  writer that consumes them must translate them first.
 
 ## Migration rules
 
