@@ -429,16 +429,25 @@ def verify_root_chain(
     clock: Callable[[], float] = time.monotonic,
     expected_resource_id: str | None = None,
     restricted_coherence: bool = False,
+    no_share_root_below: int = 0,
 ) -> tuple[RootPreview, tuple[str, ...] | None]:
     """As ``verify_root_candidate``; also returns the server-internal
-    ``oc:id`` chain of the selected root when the result is candidate_valid."""
+    ``oc:id`` chain of the selected root when the result is candidate_valid.
+
+    ``no_share_root_below`` (#584 role folders): when > 0, a share root
+    entered after that many leading components is refused (``unsafe_target``),
+    so a folder below the Vault root stays in the root's own storage. The
+    default 0 keeps the V1 rules unchanged."""
+    if type(no_share_root_below) is not int or no_share_root_below < 0:
+        return _deny("invalid_request"), None
     result, chain = _verify(selection, account, transport, source_revision, proof,
-                            clock, expected_resource_id, restricted_coherence)
+                            clock, expected_resource_id, restricted_coherence,
+                            no_share_root_below)
     return result, chain if result.status == "candidate_valid" else None
 
 
 def _verify(selection, account, transport, source_revision, proof, clock,
-            expected_resource_id, restricted_coherence):
+            expected_resource_id, restricted_coherence, no_share_root_below=0):
     if (type(proof) is not ProviderProof
             or not proof.admits(restricted_coherence=restricted_coherence)):
         return _deny("provider_unproven"), None
@@ -527,6 +536,9 @@ def _verify(selection, account, transport, source_revision, proof, clock,
                 raise _Blocked("unsafe_target")
             target_row = by_name[component]
             if not _step_allowed(inside_share, target_row):
+                raise _Blocked("unsafe_target")
+            if (no_share_root_below and len(page_chain) >= no_share_root_below
+                    and target_row.share == "share_root"):
                 raise _Blocked("unsafe_target")
             inside_share = inside_share or target_row.share == "share_root"
             expected_self = target_row.share

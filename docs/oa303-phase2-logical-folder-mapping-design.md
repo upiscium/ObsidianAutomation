@@ -1,6 +1,6 @@
 # #303 Phase 2 — logical folder mapping (design draft)
 
-**Status:** design only, no code. This is a separate gate after V1, which is
+**Status:** P2-0 and P2-1 implemented (#584); the rest is design. This is a separate gate after V1, which is
 live with root selection only. Suggest tracking it in its own issue.
 
 ## Problem
@@ -61,6 +61,43 @@ exactly today's behaviour.
 - No casefold or NFKC collisions.
 - Every role is an existing plain directory (or one inside the same
   accepted share) under the pinned root, with its own `oc:id` recorded.
+
+## P2-1 implementation (read-only)
+
+`src/obsidian_automation/vault_bindings.py`. Nothing here saves a record
+or changes a Job. Jobs keep the `vault_layout` defaults until P2-2/P2-3.
+
+- **Record:** `vault_bindings.json` in the state directory, 0600, with exactly
+  the keys `version`, `root_pin`, `roles` and `role_ids`. It is read with the
+  V1 private-JSON reader (no symlink, FIFO or oversize file).
+- **Missing record:** today's names.
+- **Unreadable or invalid record:** an error. Callers fail closed and never
+  fall back to the defaults.
+- **Shape checks (no I/O):** all six roles, the V1 new-candidate grammar
+  (ASCII, at most 16 components, no dot names), no duplicates or nesting
+  after casefold/NFKC folding. Sibling prefixes such as `Daily` and
+  `DailyIdeas` are allowed.
+- **Preview:** for each role, the V1 walk of `<active root>/<folder>`. It
+  needs a pinned active root (`root_unpinned` / `root_pin_mismatch`
+  otherwise). Each role must resolve below that pin, and the refusals are:
+  - **Another share below the root** (`unsafe_target`): a role must stay in
+    the root's own storage, a plain directory or one inside the root's own
+    share. The verifier gained `no_share_root_below` for this; its default
+    keeps the V1 rules unchanged.
+  - `duplicate_folder`: two names for one server folder.
+  - `nested_folder`: roles nested on the server, even under different names.
+  - `identity_changed`: a stored role folder recreated under the same name.
+    Preview cannot accept the new folder. P2-4 must add an explicit,
+    confirmed re-pin for a folder the user recreated on purpose.
+  - `root_changed`: the root was recreated, or the stored mapping is for
+    another root.
+  - `path_too_long`: root plus folder beyond 100 characters or 16
+    components. This is checked before any I/O.
+- **Output:** folder labels, reason codes and a `changed` flag per role. It
+  contains no IDs, URLs or ETags.
+- **Record from a valid Preview:** returned to the server only. It grants
+  nothing: the P2-4 save must re-check the pins and take the V1 Job fence.
+  Jobs may run during a Preview because nothing changes.
 
 ## Migration rules
 
