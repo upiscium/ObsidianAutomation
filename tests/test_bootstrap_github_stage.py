@@ -10,6 +10,13 @@ import sys
 import pytest
 
 BOOTSTRAP = Path(__file__).resolve().parents[1] / "tools" / "bootstrap_github_stage.py"
+
+# The bootstrap tool runs only the Debian host's /usr/bin/git. Hosts without
+# it (NixOS under `nix develop`) skip this module; CI (CI=true) always runs it.
+pytestmark = pytest.mark.skipif(
+    not os.environ.get("CI") and not Path("/usr/bin/git").is_file(),
+    reason="needs the Debian host's /usr/bin/git (runs in CI)",
+)
 SHA_FAKE_RECEIPT = "a" * 64
 
 
