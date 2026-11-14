@@ -257,6 +257,13 @@ def _commit(store: SetupStore, fence: JobFence, new: RootPin, previous: RootPin 
     return ActivationResult(done, "requires_job_reenable")
 
 
+def _mapping_present(state: Path) -> bool:
+    """#584 D2-A: a role mapping is bound to the current root, so a root switch
+    (or root rollback) is refused until the mapping is reset to today's names."""
+    from .vault_bindings_editor import mapping_present  # avoids an import cycle
+    return mapping_present(state)
+
+
 def activate_vault_root(
     *,
     enabled: bool,
@@ -284,6 +291,8 @@ def activate_vault_root(
     with fence.quiesced() as busy:
         if busy:
             return ActivationResult("blocked", "jobs_in_flight")
+        if _mapping_present(store.state):
+            return ActivationResult("blocked", "mapping_present")
         if store.nextcloud_revision() != expected_revision:
             return ActivationResult("blocked", "stale_source")
         saved = store.load_nextcloud()
@@ -333,6 +342,8 @@ def rollback_vault_root(
     with fence.quiesced() as busy:
         if busy:
             return ActivationResult("blocked", "jobs_in_flight")
+        if _mapping_present(store.state):
+            return ActivationResult("blocked", "mapping_present")
         saved = store.load_nextcloud()
         revision = store.nextcloud_revision()
         if saved is None or revision is None or saved["vault_folder"] != current.path:

@@ -1,6 +1,6 @@
 # #303 Phase 2 — logical folder mapping (design draft)
 
-**Status:** P2-0 to P2-3 implemented for obsidian-control (#584); the rest is design. This is a separate gate after V1, which is
+**Status:** P2-0 to P2-4 implemented for obsidian-control (#584); P2-4 details in `docs/oa303-p2-4-mapping-editor-design.md`. This is a separate gate after V1, which is
 live with root selection only. Suggest tracking it in its own issue.
 
 ## Problem
