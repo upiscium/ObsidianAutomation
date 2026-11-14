@@ -23,6 +23,7 @@ from .vault_format_source import FormatterSource, FormatterSourceError
 from .vault_root_activation import (
     JobRootGuard, RootPinRefused, https_transport_factory,
 )
+from .vault_bindings import RoleGuard, physical_folder, record_generation, run_verified
 from .vault_root_webui import build_vault_root_ui
 
 
@@ -69,6 +70,22 @@ def collect_b4_preview(daily_setup: DailySetup, daily_state: Path) -> dict:
         raise DailyStageFailure("source_admission", "source_unavailable") from None
 
 
+def job_guards(root_guard) -> dict:
+    """#584: each Job also pins the role folders it uses (P2-2).
+
+    B4 publishes a Daily note under today's Daily folder that names Project
+    notes by their logical paths (producers follow in P2-3). A record that
+    moves "daily" or "project" therefore stops B4 instead of writing a wrong
+    folder or wrong links. B3 and the Formatter only read.
+    """
+    return {
+        "daily": RoleGuard(root_guard, ("project", "daily"),
+                           unmapped=("project", "daily")),
+        "b3": RoleGuard(root_guard, ("project",)),
+        "formatter": RoleGuard(root_guard, ("system",)),
+    }
+
+
 def guard_snapshot_runner(guard, runner):
     """#303: refuse a Snapshot run before any Vault read when the pin fails."""
     def guarded(run_id):
@@ -82,20 +99,22 @@ def guard_daily_runner(guard, runner):
     """B4 Preview and its publication (same run) are both behind this check."""
     def guarded():
         try:
-            guard()
+            verified = guard()
         except RootPinRefused:
             raise DailyStageFailure("source_admission", "source_unavailable") from None
-        return runner()
+        # Only a RoleGuard returns the mapping it checked; a plain root guard
+        # returns None and the pull then reads the record itself.
+        return run_verified(verified, runner)
     return guarded
 
 
 def guard_formatter_runner(guard, source):
     def guarded():
         try:
-            guard()
+            verified = guard()
         except RootPinRefused:
             raise FormatterSourceError("formatter_root_pin_refused") from None
-        return source()
+        return run_verified(verified, source)
     return guarded
 
 
@@ -156,14 +175,22 @@ def main() -> int:
     # GitHub credentials and a pull-only local Project mirror are configured.
     daily_state = state / "github-daily" if store else None
 
-    daily_setup = DailySetup(daily_state, store) if store is not None else None
+    layout = (lambda role: physical_folder(store.state, role)) if store is not None else None
+    layout_generation = (lambda: record_generation(store.state)) if store is not None else None
+    daily_setup = (DailySetup(daily_state, store, layout=layout,
+                              layout_generation=layout_generation)
+                   if store is not None else None)
 
     def unguarded_daily_runner():
         # Still uses the same B2 read-only Nextcloud mirror and GitHub GET
         # collection; only bounded diagnosis of failure stages is new.
         return collect_b4_preview(daily_setup, daily_state)
 
-    daily_runner = guard_daily_runner(root_guard, unguarded_daily_runner)
+    guards = job_guards(root_guard) if root_guard is not None else {}
+    daily_guard = guards.get("daily")
+    project_guard = guards.get("b3")
+    system_guard = guards.get("formatter")
+    daily_runner = guard_daily_runner(daily_guard, unguarded_daily_runner)
 
     def daily_publisher(preview_receipt):
         if daily_setup is None or not daily_setup.configured():
@@ -175,9 +202,11 @@ def main() -> int:
     # B2/B4 and Formatter share one timer thread. No Writer is injected:
     # Source-side deployment is always read-only, irrespective of UI state.
     formatter_state = state / "vault-formatter" if store else None
-    formatter_source = FormatterSource(formatter_state, store) if store else None
+    formatter_source = (FormatterSource(formatter_state, store, layout=layout,
+                                        layout_generation=layout_generation)
+                        if store else None)
 
-    formatter_runner = (guard_formatter_runner(root_guard, formatter_source)
+    formatter_runner = (guard_formatter_runner(system_guard, formatter_source)
                         if formatter_source is not None else None)
     formatter_context = (
         FormatterJob(formatter_state, formatter_runner,
@@ -201,12 +230,12 @@ def main() -> int:
     b3_context = (
         B3ObserverJob(
             b3_state,
-            root_guard.wrap(
+            project_guard.wrap(
                 lambda: collect_b3_read_only(daily_setup, state_root=b3_state)),
             configured=daily_setup.configured,
             generation=daily_setup.source_fingerprint,
             phase_generation=daily_setup.phase_source_fingerprint,
-            phase_collector=root_guard.wrap(lambda expected: collect_b3_read_only(
+            phase_collector=project_guard.wrap(lambda expected: collect_b3_read_only(
                 daily_setup, state_root=b3_state,
                 expected_generation=expected,
             )),

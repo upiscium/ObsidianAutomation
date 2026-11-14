@@ -22,7 +22,8 @@ from . import github_daily_runonce as daily
 from . import github_project_watcher as watcher
 from . import github_daily_deterministic_preview as preview
 from .snapshot_setup import NextcloudSource
-from .vault_layout import role_folder
+from .vault_bindings import fold_generation
+from .vault_layout import remote_folder, role_folder
 
 
 class DailySetupError(ValueError):
@@ -32,13 +33,18 @@ class DailySetupError(ValueError):
 class DailySetup:
     """Store one GitHub token and reuse a read-only shared Nextcloud connection."""
 
-    def __init__(self, state: Path, shared, *, probe=None, copier=None):
+    def __init__(self, state: Path, shared, *, probe=None, copier=None, layout=None,
+                 layout_generation=None):
         self.state = state
         state.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.shared = shared
         self._lock = threading.RLock()
         self.probe = probe or probe_github
         self.copier = copier or pull_project_notes
+        # role -> physical folder (#584). The local mirror keeps the logical
+        # name, so watcher paths and receipts never change with a mapping.
+        self.layout = layout
+        self.layout_generation = layout_generation
 
     def _shared(self):
         # Prefer the shared provider-only API, which is valid without
@@ -72,6 +78,9 @@ class DailySetup:
                 ensure_ascii=False, sort_keys=True, separators=(",", ":"),
             ).encode("utf-8")
             generation = hashlib.sha256(raw).hexdigest()
+            # #584: bind receipts to the mapping record too (unchanged without one).
+            if self.layout_generation is not None:
+                generation = fold_generation(generation, self.layout_generation())
             return connections, generation
 
     def source_fingerprint(self) -> str | None:
@@ -294,7 +303,11 @@ class DailySetup:
             # remote rclone or GitHub GETs.
             project_dir = root / role_folder("project")
             project_dir.mkdir(mode=0o700)
-            if not self.copier(connections, project_dir):
+            try:
+                folder = remote_folder(self.layout, "project")
+            except ValueError:  # bad mapping record: stop, never the defaults
+                raise DailySetupError("project_mirror_pull_failed") from None
+            if not self.copier(connections, project_dir, **folder):
                 raise DailySetupError("project_mirror_pull_failed")
             projects, _warnings = watcher.scan_projects(root)
             if not projects:
@@ -326,12 +339,15 @@ def probe_github(token: str) -> bool:
         return False
 
 
-def pull_project_notes(connections, target: Path) -> bool:
-    """Use existing B2 rclone config for a GET-only remote-to-local copy."""
+def pull_project_notes(connections, target: Path, *, folder: str | None = None) -> bool:
+    """Use existing B2 rclone config for a GET-only remote-to-local copy.
+
+    ``folder`` is the project role's physical folder (#584); default today's.
+    """
     connections.validate()
     if not target.is_dir() or target.is_symlink():
         return False
-    source = connections.rclone_remote + "/" + role_folder("project")
+    source = connections.rclone_remote + "/" + (role_folder("project") if folder is None else folder)
     argv = ["rclone", "--config", str(connections.rclone_config), "copy",
             source, str(target), "--include", "*.md",
             "--retries", "1", "--low-level-retries", "1"]

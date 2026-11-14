@@ -434,6 +434,17 @@ class JobRootGuard:
         self._transport_factory = transport_factory
         self._proof = proof
 
+    @property
+    def state(self) -> Path:
+        return self._store.state
+
+    def pin(self) -> RootPin | None:
+        return current_pin(self._store.state)
+
+    def read_identity(self, path: str) -> str | None:
+        """``oc:id`` of a folder of the bound account (Depth:0), or None."""
+        return self._read_leaf(path)
+
     def _read_leaf(self, path: str) -> str | None:
         saved = self._store.load_nextcloud()
         pin = current_pin(self._store.state)

@@ -16,7 +16,10 @@ never fall back to the defaults.
 """
 from __future__ import annotations
 
+from contextvars import ContextVar
 from dataclasses import dataclass
+import hashlib
+import json
 import os
 from pathlib import Path
 import time
@@ -24,7 +27,7 @@ from types import MappingProxyType
 from typing import Callable, Mapping
 
 from .vault_layout import DEFAULT_ROLE_FOLDERS, ROLES
-from .vault_root_activation import RootPin, read_private_json
+from .vault_root_activation import RootPin, RootPinRefused, read_private_json
 from .vault_root_dav_verifier import (
     CURRENT_PROVIDER_PROOF, DavTransport, ProviderProof, verify_root_chain,
 )
@@ -242,3 +245,167 @@ def preview_bindings(
     if not ok:
         return result, None
     return result, VaultBindings(roles, root_pin.chain, MappingProxyType(role_ids))
+
+
+# --- P2-2: consumers -----------------------------------------------------------
+#
+# Jobs keep *logical* role paths inside (local mirrors, plans, receipts): the
+# default folder names. Only the remote edge (the Nextcloud pull) maps a role
+# to its *physical* folder from the record, so stored history never changes.
+
+# The mapping a RoleGuard verified for the guarded call. The pull reads its
+# folder from this snapshot, so a record saved between the check and the pull
+# cannot redirect it to an unpinned folder.
+_VERIFIED: ContextVar[VaultBindings | None] = ContextVar("vault_bindings_verified",
+                                                         default=None)
+
+
+def physical_folder(state: Path, role: str) -> str:
+    """The folder that holds ``role`` on the server, relative to the Vault root.
+
+    Inside a ``RoleGuard.wrap`` call it uses the mapping the guard verified;
+    otherwise it reads the record. Today's name without a record. Raises
+    ``BindingsError`` for an unknown role or a bad record: the caller must
+    stop, never fall back to the defaults.
+    """
+    if role not in ROLES:
+        raise BindingsError("invalid_roles")
+    verified = _VERIFIED.get()
+    return (verified if verified is not None else load_bindings(state)).roles[role]
+
+
+def record_generation(state: Path) -> str | None:
+    """Digest to fold into a Job's source generation; None without a record.
+
+    An unreadable or invalid record still yields a value, so the generation
+    changes and receipts admitted under the old mapping stop matching. Inside
+    a guarded call it describes the mapping the guard verified (the same
+    digest the file gives), so a receipt never names a mapping the pull did
+    not use.
+    """
+    verified = _VERIFIED.get()
+    if verified is not None:
+        if verified.is_default:
+            return None
+        return _digest(bindings_json(verified))
+    path = state / BINDINGS_FILE
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return "unreadable"
+    raw = read_private_json(path)
+    if raw is None:
+        return "unreadable"
+    return _digest(raw)
+
+
+def _digest(raw: object) -> str:
+    encoded = json.dumps(raw, sort_keys=True, ensure_ascii=False,
+                         separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def fold_generation(generation: str, extra: str | None) -> str:
+    """``generation`` unchanged without a record; otherwise bound to it."""
+    if extra is None:
+        return generation
+    return hashlib.sha256(f"{generation}\n{extra}".encode("utf-8")).hexdigest()
+
+
+def check_role_pins(state: Path, roles: tuple[str, ...], root_status: str,
+                    root_pin: RootPin | None,
+                    read_identity: Callable[[str], object],
+                    unmapped: tuple[str, ...] = ()) -> str:
+    return _check_role_pins(state, roles, root_status, root_pin, read_identity,
+                            unmapped)[0]
+
+
+def _check_role_pins(state, roles, root_status, root_pin, read_identity,
+                     unmapped=()) -> tuple[str, VaultBindings | None]:
+    """Pre-run guard for the role folders a Job reads.
+
+    Without a record this is the root guard's result unchanged. With one, the
+    root must be pinned (``ok``) to the record's root, and each role folder
+    must still have its recorded ``oc:id``. Anything else is ``mismatch`` (or
+    ``unavailable`` when the provider cannot answer).
+
+    ``unmapped`` lists roles the Job still uses under today's name (its code
+    does not follow a mapping yet): a record that moves one of them refuses.
+    """
+    if root_status not in ("ok", "legacy_unpinned"):
+        return root_status, None
+    if (type(roles) is not tuple or not all(r in ROLES for r in roles)
+            or type(unmapped) is not tuple or not all(r in roles for r in unmapped)):
+        return "mismatch", None
+    try:
+        bindings = load_bindings(state)
+    except BindingsError:
+        return "mismatch", None
+    if bindings.is_default:
+        return root_status, bindings
+    if (root_status != "ok" or root_pin is None or root_pin.chain is None
+            or root_pin.chain != bindings.root_pin):
+        return "mismatch", None
+    if any(bindings.roles[r] != DEFAULT_ROLE_FOLDERS[r] for r in unmapped):
+        return "mismatch", None
+    for role in roles:
+        try:
+            observed = read_identity(f"{root_pin.path}/{bindings.roles[role]}")
+        except Exception:
+            return "unavailable", None
+        if type(observed) is not str:
+            return "unavailable", None
+        if observed != bindings.role_ids[role]:
+            return "mismatch", None
+    return "ok", bindings
+
+
+class RoleGuard:
+    """A ``JobRootGuard`` that also pins the role folders one Job reads."""
+
+    def __init__(self, root_guard, roles: tuple[str, ...], *,
+                 unmapped: tuple[str, ...] = ()):
+        self._root = root_guard
+        self._roles = roles
+        self._unmapped = unmapped
+
+    def _verify(self) -> tuple[str, VaultBindings | None]:
+        try:
+            before = self._root.pin()
+            root_status = self._root.status()
+            pin = self._root.pin()
+            if pin != before:  # an activation landed during the check
+                return "unavailable", None
+            return _check_role_pins(self._root.state, self._roles, root_status,
+                                    pin, self._root.read_identity, self._unmapped)
+        except Exception:
+            return "unavailable", None
+
+    def status(self) -> str:
+        return self._verify()[0]
+
+    def __call__(self) -> VaultBindings | None:
+        status, bindings = self._verify()
+        if status not in ("ok", "legacy_unpinned"):
+            raise RootPinRefused("vault_root_pin_refused")
+        return bindings
+
+    def wrap(self, function: Callable) -> Callable:
+        """Run ``function`` with the mapping this check verified."""
+        def guarded(*args, **kwargs):
+            return run_verified(self(), function, *args, **kwargs)
+        return guarded
+
+
+def run_verified(verified: object, function: Callable, *args, **kwargs):
+    """Call ``function`` with ``verified`` (a guard's result) as the mapping its
+    pulls use. A plain root guard returns None: the record is read as usual."""
+    if not isinstance(verified, VaultBindings):
+        return function(*args, **kwargs)
+    token = _VERIFIED.set(verified)
+    try:
+        return function(*args, **kwargs)
+    finally:
+        _VERIFIED.reset(token)

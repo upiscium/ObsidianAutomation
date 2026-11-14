@@ -41,6 +41,12 @@ stages in the AI state directory, not Vault folders.
 The slice column is where the module moves from the fixed default to the
 mapping record.
 
+Update (P2-2): modules on obsidian-control map only their Nextcloud pull and
+keep logical paths inside. The AI-host modules marked P2-2 below
+(`knowledge_index`, `retrieval_eval`, `context_bundle`, `ai_input_planner`,
+`semantic_*`, `pre_review_production_canary`) are deferred to a separate
+decision; see the design doc.
+
 | Module | Role | Kind | Slice |
 | --- | --- | --- | --- |
 | `vault_formatter` | system | read (local scan) and gate | P2-2 |
