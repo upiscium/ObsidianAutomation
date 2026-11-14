@@ -19,6 +19,7 @@ from .github_daily_progress import (
 )
 from .github_daily_standard_source import read_standard_digest
 from .snapshot_setup import SetupStore, validate_nextcloud
+from .vault_layout import physical_path
 from .webdav_create import WebDAVCreateError, build_target_url
 
 _SHA = re.compile(r"[a-f0-9]{64}\Z")
@@ -60,6 +61,7 @@ def publish_verified_daily(
     shared: SetupStore,
     transport: HTTPTransport | None = None,
     timeout: float = 30.0,
+    layout: Callable[[str], str] | None = None,
 ) -> dict[str, object]:
     """Apply only one verified B4 section, never create a missing Daily Note.
 
@@ -102,11 +104,18 @@ def publish_verified_daily(
         target_path=daily_target_path(day),
         section_body=digest.render().rstrip("\n") + "\n\n",
     )
+    # #584: the receipt keeps the logical Daily path; only the URL uses the
+    # Daily role's physical folder.
+    try:
+        remote_path = physical_path(section.target_path, layout)
+    except ValueError as exc:
+        raise DailyProgressError("Daily role mapping unavailable") from exc
     outcome, before, after = _apply_project_progress_section(
         section, base_url=base,
         username=source["nextcloud_user"],
         password=source["nextcloud_password"],
         timeout=timeout, transport=transport,
+        remote_path=None if remote_path == section.target_path else remote_path,
     )
     if outcome not in _GOOD:
         raise DailyProgressError("unverified remote publication outcome")

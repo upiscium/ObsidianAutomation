@@ -1,6 +1,6 @@
 # #303 Phase 2 — logical folder mapping (design draft)
 
-**Status:** P2-0 to P2-2 implemented (#584); the rest is design. This is a separate gate after V1, which is
+**Status:** P2-0 to P2-3 implemented for obsidian-control (#584); the rest is design. This is a separate gate after V1, which is
 live with root selection only. Suggest tracking it in its own issue.
 
 ## Problem
@@ -124,9 +124,8 @@ or changes a Job. Jobs keep the `vault_layout` defaults until P2-2/P2-3.
     for that run, not a second read of the record.
   - **Root pin:** a root pin that changes during the check gives
     `unavailable`.
-- **Producers not yet mapped:** the B4 Daily publisher still writes today's
-  Daily folder, and names Project notes by their logical paths (P2-3). B4
-  therefore refuses while a record moves `daily` or `project`.
+- **Producers not yet mapped (until P2-3):** B4 refused while a record moved
+  `daily` or `project`. P2-3 lifted this; see below.
 - **Generations:** with a record, a digest of it is folded into the
   Formatter and B3/B4 source generations. Plans and phase receipts admitted
   under another mapping then stop matching. Without a record, the
@@ -156,6 +155,41 @@ or changes a Job. Jobs keep the `vault_layout` defaults until P2-2/P2-3.
 
   Formatter plans and receipts carry logical `98-System/...` paths. Any
   writer that consumes them must translate them first.
+
+## P2-3 implementation (producers on obsidian-control)
+
+- **The only Vault writer on this host is the B4 Daily publisher.** The
+  Formatter has no Writer injected, and B3 is an observer.
+- **Daily publisher:**
+  - **Paths:** it keeps the logical Daily path (`00-DailyNote/...`) in the
+    projection and the receipt. Only the WebDAV URL uses the Daily role's
+    physical folder (`vault_layout.physical_path`), for the GET before, the
+    PUT and the read-back GET.
+  - **Pins right before the PUT:** the publisher runs inside the B4
+    `RoleGuard` again. The root and role pins are re-checked just before
+    the PUT, and the write goes to the folder that check verified.
+  - **Bad record:** the publisher fails before any request.
+  - **Refusal before the PUT:** a pin refusal at that point is recorded as
+    `("publication", "vault_root_refused")`, which means nothing was sent.
+    Any other publisher failure stays `outcome_unconfirmed`.
+  - **Remaining gap:** a few requests (the GET before) remain between that
+    check and the PUT. A folder recreated in that window could still be
+    written. This is inherent to a check-then-write over WebDAV. The P2-4
+    save takes the Job fence, so the record itself cannot change then.
+- **B4 no longer refuses a mapping.** It reads Project notes and writes the
+  Daily note through the record, and its Daily body links only to GitHub
+  URLs, never to Project paths.
+- **Writers not wired on this host:**
+  - Project status mutation and overview;
+  - Formatter writer and effect journal;
+  - B3 readback;
+  - promotion transports;
+  - review intake and Human projection.
+
+  They keep logical paths, and their allowlists still check logical paths.
+  Before any of them is wired to a mapped Vault, its URL must go through
+  `physical_path` under a `RoleGuard` for that role, or the guard must list
+  the role as `unmapped`.
 
 ## Migration rules
 
