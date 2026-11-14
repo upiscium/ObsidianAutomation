@@ -108,6 +108,13 @@ fails closed without retrying. It does not roll back or clean up the local
 mirror, so a partial refresh may remain and must be handled by a later refresh
 or operator procedure.
 
+Python callers that inject a `runner` for testing or integration must implement
+the `subprocess.run(command, check=False, timeout=seconds)` callback contract.
+The runner must honor the timeout and finish or terminate/reap its subprocess
+before returning or raising `subprocess.TimeoutExpired`. The normal CLI uses
+`subprocess.run`; there is no fallback that silently drops the timeout for an
+incompatible injected runner.
+
 This stronger refresh costs additional I/O: `--ignore-times` may transfer
 every included file on each sync, and `check --download` reads remote content
 again to verify it. The check does not make the sequence atomic and cannot
