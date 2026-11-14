@@ -324,7 +324,7 @@ def test_job_guard_wiring():
     import inspect
     guards = snapshot_app.job_guards(object())
     assert (guards["daily"]._roles, guards["daily"]._unmapped) == (
-        ("project", "daily"), ("project", "daily"))
+        ("project", "daily"), ())  # P2-3: B4 writes through the mapping
     assert (guards["b3"]._roles, guards["b3"]._unmapped) == (("project",), ())
     assert (guards["formatter"]._roles, guards["formatter"]._unmapped) == (("system",), ())
     source = inspect.getsource(snapshot_app.main)

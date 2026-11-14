@@ -956,11 +956,12 @@ def _observe_daily(
     password: str,
     timeout: float,
     transport: HTTPTransport | None,
+    remote_path: str | None = None,
 ) -> RemoteDaily:
     try:
         target_url = build_target_url(
             base_url,
-            projection.target_path,
+            projection.target_path if remote_path is None else remote_path,
         )
     except WebDAVCreateError as exc:
         raise DailyProgressError(str(exc)) from exc
@@ -1039,7 +1040,10 @@ def _apply_project_progress_section(
     password: str,
     timeout: float = 30.0,
     transport: HTTPTransport | None = None,
+    remote_path: str | None = None,
 ) -> tuple[str, bytes, bytes]:
+    """``remote_path`` is the server path of ``projection.target_path`` when
+    the Daily role is mapped (#584); the projection keeps the logical path."""
     if not username:
         raise DailyProgressError("WebDAV username must not be empty")
     if not password:
@@ -1056,6 +1060,7 @@ def _apply_project_progress_section(
         password=password,
         timeout=timeout,
         transport=transport,
+        remote_path=remote_path,
     )
     disposition, desired = prepare_daily_update(
         projection,
@@ -1073,7 +1078,7 @@ def _apply_project_progress_section(
     try:
         target_url = build_target_url(
             base_url,
-            projection.target_path,
+            projection.target_path if remote_path is None else remote_path,
         )
     except WebDAVCreateError as exc:
         raise DailyProgressError(str(exc)) from exc
@@ -1132,6 +1137,7 @@ def _apply_project_progress_section(
         password=password,
         timeout=timeout,
         transport=transport,
+        remote_path=remote_path,
     )
     if after.content == desired:
         return ("recovered" if ambiguous else "applied"), before.content, after.content

@@ -40,6 +40,28 @@ def role_folders() -> Mapping[str, str]:
     return DEFAULT_ROLE_FOLDERS
 
 
+def physical_path(logical: str, layout: Callable[[str], str] | None) -> str:
+    """Map a logical Vault path (today's role folder first) to its server path.
+
+    Producers keep logical paths in receipts and checks, and call this only to
+    build the remote URL (#584 P2-3). Raises ``ValueError`` for a path outside
+    every role folder or a bad mapping (``vault_bindings.BindingsError``).
+    """
+    if type(logical) is not str:
+        raise ValueError("invalid logical path")
+    head, sep, rest = logical.partition("/")
+    role = next((r for r, f in DEFAULT_ROLE_FOLDERS.items() if f == head), None)
+    if role is None or not sep or not rest:
+        raise ValueError("path outside the role folders")
+    if layout is None:
+        return logical
+    folder = layout(role)
+    if (type(folder) is not str or not folder
+            or any(part in ("", ".", "..") for part in folder.split("/"))):
+        raise ValueError("invalid role folder")
+    return f"{folder}/{rest}"
+
+
 def remote_folder(layout: Callable[[str], str] | None, role: str) -> dict:
     """Copier keyword for a role's physical folder (#584 P2-2).
 

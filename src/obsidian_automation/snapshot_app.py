@@ -71,19 +71,37 @@ def collect_b4_preview(daily_setup: DailySetup, daily_state: Path) -> dict:
 
 
 def job_guards(root_guard) -> dict:
-    """#584: each Job also pins the role folders it uses (P2-2).
+    """#584: each Job also pins the role folders it uses (P2-2, P2-3).
 
-    B4 publishes a Daily note under today's Daily folder that names Project
-    notes by their logical paths (producers follow in P2-3). A record that
-    moves "daily" or "project" therefore stops B4 instead of writing a wrong
-    folder or wrong links. B3 and the Formatter only read.
+    B3 and the Formatter only read on this host. B4 reads Project notes and
+    writes the Daily note, both through the mapping; its publisher runs the
+    same guard again right before the PUT (``make_daily_publisher``).
     """
     return {
-        "daily": RoleGuard(root_guard, ("project", "daily"),
-                           unmapped=("project", "daily")),
+        # B4 reads Project notes (P2-2) and writes the Daily note (P2-3) through
+        # the mapping; its Daily body links only to GitHub, not to Project paths.
+        "daily": RoleGuard(root_guard, ("project", "daily")),
         "b3": RoleGuard(root_guard, ("project",)),
         "formatter": RoleGuard(root_guard, ("system",)),
     }
+
+
+def make_daily_publisher(daily_setup, daily_state, store, guard, layout):
+    """B4 publisher. #584: re-check the root and role pins right before the
+    PUT and write to the Daily folder that check verified. A refusal there is
+    reported as "nothing sent", not as an unconfirmed outcome."""
+    def daily_publisher(preview_receipt):
+        if daily_setup is None or not daily_setup.configured():
+            raise ValueError("Daily delivery source no longer configured")
+        try:
+            verified = guard()
+        except RootPinRefused:
+            raise DailyStageFailure("publication", "vault_root_refused") from None
+        return run_verified(verified, lambda: publish_verified_daily(
+            preview_receipt, cas_root=daily_state / "cas", shared=store,
+            layout=layout,
+        ))
+    return daily_publisher
 
 
 def guard_snapshot_runner(guard, runner):
@@ -192,12 +210,8 @@ def main() -> int:
     system_guard = guards.get("formatter")
     daily_runner = guard_daily_runner(daily_guard, unguarded_daily_runner)
 
-    def daily_publisher(preview_receipt):
-        if daily_setup is None or not daily_setup.configured():
-            raise ValueError("Daily delivery source no longer configured")
-        return publish_verified_daily(
-            preview_receipt, cas_root=daily_state / "cas", shared=store,
-        )
+    daily_publisher = make_daily_publisher(daily_setup, daily_state, store,
+                                           daily_guard, layout)
 
     # B2/B4 and Formatter share one timer thread. No Writer is injected:
     # Source-side deployment is always read-only, irrespective of UI state.

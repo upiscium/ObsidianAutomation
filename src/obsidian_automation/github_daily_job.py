@@ -39,6 +39,8 @@ _FAILURE_PAIRS = frozenset({
     ("runner", "unexpected_exception"),
     ("preview_validation", "invalid_preview_receipt"),
     ("publication", "outcome_unconfirmed"),
+    # #584: the pin check right before the PUT refused; nothing was sent.
+    ("publication", "vault_root_refused"),
     ("publication", "invalid_publication_receipt"),
 })
 
@@ -296,6 +298,16 @@ class DailyJob:
                 if self.publisher is not None:
                     try:
                         output = self.publisher(data)
+                    except DailyStageFailure as exc:
+                        # Only the trusted pre-PUT refusal is "no effect";
+                        # any other marker stays unconfirmed.
+                        pair = (getattr(exc, "stage", None), getattr(exc, "code", None))
+                        refused = pair == ("publication", "vault_root_refused")
+                        result = "publish_failed"
+                        failure_stage, failure_code = (
+                            "publication",
+                            "vault_root_refused" if refused else "outcome_unconfirmed",
+                        )
                     except Exception:
                         # A remote write might have happened before the
                         # exception. Do not interpret this as "no effect".
