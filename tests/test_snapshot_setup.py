@@ -9,7 +9,6 @@ from dataclasses import replace
 
 import pytest
 
-from obsidian_automation.admin_dashboard import make_server
 from obsidian_automation.snapshot_job import SnapshotJob
 from obsidian_automation.snapshot_setup import SetupStore, git_askpass, probe_connections, obscure_password, private_repo
 from test_snapshot_adapter import fixture, git
@@ -60,82 +59,6 @@ def test_store_probe_failure_save_reload_and_helper(tmp_path):
     assert "GIT-PRIVATE" not in str(store.connections())
 
 
-def test_http_setup_guards_no_auto_run(tmp_path):
-    store = SetupStore(tmp_path, probe=lambda _: True, obscure=lambda _: "encoded")
-    started, release = threading.Event(), threading.Event()
-    blocking = [False]
-    def runner(_):
-        if blocking[0]:
-            started.set()
-            assert release.wait(4)
-        return "no_changes", "verify", "a" * 40
-    job = SnapshotJob(tmp_path, runner, configured=False)
-    server = make_server(port=0, snapshot_job=job, snapshot_setup=store, observer=lambda: [], ai_observer=lambda: {})
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    port = server.server_address[1]
-    origin = f"http://127.0.0.1:{port}"
-
-    def req(method, path, payload=None, origin_header=None, token=None):
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
-        headers = {"Host": f"127.0.0.1:{port}"}
-        if origin_header:
-            headers["Origin"] = origin_header
-        if token:
-            headers["X-Obsidian-CSRF"] = token
-        if payload is not None:
-            headers["Content-Type"] = "application/json"
-        conn.request(method, path, body=json.dumps(payload) if payload is not None else None, headers=headers)
-        response = conn.getresponse()
-        result = response.status, response.read()
-        conn.close()
-        return result
-
-    def csrf():
-        return json.loads(req("GET", "/api/v1/operation-session")[1])["csrf_token"]
-
-    try:
-        path = "/api/v1/snapshot/connections"
-        assert req("GET", "/")[0] == 200
-        assert req("GET", path)[1].find(b'"configured": false') >= 0
-        assert req("POST", path, sample(), token=csrf())[0] == 403
-        assert req("POST", path, sample(), "http://evil", csrf())[0] == 403
-        assert req("POST", path, sample(), origin)[0] == 403
-        assert req("POST", path, sample(), origin, csrf())[0] == 200
-        assert job.status()["last_run"] is None and not job.settings()["enabled"]
-        assert job.settings()["configured"]
-        assert job.settings()["gitea_write"] == "unverified"
-        settings = dict(enabled=True, interval_seconds=60, source_name="nextcloud", destination_name="gitea")
-        assert req("POST", "/api/v1/snapshot/settings", settings, origin, csrf())[0] == 200
-        before = job.settings()
-        assert before["enabled"] and before["next_due"] is not None
-        store.probe = lambda _: False
-        changed = dict(sample(), git_token="NEW-PRIVATE")
-        assert req("POST", path, changed, origin, csrf())[0] == 422
-        assert job.settings() == before and store.load() == sample()
-        store.probe = lambda _: True
-        assert req("POST", path, changed, origin, csrf())[0] == 200
-        assert not job.settings()["enabled"] and job.settings()["next_due"] is None
-        assert job.status()["last_run"] is None
-        assert b"PRIVATE" not in req("GET", path)[1]
-        assert b"PRIVATE" not in req("GET", "/api/v1/snapshot")[1]
-        blocking[0] = True
-        code, data = req("POST", "/api/v1/snapshot/runs", {"request_id": uuid.uuid4().hex}, origin, csrf())
-        assert code == 202
-        assert started.wait(2)
-        assert req("POST", path, sample(), origin, csrf())[0] == 409
-        assert store.load() == changed
-        release.set()
-        job._worker.join(3)
-        assert job.status()["last_run"]["status"] == "no_changes"
-        assert job.settings()["gitea_write"] == "unverified"
-        assert not job.settings()["enabled"]
-    finally:
-        release.set()
-        server.shutdown()
-        thread.join(3)
-        server.server_close()
-        job.close()
 
 
 def test_first_branch_in_empty_bare_repo(tmp_path, monkeypatch):

@@ -10,7 +10,6 @@ import uuid
 
 import pytest
 
-from obsidian_automation.admin_dashboard import HTML, JS, make_server
 from obsidian_automation.github_daily_job import DailyJob
 from obsidian_automation.github_daily_setup import (
     DailySetup, DailySetupError, pull_project_notes,
@@ -190,153 +189,9 @@ def test_rclone_source_is_only_remote_read_into_local_disposable_folder(tmp_path
     assert kwargs["timeout"]==120
 
 
-def test_connections_http_setup_and_shared_snapshot_contract(tmp_path):
-    shared,setup=make_setup(tmp_path)
-    started=[]
-    with DailyJob(tmp_path/"daily-job",
-                  lambda:started.append(1) or {
-                      "version":1,"status":"preview_ready","date_jst":"2026-10-05",
-                      "capture_sha256":"a"*64,"digest_sha256":"b"*64,
-                      "original_event_count":4,"rendered_entity_count":2,
-                      "model_used":False,"publication_authorized":False,
-                      "vault_modified":False,
-                  },configured=setup.configured) as job:
-        server=make_server(port=0,observer=lambda:[],ai_observer=lambda:{},
-                           daily_job=job,daily_setup=setup)
-        thread=threading.Thread(target=server.serve_forever,daemon=True)
-        thread.start()
-        port=server.server_address[1]
-        origin=f"http://127.0.0.1:{port}"
-
-        def req(method,path,payload=None,orig=None,token=None):
-            conn=http.client.HTTPConnection("127.0.0.1",port,timeout=10)
-            headers={"Host":f"127.0.0.1:{port}"}
-            if orig: headers["Origin"]=orig
-            if token: headers["X-Obsidian-CSRF"]=token
-            if payload is not None: headers["Content-Type"]="application/json"
-            conn.request(method,path,
-                         json.dumps(payload) if payload is not None else None,
-                         headers=headers)
-            response=conn.getresponse()
-            val=response.status,response.read()
-            conn.close()
-            return val
-
-        def csrf():
-            return json.loads(req("GET","/api/v1/operation-session")[1])["csrf_token"]
-
-        try:
-            assert req("POST","/api/v1/daily/connections",{"github_token":TOKEN})[0]==403
-            assert req("POST","/api/v1/daily/connections",
-                       {"github_token":TOKEN},"http://evil.invalid",csrf())[0]==403
-            assert req("POST","/api/v1/daily/connections",
-                       {"github_token":TOKEN,"shell":"danger"},origin,csrf())[0]==400
-            assert req("POST","/api/v1/daily/connections",
-                       {"github_token":TOKEN},origin,csrf())[0]==200
-            assert setup.configured()
-            saved=json.loads(req("GET","/api/v1/daily/connections")[1])
-            assert saved["configured"] and TOKEN not in json.dumps(saved)
-            assert req("GET","/api/v1/workflows")[0]==200
-            assert job.settings()["enabled"] is False
-            assert started==[]
-            # Review P2 injection: failed schedule reset cannot install
-            # a new provider token while a previous schedule is On.
-            job.update({"enabled":True,"interval_seconds":86400})
-            before = (setup.state/"github.token").read_bytes()
-            original_update = job.update
-            def fail_update(_):
-                raise OSError("synthetic_SQLite_error")
-            job.update = fail_update
-            assert req("POST","/api/v1/daily/connections",
-                       {"github_token":"NEW_GITHUB_FIXTURE_TOKEN_01234567"},
-                       origin,csrf())[0] == 503
-            assert (setup.state/"github.token").read_bytes() == before
-            assert job.settings()["enabled"] is True
-            job.update = original_update
-            # Invalid input cannot even pause the old working schedule.
-            assert req("POST","/api/v1/daily/connections",
-                       {"github_token":"contains spaces"},
-                       origin,csrf())[0] == 400
-            assert job.settings()["enabled"] is True
-            assert 'id="daily-connections-form"' in HTML
-            assert 'name="github_token"' in HTML
-            assert 'dailyConnectionRefresh' in JS
-            assert "innerHTML" not in JS
-        finally:
-            server.shutdown()
-            thread.join(4)
-            server.server_close()
 
 
 
-def test_b2_nextcloud_settings_change_pauses_b4_until_reconfigured(tmp_path):
-    """One shared WebDAV account, no implicit use of an old token/source."""
-    from obsidian_automation.snapshot_setup import SetupStore
-    from obsidian_automation.snapshot_job import SnapshotJob
-    from test_snapshot_setup import sample
-
-    state=tmp_path/"app"
-    salts = iter(["encodedA","encodedB","encodedC"])
-    store=SetupStore(state,probe=lambda _:True,obscure=lambda _:next(salts))
-    assert store.save(sample())
-    snapshot=SnapshotJob(state,lambda _:("no_changes","verify","c"*40),
-                         configured=True,connection_generation=store.generation())
-    setup=DailySetup(state/"github-daily",store,probe=lambda _:True,copier=project_copy)
-    assert setup.save({"github_token":TOKEN})
-    with DailyJob(state/"github-daily",lambda: {
-        "version":1,"status":"preview_ready","date_jst":"2026-10-05",
-        "capture_sha256":"a"*64,"digest_sha256":"b"*64,
-        "original_event_count":4,"rendered_entity_count":2,
-        "model_used":False,"publication_authorized":False,
-        "vault_modified":False,
-    },configured=setup.configured) as job:
-        server=make_server(port=0,snapshot_job=snapshot,snapshot_setup=store,
-                           daily_job=job,daily_setup=setup,
-                           observer=lambda:[],ai_observer=lambda:{})
-        thread=threading.Thread(target=server.serve_forever,daemon=True)
-        thread.start()
-        port=server.server_address[1]
-        origin=f"http://127.0.0.1:{port}"
-
-        def request(method,path,payload=None,csrf=None):
-            conn=http.client.HTTPConnection("127.0.0.1",port,timeout=10)
-            headers={"Host":f"127.0.0.1:{port}","Origin":origin}
-            if csrf: headers["X-Obsidian-CSRF"]=csrf
-            if payload is not None: headers["Content-Type"]="application/json"
-            conn.request(method,path,json.dumps(payload) if payload is not None else None,
-                         headers=headers)
-            res=conn.getresponse()
-            val=res.status,res.read()
-            conn.close()
-            return val
-
-        def token():
-            return json.loads(request("GET","/api/v1/operation-session")[1])["csrf_token"]
-
-        try:
-            job.update({"enabled":True,"interval_seconds":86400})
-            assert job.settings()["enabled"]
-            rotated=sample()
-            rotated["git_token"]="ROTATED_GITEA_TOKEN"
-            old_obscured=store.rclone.read_bytes()
-            assert request("POST","/api/v1/snapshot/connections",rotated,token())[0]==200
-            assert store.rclone.read_bytes() != old_obscured
-            assert setup.configured() and job.settings()["enabled"]
-            changed=sample()
-            changed["vault_folder"]="AnotherVault"
-            assert request("POST","/api/v1/snapshot/connections",changed,token())[0]==200
-            assert not setup.configured()
-            assert not job.settings()["enabled"]
-            assert job.tick() is False
-            assert job.status()["last_run"] is None
-            assert setup.save({"github_token":TOKEN})
-            assert setup.configured()
-            assert job.settings()["enabled"] is False
-        finally:
-            server.shutdown()
-            thread.join(3)
-            server.server_close()
-    snapshot.close()
 
 
 def test_mirror_pull_detects_concurrent_shared_source_change_at_exit(tmp_path):

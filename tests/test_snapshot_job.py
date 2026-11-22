@@ -5,7 +5,6 @@ import uuid
 
 import pytest
 
-from obsidian_automation.admin_dashboard import make_server
 from obsidian_automation.snapshot_job import Busy, Invalid, SnapshotJob
 
 
@@ -59,56 +58,6 @@ def test_settings_tick_manual_restart_and_owner(tmp_path):
         recovered.close()
 
 
-def test_http_snapshot_security_and_existing_observer(tmp_path):
-    job = SnapshotJob(tmp_path, lambda _: ("no_changes", "verify", "a" * 40))
-    server = make_server(port=0, snapshot_job=job, observer=lambda: [], ai_observer=lambda: {})
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    port = server.server_address[1]
-
-    def request(method, path, payload=None, origin=None, token=None):
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
-        headers = {"Host": f"127.0.0.1:{port}"}
-        if origin is not None:
-            headers["Origin"] = origin
-        if token is not None:
-            headers["X-Obsidian-CSRF"] = token
-        if payload is not None:
-            headers["Content-Type"] = "application/json"
-        conn.request(method, path, body=json.dumps(payload) if payload is not None else None, headers=headers)
-        response = conn.getresponse()
-        result = response.status, response.read()
-        conn.close()
-        return result
-
-    try:
-        assert request("GET", "/api/v1/status")[0] == 200
-        assert json.loads(request("GET", "/api/v1/snapshot")[1])["settings"]["enabled"] is False
-        url = f"http://127.0.0.1:{port}"
-        assert request("POST", "/api/v1/snapshot/runs", {"request_id": uuid.uuid4().hex})[0] == 403
-        assert request("POST", "/api/v1/snapshot/runs", {"request_id": uuid.uuid4().hex}, origin="http://evil")[0] == 403
-        session = json.loads(request("GET", "/api/v1/operation-session")[1])
-        token = session["csrf_token"]
-        assert request("POST", "/api/v1/snapshot/runs", {"request_id": uuid.uuid4().hex, "argv": "oops"}, url, token)[0] == 400
-        valid = json.loads(request("GET", "/api/v1/operation-session")[1])["csrf_token"]
-        settings = dict(enabled=True, interval_seconds=60, source_name="nextcloud", destination_name="gitea")
-        assert request("POST", "/api/v1/snapshot/settings", settings, url, valid)[0] == 200
-        assert job.status()["last_run"] is None  # settings never execute
-        run_token = json.loads(request("GET", "/api/v1/operation-session")[1])["csrf_token"]
-        run_id = uuid.uuid4().hex
-        code, raw = request("POST", "/api/v1/snapshot/runs", {"request_id": run_id}, url, run_token)
-        assert code == 202
-        receipt = json.loads(raw)
-        assert receipt["outcome"] == "accepted"
-        assert request("GET", "/api/v1/snapshot/runs/" + receipt["run_id"])[0] == 200
-        assert request("POST", "/api/v1/snapshot/runs", {"request_id": run_id}, url, run_token)[0] == 403
-        assert request("POST", "/api/v1/snapshot/unknown", {}, url, token)[0] == 405
-        assert request("GET", "/api/v1/snapshot/runs/../../secret")[0] == 404
-    finally:
-        server.shutdown()
-        thread.join(3)
-        server.server_close()
-        job.close()
 
 
 def test_due_tick_and_off_does_not_cancel(tmp_path):

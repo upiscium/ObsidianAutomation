@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Obsidian Automation · 3 Services</title>
+<link rel="stylesheet" href="/static/three-services.css">
+<script defer src="/static/three-services.js"></script>
+</head>
+<body>
+<main class="shell">
+  <header class="header">
+    <div><p class="eyebrow">OBSIDIAN AUTOMATION</p><h1>Service Manager</h1>
+    <p class="muted">Snapshot / Core Promotion / GitHub Daily</p></div>
+    <button type="button" id="refresh" class="outline">状態を更新</button>
+  </header>
+  <p class="notice">LAN / VPN 専用。操作受付とVaultへの反映成功は別の状態として表示します。</p>
+  <div id="global-message" role="status" aria-live="polite"></div>
+  <section class="services" aria-label="自動化サービス">
+    <article class="service" data-service="snapshot" aria-labelledby="snapshot-title">
+      <div class="service-header"><h2 id="snapshot-title">Snapshot</h2><span class="status" id="snapshot-status">確認中</span></div>
+      <p class="muted">Vault → private Gitea</p>
+      <dl><dt>接続</dt><dd id="snapshot-configured">—</dd><dt>最終実行</dt><dd id="snapshot-last">—</dd><dt>次回予定</dt><dd id="snapshot-next">—</dd></dl>
+      <div class="controls">
+        <label class="toggle"><input type="checkbox" id="snapshot-enabled" disabled> 自動実行</label>
+        <label>実行間隔（秒）<input type="number" id="snapshot-interval" min="60" max="86400" value="3600" disabled></label>
+        <div class="actions"><button id="snapshot-save" disabled>設定を保存</button><button id="snapshot-run" class="outline" disabled>Run Once</button></div>
+      </div>
+      <p class="feedback" id="snapshot-message" role="status"></p>
+    </article>
+    <article class="service" data-service="core-promotion" aria-labelledby="promotion-title">
+      <div class="service-header"><h2 id="promotion-title">Core Promotion</h2><span class="status" id="core-promotion-status">確認中</span></div>
+      <p class="muted">GitHub ObsidianCore → Vault（条件付き書込）</p>
+      <dl><dt>接続</dt><dd id="core-promotion-configured">—</dd><dt>最終実行</dt><dd id="core-promotion-last">—</dd><dt>次回予定</dt><dd id="core-promotion-next">—</dd></dl>
+      <div class="controls">
+        <label class="toggle"><input type="checkbox" id="core-promotion-enabled" disabled> 自動実行</label>
+        <label>実行間隔（秒）<input type="number" id="core-promotion-interval" min="60" max="86400" value="3600" disabled></label>
+        <div class="actions"><button id="core-promotion-save" disabled>設定を保存</button><button id="core-promotion-run" class="outline" disabled>Run Once</button></div>
+      </div>
+      <details id="core-promotion-bootstrap-section"><summary>初回Checkpoint設定</summary>
+        <p class="muted">公開用Projectionと一致する、レビュー済みObsidianCoreコミットの完全なSHAを指定します。Vault内容が一致することを確認してから実行してください。処理はCheckpointを作成し、Vaultには書き込みません。</p>
+        <label>Policy SHA-256<input id="core-promotion-policy" readonly></label>
+        <label>基準となるCore commit SHA（40文字）<input id="core-promotion-baseline" type="text" pattern="[0-9a-f]{40}" maxlength="40" autocomplete="off"></label>
+        <button id="core-promotion-bootstrap" type="button" disabled>Checkpointを初期化</button>
+      </details>
+      <p class="feedback" id="core-promotion-message" role="status"></p>
+    </article>
+    <article class="service" data-service="daily" aria-labelledby="daily-title">
+      <div class="service-header"><h2 id="daily-title">GitHub Daily</h2><span class="status" id="daily-status">確認中</span></div>
+      <p class="muted">GitHub Issue / PR → 前日JSTのDaily Note</p>
+      <dl><dt>接続</dt><dd id="daily-configured">—</dd><dt>最終実行</dt><dd id="daily-last">—</dd><dt>次回予定</dt><dd id="daily-next">—</dd></dl>
+      <div class="controls">
+        <label class="toggle"><input type="checkbox" id="daily-enabled" disabled> 自動実行</label>
+        <label>実行間隔（秒）<input type="number" id="daily-interval" min="3600" max="86400" value="86400" disabled></label>
+        <div class="actions"><button id="daily-save" disabled>設定を保存</button><button id="daily-run" class="outline" disabled>Run Once</button></div>
+      </div>
+      <p class="feedback" id="daily-message" role="status"></p>
+    </article>
+  </section>
+  <details class="connections" id="connections">
+    <summary>接続設定</summary>
+    <p class="muted">接続先と認証情報はサーバー側で保管します。パスワードやTokenを画面へ再表示しません。</p>
+    <div class="connection-grid">
+      <form id="nextcloud-form">
+        <h3>Nextcloud · 共通</h3>
+        <label>WebDAV URL<input type="url" name="webdav_url" required placeholder="https://cloud.example/remote.php/dav/files/user/"></label>
+        <label>Vault folder<input name="vault_folder" required placeholder="Vault"></label>
+        <label>User<input name="nextcloud_user" required></label>
+        <label>App password<input name="nextcloud_password" type="password" required autocomplete="off"></label>
+        <button type="submit">接続を保存</button><p class="feedback" id="nextcloud-message"></p>
+      </form>
+      <form id="gitea-form">
+        <h3>Gitea · Snapshot</h3>
+        <label>Git HTTPS URL<input name="git_url" type="url" required placeholder="https://gitea.example/owner/ObsidianVault.git"></label>
+        <label>User<input name="git_user" required></label>
+        <label>Token<input name="git_token" type="password" required autocomplete="off"></label>
+        <label>Branch<input name="branch" value="main" required></label>
+        <button type="submit">接続を保存</button><p class="feedback" id="gitea-message"></p>
+      </form>
+      <form id="github-form">
+        <h3>GitHub · Daily</h3>
+        <label>Access token<input name="github_token" type="password" autocomplete="off" required></label>
+        <button type="submit">接続を保存</button><p class="feedback" id="github-message"></p>
+      </form>
+    </div>
+  </details>
+  <footer>最終結果が不明な処理は自動再試行しません。停止しても進行中の処理が取り消されるわけではありません。</footer>
+</main>
+</body>
+</html>

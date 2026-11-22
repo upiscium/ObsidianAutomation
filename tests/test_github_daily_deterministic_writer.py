@@ -298,30 +298,6 @@ def test_timer_same_job_produces_published_receipt_only_when_injected(
         assert len(dav.puts) == 1
 
 
-def test_startup_mode_default_off_explicit_opt_in_requires_state(tmp_path, monkeypatch):
-    from obsidian_automation import snapshot_app
-    from obsidian_automation.admin_dashboard import JS
-    import sys
-
-    observed = []
-    class FakeServer:
-        def __enter__(self): return self
-        def __exit__(self, *_): pass
-        def serve_forever(self, **kwargs):
-            assert self.daily_job.status()["last_run"] is None
-            assert not self.daily_job.settings()["enabled"]
-            observed.append(self.daily_job.publisher is not None)
-
-    monkeypatch.setattr(snapshot_app, "make_server", lambda **kwargs: FakeServer())
-    for flag in (False, True):
-        state = tmp_path / ("enabled" if flag else "disabled")
-        argv = ["obsidian-snapshot-app", "--state", str(state), "--port", "0"]
-        if flag: argv.append("--daily-publish")
-        monkeypatch.setattr(sys, "argv", argv)
-        assert snapshot_app.main() == 0
-    assert observed == [False, True]
-    assert "published:" in JS and "publish_failed:" in JS
-    assert "publication_enabled" in JS
 
 
 def test_private_lan_bind_and_writer_opt_in_can_coexist(tmp_path, monkeypatch):

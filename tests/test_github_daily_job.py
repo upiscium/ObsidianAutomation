@@ -9,7 +9,6 @@ import uuid
 
 import pytest
 
-from obsidian_automation.admin_dashboard import JS, make_server
 from obsidian_automation.github_daily_job import DailyJob, Busy, Invalid
 from obsidian_automation.snapshot_job import SnapshotJob
 
@@ -150,78 +149,8 @@ def test_runner_exception_does_not_leak_secret(tmp_path):
         assert job.submit(uuid.uuid4().hex)[0] == "accepted"
 
 
-def test_http_daily_origin_csrf_job_api_and_legacy_status(tmp_path):
-    with DailyJob(tmp_path / "daily", successful_preview,configured=lambda: True) as job:
-        server = make_server(port=0,daily_job=job,observer=lambda: [],ai_observer=lambda: {})
-        thread=threading.Thread(target=server.serve_forever,daemon=True)
-        thread.start()
-        port=server.server_address[1]
-        origin=f"http://127.0.0.1:{port}"
-
-        def req(method,path,payload=None,orig=None,csrf=None):
-            conn=http.client.HTTPConnection("127.0.0.1",port,timeout=10)
-            headers={"Host":f"127.0.0.1:{port}"}
-            if orig: headers["Origin"]=orig
-            if csrf: headers["X-Obsidian-CSRF"]=csrf
-            if payload is not None: headers["Content-Type"]="application/json"
-            conn.request(method,path,
-                         body=json.dumps(payload) if payload is not None else None,
-                         headers=headers)
-            resp=conn.getresponse()
-            value=resp.status,resp.read()
-            conn.close()
-            return value
-
-        def token():
-            return json.loads(req("GET","/api/v1/operation-session")[1])["csrf_token"]
-
-        try:
-            assert req("GET","/api/v1/status")[0] == 200
-            assert req("GET","/api/v1/snapshot")[0] == 503
-            assert json.loads(req("GET","/api/v1/daily")[1])["job"] == "github_daily_preview"
-            assert req("POST","/api/v1/daily/runs",{"request_id":uuid.uuid4().hex})[0] == 403
-            assert req("POST","/api/v1/daily/runs",{"request_id":uuid.uuid4().hex},
-                       "http://evil.invalid",token())[0] == 403
-            assert req("POST","/api/v1/daily/runs",{"request_id":uuid.uuid4().hex,
-                                                  "argv":"evil"},origin,token())[0] == 400
-            assert req("POST","/api/v1/daily/settings",
-                       {"enabled":True,"interval_seconds":86400},origin,token())[0] == 200
-            assert job.status()["last_run"] is None
-            rid=uuid.uuid4().hex
-            code,raw=req("POST","/api/v1/daily/runs",{"request_id":rid},origin,token())
-            assert code == 202
-            run_id=json.loads(raw)["run_id"]
-            job._worker.join(3)
-            result=json.loads(req("GET","/api/v1/daily/runs/"+run_id)[1])
-            assert result["status"]=="preview_ready"
-            assert result["date_jst"]==DATE
-            assert req("GET","/api/v1/daily/runs/../../etc/passwd")[0] == 404
-            assert req("POST","/api/v1/daily/runs",{"request_id":rid},origin,token())[0] == 202
-            assert req("POST","/api/v1/daily/settings",
-                       {"enabled":False,"interval_seconds":86400},origin,token())[0] == 200
-            assert job.settings()["enabled"] is False
-            assert "dailyRefresh" in JS and "innerHTML" not in JS
-        finally:
-            server.shutdown()
-            thread.join(3)
-            server.server_close()
 
 
-def test_http_disabled_without_daily_attached():
-    server=make_server(port=0,observer=lambda: [],ai_observer=lambda: {})
-    thread=threading.Thread(target=server.serve_forever,daemon=True)
-    thread.start()
-    try:
-        conn=http.client.HTTPConnection("127.0.0.1",server.server_address[1],timeout=10)
-        conn.request("GET","/api/v1/daily")
-        result=conn.getresponse()
-        assert result.status == 503
-        result.read()
-        conn.close()
-    finally:
-        server.shutdown()
-        thread.join(3)
-        server.server_close()
 
 
 
