@@ -252,6 +252,11 @@
       fields:["git_url","git_user","git_token","branch"]},
     github:{url:"/api/v1/daily/connections",fields:["github_token"]}
   };
+  // A constant-length placeholder is intentionally NOT an input value.
+  // Password/token fields remain empty so the mask can never be submitted
+  // to the provider as a replacement credential.
+  const secretFields=new Set(["nextcloud_password","git_token","github_token"]);
+  const secretMask="●".repeat(8);
   function statusField(group,field,state){
     const id="status-"+group+"-"+field;
     if(connectionErrors.has(group+"-"+field)){
@@ -282,8 +287,21 @@
       const response=replies[i].status==="fulfilled"?
         replies[i].value:null;
       const fields=response?.fields;
-      for(const field of config.fields)
+      const values=response?.values;
+      for(const field of config.fields){
+        const key=group+"-"+field;
+        const input=$("field-"+key);
+        if(secretFields.has(field)){
+          // Never copy the credential or a stand-in into input.value.
+          // Set the placeholder only when the server confirms its existence.
+          input.placeholder=["verified","saved","stale"].includes(fields?.[field])
+            ?secretMask:"";
+        }else if(!connectionDirty.has(key)&&document.activeElement!==input){
+          const stored=values?.[field];
+          input.value=typeof stored==="string"?stored:"";
+        }
         statusField(group,field,fields?.[field]);
+      }
       $("verify-"+group).disabled=response?.ready_to_verify!==true;
     });
   }
@@ -302,7 +320,12 @@
     msg(group+"-message","この項目を保存・確認しています…");
     try{
       const result=await post(config.url+"/field",{field,value});
-      input.value="";
+      if(secretFields.has(field)){
+        input.value="";  // no retained password/token or mask-as-value
+      }else{
+        const stored=result?.values?.[field];
+        if(typeof stored==="string")input.value=stored;
+      }
       connectionDirty.delete(group+"-"+field);
       connectionErrors.delete(group+"-"+field);
       msg(group+"-message",result.field_result==="staged"?

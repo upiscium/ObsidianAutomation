@@ -1,8 +1,9 @@
 """One-field-at-a-time setup while retaining atomic, verified provider commits.
 
 Incomplete first-time setup is a private 0600 draft, NOT an active provider.
-The browser sees only per-field states; no saved credential or URL value is
-returned. Complete configurations go through the existing provider probe
+The browser sees per-field states and explicitly nonsecret configured values;
+passwords and access tokens are never returned. Complete configurations go through
+the existing provider probe
 and single-active-writer admission gates in the HTTP controller.
 """
 from __future__ import annotations
@@ -148,7 +149,17 @@ class FieldDrafts:
                           else "saved" if field in drafts
                           else "stale" if github_stale else "missing")
                   for field in sorted(_GROUPS[group])}
-        return {"version": 1, "fields": states,
+        # Only nonsecret values are ever reflected to the private WebUI.
+        # An active configuration wins over any older staged draft. Unconfigured
+        # fields can show their privately staged nonsecret value before verify.
+        # The secret field names never occur as keys here, and even an empty
+        # or masked credential is never fabricated as an actual value.
+        visible = {
+            field: (active if active is not None else drafts)[field]
+            for field in sorted(_GROUPS[group] - _SECRET)
+            if field in (active if active is not None else drafts)
+        }
+        return {"version": 1, "fields": states, "values": visible,
                 "ready_to_verify": (active is None
                     and set(drafts) == _GROUPS[group]
                     and (group == "nextcloud"

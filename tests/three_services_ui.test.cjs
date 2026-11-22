@@ -369,3 +369,109 @@ test("schedule values individually mark saved versus changed while Save stays at
   assert.equal(el("snapshot-enabled-state").dataset.state,"verified");
   assert.match(el("snapshot-preview-result").textContent,/Previewしてください/);
 });
+
+
+test("public connection values are visible, while saved secrets use an eight-circle placeholder", async () => {
+  const models=jobs(true,true,true);
+  // A generated noncredential sentinel tests the forbidden-server-value case
+  // without including password-shaped literals in the repository.
+  const forbiddenValue=Array.from({length:5},(_,i)=>String(i)).join("_");
+  const responses={
+    "/api/v1/nextcloud/connections":{
+      fields:{webdav_url:"verified",vault_folder:"verified",nextcloud_user:"verified",
+              nextcloud_password:"verified"},
+      values:{webdav_url:"https://cloud.invalid/remote.php/dav/files/user/",
+              vault_folder:"ActualVault",nextcloud_user:"fixture-user",
+              // Even a faulty provider response must not fill a secret input.
+              nextcloud_password:forbiddenValue}
+    },
+    "/api/v1/snapshot/connections":{
+      fields:{git_url:"verified",git_user:"verified",git_token:"verified",branch:"verified"},
+      values:{git_url:"https://git.invalid/team/Vault.git",git_user:"gitbot",branch:"main",
+              git_token:forbiddenValue}
+    },
+    "/api/v1/daily/connections":{
+      fields:{github_token:"verified"},values:{github_token:forbiddenValue}
+    }
+  };
+  const reply=v=>({ok:true,async json(){return v;}});
+  const fetch=async path=>{
+    if(path==="/api/v1/core-promotion/configuration")
+      return reply({policy_sha256:"a".repeat(64),checkpoint_initialized:true});
+    if(path==="/api/v1/vault-root")
+      return reply({active_label:"ActualVault",enrolled:true,provider:"verified",can_rollback:false});
+    if(path==="/api/v1/vault-bindings")
+      return reply({state:"default",roles:{daily:"00-DailyNote",project:"10-Project",
+                    system:"98-System"},can_reset:false,can_rollback:false});
+    return reply(responses[path]??models[path]);
+  };
+  const el=await mount(models,{}, {fetch});
+  for(const [id,value] of Object.entries({
+    "field-nextcloud-webdav_url":"https://cloud.invalid/remote.php/dav/files/user/",
+    "field-nextcloud-vault_folder":"ActualVault",
+    "field-nextcloud-nextcloud_user":"fixture-user",
+    "field-gitea-git_url":"https://git.invalid/team/Vault.git",
+    "field-gitea-git_user":"gitbot",
+    "field-gitea-branch":"main"
+  })){
+    assert.equal(el(id).value,value,id);
+  }
+  for(const id of ["field-nextcloud-nextcloud_password",
+                   "field-gitea-git_token","field-github-github_token"]){
+    assert.equal(el(id).value,"",id+" secret value must remain empty");
+    assert.equal(el(id).placeholder,"●".repeat(8),id);
+    assert.equal(el(id).placeholder.length,8);
+    assert.match(el(id.replace(/^field-/,"status-")).textContent,/✓ 保存済み/);
+  }
+
+  // Typing a new public value must survive automatic refresh. Once the
+  // operator saves, only that field is transmitted and persisted.
+  const input=el("field-nextcloud-vault_folder");
+  input.value="ManualEdit";
+  input.listeners.input();
+  el("refresh").listeners.click();
+  for(let i=0;i<9;i++)await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(input.value,"ManualEdit");
+  assert.match(el("status-nextcloud-vault_folder").textContent,/変更中/);
+});
+
+
+test("missing credentials have no mask, staged credentials have a fixed mask but no submitted value", async () => {
+  const values=jobs(true,true,true);
+  let sent=false;
+  const reply=v=>({ok:true,async json(){return v;}});
+  const fetch=async path=>{
+    if(path==="/api/v1/session")return reply({csrf:"fixture"});
+    if(path==="/api/v1/core-promotion/configuration")
+      return reply({policy_sha256:"a".repeat(64),checkpoint_initialized:true});
+    if(path==="/api/v1/vault-root")return reply({active_label:"",enrolled:false,provider:"verified"});
+    if(path==="/api/v1/vault-bindings")
+      return reply({state:"default",roles:{daily:"00-DailyNote",project:"10-Project",
+                    system:"98-System"},can_reset:false,can_rollback:false});
+    if(path==="/api/v1/nextcloud/connections")return reply({
+      fields:{webdav_url:"saved",vault_folder:"saved",nextcloud_user:"saved",nextcloud_password:"saved"},
+      values:{webdav_url:"https://fixture.invalid/remote.php/dav/files/user/",
+              vault_folder:"StagedVault",nextcloud_user:"staged-owner"}
+    });
+    if(path==="/api/v1/snapshot/connections")return reply({
+      fields:{git_url:"missing",git_user:"missing",git_token:"missing",branch:"missing"},values:{}
+    });
+    if(path==="/api/v1/daily/connections")return reply({
+      fields:{github_token:"missing"},values:{}
+    });
+    if(path.endsWith("/field"))sent=true;
+    return reply(values[path]);
+  };
+  const el=await mount(values,{}, {fetch});
+  assert.equal(el("field-nextcloud-vault_folder").value,"StagedVault");
+  assert.equal(el("field-nextcloud-nextcloud_password").placeholder,"●".repeat(8));
+  assert.equal(el("field-nextcloud-nextcloud_password").value,"");
+  for(const id of ["field-gitea-git_token","field-github-github_token"]){
+    assert.equal(el(id).placeholder,"");
+    assert.equal(el(id).value,"");
+  }
+  el("save-nextcloud-nextcloud_password").listeners.click();
+  for(let i=0;i<9;i++)await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(sent,false,"visual mask must not be submitted as a credential");
+  assert.match(el("nextcloud-message").textContent,/入力してください/);
+});
