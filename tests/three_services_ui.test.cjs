@@ -348,3 +348,24 @@ test("saving without phase-preview never changes configured job", async () => {
   assert.equal(mutated,false);
   assert.match(el("snapshot-message").textContent,/Previewしてください/);
 });
+
+
+test("schedule values individually mark saved versus changed while Save stays atomic", async () => {
+  const values=jobs(true,true,true);
+  const s=values["/api/v1/snapshot"].settings;
+  s.schedule={mode:"anchored",timezone:"Asia/Tokyo",
+              anchor_local_time:"12:00",revision:3};
+  const el=await mount(values);
+  for(const kind of ["enabled","interval","anchor"]){
+    assert.equal(el("snapshot-"+kind+"-state").dataset.state,"verified");
+    assert.match(el("snapshot-"+kind+"-state").textContent,/✓ 保存済み/);
+  }
+  assert.equal(el("daily-anchor-state").textContent,"未設定");
+  el("snapshot-anchor").value="13:00";
+  el("snapshot-anchor").listeners.input();
+  assert.equal(el("snapshot-anchor-state").dataset.state,"editing");
+  assert.match(el("snapshot-anchor-state").textContent,/未保存/);
+  assert.equal(el("snapshot-interval-state").dataset.state,"verified");
+  assert.equal(el("snapshot-enabled-state").dataset.state,"verified");
+  assert.match(el("snapshot-preview-result").textContent,/Previewしてください/);
+});

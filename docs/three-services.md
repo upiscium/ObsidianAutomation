@@ -196,7 +196,9 @@ systemd action is added.
 
 The optional anchored schedule is explicitly entered in each existing
 Snapshot/Core Promotion/GitHub Daily panel: a supported JST `HH:mm` anchor,
-an integer interval in seconds and enabled/disabled. Preview computes
+an integer interval in seconds and enabled/disabled. Each individual value
+shows a persisted/unsaved marker, but the interdependent anchor and interval
+are committed together after one full schedule Preview. Preview computes
 the next **three** `Asia/Tokyo` wall-clock slots *without editing state*.
 Only minute-granular intervals dividing 86400 are accepted, with the existing
 minimum per Job (Snapshot/Promotion: 60s; GitHub Daily: 3600s).

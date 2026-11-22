@@ -4,7 +4,7 @@
   const names=["snapshot","core-promotion","daily"];
   const $=id=>document.getElementById(id);
   const data={};
-  const previewSpecs={},scheduleDirty={};
+  const previewSpecs={},scheduleDirty={},scheduleTouched={};
   let busy=false;
   let policy=null;
   // Reject out-of-order GET responses and those started before a mutation.
@@ -121,6 +121,23 @@
     }
     msg(n+"-phase-mode",settings.schedule?.mode==="anchored"?
       "JSTの壁時計で固定発火":"旧Interval方式（Preview→保存で固定時刻へ移行）");
+    for(const kind of ["enabled","interval","anchor"]){
+      const marker=n+"-"+kind+"-state";
+      if(scheduleTouched[n]?.has(kind)){
+        fieldState(marker,"editing","● 未保存");
+      }else if(kind==="anchor"&&settings.schedule?.mode!=="anchored"){
+        fieldState(marker,"missing","未設定");
+      }else{
+        const actual=kind==="enabled"?$(n+"-enabled").checked:
+          kind==="interval"?Number($(n+"-interval").value):
+          $(n+"-anchor").value;
+        const stored=kind==="enabled"?settings.enabled:
+          kind==="interval"?settings.interval_seconds:
+          settings.schedule.anchor_local_time;
+        fieldState(marker,actual===stored?"verified":"editing",
+                   actual===stored?"✓ 保存済み":"● 未保存");
+      }
+    }
     $(n+"-save").disabled=busy;
     $(n+"-run").disabled=busy||!settings.configured||(n==="core-promotion"&&settings.source_bound===false);
     if(n==="daily"&&x.publication_enabled===false)
@@ -216,6 +233,7 @@
         const body=scheduleRequest(n);
         await post("/api/v1/"+n+"/settings",body);
         scheduleDirty[n]=false;
+        if(scheduleTouched[n])scheduleTouched[n].clear();
         delete previewSpecs[n];
         msg(n+"-message","起点時刻の設定を保存しました。実行中のJobは取り消しません。");
       }else{
@@ -505,6 +523,9 @@
       for(const event of ["input","change"]){
         $(n+"-"+kind).addEventListener(event,()=>{
           scheduleDirty[n]=true;
+          if(!scheduleTouched[n])scheduleTouched[n]=new Set();
+          scheduleTouched[n].add(kind);
+          fieldState(n+"-"+kind+"-state","editing","● 未保存");
           delete previewSpecs[n];
           msg(n+"-preview-result","変更後の次回3件をPreviewしてください。");
         });

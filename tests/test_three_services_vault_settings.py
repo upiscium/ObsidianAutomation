@@ -32,6 +32,9 @@ class FakeJob:
         self._settings["enabled"] = False
         self.bound_generations.append(generation)
 
+    def source_invalidated(self):
+        self._settings["enabled"] = False
+
     def _unresolved(self):
         return self.db.execute(
             "SELECT 1 FROM runs WHERE status='indeterminate'"

@@ -72,6 +72,4 @@ class MinimalVaultFence:
             snapshot.connections_saved(self.store.generation())
         for job in (self.server.daily_job, self.server.core_promotion_job):
             if job is not None:
-                settings = job.settings()
-                job.update({"enabled": False,
-                            "interval_seconds": settings["interval_seconds"]})
+                job.source_invalidated()

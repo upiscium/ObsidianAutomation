@@ -99,7 +99,9 @@ class SnapshotJob:
         """Caller holds the job lock across probe/save and this schedule reset."""
         with self._lock:
             with self.db:
-                self.db.execute("UPDATE settings SET enabled=0,next_due=NULL WHERE id=1")
+                self.db.execute(
+                    "UPDATE settings SET enabled=0,next_due=NULL,"
+                    "schedule_revision=schedule_revision+1 WHERE id=1")
                 self.db.execute("UPDATE connection_write SET verified=0 WHERE id=1")
                 if generation is not None:
                     self.db.execute("INSERT OR REPLACE INTO connection_binding VALUES (1,?)", (generation,))

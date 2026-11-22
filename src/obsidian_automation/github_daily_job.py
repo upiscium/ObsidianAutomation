@@ -189,6 +189,19 @@ class DailyJob:
                      old["schedule"]["revision"]+1))
             return self.settings()
 
+    def source_invalidated(self):
+        """Pause and invalidate stale browser revisions on source rotation.
+
+        Invoked only under the existing Job/connection fence. It never
+        submits a run and does not overwrite the phase/interval settings.
+        """
+        with self._lock:
+            with self.db:
+                self.db.execute(
+                    "UPDATE settings SET enabled=0,next_due=NULL,schedule_revision=schedule_revision+1 WHERE id=1"
+                )
+        return self.settings()
+
     def run(self, run_id: str) -> dict | None:
         if type(run_id) is not str or _ID.fullmatch(run_id) is None:
             return None

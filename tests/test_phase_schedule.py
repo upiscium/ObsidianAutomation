@@ -258,3 +258,23 @@ def test_versioned_http_settings_are_cas_and_old_format_cannot_revert_mode(tmp_p
                 thread.join(timeout=3)
     finally:
         model.close()
+
+
+def test_source_rotation_revokes_old_schedule_save_and_preserves_anchor(job):
+    kind, model, clock = job
+    configured=model.update(anchor_payload(kind,False,3600,0))
+    assert configured["schedule"]["revision"]==1
+    assert configured["schedule"]["mode"]=="anchored"
+    if kind=="snapshot":
+        model.connections_saved("a"*64)
+    else:
+        model.source_invalidated()
+    current=model.settings()
+    assert current["enabled"] is False
+    assert current["schedule"]=={
+        "mode":"anchored","timezone":"Asia/Tokyo",
+        "anchor_local_time":"12:00","revision":2}
+    assert current["next_due"] is None
+    with pytest.raises(StaleScheduleError):
+        model.update(anchor_payload(kind,False,3600,1))
+    assert model.settings()["schedule"]["revision"]==2

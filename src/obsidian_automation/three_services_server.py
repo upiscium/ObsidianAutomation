@@ -456,8 +456,7 @@ class Handler(BaseHTTPRequestHandler):
                         payload = candidate
                     if not setup.save(payload):
                         raise Refused("github_probe_failed", 422)
-                    old = job.settings()
-                    job.update({"enabled": False, "interval_seconds": old["interval_seconds"]})
+                    job.source_invalidated()
                     try:
                         drafts.committed("github")
                     except FieldError:
@@ -591,14 +590,9 @@ class Handler(BaseHTTPRequestHandler):
                 response = store.nextcloud_status()
             if daily is not None and daily_setup is not None:
                 if before_daily != daily_setup.source_fingerprint():
-                    old = daily.settings()
-                    daily.update({"enabled": False, "interval_seconds": old["interval_seconds"]})
+                    daily.source_invalidated()
             if promotion is not None:
-                old = promotion.settings()
-                if old["enabled"]:
-                    promotion.update({
-                        "enabled": False, "interval_seconds": old["interval_seconds"]
-                    })
+                promotion.source_invalidated()
             try:
                 drafts.committed(group)
             except FieldError:
