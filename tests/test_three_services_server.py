@@ -127,3 +127,37 @@ def test_wildcard_and_non_rfc1918_bind_addresses_refused():
                     "224.0.0.1", "255.255.255.255", "::", "::1"):
         with pytest.raises(ValueError):
             make_server(port=0, bind_address=address)
+
+
+def test_incomplete_headers_release_all_handler_slots_after_absolute_deadline():
+    """16 slow connections must not indefinitely deny a new operator request."""
+    import socket
+    import time
+
+    with make_server(port=0, bind_address="127.0.0.1") as server:
+        port = server.server_port
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        clients = []
+        try:
+            for _ in range(16):
+                sock = socket.create_connection(("127.0.0.1", port), timeout=3)
+                sock.sendall(b"GET / HTTP/1.1\r\nHost: 127.0.0.1")
+                clients.append(sock)
+            # Total monotonic header timeout, not reset by each byte.
+            for _ in range(5):
+                time.sleep(0.5)
+                for sock in clients:
+                    try:
+                        sock.send(b"x")
+                    except OSError:
+                        pass
+            # The stalled requests have expired; a new client can enter.
+            code, data = request(port, "GET", "/api/v1/session")
+            assert code == 200
+            assert isinstance(json.loads(data)["csrf"], str)
+        finally:
+            for sock in clients:
+                sock.close()
+            server.shutdown()
+            worker.join(timeout=3)

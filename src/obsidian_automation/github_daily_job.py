@@ -372,11 +372,12 @@ class DailyJob:
             # A crash after commit cannot leave an expired due time which
             # re-admits an unconfirmed source collection on restart.
             run_id, request_id = uuid.uuid4().hex, uuid.uuid4().hex
+            generation = self._generation()
             with self.db:
                 self.db.execute(
-                    "INSERT INTO runs (run_id,request_id,trigger,status,created) "
-                    "VALUES (?,?,'scheduled','queued',?)",
-                    (run_id,request_id,self.clock()))
+                    "INSERT INTO runs (run_id,request_id,trigger,status,created,source_generation) "
+                    "VALUES (?,?,'scheduled','queued',?,?)",
+                    (run_id,request_id,self.clock(),generation))
                 self.db.execute("UPDATE settings SET next_due=? WHERE id=1",
                                 (self.clock()+s["interval_seconds"],))
             self._launch_worker(run_id)

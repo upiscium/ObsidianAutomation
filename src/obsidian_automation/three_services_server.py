@@ -25,6 +25,8 @@ from .vault_root_activation import reset_pin_after_connection_save
 
 
 _REQUEST_BYTES = 8192
+_HEADER_BYTES = 8192
+_HEADER_SECONDS = 2.0
 _JSON = "application/json; charset=utf-8"
 _ASSETS = {
     "/": ("index.html", "text/html; charset=utf-8"),
@@ -63,6 +65,49 @@ class CsrfTokens:
             return expiry > self.clock()
 
 
+class _BoundedHeaderReader:
+    """A total monotonic deadline across request-line and ALL header lines.
+
+    Socket idle timeouts alone are insufficient: a peer can trickle bytes
+    forever while occupying every bounded handler slot.
+    """
+    def __init__(self, raw, connection, *, clock=time.monotonic):
+        self.raw = raw
+        self.connection = connection
+        self.clock = clock
+        self.deadline = clock() + _HEADER_SECONDS
+        self.read_total = 0
+
+    def readline(self, size=-1):
+        limit = min(size if type(size) is int and size > 0 else _HEADER_BYTES,
+                    _HEADER_BYTES)
+        result = bytearray()
+        while True:
+            if len(result) >= limit or self.read_total >= _HEADER_BYTES:
+                raise TimeoutError("request_header_bytes_exceeded")
+            remaining = self.deadline - self.clock()
+            if remaining <= 0:
+                raise TimeoutError("request_header_deadline")
+            self.connection.settimeout(remaining)
+            try:
+                part = self.raw.read1(1)
+            except (TimeoutError, OSError):
+                raise TimeoutError("request_header_deadline") from None
+            if not part:
+                return bytes(result)
+            result.extend(part)
+            self.read_total += len(part)
+            if part == b"\n":
+                return bytes(result)
+
+    def read1(self, size=-1):
+        # The JSON body has its own one-second monotonic deadline.
+        return self.raw.read1(size)
+
+    def __getattr__(self, name):
+        return getattr(self.raw, name)
+
+
 class ThreeServicesServer(ThreadingHTTPServer):
     daemon_threads = True
     request_queue_size = 16
@@ -91,6 +136,11 @@ class ThreeServicesServer(ThreadingHTTPServer):
 class Handler(BaseHTTPRequestHandler):
     server_version = "ObsidianThree/0.1"
     sys_version = ""
+
+    def setup(self):
+        super().setup()
+        # Begin the total header deadline before parsing the request line.
+        self.rfile = _BoundedHeaderReader(self.rfile, self.connection)
 
     def log_message(self, *_):
         # No request path, query, URL or credential in HTTP logs.

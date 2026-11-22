@@ -324,3 +324,27 @@ def test_daily_legacy_sqlite_run_migrates_as_historical_only(tmp_path):
         assert "source_generation" in {
             row[1] for row in migrated.db.execute("PRAGMA table_info(runs)")
         }
+
+
+def test_scheduled_daily_run_persists_admission_source_generation(tmp_path):
+    """Scheduled publishing must be current only for the source it observed."""
+    now = [1000.0]
+    generation = ["a" * 64]
+    with DailyJob(
+        tmp_path / "schedule-source-bound",
+        successful_preview,
+        configured=lambda: True,
+        source_generation=lambda: generation[0],
+        clock=lambda: now[0],
+    ) as job:
+        job.update({"enabled": True, "interval_seconds": 3600})
+        now[0] += 3600
+        assert job.tick() is True
+        job._worker.join(timeout=3)
+        run = job.status()["last_run"]
+        assert run["trigger"] == "scheduled"
+        assert run["status"] == "preview_ready"
+        assert run["source_matches_current"] is True
+        assert "source_generation" not in run
+        generation[0] = "b" * 64
+        assert job.run(run["run_id"])["source_matches_current"] is False
