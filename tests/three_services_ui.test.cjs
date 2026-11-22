@@ -136,19 +136,27 @@ test("Daily success on Vault A stays historical after Vault B is reconfigured", 
 test("slow pre-mutation refresh cannot overwrite the post-save result", async () => {
   const values = jobs(true, true, true);
   let resolveOld = null;
-  let snapshotReads = 0;
+  let holdOne = false;
+  let mutated = false;
   const reply = (value) => ({ok: true, async json() {return value;}});
 
   const fetch = async (path, options) => {
     if (path === "/api/v1/snapshot") {
-      snapshotReads++;
-      if (snapshotReads === 2)
+      if (holdOne) {
+        holdOne=false;
         return await new Promise(resolve => {resolveOld = resolve;});
-      return reply(snapshot(snapshotReads === 1));
+      }
+      return reply(snapshot(!mutated));
     }
     if (path === "/api/v1/session") return reply({csrf: "synthetic"});
-    if (path === "/api/v1/snapshot/settings")
-      return reply({enabled: true, interval_seconds: 3600});
+    if (path === "/api/v1/snapshot/schedule-preview")
+      return reply({version:1,mode:"anchored",timezone:"Asia/Tokyo",
+                    anchor_local_time:"12:00",interval_seconds:3600,
+                    next_slots:[1000,4600,8200]});
+    if (path === "/api/v1/snapshot/settings") {
+      mutated=true;
+      return reply({enabled:true,interval_seconds:3600});
+    }
     if (path === "/api/v1/core-promotion/configuration")
       return reply({policy_sha256:"a".repeat(64), checkpoint_initialized:true});
     if (path === "/api/v1/vault-root")
@@ -161,25 +169,33 @@ test("slow pre-mutation refresh cannot overwrite the post-save result", async ()
 
   const el = await mount(values, {}, {fetch});
   assert.equal(el("snapshot-status").dataset.kind, "ok");
-
-  // An older refresh begins, then the operator changes the connection or
-  // settings and a newer refresh reflects unverified state.
-  el("refresh").listeners.click();
-  assert.equal(typeof resolveOld, "function");
   el("snapshot-enabled").checked = true;
   el("snapshot-interval").value = "3600";
+  el("snapshot-anchor").value = "12:00";
+  el("snapshot-enabled").listeners.change(); // browser marks unsaved draft
+  // The phase-preview is an explicit prerequisite of settings mutation.
+  el("snapshot-preview").listeners.click();
+  for (let i = 0; i < 8; i++)
+    await new Promise(resolve => setImmediate(resolve));
+  assert.match(el("snapshot-message").textContent, /Preview成功/);
+  assert.match(el("snapshot-preview-result").textContent, /次の3回/);
+
+  // An older refresh begins, then the operator saves. The newer GET
+  // correctly reports that the old source's receipt is unverified.
+  holdOne=true;
+  el("refresh").listeners.click();
+  assert.equal(typeof resolveOld, "function");
   el("snapshot-save").listeners.click();
   for (let i = 0; i < 8; i++)
     await new Promise(resolve => setImmediate(resolve));
+  assert.equal(mutated, true);
   assert.equal(el("snapshot-status").dataset.kind, "unknown");
 
-  // Old GET resolves with a verified A receipt AFTER the B response.
   resolveOld(reply(snapshot(true)));
   for (let i = 0; i < 8; i++)
     await new Promise(resolve => setImmediate(resolve));
   assert.equal(el("snapshot-status").dataset.kind, "unknown");
 });
-
 
 test("each connection value has its own checkmark and one-field Save", async () => {
   const values=jobs(true,true,true);
@@ -308,4 +324,48 @@ test("a quarantined Core checkpoint and invalid System path show no green check"
   assert.notEqual(el("core-promotion-checkpoint-status").dataset.state,"verified");
   assert.match(el("vault-bindings-system-status").textContent,/要確認/);
   assert.notEqual(el("vault-bindings-system-status").dataset.state,"fixed");
+});
+
+test("saving without phase-preview never changes configured job", async () => {
+  const values=jobs(true,true,true);
+  let mutated=false;
+  const reply = (value) => ({ok:true, async json() {return value;}});
+  const fetch = async path => {
+    if(path==="/api/v1/snapshot/settings")mutated=true;
+    if(path==="/api/v1/vault-root")
+      return reply({active_label:"Vault",enrolled:true,provider:"verified",can_rollback:false});
+    if(path==="/api/v1/vault-bindings")
+      return reply({state:"default",roles:{daily:"00-DailyNote",project:"10-Project",
+                    system:"98-System"},can_reset:false,can_rollback:false});
+    if(path==="/api/v1/core-promotion/configuration")
+      return reply({policy_sha256:"a".repeat(64), checkpoint_initialized:true});
+    return reply(values[path]);
+  };
+  const el=await mount(values,{}, {fetch});
+  el("snapshot-enabled").checked=true;
+  el("snapshot-save").listeners.click();
+  for (let i=0;i<5;i++)await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(mutated,false);
+  assert.match(el("snapshot-message").textContent,/Previewしてください/);
+});
+
+
+test("schedule values individually mark saved versus changed while Save stays atomic", async () => {
+  const values=jobs(true,true,true);
+  const s=values["/api/v1/snapshot"].settings;
+  s.schedule={mode:"anchored",timezone:"Asia/Tokyo",
+              anchor_local_time:"12:00",revision:3};
+  const el=await mount(values);
+  for(const kind of ["enabled","interval","anchor"]){
+    assert.equal(el("snapshot-"+kind+"-state").dataset.state,"verified");
+    assert.match(el("snapshot-"+kind+"-state").textContent,/✓ 保存済み/);
+  }
+  assert.equal(el("daily-anchor-state").textContent,"未設定");
+  el("snapshot-anchor").value="13:00";
+  el("snapshot-anchor").listeners.input();
+  assert.equal(el("snapshot-anchor-state").dataset.state,"editing");
+  assert.match(el("snapshot-anchor-state").textContent,/未保存/);
+  assert.equal(el("snapshot-interval-state").dataset.state,"verified");
+  assert.equal(el("snapshot-enabled-state").dataset.state,"verified");
+  assert.match(el("snapshot-preview-result").textContent,/Previewしてください/);
 });

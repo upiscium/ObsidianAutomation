@@ -22,6 +22,7 @@ from .github_daily_setup import DailySetupError
 from .snapshot_job import Invalid as SnapshotInvalid
 from .snapshot_setup import GITEA_FIELDS, validate, validate_nextcloud
 from .connection_fields import FieldDrafts, FieldError
+from .phase_schedule import StaleScheduleError, preview as phase_preview
 from .vault_root_activation import reset_pin_after_connection_save
 
 
@@ -310,8 +311,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         allowed = {
             "/api/v1/snapshot/settings", "/api/v1/snapshot/runs",
+            "/api/v1/snapshot/schedule-preview",
             "/api/v1/daily/settings", "/api/v1/daily/runs",
+            "/api/v1/daily/schedule-preview",
             "/api/v1/core-promotion/settings", "/api/v1/core-promotion/runs",
+            "/api/v1/core-promotion/schedule-preview",
             "/api/v1/core-promotion/bootstrap",
             "/api/v1/nextcloud/connections",
             "/api/v1/snapshot/connections", "/api/v1/daily/connections",
@@ -341,11 +345,32 @@ class Handler(BaseHTTPRequestHandler):
             payload = self._body()
             for name in ("snapshot", "core-promotion", "daily"):
                 base = f"/api/v1/{name}"
-                if self.path in (base + "/settings", base + "/runs"):
+                if self.path in (base + "/settings", base + "/runs",
+                                 base + "/schedule-preview"):
                     job = self._job(name)
                     if job is None:
                         raise Refused("service_unavailable", 503)
-                    if self.path.endswith("/settings"):
+                    if self.path.endswith("/schedule-preview"):
+                        if (type(payload) is not dict
+                            or set(payload) != {
+                                "timezone", "anchor_local_time", "interval_seconds"}):
+                            raise Refused("invalid_schedule", 400)
+                        try:
+                            result = phase_preview(
+                                payload["timezone"], payload["anchor_local_time"],
+                                payload["interval_seconds"], time.time(),
+                                minimum=3600 if name == "daily" else 60)
+                        except ValueError:
+                            raise Refused("invalid_schedule", 400) from None
+                        self._send(200, result)
+                    elif self.path.endswith("/settings"):
+                        # Old API remains usable for legacy interval records.
+                        # Once anchored, browser writes MUST carry CAS revision.
+                        current = job.settings()
+                        if (current.get("schedule", {}).get("mode") == "anchored"
+                            and (type(payload) is not dict
+                                 or "expected_revision" not in payload)):
+                            raise Refused("schedule_revision_required", 409)
                         self._send(200, job.update(payload))
                     else:
                         if type(payload) is not dict or set(payload) != {"request_id"}:
@@ -431,8 +456,7 @@ class Handler(BaseHTTPRequestHandler):
                         payload = candidate
                     if not setup.save(payload):
                         raise Refused("github_probe_failed", 422)
-                    old = job.settings()
-                    job.update({"enabled": False, "interval_seconds": old["interval_seconds"]})
+                    job.source_invalidated()
                     try:
                         drafts.committed("github")
                     except FieldError:
@@ -445,6 +469,8 @@ class Handler(BaseHTTPRequestHandler):
             raise Refused("method_not_allowed", 405)
         except Refused as exc:
             self._send(exc.http, {"error": exc.code})
+        except StaleScheduleError:
+            self._send(409, {"error": "stale_settings"})
         except (SnapshotInvalid, DailyInvalid, DailySetupError, FieldError,
                 PromotionInvalid, PromotionSetupInvalid, ValueError, TypeError):
             self._send(400, {"error": "invalid_request"})
@@ -564,14 +590,9 @@ class Handler(BaseHTTPRequestHandler):
                 response = store.nextcloud_status()
             if daily is not None and daily_setup is not None:
                 if before_daily != daily_setup.source_fingerprint():
-                    old = daily.settings()
-                    daily.update({"enabled": False, "interval_seconds": old["interval_seconds"]})
+                    daily.source_invalidated()
             if promotion is not None:
-                old = promotion.settings()
-                if old["enabled"]:
-                    promotion.update({
-                        "enabled": False, "interval_seconds": old["interval_seconds"]
-                    })
+                promotion.source_invalidated()
             try:
                 drafts.committed(group)
             except FieldError:

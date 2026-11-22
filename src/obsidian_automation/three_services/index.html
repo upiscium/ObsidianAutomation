@@ -23,8 +23,14 @@
       <p class="muted">Vault → private Gitea</p>
       <dl><dt>接続</dt><dd id="snapshot-configured">—</dd><dt>最終実行</dt><dd id="snapshot-last">—</dd><dt>次回予定</dt><dd id="snapshot-next">—</dd></dl>
       <div class="controls">
-        <label class="toggle"><input type="checkbox" id="snapshot-enabled" disabled> 自動実行</label>
-        <label>実行間隔（秒）<input type="number" id="snapshot-interval" min="60" max="86400" value="3600" disabled></label>
+        <label class="toggle"><input type="checkbox" id="snapshot-enabled" disabled> 自動実行 <span id="snapshot-enabled-state" class="field-state" data-state="loading">確認中</span></label>
+        <label>実行間隔（秒）<input type="number" id="snapshot-interval" min="60" max="86400" value="3600" disabled><span id="snapshot-interval-state" class="field-state" data-state="loading">確認中</span></label>
+        <label>起点時刻（Asia/Tokyo）<input id="snapshot-anchor" type="time" step="60" value="12:00"><span id="snapshot-anchor-state" class="field-state" data-state="loading">確認中</span></label>
+        <div class="schedule-preview">
+          <button type="button" id="snapshot-preview" class="outline">次の3回をプレビュー</button>
+          <p class="muted" id="snapshot-preview-result" role="status">起点時刻を保存する前にPreviewしてください。</p>
+          <small class="muted" id="snapshot-phase-mode">—</small>
+        </div>
         <div class="actions"><button id="snapshot-save" disabled>設定を保存</button><button id="snapshot-run" class="outline" disabled>Run Once</button></div>
       </div>
       <p class="feedback" id="snapshot-message" role="status"></p>
@@ -34,8 +40,14 @@
       <p class="muted">GitHub ObsidianCore → Vault（条件付き書込）</p>
       <dl><dt>接続</dt><dd id="core-promotion-configured">—</dd><dt>最終実行</dt><dd id="core-promotion-last">—</dd><dt>次回予定</dt><dd id="core-promotion-next">—</dd></dl>
       <div class="controls">
-        <label class="toggle"><input type="checkbox" id="core-promotion-enabled" disabled> 自動実行</label>
-        <label>実行間隔（秒）<input type="number" id="core-promotion-interval" min="60" max="86400" value="3600" disabled></label>
+        <label class="toggle"><input type="checkbox" id="core-promotion-enabled" disabled> 自動実行 <span id="core-promotion-enabled-state" class="field-state" data-state="loading">確認中</span></label>
+        <label>実行間隔（秒）<input type="number" id="core-promotion-interval" min="60" max="86400" value="3600" disabled><span id="core-promotion-interval-state" class="field-state" data-state="loading">確認中</span></label>
+        <label>起点時刻（Asia/Tokyo）<input id="core-promotion-anchor" type="time" step="60" value="12:00"><span id="core-promotion-anchor-state" class="field-state" data-state="loading">確認中</span></label>
+        <div class="schedule-preview">
+          <button type="button" id="core-promotion-preview" class="outline">次の3回をプレビュー</button>
+          <p class="muted" id="core-promotion-preview-result" role="status">起点時刻を保存する前にPreviewしてください。</p>
+          <small class="muted" id="core-promotion-phase-mode">—</small>
+        </div>
         <div class="actions"><button id="core-promotion-save" disabled>設定を保存</button><button id="core-promotion-run" class="outline" disabled>Run Once</button></div>
       </div>
       <details id="core-promotion-bootstrap-section"><summary>初回Checkpoint設定 <span id="core-promotion-checkpoint-status" class="field-state" data-state="loading">確認中</span></summary>
@@ -51,8 +63,14 @@
       <p class="muted">GitHub Issue / PR → 前日JSTのDaily Note</p>
       <dl><dt>接続</dt><dd id="daily-configured">—</dd><dt>最終実行</dt><dd id="daily-last">—</dd><dt>次回予定</dt><dd id="daily-next">—</dd></dl>
       <div class="controls">
-        <label class="toggle"><input type="checkbox" id="daily-enabled" disabled> 自動実行</label>
-        <label>実行間隔（秒）<input type="number" id="daily-interval" min="3600" max="86400" value="86400" disabled></label>
+        <label class="toggle"><input type="checkbox" id="daily-enabled" disabled> 自動実行 <span id="daily-enabled-state" class="field-state" data-state="loading">確認中</span></label>
+        <label>実行間隔（秒）<input type="number" id="daily-interval" min="3600" max="86400" value="86400" disabled><span id="daily-interval-state" class="field-state" data-state="loading">確認中</span></label>
+        <label>起点時刻（Asia/Tokyo）<input id="daily-anchor" type="time" step="60" value="12:00"><span id="daily-anchor-state" class="field-state" data-state="loading">確認中</span></label>
+        <div class="schedule-preview">
+          <button type="button" id="daily-preview" class="outline">次の3回をプレビュー</button>
+          <p class="muted" id="daily-preview-result" role="status">起点時刻を保存する前にPreviewしてください。</p>
+          <small class="muted" id="daily-phase-mode">—</small>
+        </div>
         <div class="actions"><button id="daily-save" disabled>設定を保存</button><button id="daily-run" class="outline" disabled>Run Once</button></div>
       </div>
       <p class="feedback" id="daily-message" role="status"></p>

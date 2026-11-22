@@ -60,3 +60,7 @@ footer{margin-top:32px;font-size:12px;color:#97a1b2}
 .field-state[data-state="failed"]{color:#ecaaa7}
 .connection-provider{min-width:0}
 @media(max-width:540px){.setting-control>input{flex-basis:100%}.setting-control>button{flex-grow:0}}
+
+/* Anchored-schedule fields belong to the existing three Job panels. */
+.schedule-preview{display:flex;flex-direction:column;gap:.4rem}
+.schedule-preview .muted{margin:0;overflow-wrap:anywhere}
