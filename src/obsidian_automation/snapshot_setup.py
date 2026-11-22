@@ -6,6 +6,7 @@ import hmac
 import json
 import os
 import re
+import secrets
 import stat
 import subprocess
 import tempfile
@@ -127,10 +128,16 @@ class SetupStore:
         self.path = state / "connections.json"
         self.rclone = state / "rclone.conf"
         self.policy = state / "policy.toml"
+        self.webdav_epoch = state / "webdav-source-epoch"
         self._lock = threading.RLock()
         self.probe = probe or probe_connections
         self.nextcloud_probe = probe_nextcloud
         self.obscure = obscure or obscure_password
+
+    def _rotate_webdav_epoch(self) -> None:
+        # Before any provider/root config commit, invalidate every previous
+        # explicit generic-root proof, even across an A -> B -> A rotation.
+        _atomic(self.webdav_epoch, secrets.token_hex(16))
 
     def _read_verified(self) -> dict | None:
         """The ONE credential registry can hold Nextcloud-only or full B2."""
@@ -243,6 +250,7 @@ class SetupStore:
                 return "invalid"
             saved["vault_folder"] = new_folder
             try:
+                self._rotate_webdav_epoch()
                 _atomic(self.path, json.dumps(saved))
             except OSError:
                 return "uncertain"
@@ -272,6 +280,7 @@ class SetupStore:
             config = _rclone_config(value, obscured)
             old = self.rclone.read_text() if self.rclone.exists() else None
             try:
+                self._rotate_webdav_epoch()
                 _atomic(self.rclone, config)
                 _atomic(self.path, json.dumps({
                     **value, MARKER: hashlib.sha256(config.encode()).hexdigest()
@@ -298,6 +307,7 @@ class SetupStore:
                 _atomic(self.policy, "version = 1\nsettle_seconds = 0\nstability_attempts = 1\nexclude = []\nrepository_owned = []\n")
             old = self.rclone.read_text() if self.rclone.exists() else None
             try:
+                self._rotate_webdav_epoch()
                 git_askpass(self.state)
                 _atomic(self.rclone, config)
                 _atomic(self.path, json.dumps({**value, MARKER: hashlib.sha256(config.encode()).hexdigest()}))

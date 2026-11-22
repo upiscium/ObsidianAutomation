@@ -246,3 +246,38 @@ def test_crash_after_target_seal_before_checkpoint_is_replay_safe(
     monkeypatch.setattr(module, "bootstrap_production_checkpoint", finish)
     assert runtime.bootstrap(request)["initialized"] is True
     assert runtime._binding()["core_commit"] == "a"*40
+
+
+def test_generic_root_epoch_binds_core_target_and_prevents_a_b_a_reuse(tmp_path):
+    from obsidian_automation.snapshot_setup import SetupStore
+    from obsidian_automation.generic_webdav_root import enroll as enroll_generic
+
+    source={
+        "webdav_url":"https://dav.example.invalid/webdav/",
+        "vault_folder":"Vault",
+        "nextcloud_user":"fixture-user",
+        "nextcloud_password":"synthetic-only-credential",
+    }
+    store=SetupStore(tmp_path/"private",obscure=lambda _:"fixture-obscured")
+    assert store.save_nextcloud(source,probed=True)
+    runtime=CorePromotionRuntime(tmp_path/"app",store,lambda:None)
+    runtime.policy_path.write_bytes(runtime.policy_bytes)
+    assert runtime._target_identity() is None  # no silent generic authority
+    assert runtime.status()["uses_shared_nextcloud"] is False
+    assert enroll_generic(store,probe=lambda _:True)=="enrolled"
+    first=runtime._target_identity()
+    assert isinstance(first,str) and len(first)==64
+    runtime._ensure_target_binding(first,"a"*40)
+    assert runtime._target_bound()
+
+    # A -> B -> A must be quarantined even when all user-visible fields
+    # return to the exact same values.
+    assert store.save_nextcloud(dict(source,vault_folder="Other"),probed=True)
+    assert runtime._target_identity() is None
+    assert store.save_nextcloud(source,probed=True)
+    assert runtime._target_identity() is None
+    assert enroll_generic(store,probe=lambda _:True)=="enrolled"
+    second=runtime._target_identity()
+    assert isinstance(second,str) and second!=first
+    assert not runtime._target_bound()
+    assert runtime.status()["requires_reauthorization"]

@@ -390,8 +390,18 @@
       msg("vault-root-enrolled",r.enrolled?"確認済み":"未確認");
       fieldState("vault-enrollment-status",r.enrolled?"verified":"missing",
                  r.enrolled?"✓ 検証済み":"未検証");
-      msg("vault-root-provider",r.provider??"不明");
-      $("vault-root-rollback").disabled=!r.can_rollback;
+      const generic=r.provider==="generic_https_path"||
+        r.provider==="generic_unverified";
+      msg("vault-root-provider",r.provider==="generic_https_path"?
+        "HTTPSパス（ID保証なし）":r.provider==="generic_unverified"?
+        "HTTPSパス（未登録）":r.provider??"不明");
+      $("vault-root-enroll").textContent=generic?
+        "HTTPSパスを検証・登録":"アカウントを検証";
+      // Only Nextcloud supplies OC-ID/OCS-backed root browse/switch.
+      for(const action of ["list","enter","preview","activate"])
+        $("vault-root-"+action).disabled=generic;
+      $("vault-root-candidate").disabled=generic;
+      $("vault-root-rollback").disabled=generic||!r.can_rollback;
     }else{
       msg("vault-root-active","取得できません");
       fieldState("vault-root-status","failed","確認できません");

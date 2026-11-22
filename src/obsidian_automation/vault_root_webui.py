@@ -18,7 +18,10 @@ from dataclasses import dataclass
 from typing import Callable
 
 from .snapshot_setup import SetupStore
-from .webdav_connection import rclone_vendor
+from .webdav_connection import rclone_vendor, probe_webdav_collection
+from .generic_webdav_root import (
+    enroll as enroll_generic, is_enrolled as is_generic_enrolled,
+)
 from .vault_root_activation import (
     ActivationResult, _pin, _read_binding, activate_vault_root,
     https_transport_factory, rollback_vault_root,
@@ -60,8 +63,15 @@ class VaultRootActions:
     fence_factory: Callable[[], object]
     transport_factory: Callable[[dict], object] = https_transport_factory
     proof: ProviderProof = CURRENT_PROVIDER_PROOF
+    generic_probe: Callable[[dict], bool] = probe_webdav_collection
+
+    def is_generic(self) -> bool:
+        saved = self.store.load_nextcloud()
+        return bool(saved and rclone_vendor(saved["webdav_url"])=="other")
 
     def enrolled(self) -> bool:
+        if self.is_generic():
+            return is_generic_enrolled(self.store)
         return load_enrollment(self.store) is not None
 
     def active_label(self) -> str | None:
@@ -81,6 +91,8 @@ class VaultRootActions:
                     and current.get("path") == saved["vault_folder"])
 
     def enroll(self) -> str:
+        if self.is_generic():
+            return enroll_generic(self.store, probe=self.generic_probe)
         return enroll_account(self.store, self.transport_factory, proof=self.proof)[0]
 
     def activate(self, path: str, leaf_id: str, revision: str,

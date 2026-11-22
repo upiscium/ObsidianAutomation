@@ -142,9 +142,12 @@ def probe_webdav_collection(value: dict) -> bool:
                 "Content-Type": "application/xml; charset=utf-8",
             },
         )
-        with urllib.request.build_opener(_NoRedirect()).open(
-            request, timeout=8,
-        ) as response:
+        # Bypass ambient HTTP(S)_PROXY; provider credential admission must
+        # reach the explicitly configured HTTPS origin, never an injected
+        # sidecar or operator-shell proxy.
+        with urllib.request.build_opener(
+            urllib.request.ProxyHandler({}), _NoRedirect(),
+        ).open(request, timeout=8) as response:
             if response.status != 207:
                 return False
             mime = response.headers.get("Content-Type", "").split(";")[0].strip().lower()

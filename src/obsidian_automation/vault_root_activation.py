@@ -441,10 +441,12 @@ class JobRootGuard:
 
     def __init__(self, store: SetupStore, *,
                  transport_factory: Callable[[dict], DavTransport] | None = None,
-                 proof: ProviderProof = CURRENT_PROVIDER_PROOF):
+                 proof: ProviderProof = CURRENT_PROVIDER_PROOF,
+                 generic_probe: Callable[[dict], bool] | None = None):
         self._store = store
         self._transport_factory = transport_factory
         self._proof = proof
+        self._generic_probe = generic_probe
 
     @property
     def state(self) -> Path:
@@ -473,10 +475,13 @@ class JobRootGuard:
         try:
             saved = self._store.load_nextcloud()
             if saved and rclone_vendor(saved["webdav_url"]) != "nextcloud":
-                # A PROPFIND collection check is not a stable Nextcloud OC-ID
-                # root pin. Do not grant a new generic DAV canonical writer
-                # before a distinct provider-neutral root admission exists.
-                return "provider_unsupported"
+                # This is *not* a Nextcloud OC-ID identity proof. A generic
+                # path-only trust decision requires explicit local enrollment
+                # plus a fresh HTTPS collection check on EVERY Job admission.
+                from .generic_webdav_root import check as check_generic
+                if self._generic_probe is None:
+                    return check_generic(self._store)
+                return check_generic(self._store, probe=self._generic_probe)
             return check_root_pin(self._store, self._read_leaf)
         except Exception:
             return "unavailable"

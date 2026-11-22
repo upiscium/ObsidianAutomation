@@ -125,7 +125,7 @@ def test_ambiguous_network_loss_awaits_explicit_replay():
                 raise PromotionTransportNetworkError("synthetic lost response")
             return super().__call__(**kwargs)
     dav=Lost({})
-    with pytest.raises(PromotionTransportNetworkError, match="lost response"):
+    with pytest.raises(PromotionTransportNetworkError, match="no trustworthy result"):
         check(dav)
     assert dav.directories == {"", "98-System/"}
     # The later controlled attempt observes and converges safely.
@@ -181,3 +181,21 @@ def test_unsafe_target_paths_rejected_without_provider_io(bad):
         ensure_parent_collections(base_url=BASE, path=bad,
                                   username="promoter",password="secret",
                                   timeout=5,transport=Never())
+
+
+
+def test_parent_transport_exceptions_are_redacted():
+    class Fails:
+        def __call__(self, **kwargs):
+            raise OSError("should-not-be-in-error-diagnostics")
+    with pytest.raises(PromotionTransportNetworkError) as exc:
+        check(Fails())
+    assert "should-not-be-in-error-diagnostics" not in str(exc.value)
+
+
+def test_double_encoded_git_parent_names_are_rejected_before_any_io():
+    class Never:
+        def __call__(self, **kwargs):
+            raise AssertionError("provider I/O was incorrectly allowed")
+    with pytest.raises(PromotionTransportError, match="ambiguous encoded parent path"):
+        check(Never(), "98-System/%2e%2e/notes.md")

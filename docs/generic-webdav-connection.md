@@ -1,20 +1,71 @@
-# #601 — Provider-neutral WebDAV connection foundation (URL/API V1)
+# #601 — Generic WebDAV compatibility (source-only, production OFF)
 
-This change is source-only until parent creation and independent review / isolated Apache + Nextcloud acceptance are complete. No authorization for live credential changes, target migration, Vault writes, unattended timers or #306 E2E.
+## Provider-neutral HTTPS connection
 
-## Scope delivered
+The WebDAV URL is the parent directory above the separately selected Vault
+folder (for example https://dav.example.invalid/webdav/ + Vault).
+A canonical HTTPS URL is required; embedded credentials, query or fragment,
+unsafe path aliases, redirects and ambient HTTP(S) proxies are rejected.
+The connection probe requires a bounded 64-KiB PROPFIND Depth:0 with one
+matching DAV collection and successful 200 propstat.
 
-- Accept a canonical HTTPS WebDAV directory URL ending with /, e.g. https://dav.example.invalid/webdav/, instead of requiring a Nextcloud-specific /remote.php/dav/files/account/ path.
-- Preserve the persisted credential keys and legacy [nextcloud] rclone remote name, without migrating stored credentials.
-- Generate rclone WebDAV vendor = nextcloud for the traditional Nextcloud path, and vendor = other for generic paths. This is an adapter mode, not an identity/security proof. Official reference: https://rclone.org/webdav/
-- On connection save, issue one read-only PROPFIND Depth:0 with a bounded 64 KiB response and require the exact Vault collection href, HTTP 207, and one successful resourcetype collection propstat. Redirects, malformed XML, wrong path, files, ambiguity and oversize fail closed.
-- Apply the same URL validation to the per-field editor and full-provider save. The Nextcloud-named internal API route and fields stay for backward compatibility.
-- Label the current common connection section WebDAV rather than Nextcloud. The OC-ID/OCS-specific Vault Root picker remains Nextcloud-only for now.
+Persisted [nextcloud] remote name and historical credential field keys remain
+compatible. Classic Nextcloud files endpoints use rclone vendor=nextcloud,
+and generic URL paths use vendor=other. This path-based hint is NOT reliable
+provider identity. Reference: https://rclone.org/webdav/
 
-## Mandatory remaining #601 work
+## Core Promotion and manual repair
 
-1. Core Promotion nested CREATE now preflights and PROPFIND-checks the configured root and every ancestor, creating only missing parents via standard MKCOL. The optional legacy Nextcloud auto-MKCOL header is no longer the only parent-creation mechanism. Synthetic tests cover 201, 405 with revalidation, 409 fail-closed, missing root, parent-file collision, lost response and checkpoint preservation. The independent security review and real-server acceptance are still pending.
-2. Generic DAV does not provide trusted OC-ID/OCS. Explicit capability gates now block Nextcloud-specific root enrollment, activation and rollback, and canonical JobRootGuard admission under generic URLs. These guards are intentionally conservative: a separate **provider-neutral root authority contract** will be needed for an operator to use a generic DAV target with all three Jobs.
-3. Local Apache httpd 2.4.71/mod_dav_fs over loopback HTTPS was verified to return 207 with a valid collection for an isolated fixture. An attempted complete promotion E2E failed at UPDATE preflight because the client did not observe a strong ETag on the immediately seeded fixture; a subsequent read-only GET did return strong Apache ETags. This is NOT an E2E PASS. Repeat this in a controlled reproducible fixture and then test Nextcloud, nested CREATE, ETag conflicts, interrupted operations and retries before Ready/Merge/Deploy. No production Vault or credentials are used.
-4. WebDAV URL denotes the directory above the separately configured vault_folder. No auto-discovery or server path rewrite is implied.
-5. #306 remains BLOCKED until full #601 is implemented, independently reviewed, tested and accepted.
+After whole-plan preflight, CREATE verifies the configured Vault root and
+every ancestor through exact PROPFIND, and uses ascending MKCOL only for
+missing approved parents. HTTP 201 and racing 405 require a fresh matching
+collection read; 409, files where directories belong, missing root, unknown
+responses and transport loss fail closed. A partial operation is not
+automatically retried or deleted. Final files retain If-None-Match:* on CREATE,
+strong If-Match for UPDATE, exact-byte GET verification, and checkpoint
+nonadvancement after incomplete effects. A Nextcloud auto-MKCOL header is
+retained on PUT as an optional compatibility hint, never a precondition.
+Manual Core Live Reconciliation CREATE also uses the same parent verification,
+and persists an attempting/failed receipt before an incomplete effect.
+
+## Generic Root authority: explicit and weaker than Nextcloud
+
+Nextcloud has stable OC-ID and OCS user binding. Standard DAV does not expose
+an equivalent persistent resource identity. For generic DAV, the existing
+Root enrollment action must be invoked explicitly to register the
+HTTPS URL, account and configured Vault path after an authenticated,
+read-only exact-collection probe. A private 0600 proof records the path-based
+authority and a durable source epoch. Every provider-connection or Vault
+folder save rotates the source epoch, invalidating prior authorization even
+after A -> B -> A changes. Missing, malformed or symlinked proof, an uncertain
+old OC-ID pin, or an offline/unverified collection blocks Job admission.
+
+Every canonical Job re-probes the same authenticated HTTPS collection just
+before acting and refuses stale or missing authorization. The Nextcloud OC-ID
+candidate picker, folder activation and rollback remain unsupported under
+generic DAV, and the UI disables those controls. Root path binding cannot
+prove that the server has not swapped the directory inode behind the same
+hostname/path. This weaker guarantee requires separate operator acceptance;
+merging source alone is NOT production authorization.
+
+## Reproducible verification and remaining gates
+
+Python synthetic tests exercise the validation and XML bounds, invalid
+collection, 201/405/409, file collision, network loss, partial MKCOL,
+conditional updates, repair failure receipt, root epoch and rotation.
+An optional local integration script starts real Apache 2.4.71 mod_dav_fs
+with localhost-only HTTPS and Basic authentication, creates a disposable
+synthetic Git/Vault fixture, and verifies nested CREATE/UPDATE/DELETE,
+strong conditional 412 rejection, exact content, checkpoint and receipts.
+It also observes actual 409/201/405 MKCOL statuses and cleans the server,
+TLS certificate and synthetic credentials afterwards.
+
+Apache can briefly issue a weak W/ ETag immediately after a fixture file is
+created. Core Promotion correctly refuses UPDATE in that state; the
+integration fixture uses older modification times to obtain stable strong
+ETags without weakening production CAS requirements.
+
+Nextcloud-format synthetic regression tests pass; actual isolated Nextcloud
+protocol E2E and independent security review are still pending. The
+production provider, Vault, credentials and Scheduler remain unchanged.
+#601 stays OPEN and #306 stays BLOCKED until final acceptance.

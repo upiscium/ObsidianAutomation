@@ -231,11 +231,31 @@ def ensure_parent_collections(
         raise PromotionTransportError("invalid parent path") from exc
     if len(components) > 32:
         raise PromotionTransportError("parent path exceeds maximum depth")
+    # A literal percent in the Git tree can be recursively URL-decoded by
+    # nonconforming proxies/providers. Refuse that ambiguity in a new parent
+    # transaction rather than risking a different path than the reviewed plan.
+    if any("%" in name for name in components):
+        raise PromotionTransportError("ambiguous encoded parent path")
     request = transport or _real_http_request
     created: list[str] = []
 
+    def bounded_request(**kwargs) -> HTTPResponse:
+        try:
+            response = request(**kwargs)
+        except Exception:
+            # Never echo an exception from a custom provider or adapter.
+            # Some include URLs, bodies or credential-bearing diagnostics.
+            raise PromotionTransportNetworkError(
+                "WebDAV parent request returned no trustworthy result"
+            ) from None
+        if type(response) is not HTTPResponse or type(response.status) is not int:
+            raise PromotionTransportNetworkError(
+                "WebDAV parent request returned invalid metadata"
+            )
+        return response
+
     def collection(url: str) -> int:
-        response = request(
+        response = bounded_request(
             method="PROPFIND", target_url=url,
             username=username, password=password,
             headers={"Depth": "0", "Content-Type": "application/xml; charset=utf-8"},
@@ -262,7 +282,7 @@ def ensure_parent_collections(
         status = collection(url)
         if status == 207:
             continue
-        response = request(
+        response = bounded_request(
             method="MKCOL", target_url=url,
             username=username, password=password,
             headers={}, body=None, timeout=timeout,

@@ -72,6 +72,7 @@ class VaultRootSelectionService:
     _CONTEXT_REASONS = frozenset({
         "binding_unavailable", "not_enrolled", "source_changed",
         "active_root_unsupported_mount", "active_root_unreadable", "provider_unproven",
+        "provider_unsupported",
     })
 
     def _load(self) -> tuple[TrustedRootContext | None, str]:
@@ -143,12 +144,18 @@ class VaultRootSelectionService:
             can_rollback = self._actions.can_rollback() is True
         except Exception:
             enrolled, label, can_rollback = False, None, False
+        generic = bool(getattr(self._actions, "is_generic", lambda: False)())
         out.update({
             "binding": "available" if enrolled else "unavailable",
             "enrolled": enrolled,
             "active_label": label if type(label) is str else None,
-            "activation": "available" if self._admitted() and enrolled else "not_available",
-            "can_rollback": can_rollback,
+            # Generic DAV allows explicit HTTPS path enrollment, not the
+            # provider-specific root picker/OC-ID activation or rollback.
+            "provider": ("generic_https_path" if enrolled else "generic_unverified")
+                        if generic else out["provider"],
+            "activation": "not_available" if generic else
+                          ("available" if self._admitted() and enrolled else "not_available"),
+            "can_rollback": False if generic else can_rollback,
         })
         return out
 
@@ -167,7 +174,11 @@ class VaultRootSelectionService:
             return refused
         if type(payload) is not dict or payload:
             return 400, {"error": "invalid_request"}
-        if not self._admitted():
+        # Generic HTTPS path enrollment relies on its own exact read-only
+        # PROPFIND and explicit operator action, not a false Nextcloud OC-ID
+        # proof. Both branches share the per-minute provider-read limit.
+        generic=bool(getattr(self._actions, "is_generic", lambda: False)())
+        if not generic and not self._admitted():
             return 200, {"version": 1, "status": "blocked", "reason": "provider_unproven"}
         if self._rate_limited():
             return 200, {"version": 1, "status": "blocked", "reason": "rate_limited"}

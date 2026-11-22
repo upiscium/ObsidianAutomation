@@ -105,7 +105,8 @@ def test_probe_read_only_and_no_secret_in_git_argv(monkeypatch):
             assert "NC-PRIVATE" not in str(request.headers)
             return Response()
 
-    def fake_build_opener(handler):
+    def fake_build_opener(proxy,handler):
+        assert proxy.proxies == {}
         assert handler.redirect_request(None, None, 302, "move", {},
                                         "https://other.invalid/") is None
         return Opener()
@@ -126,7 +127,7 @@ def test_probe_read_only_and_no_secret_in_git_argv(monkeypatch):
         def open(self, *args, **kwargs):
             raise OSError("fixture-unreachable")
     monkeypatch.setattr(setup.urllib.request, "build_opener",
-                        lambda _handler: Fails())
+                        lambda *_handlers: Fails())
     assert not probe_connections(value)
 
 

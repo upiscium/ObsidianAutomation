@@ -22,6 +22,7 @@ from .promotion_bootstrap import bootstrap_production_checkpoint
 from .public_export import load_config
 from .vault_bindings import physical_folder, run_verified
 from .vault_root_activation import current_pin, read_private_json
+from .webdav_connection import rclone_vendor
 
 
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
@@ -85,12 +86,27 @@ class CorePromotionRuntime:
                 "chain": list(pin.chain) if pin.chain is not None else None,
                 "instance_id": pin.instance_id,
             })
-            content = json.dumps({
+            identity = {
                 "webdav_url": source["webdav_url"],
                 "nextcloud_user": source["nextcloud_user"],
                 "vault_folder": source["vault_folder"],
                 "root_pin": pin_value,
-            }, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            }
+            if rclone_vendor(source["webdav_url"]) == "other":
+                # The generic path enrollment is distinct target authority
+                # and cannot reuse an OC-ID-based checkpoint. Binding the
+                # durable epoch also prevents A -> B -> A source resurrection.
+                from .generic_webdav_root import _current_epoch, is_enrolled
+                if not is_enrolled(self.store):
+                    return None
+                epoch = _current_epoch(self.store)
+                if epoch is None:
+                    return None
+                identity["generic_root_epoch"] = epoch
+            content = json.dumps(
+                identity,sort_keys=True,ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
             return hashlib.sha256(content).hexdigest()
         except (OSError, TypeError, ValueError):
             return None
@@ -239,7 +255,10 @@ class CorePromotionRuntime:
                 (self.checkpoint_path.exists() or self.target_binding_path.exists())
                 and not self._target_bound()
             ),
-            "uses_shared_nextcloud": True,
+            "uses_shared_nextcloud": bool(
+                (src:=self._source()) is not None
+                and rclone_vendor(src["webdav_url"]) == "nextcloud"
+            ),
         }
 
     def bootstrap(self, payload):

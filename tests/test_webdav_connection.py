@@ -130,7 +130,8 @@ def test_probe_one_bounded_no_redirect_propfind(monkeypatch):
             assert "synthetic-passphrase" not in str(request.headers)
             return Response()
 
-    def factory(handler):
+    def factory(proxy,handler):
+        assert proxy.proxies=={}
         assert handler.redirect_request(None,None,302,"Moved",{},
                                         "https://other.invalid/") is None
         return Opener()
