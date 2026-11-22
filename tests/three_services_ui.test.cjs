@@ -237,6 +237,7 @@ test("folder role Preview/Save changes only selected role", async () => {
   const values=jobs(true,true,true);
   const status={
     state:"ok",can_reset:true,can_rollback:false,
+    system_fixed_under_promotion:true,
     roles:{daily:"00-DailyNote",project:"10-Project",system:"98-System"}
   };
   let previewPayload=null,savePayload=null;
@@ -261,9 +262,7 @@ test("folder role Preview/Save changes only selected role", async () => {
   };
   const el=await mount(values,{}, {fetch});
   assert.match(el("vault-bindings-project-status").textContent,/✓ 保存済み/);
-  assert.match(fs.readFileSync(
-    "src/obsidian_automation/three_services/index.html","utf8"),
-    /vault-bindings-system-status[^>]*>✓ 固定/);
+  assert.equal(el("vault-bindings-system-status").textContent,"✓ 固定");
   el("vault-bindings-daily").value="01-Daily";
   el("vault-bindings-daily").listeners.input();
   assert.match(el("vault-bindings-daily-status").textContent,/未保存/);
@@ -280,4 +279,33 @@ test("folder role Preview/Save changes only selected role", async () => {
   }));
   assert.equal(status.roles.project,"10-Project");
   assert.match(el("vault-bindings-daily-status").textContent,/✓ 保存済み/);
+});
+
+
+test("a quarantined Core checkpoint and invalid System path show no green check", async () => {
+  const values=jobs(true,true,true);
+  const baseline=values["/api/v1/core-promotion"];
+  baseline.settings.configured=false;
+  const el=await mount(values,{
+    checkpoint_initialized:true,configured:false,
+    requires_reauthorization:true,target_binding_valid:false
+  },{
+    fetch: async path=>{
+      const reply=v=>({ok:true,async json(){return v;}});
+      if(path==="/api/v1/core-promotion/configuration")
+        return reply({policy_sha256:"a".repeat(64),checkpoint_initialized:true,
+          configured:false,requires_reauthorization:true,target_binding_valid:false});
+      if(path==="/api/v1/vault-root")
+        return reply({active_label:"Vault",enrolled:true,provider:"verified",can_rollback:false});
+      if(path==="/api/v1/vault-bindings")
+        return reply({state:"ok",roles:{daily:"00-DailyNote",
+          project:"10-Project",system:"99-System"},
+          system_fixed_under_promotion:false,can_reset:true,can_rollback:false});
+      return reply(values[path]);
+    }
+  });
+  assert.match(el("core-promotion-checkpoint-status").textContent,/要再確認/);
+  assert.notEqual(el("core-promotion-checkpoint-status").dataset.state,"verified");
+  assert.match(el("vault-bindings-system-status").textContent,/要確認/);
+  assert.notEqual(el("vault-bindings-system-status").dataset.state,"fixed");
 });

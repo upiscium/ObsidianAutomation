@@ -194,3 +194,50 @@ def test_real_vault_services_readonly_status_without_provider(tmp_path):
     code, response = root.candidates({})
     assert code == 200 and response["status"] == "blocked"
     assert response["candidates"] == []
+
+
+def test_legacy_nondefault_system_mapping_refuses_individual_role_preview(
+    tmp_path, monkeypatch,
+):
+    from obsidian_automation.vault_root_webui import ThreeServiceBindingsAdapter
+
+    class Inner:
+        _store=SimpleNamespace(state=tmp_path)
+        def status(self):
+            return {"version":1,"roles":{"daily":"00-DailyNote",
+                    "project":"10-Project","system":"99-System"},
+                    "editable_roles":["daily","project","system"]}
+        def preview(self,payload):
+            raise AssertionError("Must refuse before legacy editor can reset System")
+
+    adapter=ThreeServiceBindingsAdapter(Inner())
+    assert adapter.status()["system_fixed_under_promotion"] is False
+    assert adapter.status()["editable_roles"]==["daily","project"]
+    monkeypatch.setattr(
+        "obsidian_automation.vault_bindings.load_bindings",
+        lambda _: SimpleNamespace(roles={"system":"99-System"})
+    )
+    code, result=adapter.preview({"roles":{"daily":"01-Daily"}})
+    assert code==200 and result["status"]=="blocked"
+    assert result["reason"]=="legacy_system_mapping_requires_reset"
+
+
+def test_legacy_system_mapping_also_rejects_old_preview_handle_save(
+    tmp_path, monkeypatch,
+):
+    from obsidian_automation.vault_root_webui import ThreeServiceBindingsAdapter
+
+    class Inner:
+        _store=SimpleNamespace(state=tmp_path)
+        def save(self,payload):
+            raise AssertionError("Legacy System path must fail closed before commit")
+
+    monkeypatch.setattr(
+        "obsidian_automation.vault_bindings.load_bindings",
+        lambda _: SimpleNamespace(roles={"system":"99-System"})
+    )
+    code,response=ThreeServiceBindingsAdapter(Inner()).save(
+        {"handle":"old-token","confirm":True})
+    assert code==200
+    assert response["status"]=="blocked"
+    assert response["reason"]=="legacy_system_mapping_requires_reset"

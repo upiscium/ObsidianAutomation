@@ -275,3 +275,31 @@ def test_probe_failure_precedes_per_field_target_quarantine(tmp_path):
         server.shutdown()
         thread.join(timeout=3)
         job.close()
+
+
+def test_post_commit_draft_cleanup_failure_is_not_false_invalid_request(
+    tmp_path, monkeypatch,
+):
+    from obsidian_automation.connection_fields import FieldDrafts, FieldError
+
+    store, job = setup(tmp_path)
+    assert store.save({**NEXTCLOUD, **GITEA})
+    job.configured=True
+    server, thread=run_server(store, job)
+    try:
+        def fail_after_commit(self, group):
+            raise FieldError("unreadable_field_draft")
+
+        monkeypatch.setattr(FieldDrafts,"committed",fail_after_commit)
+        code, raw=save(server.server_port,
+                       "/api/v1/snapshot/connections/field",
+                       {"field":"branch","value":"next"})
+        body=json.loads(raw)
+        assert code==503
+        assert body["error"]=="operation_unavailable"
+        assert store.load()["branch"]=="next"
+        assert job.settings()["enabled"] is False
+    finally:
+        server.shutdown()
+        thread.join(timeout=3)
+        job.close()

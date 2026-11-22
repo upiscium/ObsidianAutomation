@@ -144,9 +144,13 @@
       $("core-promotion-bootstrap").disabled=busy||d.checkpoint_initialized||
         typeof policy!=="string"||!/^[0-9a-f]{64}$/.test(policy);
       $("core-promotion-bootstrap-section").hidden=false;
+      const checkpointOk=d.checkpoint_initialized===true&&
+        d.target_binding_valid===true&&d.requires_reauthorization!==true&&
+        d.configured===true;
       fieldState("core-promotion-checkpoint-status",
-                 d.checkpoint_initialized?"verified":"missing",
-                 d.checkpoint_initialized?"✓ 初期化済み":"未初期化");
+                 checkpointOk?"verified":d.checkpoint_initialized?"failed":"missing",
+                 checkpointOk?"✓ 使用可能":d.checkpoint_initialized?
+                   "要再確認・再承認":"未初期化");
       if(d.requires_reauthorization===true)
         msg("core-promotion-message",
             "接続先Vaultが変更されたため、旧Checkpointでの実行を拒否しています。新しい基準の独立照合が必要です。");
@@ -306,6 +310,10 @@
     if(rs[1].status==="fulfilled"){
       const b=rs[1].value;
       msg("vault-bindings-state",b.state??"不明");
+      const systemValid=b.system_fixed_under_promotion===true;
+      fieldState("vault-bindings-system-status",
+        systemValid?"fixed":"failed",
+        systemValid?"✓ 固定":"要確認・標準Systemへ戻してください");
       $("vault-bindings-reset").disabled=b.can_reset!==true;
       $("vault-bindings-rollback").disabled=b.can_rollback!==true;
       mappingRoles.forEach(role=>{
@@ -323,6 +331,7 @@
       msg("vault-bindings-state","取得できません");
       $("vault-bindings-reset").disabled=true;
       $("vault-bindings-rollback").disabled=true;
+      fieldState("vault-bindings-system-status","failed","確認できません");
       mappingRoles.forEach(role=>fieldState(
         "vault-bindings-"+role+"-status","failed","確認できません"));
     }

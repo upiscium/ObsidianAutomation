@@ -125,10 +125,26 @@ class ThreeServiceBindingsAdapter:
     def status(self):
         value = self.inner.status()
         value["editable_roles"] = ["daily", "project"]
-        value["system_fixed_under_promotion"] = True
+        # Do not claim an old nondefault System mapping is currently fixed.
+        roles = value.get("roles")
+        value["system_fixed_under_promotion"] = (
+            type(roles) is dict and roles.get("system") == "98-System"
+        )
         return value
 
     def preview(self, payload):
+        # The old editor's restricted-role proposal would otherwise reset a
+        # legacy nondefault System folder silently when changing Daily.
+        from .vault_bindings import load_bindings, BindingsError
+        try:
+            current = load_bindings(self.inner._store.state)
+        except (BindingsError, OSError, ValueError):
+            return 200, {"version": 1, "status": "blocked",
+                         "reason": "unreadable_record", "writes_vault": False}
+        if current.roles.get("system") != "98-System":
+            return 200, {"version": 1, "status": "blocked",
+                         "reason": "legacy_system_mapping_requires_reset",
+                         "writes_vault": False, "activation_allowed": False}
         roles = payload.get("roles") if type(payload) is dict else None
         if (type(roles) is dict and "system" in roles
             and roles["system"] != "98-System"):
@@ -138,6 +154,18 @@ class ThreeServiceBindingsAdapter:
         return self.inner.preview(payload)
 
     def save(self, payload):
+        # A previously previewed handle must not silently normalize a legacy
+        # nonstandard System mapping, even if that mapping changed afterwards.
+        from .vault_bindings import load_bindings, BindingsError
+        try:
+            current = load_bindings(self.inner._store.state)
+        except (BindingsError, OSError, ValueError):
+            return 200, {"version": 1, "status": "blocked",
+                         "reason": "unreadable_record", "writes_vault": False}
+        if current.roles.get("system") != "98-System":
+            return 200, {"version": 1, "status": "blocked",
+                         "reason": "legacy_system_mapping_requires_reset",
+                         "writes_vault": False}
         return self.inner.save(payload)
 
     def reset(self, payload):

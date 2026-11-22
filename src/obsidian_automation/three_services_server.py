@@ -433,7 +433,12 @@ class Handler(BaseHTTPRequestHandler):
                         raise Refused("github_probe_failed", 422)
                     old = job.settings()
                     job.update({"enabled": False, "interval_seconds": old["interval_seconds"]})
-                    drafts.committed("github")
+                    try:
+                        drafts.committed("github")
+                    except FieldError:
+                        # Credential activation already committed. A cleanup
+                        # failure is indeterminate, never an invalid request.
+                        raise Refused("operation_unavailable", 503) from None
                 self._send(200, {**setup.status(),
                                  **drafts.status("github", setup)})
                 return
@@ -567,7 +572,12 @@ class Handler(BaseHTTPRequestHandler):
                     promotion.update({
                         "enabled": False, "interval_seconds": old["interval_seconds"]
                     })
-            drafts.committed(group)
+            try:
+                drafts.committed(group)
+            except FieldError:
+                # The provider is already saved: never report a plain 400
+                # that might encourage blind repetition of a target switch.
+                raise Refused("operation_unavailable", 503) from None
         self._send(200, {**response, **drafts.status(group),
                          "field_result": "verified"})
 

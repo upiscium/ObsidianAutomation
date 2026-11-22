@@ -155,7 +155,10 @@ The common Settings UI contains **one save control and one explicit status for
 each Nextcloud (4), Gitea (4), GitHub (1) value**. The Daily/Project Vault
 folder mappings likewise have distinct Preview and Save actions. The System
 mapping is displayed as fixed at `98-System` until Core Promotion supports
-other destinations. Vault root/pin and Core bootstrap show their own status.
+other destinations. An existing legacy nondefault System mapping is marked
+incompatible and blocks individual mapping changes until an explicit reset.
+A stale/quarantined Core checkpoint is likewise never shown with a green
+success checkmark. Vault root/pin and Core bootstrap show their own status.
 
 New setup values can be saved one at a time. Until a complete provider
 configuration is present, values are held only in a bounded private
