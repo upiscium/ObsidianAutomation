@@ -119,8 +119,9 @@
       if(document.activeElement!==$(n+"-anchor"))
         $(n+"-anchor").value=settings.schedule?.anchor_local_time??"12:00";
     }
+    $(n+"-phase-mode").hidden=settings.schedule?.mode==="anchored";
     msg(n+"-phase-mode",settings.schedule?.mode==="anchored"?
-      "JSTの壁時計で固定発火":"旧Interval方式（Preview→保存で固定時刻へ移行）");
+      "":"旧Interval方式（Preview→保存で固定時刻へ移行）");
     for(const kind of ["enabled","interval","anchor"]){
       const marker=n+"-"+kind+"-state";
       if(scheduleTouched[n]?.has(kind)){
@@ -235,7 +236,7 @@
         scheduleDirty[n]=false;
         if(scheduleTouched[n])scheduleTouched[n].clear();
         delete previewSpecs[n];
-        msg(n+"-message","起点時刻の設定を保存しました。実行中のJobは取り消しません。");
+        msg(n+"-message","");
       }else{
         const result=await post("/api/v1/"+n+"/runs",{request_id:requestId()});
         msg(n+"-message","受付 "+result.outcome+" · Run ID "+result.run_id+"。実行結果は別途照合します。");

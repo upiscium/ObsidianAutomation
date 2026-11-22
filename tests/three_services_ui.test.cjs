@@ -189,6 +189,7 @@ test("slow pre-mutation refresh cannot overwrite the post-save result", async ()
   for (let i = 0; i < 8; i++)
     await new Promise(resolve => setImmediate(resolve));
   assert.equal(mutated, true);
+  assert.equal(el("snapshot-message").textContent, "");
   assert.equal(el("snapshot-status").dataset.kind, "unknown");
 
   resolveOld(reply(snapshot(true)));
@@ -474,4 +475,28 @@ test("missing credentials have no mask, staged credentials have a fixed mask but
   for(let i=0;i<9;i++)await new Promise(resolve=>setImmediate(resolve));
   assert.equal(sent,false,"visual mask must not be submitted as a credential");
   assert.match(el("nextcloud-message").textContent,/入力してください/);
+});
+
+test("UI copy matches operator request without extra footer or schedule success prose", async () => {
+  const html=fs.readFileSync("src/obsidian_automation/three_services/index.html","utf8");
+  assert.equal(html.match(/起点時刻\(Asia\/Tokyo\)/g)?.length,3);
+  assert.equal(html.includes("起点時刻（Asia/Tokyo）"),false);
+  assert.ok(html.includes("RootやSystemの変更後は再検証が必要です。変更した機能の自動実行はOffになります。"));
+  for(const deleted of [
+    "Vault内のファイルは移動・編集しません。",
+    "Core Promotionは旧Checkpointを再利用できず、再検証が必要です。",
+    "最終結果が不明な処理は自動再試行しません。"
+  ])assert.equal(html.includes(deleted),false);
+  assert.equal(html.includes("<footer>"),false);
+  assert.equal(code.includes("起点時刻の設定を保存しました。実行中のJobは取り消しません。"),false);
+  assert.equal(code.includes("JSTの壁時計で固定発火"),false);
+  assert.equal(html.match(/ class="service"/g)?.length,3);
+  const models=jobs(true,true,true);
+  models["/api/v1/snapshot"].settings.schedule={
+    mode:"anchored",timezone:"Asia/Tokyo",anchor_local_time:"12:00",revision:3
+  };
+  const el=await mount(models);
+  assert.equal(el("snapshot-phase-mode").textContent,"");
+  assert.equal(el("snapshot-phase-mode").hidden,true);
+  assert.match(el("daily-phase-mode").textContent,/旧Interval方式/);
 });
