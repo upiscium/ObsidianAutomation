@@ -97,15 +97,26 @@ The preflight content SHA prevents applying a Core change over a semantically un
 
 If another client changes the target after preflight, the conditional request must not silently overwrite it.
 
-## Nextcloud parent directories
+## Parent directories across WebDAV providers
 
-PUT requests include:
+A reviewed Core CREATE first passes the complete Promotion Plan/content
+preflight, then checks the configured Vault root and each parent directory with
+a bounded `PROPFIND Depth:0`. A parent is accepted only when the DAV
+`resourcetype` response proves the exact path is a collection. Missing parents
+are created one level at a time with standard `MKCOL` (HTTP 201), followed by
+the same collection revalidation; a racing HTTP 405 is acceptable **only** if
+the subsequent PROPFIND proves that the directory now exists. File/collection
+conflicts, 409, inaccessible roots, ambiguous responses and transport loss stop
+the promotion without advancing the checkpoint. Created directories are not
+silently removed or automatically retried after an unknown effect.
 
-```text
-X-NC-WebDAV-Auto-Mkcol: 1
-```
-
-so a reviewed Core create under a newly-added nested managed directory can be uploaded without a separate unconditional recursive `MKCOL` transaction.
+The final file PUT still uses strong `If-None-Match: *` for CREATE and
+`If-Match` for UPDATE, with exact-byte post-GET verification. For backwards
+compatibility, the PUT still includes the optional legacy
+`X-NC-WebDAV-Auto-Mkcol: 1` header, but **no correctness decision depends on
+an Apache server understanding it**. Generic WebDAV root identity currently
+has separate capability restrictions; this is not a blanket grant of writer
+authority to arbitrary WebDAV hosts. See `docs/generic-webdav-connection.md`.
 
 ## Exact-byte post-verification
 

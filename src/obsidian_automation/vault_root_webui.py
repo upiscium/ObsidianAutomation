@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from .snapshot_setup import SetupStore
+from .webdav_connection import rclone_vendor
 from .vault_root_activation import (
     ActivationResult, _pin, _read_binding, activate_vault_root,
     https_transport_factory, rollback_vault_root,
@@ -71,8 +72,10 @@ class VaultRootActions:
         # Mirrors rollback_vault_root: offered only when it can succeed.
         data = _read_binding(self.store.state)
         saved = self.store.load_nextcloud()
+        if saved is None or rclone_vendor(saved["webdav_url"]) != "nextcloud":
+            return False
         current = data.get("current") if data else None
-        return bool(data and _pin(data.get("previous")) is not None and saved
+        return bool(data and _pin(data.get("previous")) is not None
                     and data.get("outcome") in ("activated", "pending_activated")
                     and type(current) is dict
                     and current.get("path") == saved["vault_folder"])
@@ -85,6 +88,8 @@ class VaultRootActions:
         saved = self.store.load_nextcloud()
         if saved is None:
             return ActivationResult("blocked", "binding_unavailable")
+        if rclone_vendor(saved["webdav_url"]) != "nextcloud":
+            return ActivationResult("blocked", "provider_unsupported")
         return activate_vault_root(
             enabled=True, store=self.store, fence=self.fence_factory(),
             account=ctx.account, transport=self.transport_factory(saved),
@@ -94,6 +99,11 @@ class VaultRootActions:
         )
 
     def rollback(self) -> ActivationResult:
+        saved = self.store.load_nextcloud()
+        if saved is None:
+            return ActivationResult("blocked", "binding_unavailable")
+        if rclone_vendor(saved["webdav_url"]) != "nextcloud":
+            return ActivationResult("blocked", "provider_unsupported")
         return rollback_vault_root(enabled=True, store=self.store,
                                    fence=self.fence_factory())
 

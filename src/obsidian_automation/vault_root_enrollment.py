@@ -29,6 +29,7 @@ from urllib.parse import unquote, urlsplit
 from xml.etree import ElementTree as ET
 
 from .snapshot_setup import SetupStore, _atomic
+from .webdav_connection import rclone_vendor
 from .vault_root_activation import (
     _origin, _pin, _read_binding, _source_digest, read_private_json,
 )
@@ -133,6 +134,10 @@ def enroll_account(
     saved = store.load_nextcloud()
     if saved is None:
         return "binding_unavailable", None
+    # Generic DAV does not expose OC-ID/OCS identity. Do not probe a generic
+    # provider with a Nextcloud-only enrollment contract.
+    if rclone_vendor(saved["webdav_url"]) != "nextcloud":
+        return "provider_unsupported", None
     origin, prefix = _origin(saved["webdav_url"]), urlsplit(saved["webdav_url"]).path
     if _ACCOUNT.fullmatch(prefix) is None:
         return "account_unverified", None
@@ -181,6 +186,7 @@ def load_enrollment(store: SetupStore) -> AccountEnrollment | None:
     data = read_private_json(store.state / ENROLLMENT_FILE)
     saved = store.load_nextcloud()
     if (type(data) is not dict or data.get("version") != 1 or saved is None
+            or rclone_vendor(saved["webdav_url"]) != "nextcloud"
             or data.get("source_sha256") != _source_digest(saved)):
         return None
     instance, root_id, user = (data.get("instance_id"), data.get("root_resource_id"),
@@ -215,6 +221,8 @@ def context_provider(
         saved = store.load_nextcloud()
         if saved is None or revision is None:
             return "binding_unavailable"
+        if rclone_vendor(saved["webdav_url"]) != "nextcloud":
+            return "provider_unsupported"
         enrollment = load_enrollment(store)
         if enrollment is None:
             return "not_enrolled"

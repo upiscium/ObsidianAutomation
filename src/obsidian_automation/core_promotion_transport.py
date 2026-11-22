@@ -29,7 +29,9 @@ from .webdav_create import (
     _connection,
     _read_password,
     build_target_url,
+    _safe_components,
 )
+from .webdav_connection import _collection_multistatus, PROPFIND_BODY, MAX_XML_BYTES
 
 
 CHECKPOINT_VERSION = 1
@@ -205,6 +207,83 @@ def _real_http_request(
     return HTTPResponse(status=status, body=raw, etag=etag)
 
 
+def ensure_parent_collections(
+    *,
+    base_url: str,
+    path: str,
+    username: str,
+    password: str,
+    timeout: float,
+    transport: HTTPTransport | None,
+) -> tuple[str, ...]:
+    """Qualify existing directories and create only missing approved parents.
+
+    Only call after the complete promotion plan has passed conflict preflight.
+    The configured Vault *root* must already exist: creating or selecting a
+    different root would escape the operator's authority. A partial MKCOL is
+    deliberately not rolled back or auto-retried; a subsequent approved run
+    must re-observe every component and the target before proceeding.
+    """
+    try:
+        components = _safe_components(path)
+        build_target_url(base_url, path)  # strict host/relative-path checks
+    except WebDAVCreateError as exc:
+        raise PromotionTransportError("invalid parent path") from exc
+    if len(components) > 32:
+        raise PromotionTransportError("parent path exceeds maximum depth")
+    request = transport or _real_http_request
+    created: list[str] = []
+
+    def collection(url: str) -> int:
+        response = request(
+            method="PROPFIND", target_url=url,
+            username=username, password=password,
+            headers={"Depth": "0", "Content-Type": "application/xml; charset=utf-8"},
+            body=PROPFIND_BODY, timeout=timeout,
+            response_limit=MAX_XML_BYTES,
+        )
+        if response.status == 404:
+            return 404
+        if (response.status != 207 or type(response.body) is not bytes
+                or not _collection_multistatus(response.body, url)):
+            raise PromotionTransportConflict(
+                "WebDAV ancestor is not a verified DAV collection"
+            )
+        return 207
+
+    # This root is configured and independently selected. It must never be
+    # silently created by promotion under an unexpected generic DAV mount.
+    root_url = base_url.rstrip("/") + "/"
+    if collection(root_url) != 207:
+        raise PromotionTransportConflict("configured WebDAV root is missing")
+    for depth in range(1, len(components)):
+        relative = "/".join(components[:depth])
+        url = build_target_url(base_url, relative) + "/"
+        status = collection(url)
+        if status == 207:
+            continue
+        response = request(
+            method="MKCOL", target_url=url,
+            username=username, password=password,
+            headers={}, body=None, timeout=timeout,
+            response_limit=MAX_MUTATION_RESPONSE_BYTES,
+        )
+        # A racing peer can create the collection before MKCOL returns 405.
+        # Both 201 and 405 require a separate exact collection observation.
+        # 409 and network loss remain failures even if a later run can recover.
+        if response.status not in (201, 405):
+            raise PromotionTransportConflict(
+                "WebDAV parent MKCOL refused or conflicted"
+            )
+        if collection(url) != 207:
+            raise PromotionTransportNetworkError(
+                "WebDAV parent creation could not be verified"
+            )
+        if response.status == 201:
+            created.append(relative)
+    return tuple(created)
+
+
 def _observe_remote(
     *,
     base_url: str,
@@ -355,8 +434,15 @@ def _perform_mutation(
     body: bytes | None = None
     method: str
     if change.action == "create":
+        # Preflight already checked every planned content change. Verify the
+        # configured root and each parent before submitting the conditional
+        # PUT. Nextcloud's auto-MKCOL header alone is not portable to Apache.
         method = "PUT"
         body = _desired_bytes(core_repository, plan, change)
+        ensure_parent_collections(
+            base_url=base_url, path=change.path, username=username,
+            password=password, timeout=timeout, transport=transport,
+        )
         headers.update(
             {
                 "If-None-Match": "*",

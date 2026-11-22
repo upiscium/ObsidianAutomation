@@ -96,6 +96,11 @@ def _base_remote(plan, repo: Path) -> dict[str, bytes]:
 class FakeDAV:
     def __init__(self, files: dict[str, bytes]):
         self.files = dict(files)
+        self.directories = {""}
+        for stored in files:
+            parts = stored.split("/")[:-1]
+            for depth in range(1, len(parts) + 1):
+                self.directories.add("/".join(parts[:depth]) + "/")
         self.versions = {path: 1 for path in files}
         self.mutations: list[tuple[str, str, dict[str, str], bytes | None]] = []
         self.raise_after_apply_for: str | None = None
@@ -135,6 +140,32 @@ class FakeDAV:
             if path not in self.files:
                 return HTTPResponse(404, b"", None)
             return HTTPResponse(200, self.files[path], self._etag(path))
+        if method == "PROPFIND":
+            assert headers.get("Depth") == "0"
+            assert body is not None and b"resourcetype" in body
+            assert response_limit == 64 * 1024
+            if path not in self.directories:
+                return HTTPResponse(404, b"", None)
+            href = urlsplit(target_url).path
+            xml = (
+                '<d:multistatus xmlns:d="DAV:"><d:response>'
+                f'<d:href>{href}</d:href><d:propstat><d:prop>'
+                '<d:resourcetype><d:collection/></d:resourcetype></d:prop>'
+                '<d:status>HTTP/1.1 200 OK</d:status></d:propstat>'
+                '</d:response></d:multistatus>'
+            ).encode()
+            return HTTPResponse(207, xml, None)
+        if method == "MKCOL":
+            self.mutations.append((method, path, headers, body))
+            assert body is None
+            parts = path.rstrip("/").split("/")
+            parent = "/".join(parts[:-1]) + "/" if len(parts)>1 else ""
+            if parent not in self.directories:
+                return HTTPResponse(409, b"", None)
+            if path in self.directories or path.rstrip("/") in self.files:
+                return HTTPResponse(405, b"", None)
+            self.directories.add(path)
+            return HTTPResponse(201, b"", None)
 
         self.mutations.append((method, path, headers, body))
         if path in self.concurrent_before_mutation:

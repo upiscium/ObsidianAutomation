@@ -31,6 +31,7 @@ from typing import Callable, ContextManager, Iterator, Protocol
 from urllib.parse import urlsplit
 
 from .snapshot_setup import SetupStore, _atomic
+from .webdav_connection import rclone_vendor
 
 from .vault_root_dav_verifier import (
     CURRENT_PROVIDER_PROOF, DavTransport, ProviderProof, TrustedDavAccount,
@@ -470,6 +471,12 @@ class JobRootGuard:
 
     def status(self) -> str:
         try:
+            saved = self._store.load_nextcloud()
+            if saved and rclone_vendor(saved["webdav_url"]) != "nextcloud":
+                # A PROPFIND collection check is not a stable Nextcloud OC-ID
+                # root pin. Do not grant a new generic DAV canonical writer
+                # before a distinct provider-neutral root admission exists.
+                return "provider_unsupported"
             return check_root_pin(self._store, self._read_leaf)
         except Exception:
             return "unavailable"
