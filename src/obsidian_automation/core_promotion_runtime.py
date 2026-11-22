@@ -187,6 +187,25 @@ class CorePromotionRuntime:
             pass
         return True
 
+    def quarantine_for_vault_structure_change(self):
+        """Sticky target-fence for a root or System mapping switch.
+
+        Caller holds the promotion effect gate and all Job locks. This
+        prevents A->B->A checkpoint reuse after editing Vault settings.
+        """
+        if (not self.target_binding_path.exists()
+            and not self.target_binding_path.is_symlink()
+            and not self.checkpoint_path.exists()
+            and not self.checkpoint_path.is_symlink()):
+            return False
+        if self._quarantined():
+            return True
+        try:
+            self._create_exclusive(self.quarantine_path, b"vault_structure_changed\n")
+        except FileExistsError:
+            pass
+        return True
+
     def source_generation(self):
         if not self._policy_verified() or self._source() is None:
             return None

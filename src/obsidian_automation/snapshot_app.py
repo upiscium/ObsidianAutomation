@@ -19,6 +19,7 @@ from .vault_root_activation import (
     JobRootGuard, RootPinRefused, https_transport_factory,
 )
 from .vault_bindings import RoleGuard, physical_folder, record_generation, run_verified
+from .vault_root_webui import build_vault_bindings_ui, build_vault_root_ui
 
 
 # Only trusted static source errors may appear in B4 durable diagnostics.
@@ -191,8 +192,11 @@ def main() -> int:
         server.daily_setup = daily_setup
         server.core_promotion_job = promotion_job
         server.core_promotion_runtime = promotion_runtime
-        # Existing selection/mapping records remain valid. Their old WebUI
-        # routes are deliberately not exposed by this minimal profile.
+        # Vault Settings are common configuration, not a fourth Job.
+        # Existing verified source/pin/role editors are gated with *all*
+        # three Job locks and the Core Promotion effect gate.
+        server.vault_root_selection = build_vault_root_ui(store, server)
+        server.vault_bindings_editor = build_vault_bindings_ui(store, server)
         hooks = tuple(item.tick for item in (daily_job, promotion_job)
                       if item is not None)
         job.start_scheduler(tick_hooks=hooks)

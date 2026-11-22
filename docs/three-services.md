@@ -126,3 +126,25 @@ code purge.
 No cross-Vault mapping editor, generated Daily/Monthly/Recurring/Subscription
 jobs, AI enhancement, full-Vault Formatter or new infrastructure. They may be
 reintroduced only as independently scoped requirements.
+
+## Vault Settings (three-panel UI extension, #598)
+
+The common **Vault管理設定** section is not a fourth managed workflow.
+It restores the previously reviewed verified WebDAV root-selection flow
+(candidate enumeration, Preview, explicit activation, one-step rollback,
+trusted account enrollment) and the previously reviewed restricted
+`daily`/`project` mapping flow (System stays fixed at `98-System` until Core Promotion supports another target) (Preview, save, reset,
+one-step rollback). Root credentials are never returned. Raw Vault contents
+are not read for this UI, and none of the configuration actions creates,
+moves, deletes or overwrites a Vault note.
+
+A new single-app fence serializes configuration changes with Snapshot,
+GitHub Daily and Core Promotion, including the Promotion effect gate and
+indeterminate result admission. Any root/System mapping target change
+durably quarantines the existing Promotion checkpoint before the
+configuration's pending marker is released. Any change pauses all three
+schedules. Changes to root or System mapping require explicit Core
+requalification; do not delete the quarantine marker as a shortcut.
+Configuration Preview is not a confirmed canonical Vault edit.
+
+This extension remains source-only until reviewed and separately deployed.

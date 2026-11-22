@@ -278,6 +278,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200 if runtime else 503,
                            runtime.status() if runtime else {"error": "unavailable"})
                 return
+            if self.path in ("/api/v1/vault-root", "/api/v1/vault-bindings"):
+                service = (self.server.vault_root_selection
+                           if self.path == "/api/v1/vault-root"
+                           else self.server.vault_bindings_editor)
+                self._send(200 if service else 503,
+                           service.status() if service else {"error": "unavailable"})
+                return
             for name in ("snapshot", "core-promotion", "daily"):
                 base = f"/api/v1/{name}"
                 if self.path == base or self.path.startswith(base + "/runs/"):
@@ -303,6 +310,11 @@ class Handler(BaseHTTPRequestHandler):
             "/api/v1/core-promotion/bootstrap",
             "/api/v1/nextcloud/connections",
             "/api/v1/snapshot/connections", "/api/v1/daily/connections",
+            "/api/v1/vault-root/candidates", "/api/v1/vault-root/previews",
+            "/api/v1/vault-root/enrollment", "/api/v1/vault-root/activations",
+            "/api/v1/vault-root/rollbacks",
+            "/api/v1/vault-bindings/previews", "/api/v1/vault-bindings/saves",
+            "/api/v1/vault-bindings/resets", "/api/v1/vault-bindings/rollbacks",
         }
         if self.path not in allowed:
             self._send(405, {"error": "method_not_allowed"})
@@ -346,6 +358,33 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(200, runtime.bootstrap(payload))
                 finally:
                     job._effect_gate.release()
+                return
+            if self.path.startswith("/api/v1/vault-root/"):
+                routes = {
+                    "/api/v1/vault-root/candidates": "candidates",
+                    "/api/v1/vault-root/previews": "preview",
+                    "/api/v1/vault-root/enrollment": "enroll",
+                    "/api/v1/vault-root/activations": "activate",
+                    "/api/v1/vault-root/rollbacks": "rollback",
+                }
+                service = self.server.vault_root_selection
+                if service is None:
+                    raise Refused("service_unavailable", 503)
+                code, data = getattr(service, routes[self.path])(payload)
+                self._send(code, data)
+                return
+            if self.path.startswith("/api/v1/vault-bindings/"):
+                routes = {
+                    "/api/v1/vault-bindings/previews": "preview",
+                    "/api/v1/vault-bindings/saves": "save",
+                    "/api/v1/vault-bindings/resets": "reset",
+                    "/api/v1/vault-bindings/rollbacks": "rollback",
+                }
+                service = self.server.vault_bindings_editor
+                if service is None:
+                    raise Refused("service_unavailable", 503)
+                code, data = getattr(service, routes[self.path])(payload)
+                self._send(code, data)
                 return
             if self.path in ("/api/v1/nextcloud/connections",
                              "/api/v1/snapshot/connections"):
@@ -505,4 +544,6 @@ def make_server(*, port=8370, bind_address="127.0.0.1",
     server.daily_setup = None
     server.core_promotion_job = None
     server.core_promotion_runtime = None
+    server.vault_root_selection = None
+    server.vault_bindings_editor = None
     return server

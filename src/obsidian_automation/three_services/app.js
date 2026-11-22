@@ -9,9 +9,13 @@
   // Reject out-of-order GET responses and those started before a mutation.
   let refreshGeneration=0;
   let configurationGeneration=0;
+  let vaultGeneration=0;
+  let previewRootHandle=null, previewBindingsHandle=null, previewBindingsInput=null;
+  let bindingsDirty=false;
   function invalidatePendingReads(){
     refreshGeneration++;
     configurationGeneration++;
+    vaultGeneration++;
   }
   const errors={
     unconfigured:"接続または初期設定が未完了です",
@@ -165,7 +169,7 @@
       msg(message,"保存しました。影響する自動実行は再確認が必要です。");
       $(form).reset();
     }catch(e){msg(message,describe(e.message));}
-    finally{busy=false;await refresh();await configuration();}
+    finally{busy=false;await refresh();await configuration();await vaultRefresh();}
   }
   async function bootstrap(){
     if(busy||!policy)return;
@@ -182,17 +186,155 @@
     }catch(e){msg("core-promotion-message",describe(e.message));}
     finally{busy=false;await refresh();await configuration();}
   }
+  // Vault Settings use the existing bounded/root-pinned services. Preview
+  // handles are one-use and never treated as permission to auto-activate.
+  const mappingRoles=["daily","project","system"];
+  function rolePayload(){
+    return Object.fromEntries(mappingRoles.map(k=>[k,$("vault-bindings-"+k).value.trim()]));
+  }
+  async function vaultRefresh(){
+    if(busy)return;
+    const generation=++vaultGeneration;
+    const rs=await Promise.allSettled([
+      get("/api/v1/vault-root"),get("/api/v1/vault-bindings")
+    ]);
+    if(generation!==vaultGeneration)return;
+    if(rs[0].status==="fulfilled"){
+      const r=rs[0].value;
+      msg("vault-root-active",r.active_label??"未設定");
+      msg("vault-root-enrolled",r.enrolled?"確認済み":"未確認");
+      msg("vault-root-provider",r.provider??"不明");
+      $("vault-root-rollback").disabled=!r.can_rollback;
+    }else{
+      msg("vault-root-active","取得できません");
+      $("vault-root-rollback").disabled=true;
+    }
+    if(rs[1].status==="fulfilled"){
+      const b=rs[1].value;
+      msg("vault-bindings-state",b.state??"不明");
+      $("vault-bindings-reset").disabled=b.can_reset!==true;
+      $("vault-bindings-rollback").disabled=b.can_rollback!==true;
+      if(!bindingsDirty && b.roles && typeof b.roles==="object"){
+        mappingRoles.forEach(role=>{
+          const input=$("vault-bindings-"+role);
+          if(document.activeElement!==input)input.value=b.roles[role]??"";
+        });
+      }
+    }else{
+      msg("vault-bindings-state","取得できません");
+      $("vault-bindings-reset").disabled=true;
+      $("vault-bindings-rollback").disabled=true;
+    }
+  }
+  async function rootAction(kind){
+    if(busy)return;
+    const pick=$("vault-root-candidate").value;
+    if(["enter","preview","activate"].includes(kind)&&!pick){
+      msg("vault-root-message","候補フォルダを選択してください。");return;
+    }
+    if(kind==="activate"&&previewRootHandle!==pick){
+      msg("vault-root-message","切替前に同じ候補をPreviewしてください。");return;
+    }
+    if(["activate","rollback"].includes(kind)&&
+       !confirm("Vaultの参照先を変更します。Vault内のファイルは移動せず、各JobをOffにします。既存のCore Promotion Checkpointは再検証が必要です。続行しますか？"))return;
+    busy=true;invalidatePendingReads();
+    try{
+      const spec={
+        enroll:["/api/v1/vault-root/enrollment",{}],
+        list:["/api/v1/vault-root/candidates",{}],
+        enter:["/api/v1/vault-root/candidates",{parent:pick}],
+        preview:["/api/v1/vault-root/previews",{candidate:pick}],
+        activate:["/api/v1/vault-root/activations",{candidate:pick,confirm:true}],
+        rollback:["/api/v1/vault-root/rollbacks",{confirm:true}]
+      };
+      const [url,payload]=spec[kind];
+      const result=await post(url,payload);
+      const status=result.status??"unknown";
+      if(kind==="list"||kind==="enter"){
+        previewRootHandle=null;
+        $("vault-root-activate").disabled=true;
+        const select=$("vault-root-candidate");
+        select.replaceChildren(new Option("候補を選択", ""));
+        for(const c of result.candidates??[]){
+          if(typeof c.label==="string"&&typeof c.handle==="string")
+            select.add(new Option(c.label,c.handle));
+        }
+        msg("vault-root-message",status==="ok"?
+          "フォルダ候補を取得しました。検証する候補を選んでください。":
+          "候補を取得できませんでした: "+String(result.reason??status));
+      }else if(kind==="preview"){
+        previewRootHandle=status==="candidate_valid"?pick:null;
+        $("vault-root-activate").disabled=previewRootHandle===null;
+        msg("vault-root-message",status==="candidate_valid"?
+          "検証成功。明示的にRoot切替できます。":
+          "Preview: "+String(result.reason??status));
+      }else{
+        previewRootHandle=null;
+        $("vault-root-activate").disabled=true;
+        msg("vault-root-message",status+" · "+String(result.reason??""));
+      }
+    }catch(e){msg("vault-root-message",describe(e.message));}
+    finally{busy=false;await refresh();await configuration();await vaultRefresh();}
+  }
+  async function bindingsAction(kind){
+    if(busy)return;
+    const roles=rolePayload(),serialized=JSON.stringify(roles);
+    if(kind==="save"&&(!previewBindingsHandle||previewBindingsInput!==serialized)){
+      msg("vault-bindings-message","現在の内容でPreviewし直してください。");return;
+    }
+    if(["save","reset","rollback"].includes(kind)&&
+       !confirm("変更を確定し、必要なJobをOffにします。Vault内のノートは移動しません。続行しますか？"))return;
+    busy=true;invalidatePendingReads();
+    try{
+      const spec={
+        preview:["/api/v1/vault-bindings/previews",{roles}],
+        save:["/api/v1/vault-bindings/saves",{handle:previewBindingsHandle,confirm:true}],
+        reset:["/api/v1/vault-bindings/resets",{confirm:true}],
+        rollback:["/api/v1/vault-bindings/rollbacks",{confirm:true}]
+      };
+      const [url,payload]=spec[kind];
+      const result=await post(url,payload);
+      if(kind==="preview"){
+        previewBindingsHandle=typeof result.handle==="string"?result.handle:null;
+        previewBindingsInput=previewBindingsHandle?serialized:null;
+        $("vault-bindings-save").disabled=!previewBindingsHandle;
+      }else{
+        previewBindingsHandle=previewBindingsInput=null;
+        bindingsDirty=false;
+        $("vault-bindings-save").disabled=true;
+      }
+      msg("vault-bindings-message",String(result.status??"unknown")+
+          " · "+String(result.reason??(previewBindingsHandle?"確認後に保存できます":"")));
+    }catch(e){msg("vault-bindings-message",describe(e.message));}
+    finally{busy=false;await refresh();await configuration();await vaultRefresh();}
+  }
+  $("vault-root-candidate").addEventListener("change",()=>{
+    previewRootHandle=null;$("vault-root-activate").disabled=true;
+  });
+  for(const kind of ["enroll","list","enter","preview","activate","rollback"]){
+    $("vault-root-"+kind).addEventListener("click",()=>void rootAction(kind));
+  }
+  for(const kind of ["preview","save","reset","rollback"]){
+    $("vault-bindings-"+kind).addEventListener("click",()=>void bindingsAction(kind));
+  }
+  mappingRoles.forEach(role=>$("vault-bindings-"+role).addEventListener("input",()=>{
+    bindingsDirty=true;
+    previewBindingsHandle=previewBindingsInput=null;
+    $("vault-bindings-save").disabled=true;
+  }));
   names.forEach(n=>{
     $(n+"-save").addEventListener("click",()=>void action(n,"settings"));
     $(n+"-run").addEventListener("click",()=>void action(n,"runs"));
   });
-  $("refresh").addEventListener("click",()=>void refresh());
+  $("refresh").addEventListener("click",()=>void Promise.all([
+    refresh(),configuration(),vaultRefresh()
+  ]));
   $("core-promotion-bootstrap").addEventListener("click",()=>void bootstrap());
   [["nextcloud-form","/api/v1/nextcloud/connections","nextcloud-message"],
    ["gitea-form","/api/v1/snapshot/connections","gitea-message"],
    ["github-form","/api/v1/daily/connections","github-message"]].forEach(([f,u,m])=>{
       $(f).addEventListener("submit",e=>{e.preventDefault();void connection(u,f,m);});
   });
-  void Promise.all([refresh(),configuration()]);
+  void Promise.all([refresh(),configuration(),vaultRefresh()]);
   setInterval(()=>{if(!busy&&!document.hidden)void refresh();},6000);
 })();

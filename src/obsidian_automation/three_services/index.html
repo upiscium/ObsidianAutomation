@@ -58,6 +58,41 @@
       <p class="feedback" id="daily-message" role="status"></p>
     </article>
   </section>
+  <details class="connections" id="vault-settings">
+    <summary>Vault管理設定（Root / Folder Mapping）</summary>
+    <p class="muted">Vault内のファイルは移動・編集しません。RootやSystemの変更後、Core Promotionは旧Checkpointを再利用できず、再検証が必要です。変更した機能の自動実行はOffになります。</p>
+    <div class="vault-grid">
+      <section aria-labelledby="vault-root-title">
+        <h3 id="vault-root-title">Vault Root</h3>
+        <dl><dt>現在のRoot</dt><dd id="vault-root-active">—</dd><dt>アカウント検証</dt><dd id="vault-root-enrolled">—</dd><dt>Provider</dt><dd id="vault-root-provider">—</dd></dl>
+        <div class="actions"><button type="button" id="vault-root-enroll" class="outline">アカウントを検証</button><button type="button" id="vault-root-list" class="outline">候補フォルダを表示</button></div>
+        <label>候補（選択前にPreview）
+          <select id="vault-root-candidate" aria-label="Vaultルート候補"><option value="">候補を取得してください</option></select>
+        </label>
+        <div class="actions">
+          <button type="button" id="vault-root-enter" class="outline">選択フォルダの中を見る</button>
+          <button type="button" id="vault-root-preview" class="outline">Preview</button>
+          <button type="button" id="vault-root-activate" disabled>Rootを切替</button>
+          <button type="button" id="vault-root-rollback" class="outline">直前のRootに戻す</button>
+        </div>
+        <p class="feedback" id="vault-root-message" role="status"></p>
+      </section>
+      <section aria-labelledby="vault-bindings-title">
+        <h3 id="vault-bindings-title">Folder Mapping</h3>
+        <dl><dt>設定状態</dt><dd id="vault-bindings-state">—</dd></dl>
+        <label>Daily<input id="vault-bindings-daily" autocomplete="off" placeholder="00-DailyNote"></label>
+        <label>Project<input id="vault-bindings-project" autocomplete="off" placeholder="10-Project"></label>
+        <label>System（Core Promotionの互換性のため固定）<input id="vault-bindings-system" readonly autocomplete="off" value="98-System"></label>
+        <div class="actions">
+          <button type="button" id="vault-bindings-preview" class="outline">Preview</button>
+          <button type="button" id="vault-bindings-save" disabled>Mappingを保存</button>
+          <button type="button" id="vault-bindings-reset" class="outline">標準配置に戻す</button>
+          <button type="button" id="vault-bindings-rollback" class="outline">直前のMappingに戻す</button>
+        </div>
+        <p class="feedback" id="vault-bindings-message" role="status"></p>
+      </section>
+    </div>
+  </details>
   <details class="connections" id="connections">
     <summary>接続設定</summary>
     <p class="muted">接続先と認証情報はサーバー側で保管します。パスワードやTokenを画面へ再表示しません。</p>
