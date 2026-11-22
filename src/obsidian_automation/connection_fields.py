@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 from .snapshot_setup import (
     NEXTCLOUD_FIELDS, GITEA_FIELDS, _atomic, validate_nextcloud, validate,
 )
+from .webdav_connection import validate_webdav_url
 
 _GROUPS = {
     "nextcloud": frozenset(NEXTCLOUD_FIELDS),
@@ -39,14 +40,16 @@ def _validate_field(group: str, field: object, value: object):
         or not 1 <= len(value) <= 512
         or any(ord(ch) < 32 or ord(ch) == 127 for ch in value)):
         raise FieldError("invalid_field")
-    if field in ("webdav_url", "git_url"):
+    if field == "webdav_url":
+        try:
+            validate_webdav_url(value)
+        except ValueError:
+            raise FieldError("invalid_field") from None
+    elif field == "git_url":
         parsed = urlsplit(value)
         if (parsed.scheme != "https" or not parsed.hostname
             or parsed.username or parsed.password or parsed.query or parsed.fragment
-            or (field == "webdav_url"
-                and (not parsed.path.startswith("/remote.php/dav/files/")
-                     or not parsed.path.endswith("/")))
-            or (field == "git_url" and not parsed.path.endswith(".git"))):
+            or not parsed.path.endswith(".git")):
             raise FieldError("invalid_field")
     if field == "vault_folder":
         if (re.fullmatch(r"[A-Za-z0-9_./ -]{1,100}", value) is None

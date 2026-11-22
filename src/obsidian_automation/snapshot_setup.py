@@ -1,7 +1,6 @@
 """One-account snapshot setup. No secret-bearing values are returned to HTTP."""
 from __future__ import annotations
 
-import base64
 import hashlib
 import hmac
 import json
@@ -11,13 +10,13 @@ import stat
 import subprocess
 import tempfile
 import threading
-import urllib.error
 import urllib.request
 from pathlib import Path
-from urllib.parse import quote, urlsplit
+from urllib.parse import urlsplit
 from dataclasses import dataclass
 
 from .snapshot_adapter import Connections, _command, git_environment
+from .webdav_connection import validate_webdav_url, rclone_vendor, probe_webdav_collection
 
 NEXTCLOUD_FIELDS = {"webdav_url", "vault_folder", "nextcloud_user", "nextcloud_password"}
 GITEA_FIELDS = {"git_url", "git_user", "git_token", "branch"}
@@ -51,12 +50,10 @@ def validate_nextcloud(value: object) -> dict:
     if any(type(v) is not str or not v or len(v) > 512 or any(ord(c) < 32 for c in v)
            for v in value.values()):
         raise ValueError("invalid_nextcloud_connection")
-    web = urlsplit(value["webdav_url"])
-    if (web.scheme != "https" or not web.hostname
-            or not web.path.startswith("/remote.php/dav/files/")
-            or web.username or web.password or web.query or web.fragment
-            or not web.path.endswith("/")):
-        raise ValueError("invalid_nextcloud_connection")
+    try:
+        validate_webdav_url(value["webdav_url"])
+    except ValueError:
+        raise ValueError("invalid_nextcloud_connection") from None
     if not re.fullmatch(r"[A-Za-z0-9_./ -]{1,100}", value["vault_folder"]) or any(
             part in ("", ".", "..") for part in value["vault_folder"].split("/")):
         raise ValueError("invalid_nextcloud_connection")
@@ -71,11 +68,12 @@ def validate(value: object) -> dict:
     if any(type(v) is not str or not v or len(v) > 512 or any(ord(c) < 32 for c in v)
            for v in value.values()):
         raise ValueError("invalid_connection")
-    web = urlsplit(value["webdav_url"])
     git = urlsplit(value["git_url"])
-    if (web.scheme != "https" or not web.hostname or not web.path.startswith("/remote.php/dav/files/")
-            or web.username or web.password or web.query or web.fragment or not web.path.endswith("/")
-            or git.scheme != "https" or not git.hostname or not git.path.endswith(".git")
+    try:
+        validate_webdav_url(value["webdav_url"])
+    except ValueError:
+        raise ValueError("invalid_connection") from None
+    if (git.scheme != "https" or not git.hostname or not git.path.endswith(".git")
             or git.username or git.password or git.query or git.fragment):
         raise ValueError("invalid_connection")
     if not re.fullmatch(r"[A-Za-z0-9_./ -]{1,100}", value["vault_folder"]) or any(
@@ -314,7 +312,8 @@ class SetupStore:
 
 def _rclone_config(value: dict, obscured: str) -> str:
     return ("[nextcloud]\ntype = webdav\nurl = " + value["webdav_url"] +
-            "\nvendor = nextcloud\nuser = " + value["nextcloud_user"] +
+            "\nvendor = " + rclone_vendor(value["webdav_url"]) +
+            "\nuser = " + value["nextcloud_user"] +
             "\npass = " + obscured + "\n")
 
 
@@ -328,17 +327,12 @@ def obscure_password(password: str) -> str:
 
 
 def probe_nextcloud(value: dict) -> bool:
-    """Verify only the selected remote Vault via read-only WebDAV PROPFIND."""
-    url = value["webdav_url"] + "/".join(quote(p) for p in value["vault_folder"].split("/")) + "/"
-    basic = base64.b64encode((value["nextcloud_user"] + ":" + value["nextcloud_password"]).encode()).decode()
-    request = urllib.request.Request(url, method="PROPFIND", headers={
-        "Depth": "0", "Authorization": "Basic " + basic
-    })
-    try:
-        with urllib.request.urlopen(request, timeout=8) as response:
-            return response.status == 207
-    except (OSError, urllib.error.URLError, ValueError):
-        return False
+    """Backwards-compatible entrypoint; strictly verify a DAV collection.
+
+    A 207 alone is insufficient: require a bounded 200 resourcetype collection
+    for the exact selected Vault. No redirect or provider write is allowed.
+    """
+    return probe_webdav_collection(value)
 
 
 def probe_connections(value: dict) -> bool:
