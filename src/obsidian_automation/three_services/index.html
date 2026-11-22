@@ -24,7 +24,7 @@
       <div class="controls">
         <label class="toggle"><input type="checkbox" id="snapshot-enabled" disabled> 自動実行 <span id="snapshot-enabled-state" class="field-state" data-state="loading">確認中</span></label>
         <label>実行間隔（秒）<input type="number" id="snapshot-interval" min="60" max="86400" value="3600" disabled><span id="snapshot-interval-state" class="field-state" data-state="loading">確認中</span></label>
-        <label>起点時刻（Asia/Tokyo）<input id="snapshot-anchor" type="time" step="60" value="12:00"><span id="snapshot-anchor-state" class="field-state" data-state="loading">確認中</span></label>
+        <label>起点時刻(Asia/Tokyo)<input id="snapshot-anchor" type="time" step="60" value="12:00"><span id="snapshot-anchor-state" class="field-state" data-state="loading">確認中</span></label>
         <div class="schedule-preview">
           <button type="button" id="snapshot-preview" class="outline">次の3回をプレビュー</button>
           <p class="muted" id="snapshot-preview-result" role="status">起点時刻を保存する前にPreviewしてください。</p>
@@ -41,7 +41,7 @@
       <div class="controls">
         <label class="toggle"><input type="checkbox" id="core-promotion-enabled" disabled> 自動実行 <span id="core-promotion-enabled-state" class="field-state" data-state="loading">確認中</span></label>
         <label>実行間隔（秒）<input type="number" id="core-promotion-interval" min="60" max="86400" value="3600" disabled><span id="core-promotion-interval-state" class="field-state" data-state="loading">確認中</span></label>
-        <label>起点時刻（Asia/Tokyo）<input id="core-promotion-anchor" type="time" step="60" value="12:00"><span id="core-promotion-anchor-state" class="field-state" data-state="loading">確認中</span></label>
+        <label>起点時刻(Asia/Tokyo)<input id="core-promotion-anchor" type="time" step="60" value="12:00"><span id="core-promotion-anchor-state" class="field-state" data-state="loading">確認中</span></label>
         <div class="schedule-preview">
           <button type="button" id="core-promotion-preview" class="outline">次の3回をプレビュー</button>
           <p class="muted" id="core-promotion-preview-result" role="status">起点時刻を保存する前にPreviewしてください。</p>
@@ -64,7 +64,7 @@
       <div class="controls">
         <label class="toggle"><input type="checkbox" id="daily-enabled" disabled> 自動実行 <span id="daily-enabled-state" class="field-state" data-state="loading">確認中</span></label>
         <label>実行間隔（秒）<input type="number" id="daily-interval" min="3600" max="86400" value="86400" disabled><span id="daily-interval-state" class="field-state" data-state="loading">確認中</span></label>
-        <label>起点時刻（Asia/Tokyo）<input id="daily-anchor" type="time" step="60" value="12:00"><span id="daily-anchor-state" class="field-state" data-state="loading">確認中</span></label>
+        <label>起点時刻(Asia/Tokyo)<input id="daily-anchor" type="time" step="60" value="12:00"><span id="daily-anchor-state" class="field-state" data-state="loading">確認中</span></label>
         <div class="schedule-preview">
           <button type="button" id="daily-preview" class="outline">次の3回をプレビュー</button>
           <p class="muted" id="daily-preview-result" role="status">起点時刻を保存する前にPreviewしてください。</p>
@@ -77,7 +77,7 @@
   </section>
   <details class="connections" id="vault-settings">
     <summary>Vault管理設定（Root / Folder Mapping）</summary>
-    <p class="muted">Vault内のファイルは移動・編集しません。RootやSystemの変更後、Core Promotionは旧Checkpointを再利用できず、再検証が必要です。変更した機能の自動実行はOffになります。</p>
+    <p class="muted">RootやSystemの変更後は再検証が必要です。変更した機能の自動実行はOffになります。</p>
     <div class="vault-grid">
       <section aria-labelledby="vault-root-title">
         <h3 id="vault-root-title">Vault Root</h3>
@@ -222,7 +222,6 @@
       </section>
     </div>
   </details>
-  <footer>最終結果が不明な処理は自動再試行しません。停止しても進行中の処理が取り消されるわけではありません。</footer>
 </main>
 </body>
 </html>
