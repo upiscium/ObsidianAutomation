@@ -185,3 +185,53 @@ def test_generic_proof_fails_closed_when_epoch_file_unreadable(tmp_path):
     store.webdav_epoch.chmod(0o644)
     assert not is_enrolled(store)
     assert check_generic(store,probe=lambda _:True)=="provider_unverified"
+
+
+def test_normal_connection_saved_record_without_pin_marker_can_enroll(tmp_path):
+    """Copilot R1: a legitimate fresh generic config can have an unpinned binding."""
+    from obsidian_automation.vault_root_activation import (
+        _write_binding, _source_digest, RootPin,
+    )
+    store=SetupStore(tmp_path, obscure=lambda _:"fixture-obscured")
+    assert store.save_nextcloud(SOURCE, probed=True)
+    # This may be left by the connection-field save/fence even if OC-ID
+    # enrollment has never started. It must not be mistaken for a prior pin.
+    assert _write_binding(
+        store.state,RootPin(SOURCE["vault_folder"],None,None),
+        None,"connection_saved",clock=lambda:1.0,
+        source=_source_digest(SOURCE))
+    assert not (tmp_path/"vault_root_pinning.enabled").exists()
+    assert enroll_generic(store,probe=lambda _:True)=="enrolled"
+    assert is_enrolled(store)
+    assert JobRootGuard(store,generic_probe=lambda _:True).status()=="ok"
+
+
+def test_unpinned_record_without_marker_must_still_match_source_and_not_be_symlinked(tmp_path):
+    from obsidian_automation.vault_root_activation import (
+        _write_binding, _source_digest, RootPin,
+    )
+    store=SetupStore(tmp_path, obscure=lambda _:"fixture-obscured")
+    assert store.save_nextcloud(SOURCE, probed=True)
+    assert _write_binding(
+        store.state,RootPin("SomeOtherVault",None,None),
+        None,"connection_saved",clock=lambda:1.0,
+        source=_source_digest(SOURCE))
+    assert enroll_generic(store,probe=lambda _:True)=="prior_root_pin_requires_reset"
+    assert not is_enrolled(store)
+
+
+def test_present_corrupt_pin_marker_never_downgrades_to_unpinned_generic(tmp_path):
+    from obsidian_automation.vault_root_activation import (
+        _write_binding, _source_digest, RootPin,
+    )
+    store=SetupStore(tmp_path, obscure=lambda _:"fixture-obscured")
+    assert store.save_nextcloud(SOURCE, probed=True)
+    assert _write_binding(
+        store.state,RootPin(SOURCE["vault_folder"],None,None),
+        None,"connection_saved",clock=lambda:1.0,
+        source=_source_digest(SOURCE))
+    marker=tmp_path/"vault_root_pinning.enabled"
+    marker.write_text("not a trusted pin")
+    marker.chmod(0o600)
+    assert enroll_generic(store,probe=lambda _:True)=="prior_root_pin_requires_reset"
+    assert not is_enrolled(store)

@@ -82,9 +82,23 @@ def vault_collection_url(base_url: str, vault_folder: str) -> str:
 def _collection_multistatus(raw: bytes, target_url: str) -> bool:
     if not 0 < len(raw) <= MAX_XML_BYTES:
         return False
-    # The parser does not fetch external resources, and raw input is bounded.
+    # Untrusted provider XML must not expand DTD-defined entities even when
+    # the original wire response is bounded. Decode *only* UTF-8 and refuse
+    # declarations, comments, and external/internal DTDs before XML parsing.
+    # None is needed in the fixed DAV collection admission response.
     try:
-        root = ET.fromstring(raw)
+        decoded = raw.decode("utf-8", "strict")
+        if ("<!" in decoded or "\x00" in decoded or decoded.startswith("\ufeff")):
+            return False
+        declaration = re.match(r"\s*<\?xml\b([^?]*)\?>", decoded, re.I)
+        if declaration is not None:
+            declared = re.search(
+                r"""\bencoding\s*=\s*['\"]([^'\"]+)['\"]""",
+                declaration.group(1), re.I,
+            )
+            if declared and declared.group(1).lower() != "utf-8":
+                return False
+        root = ET.fromstring(decoded)
         if root.tag != DAV + "multistatus":
             return False
         responses = root.findall(DAV + "response")
@@ -98,13 +112,29 @@ def _collection_multistatus(raw: bytes, target_url: str) -> bool:
         hrefs = row.findall(DAV + "href")
         if len(hrefs) != 1 or not isinstance(hrefs[0].text, str):
             return False
-        href, want = urlsplit(hrefs[0].text), urlsplit(target_url)
+        href_text = hrefs[0].text
+        if any(ord(ch) < 33 or ord(ch) == 127 for ch in href_text):
+            return False
+        href, want = urlsplit(href_text), urlsplit(target_url)
         if href.scheme or href.netloc:
             if (href.scheme != want.scheme
                     or href.netloc.lower() != want.netloc.lower()):
                 return False
-        if (href.query or href.fragment or
-                unquote(href.path) != unquote(want.path)):
+        # Compare literal URI path segments, not fully decoded strings.
+        # Otherwise %2F / %5C can alias a different DAV resource or turn
+        # a server-provided single segment into a path hierarchy.
+        def normalized_path(path: str) -> str | None:
+            if (not path.startswith("/")
+                    or re.search(r"%(?![0-9a-fA-F]{2})", path)
+                    or re.search(r"%(?:2[fF]|5[cC])", path)
+                    or "\\" in path):
+                return None
+            return re.sub(r"%[0-9a-fA-F]{2}",
+                          lambda m: m.group(0).upper(), path)
+
+        expected = normalized_path(want.path)
+        if (expected is None or href.query or href.fragment
+                or normalized_path(href.path) != expected):
             return False
         # A 207 is not success by itself. Exact resource-type 200 is required.
         matches = []

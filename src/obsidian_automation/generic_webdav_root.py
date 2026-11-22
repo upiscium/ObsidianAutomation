@@ -93,15 +93,25 @@ def _pin_compatible(store: SetupStore) -> bool:
     # Prior Nextcloud activation must have passed an explicit connection
     # change fence and become an unpinned 'connection_saved' candidate.
     data=_read_binding(store.state)
-    if (type(data) is not dict or data.get("outcome")!="connection_saved"
-            or not marker.is_file() or marker.is_symlink()):
+    if (type(data) is not dict
+            or set(data) != {"version", "current", "previous", "outcome",
+                             "recorded_at", "source_sha256"}
+            or data.get("outcome") != "connection_saved"
+            or data.get("previous") is not None
+            or binding.is_symlink() or marker.is_symlink()):
         return False
-    try:
-        if (stat.S_IMODE(marker.stat().st_mode)!=0o600
-                or marker.read_bytes()!=b"1\n"):
+    # No marker means an ordinary connection_saved record has never begun
+    # Nextcloud OC-ID pinning, and is a legitimate first generic setup.
+    # Once a marker exists, it must still be the exact protected pinning
+    # marker; an unreadable or malformed marker is never downgraded.
+    if marker.exists():
+        try:
+            if (not marker.is_file()
+                    or stat.S_IMODE(marker.stat().st_mode) != 0o600
+                    or marker.read_bytes() != b"1\n"):
+                return False
+        except OSError:
             return False
-    except OSError:
-        return False
     pin=_pin(data.get("current"))
     saved=store.load_nextcloud()
     return bool(pin and pin.chain is None and saved is not None

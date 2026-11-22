@@ -160,3 +160,53 @@ def test_webdav_store_restart_and_individual_save_without_gitea(tmp_path):
     assert candidate["webdav_url"].endswith("/another/")
     assert candidate["nextcloud_password"]=="synthetic-passphrase"
     assert store.load_nextcloud()==source()  # Preview does not change live data
+
+
+def test_reject_dtd_entity_expansion_and_non_utf8_before_parser(monkeypatch):
+    from obsidian_automation import webdav_connection as dav
+    target="https://dav.example.invalid/webdav/Vault/"
+    bomb=(
+        b'<?xml version="1.0" encoding="utf-8"?>'
+        b'<!DOCTYPE d:multistatus ['
+        b'<!ENTITY recursive "invalid-resource">'
+        b'<!ENTITY amplified "&recursive;&recursive;&recursive;">'
+        b']><d:multistatus xmlns:d="DAV:"><d:response>'
+        b'<d:href>&amplified;</d:href></d:response></d:multistatus>'
+    )
+    declaration=(
+        b'<?xml version="1.0" encoding="iso-8859-1"?>'
+        +xml()
+    )
+    # Never invoke ElementTree on untrusted DTDs, including tiny bombs.
+    monkeypatch.setattr(dav.ET,"fromstring",
+                        lambda _x: pytest.fail("DTD reached XML parser"))
+    for payload in (
+        bomb,
+        declaration,
+        xml().decode().encode("utf-16le"),
+        b'\xef\xbb\xbf'+xml(),
+        xml().replace(b'<d:response>',b'<!--DTD note--><d:response>'),
+    ):
+        assert not _collection_multistatus(payload,target)
+
+
+@pytest.mark.parametrize("alias", [
+    "/webdav/Vault%2fOther/",
+    "/webdav/Vault%2FOther/",
+    "/webdav/Vault%5cOther/",
+    "/webdav/Vault%5COther/",
+    "/webdav/Vault%2e/Other/",
+    "/webdav/Vault%252fOther/",
+])
+def test_href_encoded_separator_or_noncanonical_alias_is_not_authority(alias):
+    target="https://dav.example.invalid/webdav/Vault/Other/"
+    assert not _collection_multistatus(xml(href=alias),target)
+
+
+def test_href_percent_hex_case_variation_still_matches_canonical_resource():
+    target="https://dav.example.invalid/webdav/Vault%20Root/"
+    assert _collection_multistatus(
+        xml(href="/webdav/Vault%20Root/"),target)
+    target="https://dav.example.invalid/webdav/Vault%2ARoot/"
+    assert _collection_multistatus(
+        xml(href="/webdav/Vault%2aRoot/"),target)
