@@ -12,10 +12,10 @@ def test_production_console_entrypoint_uses_managed_deployment_wrapper() -> None
         'obsidian-core-promotion-run = "obsidian_automation.managed_promotion_deployment:main"'
         in pyproject
     )
-    assert (
-        'obsidian-core-promotion-transport = "obsidian_automation.core_promotion_transport:main"'
-        in pyproject
-    )
+    # The conditional transport is now internal to the three-service app.
+    # Do not re-expose the legacy transport as a separate operator command.
+    assert 'obsidian-core-promotion-transport = ' not in pyproject
+    assert 'obsidian-snapshot-app = "obsidian_automation.snapshot_app:main"' in pyproject
 
 
 def test_managed_deployment_wrapper_scopes_and_restores_transport_override() -> None:

@@ -9,7 +9,6 @@ import uuid
 
 import pytest
 
-from obsidian_automation.admin_dashboard import JS, make_server
 from obsidian_automation.github_daily_job import DailyJob, Busy, Invalid
 from obsidian_automation.snapshot_job import SnapshotJob
 
@@ -150,78 +149,8 @@ def test_runner_exception_does_not_leak_secret(tmp_path):
         assert job.submit(uuid.uuid4().hex)[0] == "accepted"
 
 
-def test_http_daily_origin_csrf_job_api_and_legacy_status(tmp_path):
-    with DailyJob(tmp_path / "daily", successful_preview,configured=lambda: True) as job:
-        server = make_server(port=0,daily_job=job,observer=lambda: [],ai_observer=lambda: {})
-        thread=threading.Thread(target=server.serve_forever,daemon=True)
-        thread.start()
-        port=server.server_address[1]
-        origin=f"http://127.0.0.1:{port}"
-
-        def req(method,path,payload=None,orig=None,csrf=None):
-            conn=http.client.HTTPConnection("127.0.0.1",port,timeout=10)
-            headers={"Host":f"127.0.0.1:{port}"}
-            if orig: headers["Origin"]=orig
-            if csrf: headers["X-Obsidian-CSRF"]=csrf
-            if payload is not None: headers["Content-Type"]="application/json"
-            conn.request(method,path,
-                         body=json.dumps(payload) if payload is not None else None,
-                         headers=headers)
-            resp=conn.getresponse()
-            value=resp.status,resp.read()
-            conn.close()
-            return value
-
-        def token():
-            return json.loads(req("GET","/api/v1/operation-session")[1])["csrf_token"]
-
-        try:
-            assert req("GET","/api/v1/status")[0] == 200
-            assert req("GET","/api/v1/snapshot")[0] == 503
-            assert json.loads(req("GET","/api/v1/daily")[1])["job"] == "github_daily_preview"
-            assert req("POST","/api/v1/daily/runs",{"request_id":uuid.uuid4().hex})[0] == 403
-            assert req("POST","/api/v1/daily/runs",{"request_id":uuid.uuid4().hex},
-                       "http://evil.invalid",token())[0] == 403
-            assert req("POST","/api/v1/daily/runs",{"request_id":uuid.uuid4().hex,
-                                                  "argv":"evil"},origin,token())[0] == 400
-            assert req("POST","/api/v1/daily/settings",
-                       {"enabled":True,"interval_seconds":86400},origin,token())[0] == 200
-            assert job.status()["last_run"] is None
-            rid=uuid.uuid4().hex
-            code,raw=req("POST","/api/v1/daily/runs",{"request_id":rid},origin,token())
-            assert code == 202
-            run_id=json.loads(raw)["run_id"]
-            job._worker.join(3)
-            result=json.loads(req("GET","/api/v1/daily/runs/"+run_id)[1])
-            assert result["status"]=="preview_ready"
-            assert result["date_jst"]==DATE
-            assert req("GET","/api/v1/daily/runs/../../etc/passwd")[0] == 404
-            assert req("POST","/api/v1/daily/runs",{"request_id":rid},origin,token())[0] == 202
-            assert req("POST","/api/v1/daily/settings",
-                       {"enabled":False,"interval_seconds":86400},origin,token())[0] == 200
-            assert job.settings()["enabled"] is False
-            assert "dailyRefresh" in JS and "innerHTML" not in JS
-        finally:
-            server.shutdown()
-            thread.join(3)
-            server.server_close()
 
 
-def test_http_disabled_without_daily_attached():
-    server=make_server(port=0,observer=lambda: [],ai_observer=lambda: {})
-    thread=threading.Thread(target=server.serve_forever,daemon=True)
-    thread.start()
-    try:
-        conn=http.client.HTTPConnection("127.0.0.1",server.server_address[1],timeout=10)
-        conn.request("GET","/api/v1/daily")
-        result=conn.getresponse()
-        assert result.status == 503
-        result.read()
-        conn.close()
-    finally:
-        server.shutdown()
-        thread.join(3)
-        server.server_close()
 
 
 
@@ -311,3 +240,111 @@ def test_scheduled_thread_launch_failure_has_durable_no_replay_result(tmp_path, 
         assert job.status()["last_run"]["status"] == "unconfirmed"
         assert job.status()["settings"]["next_due"] == 8200.0
         assert job._worker is None
+
+
+def test_daily_receipts_bind_current_nextcloud_source_not_just_configured(tmp_path):
+    """A success on Vault A cannot become success on Vault B after GitHub token re-save."""
+    generation = ["a" * 64]
+    with DailyJob(
+        tmp_path / "daily-source-bound",
+        successful_preview,
+        configured=lambda: True,
+        source_generation=lambda: generation[0],
+    ) as job:
+        # No remote writer: source metadata only, inserted as synthetic
+        # historical post-write evidence in the local isolated fixture.
+        with job.db:
+            job.db.execute(
+                "INSERT INTO runs (run_id,request_id,trigger,status,created,"
+                "source_generation,publication_outcome) VALUES (?,?,?,?,?,?,?)",
+                ("1" * 32, "2" * 32, "scheduled", "published", 123,
+                 generation[0], "applied"),
+            )
+        old = job.run("1" * 32)
+        assert old["source_matches_current"] is True
+        assert "source_generation" not in old
+        generation[0] = "b" * 64
+        # GitHub may be reconfigured and the whole service may report ready,
+        # but no publication on the replacement Vault has occurred.
+        assert job.settings()["configured"] is True
+        assert job.run("1" * 32)["status"] == "published"
+        assert job.run("1" * 32)["source_matches_current"] is False
+
+        with job.db:
+            job.db.execute(
+                "INSERT INTO runs (run_id,request_id,trigger,status,created,"
+                "source_generation) VALUES (?,?,?,?,?,?)",
+                ("3" * 32, "4" * 32, "manual", "published", 124, None),
+            )
+        assert job.status()["last_run"]["source_matches_current"] is False
+
+
+def test_daily_run_admission_stores_source_generation_without_exposing_it(tmp_path):
+    generation = ["c" * 64]
+    with DailyJob(
+        tmp_path / "daily-new-binding", successful_preview,
+        configured=lambda: True, source_generation=lambda: generation[0],
+    ) as job:
+        outcome, receipt = job.submit("5" * 32)
+        assert outcome == "accepted"
+        job._worker.join(timeout=3)
+        run = job.run(receipt["run_id"])
+        assert run["source_matches_current"] is True
+        assert "source_generation" not in run
+        generation[0] = "d" * 64
+        assert job.run(receipt["run_id"])["source_matches_current"] is False
+
+
+def test_daily_legacy_sqlite_run_migrates_as_historical_only(tmp_path):
+    import sqlite3
+
+    directory = tmp_path / "legacy-daily"
+    directory.mkdir()
+    db = sqlite3.connect(directory / "daily.sqlite3")
+    try:
+        db.execute(
+            "CREATE TABLE runs (run_id TEXT PRIMARY KEY, "
+            "request_id TEXT UNIQUE NOT NULL, trigger TEXT NOT NULL, "
+            "status TEXT NOT NULL, created REAL NOT NULL, completed REAL, "
+            "date_jst TEXT, capture_sha256 TEXT, digest_sha256 TEXT, "
+            "original_event_count INTEGER, rendered_entity_count INTEGER)"
+        )
+        db.execute(
+            "INSERT INTO runs (run_id,request_id,trigger,status,created) "
+            "VALUES (?,?,?,?,?)",
+            ("8" * 32, "9" * 32, "scheduled", "published", 123),
+        )
+        db.commit()
+    finally:
+        db.close()
+    with DailyJob(directory, successful_preview, configured=lambda: True,
+                  source_generation=lambda: "b"*64) as migrated:
+        assert migrated.run("8" * 32)["status"] == "published"
+        assert migrated.run("8" * 32)["source_matches_current"] is False
+        assert "source_generation" in {
+            row[1] for row in migrated.db.execute("PRAGMA table_info(runs)")
+        }
+
+
+def test_scheduled_daily_run_persists_admission_source_generation(tmp_path):
+    """Scheduled publishing must be current only for the source it observed."""
+    now = [1000.0]
+    generation = ["a" * 64]
+    with DailyJob(
+        tmp_path / "schedule-source-bound",
+        successful_preview,
+        configured=lambda: True,
+        source_generation=lambda: generation[0],
+        clock=lambda: now[0],
+    ) as job:
+        job.update({"enabled": True, "interval_seconds": 3600})
+        now[0] += 3600
+        assert job.tick() is True
+        job._worker.join(timeout=3)
+        run = job.status()["last_run"]
+        assert run["trigger"] == "scheduled"
+        assert run["status"] == "preview_ready"
+        assert run["source_matches_current"] is True
+        assert "source_generation" not in run
+        generation[0] = "b" * 64
+        assert job.run(run["run_id"])["source_matches_current"] is False

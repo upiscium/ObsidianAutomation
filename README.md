@@ -1,137 +1,78 @@
-# ObsidianAutomation
+# ObsidianAutomation — Three-service profile
 
-Reusable automation software for maintaining and publishing an Obsidian Vault while keeping private Vault data and production deployment details outside this public repository.
+ObsidianAutomation is a **single, non-root, LAN/VPN-only application** for three
+fixed Obsidian Vault workflows. It has exactly three WebUI service panels:
 
-The repository includes deterministic Vault publication/synchronization components and the production AI lifecycle used to generate, validate, review, and conditionally publish Knowledge Notes while preserving explicit authority boundaries.
+| Workflow | Source → destination | Control |
+| --- | --- | --- |
+| Snapshot | Live Vault → private Gitea Git snapshot | Enable/disable, interval, Run Once, verified result |
+| Core Promotion | reviewed GitHub ObsidianCore → canonical Vault | Enable/disable, interval, Run Once, verified result |
+| GitHub Daily | GitHub Issue/PR activity → yesterday's JST Daily Note | Enable/disable, interval, Run Once, verified result |
 
-## Start here
+No AI Knowledge, External ChatGPT Import, GitHub Project Writer, Vault
+Formatter, root Operator console, or general-purpose command runner is exposed
+or scheduled by this profile. The GitHub reader used by Daily is **not** the
+retired GitHub Project Writer.
 
-For production deployment and first-host setup, see [Installation](docs/installation.md).
+## Runtime
 
-For the Human-facing AI workflow, including `04-AI` projection, Human Review, post-review delivery, and Completed cleanup, see [Getting started](docs/getting-started.md).
+The one process `obsidian-snapshot-app` owns all three independent persistent
+SQLite Job controllers and the private management UI. First use requires
+Nextcloud, Gitea (for Snapshot), and GitHub (for Daily) credentials as
+applicable. Core Promotion additionally requires a reviewed baseline checkpoint.
 
-The detailed projection contract is documented in [Human-facing AI lifecycle projection](docs/human-ai-projection.md).
+```sh
+obsidian-snapshot-app \
+  --state /var/lib/obsidian-snapshot \
+  --bind 127.0.0.1 \
+  --daily-publish
+```
 
-## Optional fixed-service operator console (#300)
+Binding to a trusted RFC1918 LAN address is supported. The app intentionally
+does **not** implement a Web login: network access must be restricted to a
+trusted LAN and authenticated VPN. The default without `--daily-publish`
+is Daily Preview only, **not** Vault publication.
 
-The independently released #300 operator console supports five fixed systemd
-timer/service pairs, with read-only status and explicitly confirmed
-Pause/Resume/Run once requests. Operation receipts distinguish systemd Job
-admission from service-level GitHub/Gitea/Nextcloud success. This is a
-separately reviewed LAN/VPN-only operator feature, not the unfinished
-#298/#311 single-LXC setup Wizard, Connections, Vault Gateway, folder mapping,
-or Snapshot/Publisher migration. **Only one automation execution LXC per
-managed Vault is supported**; multi-instance active control is unsupported.
-The privileged Worker is OFF until its installed source, Unix ACLs, shared
-updater locks and private ingress pass exact-revision acceptance.
+Each service has explicit configuration and schedule status, a one-use-CSRF
+settings action, a request-ID-bound Run Once action, and a separate verified
+execution result. A `202` receipt only proves admission, not completion.
+Ambiguous Core Promotion effects block further execution until reconciled.
 
-See [the #300 standalone release scope](docs/releases/300-standalone-20261018.md)
-and [operator deployment boundary](docs/admin-operator-operational-runbook.md).
+## Core Promotion setup
 
-## Trust boundary
+The first Core Promotion checkpoint is an explicit operation: choose an
+**already reflected** generated public-projection commit in
+`upiscium/ObsidianCore`; verify the live Vault and the exact allowlist policy
+before entering its complete 40-character SHA in the UI. The new adapter
+reuses the existing conditional WebDAV promotion, deterministic policy checks
+and managed `.obsidian/appearance.json` compatibility. **Do not** initialize
+from an arbitrary latest commit or infer that an old-host checkpoint is safe
+to reuse without checking its exact source and policy.
 
-This repository may contain reusable automation code, schemas, tests, prompts, and container definitions. It must not contain production credentials, private Vault contents, internal endpoints, runner registration data, or environment-specific secrets.
+The bundled public-export policy remains coupled to the Gitea publication
+bridge. `obsidian-public-export` and `obsidian-public-publish` remain as
+supporting commands for the currently separate Gitea Runner; they are not
+independent WebUI services. Do not retire the Runner until a different
+publisher has been independently verified.
 
-The Public Exporter is deterministic and does not use an LLM. The private Vault is the source of projection content; public-repository-owned files are preserved separately.
+## Source-only / production boundary
 
-## Nix development environment
+Changing this repository does not deploy or activate jobs on
+`obsidian-control`. Production setup and rollback are documented in
+[Three-service deployment and acceptance](docs/three-services.md). The old
+`--vault-root-ui` / `--vault-bindings-ui` command-line switches have been
+retired; update the service unit **when** doing an independently approved
+production cutover. Existing Vault contents and private SQLite state must be
+preserved; do not delete them as part of the source purge.
 
-On NixOS or another system with flakes enabled, enter the development environment with:
+## Development
 
-```bash
+```sh
 nix develop
+pytest -q
 ```
 
-With direnv installed, the repository also provides `.envrc`:
-
-```bash
-direnv allow
-```
-
-The development shell provides Python, pytest, Git, Node.js, `obsidian-public-export`, `obsidian-public-publish`, and `obsidian-vault-snapshot` from the current working tree.
-
-Nix is for development and manual verification only. Production automation is expected to run independently in dedicated Linux containers and does not require Nix.
-
-## Vault Formatter (read-only Phase 1, #470)
-
-The conservative `98-System/` Markdown format planner does not modify the
-canonical Vault. It reports safe whitespace-only-line corrections and an
-immutable, deterministic change plan. The conditional writer and scheduled
-operations are separate, explicitly gated workstreams (#471/#472).
-
-See [Vault Formatter / Phase 1](docs/vault-formatter.md) for setup, usage,
-safety restrictions and tests. Source-only #472 adds a separate Off-by-default
-Formatter Job and status controls to the existing nonroot app, documented in
-[Formatter operations](docs/vault-formatter-operations.md). Ordinary app startup
-never injects a Vault Writer: Auto apply requires independent provider/authority
-acceptance before future source integration and production activation.
-
-## Public Exporter v0
-
-The exporter treats the destination repository as two trust domains:
-
-- paths matched by `repository_owned` are preserved and never managed by the exporter;
-- every other destination file belongs to the generated projection and is removed if it is no longer present in the allowlisted source projection.
-
-Git metadata (`.git` and `.git/**`) is always protected even if it is omitted from the configuration.
-
-The example policy is in `configs/public-export.example.toml`. Optional `exclude` patterns remove operational or private files from the selected source projection even when a broader `include` pattern matches them; an already-exported excluded path is removed from the destination on the next apply.
-
-### Preview a projection
-
-```bash
-obsidian-public-export \
-  --source /path/to/private-vault \
-  --destination /path/to/ObsidianCore \
-  --config configs/public-export.example.toml \
-  --dry-run
-```
-
-The dry run prints `ADD`, `UPDATE`, and `DELETE` operations without changing the destination.
-
-### Apply a projection
-
-After reviewing the dry-run output:
-
-```bash
-obsidian-public-export \
-  --source /path/to/private-vault \
-  --destination /path/to/ObsidianCore \
-  --config configs/public-export.example.toml
-```
-
-v0 rejects path traversal, symlinks in managed paths, missing required allowlist entries, and collisions with repository-owned paths.
-
-## Public Publisher v0
-
-`obsidian-public-publish` is the transaction helper intended for a trusted Gitea Runner. It requires a clean `ObsidianCore` checkout, applies the projection, runs repository validation/tests, and creates one local commit only after validation succeeds. It intentionally never runs `git push`.
-
-The production design and example Gitea workflow are documented in `docs/gitea-publication.md` and `examples/gitea/public-projection.yml`.
-
-## Live Vault Snapshot v0
-
-`obsidian-vault-snapshot` turns a stable local mirror of the Live Vault into one private Git snapshot commit. The helper itself has no network access and never pushes.
-
-The recommended production topology uses a dedicated unprivileged Linux container. That container pulls the Vault directly from Nextcloud over WebDAV into a local mirror, verifies the pull, runs the snapshot helper, and pushes only the resulting private Gitea commit. The Proxmox host does not need to mount or authenticate to Nextcloud.
-
-The design is documented in `docs/live-vault-snapshot.md`; the example policy is `configs/vault-snapshot.example.toml`.
-
-## Current scope
-
-The repository currently covers:
-
-- deterministic public projection and publication of the managed ObsidianCore surface;
-- private Live Vault snapshot support;
-- pull-only AI input mirroring;
-- automatic Input Planner -> Generator -> Validator -> Reader -> Evaluator processing;
-- Human-facing `04-AI/**` lifecycle projection;
-- fail-closed Human Review Intake;
-- separated Executor -> Sync -> Executor canonical Knowledge creation;
-- post-review `60-Execution -> 70-Transport -> 80-Completed` projection;
-- terminal Human-facing projection cleanup while retaining `80-Completed`;
-- exact-SHA production bootstrap/update and authority verification;
-- GitHub Project status synchronization and Core promotion workflows.
-
-Production credentials, private Vault contents, environment-specific endpoints, and deployment secrets remain outside this repository.
-
-For installation and operational acceptance, follow [Installation](docs/installation.md) and [Pre-review production rollout and acceptance](docs/pre-review-production.md).
+The build publishes five fixed console scripts: the three-service app, the
+existing public exporter/publisher support tools, and Core Promotion
+bootstrap/run recovery commands. Its remaining internal Python modules are
+libraries required by these three workflows, not additional active services.
