@@ -240,3 +240,87 @@ def test_scheduled_thread_launch_failure_has_durable_no_replay_result(tmp_path, 
         assert job.status()["last_run"]["status"] == "unconfirmed"
         assert job.status()["settings"]["next_due"] == 8200.0
         assert job._worker is None
+
+
+def test_daily_receipts_bind_current_nextcloud_source_not_just_configured(tmp_path):
+    """A success on Vault A cannot become success on Vault B after GitHub token re-save."""
+    generation = ["a" * 64]
+    with DailyJob(
+        tmp_path / "daily-source-bound",
+        successful_preview,
+        configured=lambda: True,
+        source_generation=lambda: generation[0],
+    ) as job:
+        # No remote writer: source metadata only, inserted as synthetic
+        # historical post-write evidence in the local isolated fixture.
+        with job.db:
+            job.db.execute(
+                "INSERT INTO runs (run_id,request_id,trigger,status,created,"
+                "source_generation,publication_outcome) VALUES (?,?,?,?,?,?,?)",
+                ("1" * 32, "2" * 32, "scheduled", "published", 123,
+                 generation[0], "applied"),
+            )
+        old = job.run("1" * 32)
+        assert old["source_matches_current"] is True
+        assert "source_generation" not in old
+        generation[0] = "b" * 64
+        # GitHub may be reconfigured and the whole service may report ready,
+        # but no publication on the replacement Vault has occurred.
+        assert job.settings()["configured"] is True
+        assert job.run("1" * 32)["status"] == "published"
+        assert job.run("1" * 32)["source_matches_current"] is False
+
+        with job.db:
+            job.db.execute(
+                "INSERT INTO runs (run_id,request_id,trigger,status,created,"
+                "source_generation) VALUES (?,?,?,?,?,?)",
+                ("3" * 32, "4" * 32, "manual", "published", 124, None),
+            )
+        assert job.status()["last_run"]["source_matches_current"] is False
+
+
+def test_daily_run_admission_stores_source_generation_without_exposing_it(tmp_path):
+    generation = ["c" * 64]
+    with DailyJob(
+        tmp_path / "daily-new-binding", successful_preview,
+        configured=lambda: True, source_generation=lambda: generation[0],
+    ) as job:
+        outcome, receipt = job.submit("5" * 32)
+        assert outcome == "accepted"
+        job._worker.join(timeout=3)
+        run = job.run(receipt["run_id"])
+        assert run["source_matches_current"] is True
+        assert "source_generation" not in run
+        generation[0] = "d" * 64
+        assert job.run(receipt["run_id"])["source_matches_current"] is False
+
+
+def test_daily_legacy_sqlite_run_migrates_as_historical_only(tmp_path):
+    import sqlite3
+
+    directory = tmp_path / "legacy-daily"
+    directory.mkdir()
+    db = sqlite3.connect(directory / "daily.sqlite3")
+    try:
+        db.execute(
+            "CREATE TABLE runs (run_id TEXT PRIMARY KEY, "
+            "request_id TEXT UNIQUE NOT NULL, trigger TEXT NOT NULL, "
+            "status TEXT NOT NULL, created REAL NOT NULL, completed REAL, "
+            "date_jst TEXT, capture_sha256 TEXT, digest_sha256 TEXT, "
+            "original_event_count INTEGER, rendered_entity_count INTEGER)"
+        )
+        db.execute(
+            "INSERT INTO runs (run_id,request_id,trigger,status,created) "
+            "VALUES (?,?,?,?,?)",
+            ("8" * 32, "9" * 32, "scheduled", "published", 123),
+        )
+        db.commit()
+    finally:
+        db.close()
+    with DailyJob(directory, successful_preview, configured=lambda: True,
+                  source_generation=lambda: "b"*64) as migrated:
+        assert migrated.run("8" * 32)["status"] == "published"
+        assert migrated.run("8" * 32)["source_matches_current"] is False
+        assert "source_generation" in {
+            row[1] for row in migrated.db.execute("PRAGMA table_info(runs)")
+        }

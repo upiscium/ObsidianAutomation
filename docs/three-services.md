@@ -10,7 +10,10 @@ disablement is authorized by this document.**
   `snapshot.sqlite3`, nonroot Gitea credential and verified readback.
 - **GitHub Daily:** Existing `DailyJob`, deterministic Preview, bounded
   source capture/verification, CAS/conditional section-only Daily writer.
-  `--daily-publish` is still required for actual Daily publication.
+  `--daily-publish` is still required for actual Daily publication. New runs
+  bind the exact private Nextcloud source generation; legacy/unbound rows
+  are historical, never treated as verified results of a new Vault source.
+  HTTP responses expose only a current-binding Boolean, not credential hashes.
 - **Core Promotion:** New `CorePromotionJob`, source binding, OFF-by-default
   durable SQLite schedule, explicit private checkpoint bootstrap and existing
   managed `run_promotion_cycle`. The old write transport retains policy SHA,

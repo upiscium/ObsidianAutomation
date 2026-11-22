@@ -60,6 +60,7 @@ class DailyJob:
     def __init__(self, state: Path, runner: Callable[[], dict],
                  *, configured: Callable[[], bool] = lambda: False,
                  publisher: Callable[[dict], dict] | None = None,
+                 source_generation: Callable[[], str | None] = lambda: None,
                  clock: Callable[[], float] = time.time):
         self.state = state
         state.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -92,6 +93,10 @@ class DailyJob:
                 self.db.execute("ALTER TABLE runs ADD COLUMN failure_stage TEXT")
             if "failure_code" not in columns:
                 self.db.execute("ALTER TABLE runs ADD COLUMN failure_code TEXT")
+            # Existing run rows have no trustworthy source identity. They are
+            # historical until a newly admitted run has a pinned generation.
+            if "source_generation" not in columns:
+                self.db.execute("ALTER TABLE runs ADD COLUMN source_generation TEXT")
             self.db.execute("UPDATE runs SET status='unconfirmed',completed=? "
                             "WHERE status IN ('queued','running')", (clock(),))
             self.db.commit()
@@ -103,6 +108,7 @@ class DailyJob:
             raise
         self.runner = runner
         self.is_configured = configured
+        self.source_generation = source_generation
         # None preserves the existing Preview-only behavior. An explicitly
         # supplied publisher is the only route to canonical WebDAV writes.
         self.publisher = publisher
@@ -130,6 +136,14 @@ class DailyJob:
             return self.is_configured() is True
         except Exception:
             return False
+
+    def _generation(self) -> str | None:
+        try:
+            generation = self.source_generation()
+            return (generation if type(generation) is str
+                    and _SHA.fullmatch(generation) else None)
+        except Exception:
+            return None
 
     def settings(self) -> dict:
         with self._lock:
@@ -165,7 +179,7 @@ class DailyJob:
             row = self.db.execute(
                 "SELECT run_id,request_id,trigger,status,created,completed,date_jst,"
                 "capture_sha256,digest_sha256,original_event_count,rendered_entity_count,"
-                "publication_outcome,failure_stage,failure_code FROM runs WHERE run_id=?",
+                "publication_outcome,failure_stage,failure_code,source_generation FROM runs WHERE run_id=?",
                 (run_id,)).fetchone()
             if row is None:
                 return None
@@ -174,7 +188,14 @@ class DailyJob:
                 "date_jst","capture_sha256","digest_sha256",
                 "original_event_count","rendered_entity_count",
                 "publication_outcome","failure_stage","failure_code",
-            ), row))
+            ), row[:14]))
+            # Only a Boolean is HTTP-visible: never expose private
+            # credential-derived source generation digests to the browser.
+            result["source_matches_current"] = (
+                row[14] is not None
+                and row[14] == self._generation()
+                and self.configured()
+            )
             # Even tampered SQLite text must never become an arbitrary
             # externally observable diagnostic.
             pair = (result["failure_stage"], result["failure_code"])
@@ -206,9 +227,11 @@ class DailyJob:
             if self.db.execute("SELECT 1 FROM runs WHERE status IN ('queued','running') LIMIT 1").fetchone():
                 return "busy", None
             run_id = uuid.uuid4().hex
+            generation = self._generation()
             with self.db:
-                self.db.execute("INSERT INTO runs (run_id,request_id,trigger,status,created) "
-                                "VALUES (?,?,?,?,?)", (run_id,request_id,trigger,"queued",self.clock()))
+                self.db.execute("INSERT INTO runs (run_id,request_id,trigger,status,created,source_generation) "
+                                "VALUES (?,?,?,?,?,?)", (run_id,request_id,trigger,
+                                                        "queued",self.clock(),generation))
             self._launch_worker(run_id)
             return "accepted", self.run(run_id)
 

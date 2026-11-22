@@ -170,6 +170,7 @@ def main() -> int:
     # AI and External Import have no active tick hook or public action route.
     daily_context = DailyJob(
         daily_state, daily_runner, configured=daily_setup.configured,
+        source_generation=daily_setup.source_fingerprint,
         publisher=daily_publisher if args.daily_publish else None,
     )
     promotion_runtime = CorePromotionRuntime(state, store, promotion_guard)

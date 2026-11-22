@@ -104,6 +104,10 @@ def test_http_target_rotation_quarantines_existing_promotion_even_after_revert(
                 thread.start()
                 try:
                     changed = {**start, "vault_folder": "NewVault"}
+                    store.nextcloud_probe = lambda _: False
+                    assert save(port, "/api/v1/nextcloud/connections", changed)[0] == 422
+                    assert not runtime.quarantine_path.exists()
+                    store.nextcloud_probe = lambda _: True
                     assert save(port, "/api/v1/nextcloud/connections", changed)[0] == 200
                     assert runtime.quarantine_path.is_file()
                     assert runtime.configured() is False

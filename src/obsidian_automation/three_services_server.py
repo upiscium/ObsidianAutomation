@@ -378,11 +378,15 @@ class Handler(BaseHTTPRequestHandler):
                 payload = validate(payload)
                 if self._mapping_blocks_change(store, payload):
                     raise Refused("mapping_present")
-                # Seal old-target authority before changing a Nextcloud
-                # destination, even if the user later selects the old path.
+                # Probe a valid candidate BEFORE sealing a changed target.
+                # A simple connectivity failure must not quarantine a
+                # perfectly good checkpoint on the unchanged Vault.
+                if not store.probe(payload):
+                    raise Refused("connection_probe_failed", 422)
                 if promotion_runtime is not None:
                     promotion_runtime.quarantine_for_target_change(payload)
-                if not store.save(payload):
+                # Commit only after a successful probe and durable quarantine.
+                if not store.save(payload, probed=True):
                     raise Refused("connection_probe_failed", 422)
                 reset_pin_after_connection_save(store)
                 job.connections_saved(store.generation())
@@ -391,17 +395,24 @@ class Handler(BaseHTTPRequestHandler):
                 payload = validate_nextcloud(payload)
                 if self._mapping_blocks_change(store, payload):
                     raise Refused("mapping_present")
-                if promotion_runtime is not None:
-                    promotion_runtime.quarantine_for_target_change(payload)
                 # Nextcloud is shared. A full B2 record cannot be updated by
-                # save_nextcloud(); preserve the existing private Gitea values
-                # and probe the combined record instead of rejecting the UI.
+                # save_nextcloud(); preserve the existing private Gitea values.
                 previous = store.load()
                 if previous is not None:
-                    if not store.save({**previous, **payload}):
+                    combined = validate({**previous, **payload})
+                    if not store.probe(combined):
+                        raise Refused("connection_probe_failed", 422)
+                elif not store.nextcloud_probe(payload):
+                    raise Refused("connection_probe_failed", 422)
+                # After validated remote admission, invalidate an old target
+                # BEFORE the new credentials are durably committed.
+                if promotion_runtime is not None:
+                    promotion_runtime.quarantine_for_target_change(payload)
+                if previous is not None:
+                    if not store.save(combined, probed=True):
                         raise Refused("connection_probe_failed", 422)
                     job.connections_saved(store.generation())
-                elif not store.save_nextcloud(payload):
+                elif not store.save_nextcloud(payload, probed=True):
                     raise Refused("connection_probe_failed", 422)
                 reset_pin_after_connection_save(store)
                 response = store.nextcloud_status()

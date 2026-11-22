@@ -6,6 +6,13 @@
   const data={};
   let busy=false;
   let policy=null;
+  // Reject out-of-order GET responses and those started before a mutation.
+  let refreshGeneration=0;
+  let configurationGeneration=0;
+  function invalidatePendingReads(){
+    refreshGeneration++;
+    configurationGeneration++;
+  }
   const errors={
     unconfigured:"接続または初期設定が未完了です",
     busy:"別の実行が進行中です",
@@ -60,7 +67,7 @@
         ?{kind:"ok",label:"保存・検証済み"}
         :{kind:"unknown",label:"旧接続先の履歴・現接続先は未検証"};
     if(n==="daily"&&s==="published")
-      return x.settings.configured===true
+      return x.settings.configured===true&&x.last_run.source_matches_current===true
         ?{kind:"ok",label:"Daily反映済み"}
         :{kind:"unknown",label:"旧接続先の履歴・現接続先は未検証"};
     if(n==="core-promotion"&&(s==="promoted"||s==="up_to_date")){
@@ -96,7 +103,10 @@
       msg("daily-message","現在はPreview専用です。反映にはサーバーの --daily-publish が必要です。");
   }
   async function refresh(){
+    if(busy)return;
+    const generation=++refreshGeneration;
     const rs=await Promise.allSettled(names.map(n=>get("/api/v1/"+n)));
+    if(generation!==refreshGeneration)return;
     rs.forEach((r,i)=>{
       const n=names[i];
       if(r.status==="fulfilled")render(n,r.value);
@@ -110,8 +120,11 @@
     });
   }
   async function configuration(){
+    if(busy)return;
+    const generation=++configurationGeneration;
     try{
       const d=await get("/api/v1/core-promotion/configuration");
+      if(generation!==configurationGeneration)return;
       policy=d.policy_sha256;
       $("core-promotion-policy").value=policy;
       $("core-promotion-bootstrap").disabled=busy||d.checkpoint_initialized||
@@ -120,11 +133,15 @@
       if(d.requires_reauthorization===true)
         msg("core-promotion-message",
             "接続先Vaultが変更されたため、旧Checkpointでの実行を拒否しています。新しい基準の独立照合が必要です。");
-    }catch(e){policy=null;$("core-promotion-bootstrap").disabled=true;}
+    }catch(e){
+      if(generation!==configurationGeneration)return;
+      policy=null;$("core-promotion-bootstrap").disabled=true;
+    }
   }
   async function action(n,kind){
     if(busy)return;
     busy=true;
+    invalidatePendingReads();
     try{
       if(kind==="settings"){
         const body={enabled:$(n+"-enabled").checked,interval_seconds:Number($(n+"-interval").value)};
@@ -140,7 +157,9 @@
   }
   async function connection(url,form,message){
     if(busy)return;
-    busy=true;msg(message,"接続を検証しています…");
+    busy=true;
+    invalidatePendingReads();
+    msg(message,"接続を検証しています…");
     try{
       await post(url,Object.fromEntries(new FormData($(form))));
       msg(message,"保存しました。影響する自動実行は再確認が必要です。");
@@ -156,6 +175,7 @@
     }
     if(!confirm("指定コミットでCheckpointを初期化します。Vaultは変更しません。続行しますか？"))return;
     busy=true;
+    invalidatePendingReads();
     try{
       const r=await post("/api/v1/core-promotion/bootstrap",{core_commit:sha,policy_sha256:policy});
       msg("core-promotion-message","Checkpoint初期化済み。基準 "+r.baseline_commit+" / 最新 "+r.head_commit);
