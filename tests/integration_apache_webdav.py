@@ -6,8 +6,10 @@ Binds localhost, creates no remote shares, and destroys its own temp dir.
 from __future__ import annotations
 
 import contextlib
+import grp
 import http.client
 import os
+import pwd
 import socket
 import ssl
 import subprocess
@@ -37,7 +39,8 @@ def apache_config(httpd: Path, root: Path):
     modules=prefix/"modules"
     lines=[
         f'ServerRoot "{prefix}"','ServerName localhost',
-        f'Listen 127.0.0.1:{PORT}','User upiscium','Group users',
+        f'Listen 127.0.0.1:{PORT}',f'User {pwd.getpwuid(os.getuid()).pw_name}',
+        f'Group {grp.getgrgid(os.getgid()).gr_name}',
         f'PidFile "{root}/httpd.pid"',f'ErrorLog "{root}/apache.log"',
         'LogLevel warn',
     ]

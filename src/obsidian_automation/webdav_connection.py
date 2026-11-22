@@ -8,6 +8,7 @@ redirects with the Basic credential, and never writes provider content.
 from __future__ import annotations
 
 import base64
+import http.client
 import re
 import urllib.error
 import urllib.request
@@ -185,5 +186,6 @@ def probe_webdav_collection(value: dict) -> bool:
                 return False
             raw = response.read(MAX_XML_BYTES + 1)
         return _collection_multistatus(raw, url)
-    except (OSError, urllib.error.URLError, ValueError, UnicodeError, KeyError):
+    except (OSError, urllib.error.URLError, http.client.HTTPException,
+            ValueError, UnicodeError, KeyError):
         return False

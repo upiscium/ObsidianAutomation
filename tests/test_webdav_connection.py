@@ -1,5 +1,7 @@
 """Synthetic provider-neutral DAV URL/probe and Nextcloud compatibility."""
 
+import http.client
+
 import pytest
 
 from obsidian_automation.connection_fields import FieldDrafts
@@ -210,3 +212,17 @@ def test_href_percent_hex_case_variation_still_matches_canonical_resource():
     target="https://dav.example.invalid/webdav/Vault%2ARoot/"
     assert _collection_multistatus(
         xml(href="/webdav/Vault%2aRoot/"),target)
+
+
+@pytest.mark.parametrize("exc",[
+    http.client.BadStatusLine("garbage"),
+    http.client.IncompleteRead(b"x",5),
+])
+def test_probe_fails_closed_on_malformed_or_truncated_http(monkeypatch,exc):
+    import obsidian_automation.webdav_connection as module
+
+    class Opener:
+        def open(self,request,timeout): raise exc
+    monkeypatch.setattr(module.urllib.request,"build_opener",
+                        lambda *_: Opener())
+    assert probe_webdav_collection(source()) is False
