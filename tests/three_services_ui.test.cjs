@@ -21,6 +21,15 @@ async function mount(jobs, configuration = {}, options = {}) {
   }
   const defaultFetch = async (path) => {
     const key = String(path);
+    if (key === "/api/v1/vault-root")
+      return {ok:true, async json(){return {
+        version:1,active_label:"Vault",enrolled:true,provider:"verified",
+        can_rollback:false};}};
+    if (key === "/api/v1/vault-bindings")
+      return {ok:true, async json(){return {
+        version:1,state:"default",
+        roles:{daily:"00-DailyNote",project:"10-Project",system:"98-System"},
+        can_reset:false,can_rollback:false};}};
     if (key === "/api/v1/core-promotion/configuration") {
       return {
         ok: true,
@@ -141,6 +150,11 @@ test("slow pre-mutation refresh cannot overwrite the post-save result", async ()
       return reply({enabled: true, interval_seconds: 3600});
     if (path === "/api/v1/core-promotion/configuration")
       return reply({policy_sha256:"a".repeat(64), checkpoint_initialized:true});
+    if (path === "/api/v1/vault-root")
+      return reply({active_label:"Vault",enrolled:true,provider:"verified",can_rollback:false});
+    if (path === "/api/v1/vault-bindings")
+      return reply({state:"default",roles:{daily:"00-DailyNote",project:"10-Project",
+                   system:"98-System"},can_reset:false,can_rollback:false});
     return reply(values[path]);
   };
 
