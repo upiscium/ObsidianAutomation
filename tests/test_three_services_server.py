@@ -118,3 +118,12 @@ def test_core_promotion_run_admission_is_not_false_success():
         finally:
             server.shutdown()
             thread.join(timeout=3)
+
+
+def test_wildcard_and_non_rfc1918_bind_addresses_refused():
+    import pytest
+
+    for address in ("0.0.0.0", "169.254.1.1", "100.64.0.1",
+                    "224.0.0.1", "255.255.255.255", "::", "::1"):
+        with pytest.raises(ValueError):
+            make_server(port=0, bind_address=address)

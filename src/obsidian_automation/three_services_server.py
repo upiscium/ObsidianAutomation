@@ -20,7 +20,7 @@ from .core_promotion_runtime import Invalid as PromotionSetupInvalid
 from .github_daily_job import Invalid as DailyInvalid
 from .github_daily_setup import DailySetupError
 from .snapshot_job import Invalid as SnapshotInvalid
-from .snapshot_setup import GITEA_FIELDS
+from .snapshot_setup import GITEA_FIELDS, validate, validate_nextcloud
 from .vault_root_activation import reset_pin_after_connection_save
 
 
@@ -368,22 +368,31 @@ class Handler(BaseHTTPRequestHandler):
             raise Refused("service_unavailable", 503)
         with self._connection_fence():
             before_daily = daily_setup.source_fingerprint() if daily_setup else None
+            promotion_runtime = self.server.core_promotion_runtime
             if self.path == "/api/v1/snapshot/connections":
                 if type(payload) is dict and set(payload) == GITEA_FIELDS:
                     previous = store.load_nextcloud()
                     if previous is None:
                         raise Refused("nextcloud_missing")
                     payload = {**previous, **payload}
+                payload = validate(payload)
                 if self._mapping_blocks_change(store, payload):
                     raise Refused("mapping_present")
+                # Seal old-target authority before changing a Nextcloud
+                # destination, even if the user later selects the old path.
+                if promotion_runtime is not None:
+                    promotion_runtime.quarantine_for_target_change(payload)
                 if not store.save(payload):
                     raise Refused("connection_probe_failed", 422)
                 reset_pin_after_connection_save(store)
                 job.connections_saved(store.generation())
                 response = store.status()
             else:
+                payload = validate_nextcloud(payload)
                 if self._mapping_blocks_change(store, payload):
                     raise Refused("mapping_present")
+                if promotion_runtime is not None:
+                    promotion_runtime.quarantine_for_target_change(payload)
                 # Nextcloud is shared. A full B2 record cannot be updated by
                 # save_nextcloud(); preserve the existing private Gitea values
                 # and probe the combined record instead of rejecting the UI.
@@ -420,7 +429,12 @@ def make_server(*, port=8370, bind_address="127.0.0.1",
     if type(port) is not int or not 0 <= port <= 65535:
         raise ValueError("invalid_port")
     ip = ipaddress.ip_address(bind_address)
-    if ip.version != 4 or not (ip.is_private or ip.is_loopback):
+    # is_private includes 0.0.0.0 on current CPython. Do not trust it for
+    # the operator-only HTTP perimeter. RFC1918 or loopback ONLY.
+    rfc1918 = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+    if (ip.version != 4 or ip.is_unspecified or ip.is_multicast
+        or not (ip.is_loopback or any(ip in ipaddress.ip_network(net)
+                                     for net in rfc1918))):
         raise ValueError("private_bind_required")
     server = ThreeServicesServer((bind_address, port), Handler)
     server.csrf = CsrfTokens()

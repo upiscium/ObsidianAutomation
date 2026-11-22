@@ -55,18 +55,26 @@ unit name, command or script is accepted.
    `public-export.toml`; invalid/missing policy is not silently recreated
    after a mismatch.
 2. Core Promotion starts **OFF**; a missing checkpoint, mismatched policy,
-   missing Nextcloud connection or changed source fingerprint refuses enabling.
+   missing Nextcloud connection, mismatched private Vault-target seal or
+   changed source fingerprint refuses enabling. The durable target seal
+   includes the server, account, selected Vault folder and enrolled root pin.
 3. Checkpoint bootstrap must use a complete 40-character ancestor commit
    whose subject matches the generated Gitea public projection, and which is
    independently confirmed reflected in the actual canonical Vault. The
    source code cannot prove this last fact automatically.
-4. Every run reuses the existing exact policy/plan/conditional WebDAV transport.
+4. Vault-target changes performed through the connection UI create a
+   persistent quarantine marker **before** the new connection is saved.
+   Switching back to the prior target does not clear it. The old checkpoint
+   must be independently reconciled and explicitly reauthorized; deleting
+   the marker to bypass validation is prohibited. Credential-only changes
+   for the same target do not invalidate the sealed Vault identity.
+5. Every run reuses the existing exact policy/plan/conditional WebDAV transport.
    The `CorePromotionJob` is an admission/status wrapper, not a replacement
    for conflict checks or canonical readback.
-5. On crashes, lost responses or an unclassified exception, result is
+6. On crashes, lost responses or an unclassified exception, result is
    **indeterminate**. No automatic replay or new request ID is allowed until
    the operator has reconciled the private checkpoint, receipt and Vault state.
-6. Separate Snapshot and Daily jobs remain operational if Promotion is
+7. Separate Snapshot and Daily jobs remain operational if Promotion is
    unavailable or fails. Do not treat a public Core Git SHA as proof that
    Live Vault has been updated.
 

@@ -5,7 +5,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 from .artifact_lifecycle import sha256_bytes
 from .core_promotion_transport import PromotionTransportError, initialize_checkpoint
@@ -34,6 +34,7 @@ def bootstrap_production_checkpoint(
     core_commit: str,
     repository_url: str = CORE_REPOSITORY_URL,
     git_runner: GitRunner = _run_git,
+    before_checkpoint: Callable[[str, str, str], None] | None = None,
 ) -> tuple[str, str, Path]:
     if repository_url != CORE_REPOSITORY_URL and git_runner is _run_git:
         raise PromotionDeploymentError("production Core repository URL is fixed to upiscium/ObsidianCore")
@@ -79,6 +80,11 @@ def bootstrap_production_checkpoint(
         try:
             load_config(config_path)
             policy_sha = sha256_bytes(config_path.read_bytes())
+            # Optional target seal is written only AFTER the requested Core
+            # baseline has passed ancestry, generated-subject and policy
+            # validation, but BEFORE the checkpoint becomes authoritative.
+            if before_checkpoint is not None:
+                before_checkpoint(resolved, head, policy_sha)
             initialize_checkpoint(
                 checkpoint_path,
                 core_commit=resolved,

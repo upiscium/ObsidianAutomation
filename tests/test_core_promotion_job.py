@@ -41,6 +41,8 @@ def test_new_install_off_by_default_and_manual_verified(tmp_path):
         run = job.run(receipt["run_id"])
         assert run["status"] == "promoted"
         assert run["receipt_sha256"] == RECEIPT
+        assert run["source_matches_current"] is True
+        assert "source_generation" not in run
         assert job.status()["job"] == "core_promotion"
 
 
@@ -121,3 +123,16 @@ def test_bad_settings_rejected_and_disconnected_job_cannot_enable(tmp_path):
         with pytest.raises(Invalid):
             job.update({"enabled": "yes", "interval_seconds": 60})
         assert job.submit("9" * 32) == ("unconfigured", None)
+
+
+def test_previous_success_not_relabelled_as_current_after_source_rotation(tmp_path):
+    generation = ["e" * 64]
+    with create(tmp_path, source_generation=lambda: generation[0]) as job:
+        accepted, receipt = job.submit("c" * 32)
+        assert accepted == "accepted"
+        job._worker.join(timeout=3)
+        assert job.run(receipt["run_id"])["source_matches_current"] is True
+        generation[0] = "f" * 64
+        assert job.run(receipt["run_id"])["status"] == "promoted"
+        assert job.run(receipt["run_id"])["source_matches_current"] is False
+        assert job.status()["last_run"]["source_matches_current"] is False

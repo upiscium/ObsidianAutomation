@@ -55,7 +55,10 @@ class CorePromotionJob:
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.execute("CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK(id=1), enabled INTEGER NOT NULL, interval_seconds INTEGER NOT NULL, next_due REAL, source_generation TEXT)")
             self.db.execute("INSERT OR IGNORE INTO settings VALUES (1,0,3600,NULL,NULL)")
-            self.db.execute("CREATE TABLE IF NOT EXISTS runs (run_id TEXT PRIMARY KEY, request_id TEXT UNIQUE NOT NULL, trigger TEXT NOT NULL, status TEXT NOT NULL, created REAL NOT NULL, completed REAL, base_commit TEXT, head_commit TEXT, plan_sha256 TEXT, receipt_sha256 TEXT)")
+            self.db.execute("CREATE TABLE IF NOT EXISTS runs (run_id TEXT PRIMARY KEY, request_id TEXT UNIQUE NOT NULL, trigger TEXT NOT NULL, status TEXT NOT NULL, created REAL NOT NULL, completed REAL, base_commit TEXT, head_commit TEXT, plan_sha256 TEXT, receipt_sha256 TEXT, source_generation TEXT)")
+            columns = {row[1] for row in self.db.execute("PRAGMA table_info(runs)")}
+            if "source_generation" not in columns:
+                self.db.execute("ALTER TABLE runs ADD COLUMN source_generation TEXT")
             self.db.execute("UPDATE runs SET status='indeterminate',completed=? WHERE status IN ('queued','running')", (clock(),))
             self.db.commit()
         except BaseException:
@@ -143,12 +146,20 @@ class CorePromotionJob:
             return None
         with self._lock:
             row = self.db.execute(
-                "SELECT run_id,request_id,trigger,status,created,completed,base_commit,head_commit,plan_sha256,receipt_sha256 FROM runs WHERE run_id=?",
+                "SELECT run_id,request_id,trigger,status,created,completed,base_commit,head_commit,plan_sha256,receipt_sha256,source_generation FROM runs WHERE run_id=?",
                 (run_id,),
             ).fetchone()
-            return dict(zip(("run_id", "request_id", "trigger", "status", "created",
-                             "completed", "base_commit", "head_commit",
-                             "plan_sha256", "receipt_sha256"), row)) if row else None
+            if row is None:
+                return None
+            result = dict(zip(("run_id", "request_id", "trigger", "status",
+                               "created", "completed", "base_commit", "head_commit",
+                               "plan_sha256", "receipt_sha256"), row[:10]))
+            # Browser sees a Boolean only, never credential-derived digests.
+            result["source_matches_current"] = (
+                row[10] is not None and row[10] == self._generation()
+                and self.configured()
+            )
+            return result
 
     def status(self):
         with self._lock:
@@ -180,10 +191,13 @@ class CorePromotionJob:
             ).fetchone():
                 return "busy", None
             run_id = uuid.uuid4().hex
+            generation = self._generation()
+            if generation is None:
+                return "unconfigured", None
             with self.db:
                 self.db.execute(
-                    "INSERT INTO runs (run_id,request_id,trigger,status,created) VALUES (?,?,?,?,?)",
-                    (run_id, request_id, trigger, "queued", self.clock()),
+                    "INSERT INTO runs (run_id,request_id,trigger,status,created,source_generation) VALUES (?,?,?,?,?,?)",
+                    (run_id, request_id, trigger, "queued", self.clock(), generation),
                 )
             self._worker = threading.Thread(target=self._execute, args=(run_id,), daemon=False)
             try:

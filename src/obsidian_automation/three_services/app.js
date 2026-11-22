@@ -56,11 +56,21 @@
     const s=x.last_run?.status;
     if(s==="queued"||s==="running")return {kind:"running",label:"実行中"};
     if(n==="snapshot"&&(s==="saved"||s==="no_changes"))
-      return x.last_run.stage==="verify"?{kind:"ok",label:"保存・検証済み"}:{kind:"unknown",label:"結果未検証"};
-    if(n==="daily"&&s==="published")return {kind:"ok",label:"Daily反映済み"};
-    if(n==="core-promotion"&&s==="promoted")
-      return x.last_run.receipt_sha256?{kind:"ok",label:"反映・検証済み"}:{kind:"unknown",label:"結果未検証"};
-    if(n==="core-promotion"&&s==="up_to_date")return {kind:"ok",label:"最新・Live照合済み"};
+      return x.settings.gitea_write==="verified"&&x.last_run.stage==="verify"
+        ?{kind:"ok",label:"保存・検証済み"}
+        :{kind:"unknown",label:"旧接続先の履歴・現接続先は未検証"};
+    if(n==="daily"&&s==="published")
+      return x.settings.configured===true
+        ?{kind:"ok",label:"Daily反映済み"}
+        :{kind:"unknown",label:"旧接続先の履歴・現接続先は未検証"};
+    if(n==="core-promotion"&&(s==="promoted"||s==="up_to_date")){
+      if(x.settings.configured!==true||x.last_run.source_matches_current!==true)
+        return {kind:"unknown",label:"旧接続先の履歴・現接続先は未検証"};
+      if(s==="promoted")
+        return x.last_run.receipt_sha256?{kind:"ok",label:"反映・検証済み"}
+                                        :{kind:"unknown",label:"結果未検証"};
+      return {kind:"ok",label:"最新・Live照合済み"};
+    }
     if(["failed","publish_failed","conflict","live_drift"].includes(s))return {kind:"error",label:s==="live_drift"?"Live driftを検出":"失敗・競合"};
     if(["indeterminate","unconfirmed"].includes(s))return {kind:"unknown",label:"結果不明・要確認"};
     if(s==="preview_ready")return {kind:"unknown",label:"Previewのみ・未反映"};
@@ -107,6 +117,9 @@
       $("core-promotion-bootstrap").disabled=busy||d.checkpoint_initialized||
         typeof policy!=="string"||!/^[0-9a-f]{64}$/.test(policy);
       $("core-promotion-bootstrap-section").hidden=d.checkpoint_initialized;
+      if(d.requires_reauthorization===true)
+        msg("core-promotion-message",
+            "接続先Vaultが変更されたため、旧Checkpointでの実行を拒否しています。新しい基準の独立照合が必要です。");
     }catch(e){policy=null;$("core-promotion-bootstrap").disabled=true;}
   }
   async function action(n,kind){

@@ -28,6 +28,7 @@ def ready(tmp_path, monkeypatch):
     shared = SyntheticSharedStore(tmp_path)
     runtime = CorePromotionRuntime(tmp_path, shared, lambda: None)
     runtime.policy_path.write_bytes(runtime.policy_bytes)
+    runtime._ensure_target_binding(runtime._target_identity(), "a" * 40)
     monkeypatch.setattr(module, "load_checkpoint", lambda _: SimpleNamespace(
         source_repository=CORE_REPOSITORY, policy_version=PROMOTION_POLICY_VERSION,
         policy_sha256=runtime.policy_sha256,
@@ -106,6 +107,7 @@ def test_bootstrap_explicit_sha_and_no_canonical_put(tmp_path, monkeypatch):
     calls = []
     def fake_bootstrap(**kwargs):
         calls.append(kwargs)
+        kwargs["before_checkpoint"]("a"*40, "b"*40, runtime.policy_sha256)
         runtime.checkpoint_path.write_text("synthetic-checkpoint")
         return "a"*40, "b"*40, runtime.checkpoint_path
     monkeypatch.setattr(module, "bootstrap_production_checkpoint", fake_bootstrap)
@@ -115,5 +117,75 @@ def test_bootstrap_explicit_sha_and_no_canonical_put(tmp_path, monkeypatch):
     assert result["baseline_commit"] == "a"*40
     assert len(calls) == 1
     assert runtime.policy_path.read_bytes() == runtime.policy_bytes
+    assert runtime._target_bound() is True
+    assert runtime._binding()["core_commit"] == "a" * 40
     with pytest.raises(Invalid):
         runtime.bootstrap({"core_commit":"a"*40, "policy_sha256":runtime.policy_sha256})
+
+
+def test_checkpoint_bound_to_exact_vault_target_and_sticky_quarantine(tmp_path, monkeypatch):
+    runtime, shared = ready(tmp_path, monkeypatch)
+    original = dict(shared.connection)
+    assert runtime.configured() is True
+    assert runtime._target_bound() is True
+
+    # Moving to another Vault with the same Core policy may not reuse a
+    # checkpoint even for a manual Run Once while the scheduler is OFF.
+    shared.connection["vault_folder"] = "Other Vault"
+    assert runtime.configured() is False
+    assert runtime.status()["requires_reauthorization"] is True
+    with pytest.raises(Invalid):
+        runtime.run()
+
+    # UI-controlled A->B->A rotation burns the old target authority
+    # permanently, even if the saved connection later looks like A again.
+    shared.connection = dict(original)
+    assert runtime.quarantine_for_target_change(
+        {**original, "vault_folder": "Other Vault"}
+    ) is True
+    assert runtime.quarantine_path.read_bytes() == b"target_changed\n"
+    assert runtime.configured() is False
+    shared.connection["vault_folder"] = "Other Vault"
+    shared.connection["vault_folder"] = original["vault_folder"]
+    assert runtime.configured() is False
+    with pytest.raises(Invalid):
+        runtime.run()
+
+
+def test_same_target_credential_rotation_is_not_target_change(tmp_path, monkeypatch):
+    runtime, shared = ready(tmp_path, monkeypatch)
+    candidate = {**shared.connection, "nextcloud_password": "ROTATED-SYNTHETIC"}
+    assert runtime.quarantine_for_target_change(candidate) is False
+    shared.connection.update(candidate)
+    assert runtime.configured() is True
+    assert not runtime.quarantine_path.exists()
+
+
+def test_target_binding_cannot_be_replaced_or_retargeted(tmp_path, monkeypatch):
+    runtime, shared = ready(tmp_path, monkeypatch)
+    original = runtime._target_identity()
+    assert runtime.target_binding_path.stat().st_mode & 0o777 == 0o600
+    runtime._ensure_target_binding(original, "a" * 40)
+    with pytest.raises(Invalid):
+        runtime._ensure_target_binding(original, "b" * 40)
+    shared.connection["vault_folder"] = "new"
+    with pytest.raises(Invalid):
+        runtime._ensure_target_binding(runtime._target_identity(), "a" * 40)
+
+
+def test_invalid_generated_baseline_must_not_seal_target(tmp_path, monkeypatch):
+    from obsidian_automation.promotion_deployment import PromotionDeploymentError
+
+    store = SyntheticSharedStore(tmp_path)
+    runtime = CorePromotionRuntime(tmp_path, store, lambda: None)
+
+    def invalid_baseline(**kwargs):
+        # The real bootstrap rejects non-generated or nonancestor commits
+        # before invoking its new before_checkpoint callback.
+        raise PromotionDeploymentError("not_a_generated_projection")
+
+    monkeypatch.setattr(module, "bootstrap_production_checkpoint", invalid_baseline)
+    with pytest.raises(PromotionDeploymentError):
+        runtime.bootstrap({"core_commit":"a"*40, "policy_sha256":runtime.policy_sha256})
+    assert not runtime.checkpoint_path.exists()
+    assert not runtime.target_binding_path.exists()
