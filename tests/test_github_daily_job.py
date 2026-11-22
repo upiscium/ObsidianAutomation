@@ -28,7 +28,9 @@ def test_daily_job_default_off_configuration_and_invalid_settings(tmp_path):
     with DailyJob(state, successful_preview) as job:
         assert job.status()["settings"] == {
             "enabled": False, "interval_seconds": 86400,
-            "next_due": None, "configured": False}
+            "next_due": None, "configured": False,
+            "schedule": {"mode": "legacy_interval", "timezone": None,
+                         "anchor_local_time": None, "revision": 0}}
         assert job.status()["last_run"] is None
         assert job.submit(uuid.uuid4().hex)[0] == "unconfigured"
         assert job.tick() is False

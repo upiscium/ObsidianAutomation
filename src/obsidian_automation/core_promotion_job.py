@@ -15,6 +15,11 @@ import uuid
 from pathlib import Path
 from typing import Callable, Mapping
 
+from .phase_schedule import (
+    StaleScheduleError, due_after_tick, due_for_update, missed,
+    parse_update, schedule_status, upgrade_settings,
+)
+
 _ID = re.compile(r"[0-9a-f]{32}\Z")
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
@@ -54,7 +59,8 @@ class CorePromotionJob:
             self.db = sqlite3.connect(state / "job.sqlite3", check_same_thread=False)
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.execute("CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK(id=1), enabled INTEGER NOT NULL, interval_seconds INTEGER NOT NULL, next_due REAL, source_generation TEXT)")
-            self.db.execute("INSERT OR IGNORE INTO settings VALUES (1,0,3600,NULL,NULL)")
+            self.db.execute("INSERT OR IGNORE INTO settings (id,enabled,interval_seconds,next_due,source_generation) VALUES (1,0,3600,NULL,NULL)")
+            upgrade_settings(self.db)
             self.db.execute("CREATE TABLE IF NOT EXISTS runs (run_id TEXT PRIMARY KEY, request_id TEXT UNIQUE NOT NULL, trigger TEXT NOT NULL, status TEXT NOT NULL, created REAL NOT NULL, completed REAL, base_commit TEXT, head_commit TEXT, plan_sha256 TEXT, receipt_sha256 TEXT, source_generation TEXT)")
             columns = {row[1] for row in self.db.execute("PRAGMA table_info(runs)")}
             if "source_generation" not in columns:
@@ -102,14 +108,16 @@ class CorePromotionJob:
 
     def settings(self):
         with self._lock:
-            enabled, interval, due, generation = self.db.execute(
-                "SELECT enabled,interval_seconds,next_due,source_generation FROM settings WHERE id=1"
+            enabled, interval, due, generation, tz, anchor, revision = self.db.execute(
+                "SELECT enabled,interval_seconds,next_due,source_generation,"
+                "schedule_tz,schedule_anchor,schedule_revision FROM settings WHERE id=1"
             ).fetchone()
             current = self._generation()
             bound = (not enabled or (current is not None and current == generation))
             return {"enabled": bool(enabled), "interval_seconds": interval,
                     "next_due": due if enabled else None,
-                    "configured": self.configured(), "source_bound": bound}
+                    "configured": self.configured(), "source_bound": bound,
+                    "schedule": schedule_status(tz,anchor,revision)}
 
     def _unresolved(self) -> bool:
         """An ambiguous past effect requires operator reconciliation."""
@@ -118,27 +126,39 @@ class CorePromotionJob:
         ).fetchone() is not None
 
     def update(self, payload: dict):
-        if (type(payload) is not dict or set(payload) != {"enabled", "interval_seconds"}
-            or type(payload["enabled"]) is not bool
-            or type(payload["interval_seconds"]) is not int
-            or not 60 <= payload["interval_seconds"] <= 86400):
-            raise Invalid("invalid_core_promotion_settings")
         with self._lock:
-            if payload["enabled"] and not self.configured():
-                raise Invalid("core_promotion_not_configured")
-            if payload["enabled"] and self._unresolved():
-                raise Invalid("core_promotion_requires_reconciliation")
             old = self.settings()
-            gen = self._generation() if payload["enabled"] else None
-            due = (self.clock() + payload["interval_seconds"] if payload["enabled"]
-                   and (not old["enabled"] or old["interval_seconds"] != payload["interval_seconds"]
-                        or not old["source_bound"])
-                   else old["next_due"] if payload["enabled"] else None)
+            try:
+                enabled,interval,tz,anchor = parse_update(
+                    payload, prefix=frozenset({"enabled","interval_seconds"}),
+                    minimum=60, old=old)
+            except StaleScheduleError:
+                raise
+            except ValueError:
+                raise Invalid("invalid_core_promotion_settings") from None
+            if enabled and not self.configured():
+                raise Invalid("core_promotion_not_configured")
+            if enabled and self._unresolved():
+                raise Invalid("core_promotion_requires_reconciliation")
+            if (enabled == old["enabled"]
+                and interval == old["interval_seconds"]
+                and tz == old["schedule"]["timezone"]
+                and anchor == old["schedule"]["anchor_local_time"]
+                and (not enabled or old["source_bound"])):
+                return old
+            gen = self._generation() if enabled else None
+            due = due_for_update(self.clock(), old, enabled, interval, tz, anchor)
+            if enabled and not old["source_bound"]:
+                due = (due_after_tick(self.clock(),interval,{
+                    "mode": "anchored" if tz else "legacy_interval",
+                    "timezone": tz, "anchor_local_time": anchor}) if tz else self.clock()+interval)
             with self.db:
                 self.db.execute(
-                    "UPDATE settings SET enabled=?,interval_seconds=?,next_due=?,source_generation=? WHERE id=1",
-                    (int(payload["enabled"]), payload["interval_seconds"], due, gen),
-                )
+                    "UPDATE settings SET enabled=?,interval_seconds=?,next_due=?,"
+                    "source_generation=?,schedule_tz=?,schedule_anchor=?,"
+                    "schedule_revision=? WHERE id=1",
+                    (int(enabled),interval,due,gen,tz,anchor,
+                     old["schedule"]["revision"]+1))
             return self.settings()
 
     def run(self, run_id: str):
@@ -248,15 +268,23 @@ class CorePromotionJob:
             settings = self.settings()
             if self._unresolved():
                 return False
+            now = self.clock()
+            due = settings["next_due"]
             if (not settings["enabled"] or not settings["configured"]
-                or not settings["source_bound"] or settings["next_due"] is None
-                or self.clock() < settings["next_due"]):
+                or not settings["source_bound"] or due is None or now < due):
                 return False
-            if self.db.execute(
+            busy = self.db.execute(
                 "SELECT 1 FROM runs WHERE status IN ('queued','running') LIMIT 1"
-            ).fetchone():
+            ).fetchone() is not None
+            if busy or missed(now,due,settings["schedule"]):
+                if settings["schedule"]["mode"] == "anchored":
+                    with self.db:
+                        self.db.execute("UPDATE settings SET next_due=? WHERE id=1",
+                                        (due_after_tick(now,settings["interval_seconds"],
+                                                        settings["schedule"]),))
                 return False
             with self.db:
                 self.db.execute("UPDATE settings SET next_due=? WHERE id=1",
-                                (self.clock() + settings["interval_seconds"],))
+                                (due_after_tick(now,settings["interval_seconds"],
+                                                settings["schedule"]),))
             return self.submit(uuid.uuid4().hex, "scheduled")[0] == "accepted"

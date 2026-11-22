@@ -33,7 +33,9 @@ def test_new_install_off_by_default_and_manual_verified(tmp_path):
     with create(tmp_path) as job:
         assert job.settings() == {
             "enabled": False, "interval_seconds": 3600,
-            "next_due": None, "configured": True, "source_bound": True
+            "next_due": None, "configured": True, "source_bound": True,
+            "schedule": {"mode": "legacy_interval", "timezone": None,
+                         "anchor_local_time": None, "revision": 0}
         }
         outcome, receipt = job.submit("1" * 32)
         assert outcome == "accepted"

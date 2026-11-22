@@ -14,6 +14,11 @@ import uuid
 from pathlib import Path
 from typing import Callable
 
+from .phase_schedule import (
+    StaleScheduleError, due_after_tick, due_for_update, missed,
+    parse_update, schedule_status, upgrade_settings,
+)
+
 _ID = re.compile(r"[a-f0-9]{32}\Z")
 _SHA = re.compile(r"[a-f0-9]{64}\Z")
 _DATE = re.compile(r"20\d{2}-\d{2}-\d{2}\Z")
@@ -76,7 +81,8 @@ class DailyJob:
             self.db.execute("CREATE TABLE IF NOT EXISTS settings "
                             "(id INTEGER PRIMARY KEY CHECK(id=1), enabled INTEGER NOT NULL, "
                             "interval_seconds INTEGER NOT NULL, next_due REAL)")
-            self.db.execute("INSERT OR IGNORE INTO settings VALUES (1,0,86400,NULL)")
+            self.db.execute("INSERT OR IGNORE INTO settings (id,enabled,interval_seconds,next_due) VALUES (1,0,86400,NULL)")
+            upgrade_settings(self.db)
             self.db.execute("CREATE TABLE IF NOT EXISTS runs ("
                             "run_id TEXT PRIMARY KEY, request_id TEXT UNIQUE NOT NULL, "
                             "trigger TEXT NOT NULL, status TEXT NOT NULL, created REAL NOT NULL, "
@@ -147,29 +153,40 @@ class DailyJob:
 
     def settings(self) -> dict:
         with self._lock:
-            enabled, interval, due = self.db.execute(
-                "SELECT enabled,interval_seconds,next_due FROM settings WHERE id=1"
+            enabled, interval, due, tz, anchor, revision = self.db.execute(
+                "SELECT enabled,interval_seconds,next_due,schedule_tz,"
+                "schedule_anchor,schedule_revision FROM settings WHERE id=1"
             ).fetchone()
             return {"enabled": bool(enabled), "interval_seconds": interval,
                     "next_due": due if enabled else None,
-                    "configured": self.configured()}
+                    "configured": self.configured(),
+                    "schedule": schedule_status(tz,anchor,revision)}
 
     def update(self, payload: dict) -> dict:
-        if (type(payload) is not dict or set(payload) != {"enabled","interval_seconds"}
-                or type(payload["enabled"]) is not bool
-                or type(payload["interval_seconds"]) is not int
-                or not 3600 <= payload["interval_seconds"] <= 86400):
-            raise Invalid("invalid_daily_settings")
         with self._lock:
-            if payload["enabled"] and not self.configured():
-                raise Invalid("daily_connections_missing")
             old = self.settings()
-            due = (self.clock() + payload["interval_seconds"] if payload["enabled"] and
-                   (not old["enabled"] or old["interval_seconds"] != payload["interval_seconds"])
-                   else old["next_due"] if payload["enabled"] else None)
+            try:
+                enabled,interval,tz,anchor = parse_update(
+                    payload, prefix=frozenset({"enabled","interval_seconds"}),
+                    minimum=3600, old=old)
+            except StaleScheduleError:
+                raise
+            except ValueError:
+                raise Invalid("invalid_daily_settings") from None
+            if enabled and not self.configured():
+                raise Invalid("daily_connections_missing")
+            if (enabled == old["enabled"]
+                and interval == old["interval_seconds"]
+                and tz == old["schedule"]["timezone"]
+                and anchor == old["schedule"]["anchor_local_time"]):
+                return old
+            due = due_for_update(self.clock(), old, enabled, interval, tz, anchor)
             with self.db:
-                self.db.execute("UPDATE settings SET enabled=?,interval_seconds=?,next_due=? WHERE id=1",
-                                (int(payload["enabled"]),payload["interval_seconds"],due))
+                self.db.execute(
+                    "UPDATE settings SET enabled=?,interval_seconds=?,next_due=?,"
+                    "schedule_tz=?,schedule_anchor=?,schedule_revision=? WHERE id=1",
+                    (int(enabled), interval, due, tz, anchor,
+                     old["schedule"]["revision"]+1))
             return self.settings()
 
     def run(self, run_id: str) -> dict | None:
@@ -360,25 +377,34 @@ class DailyJob:
                      failure_stage,failure_code,run_id))
 
     def tick(self) -> bool:
-        """The parent Snapshot app invokes this from its one scheduler thread."""
+        """One durable scheduler admission; skip missed JST phase slots."""
         with self._lock:
             s = self.settings()
-            if not (s["enabled"] and s["configured"] and s["next_due"] is not None
-                    and self.clock() >= s["next_due"]):
+            now = self.clock()
+            due = s["next_due"]
+            if (not s["enabled"] or not s["configured"] or due is None
+                or now < due):
                 return False
-            if self.db.execute("SELECT 1 FROM runs WHERE status IN ('queued','running') LIMIT 1").fetchone():
+            busy = self.db.execute(
+                "SELECT 1 FROM runs WHERE status IN ('queued','running') LIMIT 1"
+            ).fetchone() is not None
+            if busy or missed(now,due,s["schedule"]):
+                if s["schedule"]["mode"] == "anchored":
+                    with self.db:
+                        self.db.execute("UPDATE settings SET next_due=? WHERE id=1",
+                                        (due_after_tick(now,s["interval_seconds"],
+                                                        s["schedule"]),))
                 return False
-            # Job admission and the next schedule must commit atomically.
-            # A crash after commit cannot leave an expired due time which
-            # re-admits an unconfirmed source collection on restart.
+            # Job admission and next schedule commit atomically.
             run_id, request_id = uuid.uuid4().hex, uuid.uuid4().hex
             generation = self._generation()
             with self.db:
                 self.db.execute(
                     "INSERT INTO runs (run_id,request_id,trigger,status,created,source_generation) "
                     "VALUES (?,?,'scheduled','queued',?,?)",
-                    (run_id,request_id,self.clock(),generation))
+                    (run_id,request_id,now,generation))
                 self.db.execute("UPDATE settings SET next_due=? WHERE id=1",
-                                (self.clock()+s["interval_seconds"],))
+                                (due_after_tick(now,s["interval_seconds"],
+                                                s["schedule"]),))
             self._launch_worker(run_id)
             return True

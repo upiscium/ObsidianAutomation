@@ -10,6 +10,11 @@ import uuid
 from pathlib import Path
 from typing import Callable
 
+from .phase_schedule import (
+    StaleScheduleError, due_after_tick, due_for_update, missed,
+    parse_update, schedule_status, upgrade_settings,
+)
+
 _ID = re.compile(r"[a-f0-9]{32}\Z")
 TERMINAL = {"saved", "no_changes", "failed", "unconfirmed"}
 
@@ -53,7 +58,8 @@ class SnapshotJob:
                 self.db.execute("UPDATE settings SET enabled=0,next_due=NULL WHERE id=1")
                 self.db.execute("UPDATE connection_write SET verified=0 WHERE id=1")
                 self.db.execute("INSERT OR REPLACE INTO connection_binding VALUES (1,?)", (connection_generation,))
-        self.db.execute("INSERT OR IGNORE INTO settings VALUES (1,0,300,NULL,'nextcloud','gitea')")
+        self.db.execute("INSERT OR IGNORE INTO settings (id,enabled,interval,next_due,source_name,destination_name) VALUES (1,0,300,NULL,'nextcloud','gitea')")
+        upgrade_settings(self.db)
         if not configured:
             self.db.execute("UPDATE settings SET enabled=0,next_due=NULL WHERE id=1")
             self.db.execute("UPDATE connection_write SET verified=0 WHERE id=1")
@@ -79,12 +85,14 @@ class SnapshotJob:
 
     def settings(self) -> dict:
         with self._lock:
-            enabled, interval, due, source, destination = self.db.execute(
-                "SELECT enabled,interval,next_due,source_name,destination_name FROM settings WHERE id=1"
+            enabled, interval, due, source, destination, tz, anchor, revision = self.db.execute(
+                "SELECT enabled,interval,next_due,source_name,destination_name,"
+                "schedule_tz,schedule_anchor,schedule_revision FROM settings WHERE id=1"
             ).fetchone()
             return dict(version=1, configured=self.configured, enabled=bool(enabled),
                         interval_seconds=interval, next_due=due if enabled else None,
                         source_name=source, destination_name=destination,
+                        schedule=schedule_status(tz, anchor, revision),
                         gitea_write="verified" if self.db.execute("SELECT verified FROM connection_write WHERE id=1").fetchone()[0] else "unverified")
 
     def connections_saved(self, generation: str | None = None) -> None:
@@ -98,20 +106,34 @@ class SnapshotJob:
             self.configured = True
 
     def update(self, payload: dict) -> dict:
-        if type(payload) is not dict or set(payload) != {"enabled", "interval_seconds", "source_name", "destination_name"}:
-            raise Invalid("invalid_settings")
-        enabled, interval = payload["enabled"], payload["interval_seconds"]
-        if (type(enabled) is not bool or type(interval) is not int or not 60 <= interval <= 86400
-                or payload["source_name"] != "nextcloud" or payload["destination_name"] != "gitea"):
-            raise Invalid("invalid_settings")
         with self._lock:
             previous = self.settings()
-            due = (self.clock() + interval if enabled and
-                   (not previous["enabled"] or interval != previous["interval_seconds"])
-                   else previous["next_due"] if enabled else None)
+            if (type(payload) is not dict
+                or payload.get("source_name") != "nextcloud"
+                or payload.get("destination_name") != "gitea"):
+                raise Invalid("invalid_settings")
+            try:
+                enabled, interval, tz, anchor = parse_update(
+                    payload, prefix=frozenset({
+                        "enabled", "interval_seconds", "source_name",
+                        "destination_name"
+                    }), minimum=60, old=previous)
+            except StaleScheduleError:
+                raise
+            except ValueError:
+                raise Invalid("invalid_settings") from None
+            revision = previous["schedule"]["revision"]
+            if (enabled == previous["enabled"]
+                and interval == previous["interval_seconds"]
+                and tz == previous["schedule"]["timezone"]
+                and anchor == previous["schedule"]["anchor_local_time"]):
+                return previous
+            due = due_for_update(self.clock(), previous, enabled, interval, tz, anchor)
             with self.db:
-                self.db.execute("UPDATE settings SET enabled=?,interval=?,next_due=? WHERE id=1",
-                                (enabled, interval, due))
+                self.db.execute(
+                    "UPDATE settings SET enabled=?,interval=?,next_due=?,"
+                    "schedule_tz=?,schedule_anchor=?,schedule_revision=? WHERE id=1",
+                    (int(enabled), interval, due, tz, anchor, revision+1))
             return self.settings()
 
     def run(self, run_id: str) -> dict | None:
@@ -168,12 +190,27 @@ class SnapshotJob:
     def tick(self) -> bool:
         with self._lock:
             settings = self.settings()
-            if not settings["enabled"] or not self.configured or settings["next_due"] is None or self.clock() < settings["next_due"]:
+            now = self.clock()
+            due = settings["next_due"]
+            if (not settings["enabled"] or not self.configured
+                or due is None or now < due):
                 return False
-            if self.db.execute("SELECT 1 FROM runs WHERE status IN ('queued','running') LIMIT 1").fetchone():
+            busy = self.db.execute(
+                "SELECT 1 FROM runs WHERE status IN ('queued','running') LIMIT 1"
+            ).fetchone() is not None
+            if busy or missed(now,due,settings["schedule"]):
+                # A late restart or long-running worker may skip the slot.
+                # This is not a catch-up queue or a rerun of uncertain work.
+                if settings["schedule"]["mode"] == "anchored":
+                    with self.db:
+                        self.db.execute("UPDATE settings SET next_due=? WHERE id=1",
+                                        (due_after_tick(now,settings["interval_seconds"],
+                                                        settings["schedule"]),))
                 return False
             with self.db:
-                self.db.execute("UPDATE settings SET next_due=? WHERE id=1", (self.clock() + settings["interval_seconds"],))
+                self.db.execute("UPDATE settings SET next_due=? WHERE id=1",
+                                (due_after_tick(now,settings["interval_seconds"],
+                                                settings["schedule"]),))
             return self.submit(uuid.uuid4().hex, "scheduled")[0] == "accepted"
 
     def start_scheduler(self, *, tick_hooks: tuple[Callable[[], bool], ...] = ()) -> None:

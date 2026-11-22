@@ -4,6 +4,7 @@
   const names=["snapshot","core-promotion","daily"];
   const $=id=>document.getElementById(id);
   const data={};
+  const previewSpecs={},scheduleDirty={};
   let busy=false;
   let policy=null;
   // Reject out-of-order GET responses and those started before a mutation.
@@ -35,7 +36,10 @@
     needs_reconciliation:"未確認のCore Promotionが存在します。CheckpointとVaultの状態を照合するまで再実行できません",
     operation_unavailable:"結果不明です。再送せず、状態を確認してください",
     invalid_field:"項目の値が正しくありません",
-    unreadable_field_draft:"一時保存した設定を読み取れません。管理者による確認が必要です"
+    unreadable_field_draft:"一時保存した設定を読み取れません。管理者による確認が必要です",
+    invalid_schedule:"起点時刻・間隔が不正です。間隔は60秒の倍数かつ24時間を割り切る値にしてください",
+    stale_settings:"別の画面で設定が変わりました。再読込してPreviewし直してください",
+    schedule_revision_required:"旧形式からの設定変更は拒否されました。新しいUIからPreviewしてください"
   };
   const msg=(id,s)=>{$(id).textContent=s;};
   function fieldState(id,state,label){
@@ -109,8 +113,14 @@
     msg(n+"-next",settings.enabled?dateText(settings.next_due):"自動実行Off");
     $(n+"-enabled").disabled=false;
     $(n+"-interval").disabled=false;
-    if(document.activeElement!==$(n+"-enabled"))$(n+"-enabled").checked=settings.enabled;
-    if(document.activeElement!==$(n+"-interval"))$(n+"-interval").value=settings.interval_seconds;
+    if(!scheduleDirty[n]){
+      if(document.activeElement!==$(n+"-enabled"))$(n+"-enabled").checked=settings.enabled;
+      if(document.activeElement!==$(n+"-interval"))$(n+"-interval").value=settings.interval_seconds;
+      if(document.activeElement!==$(n+"-anchor"))
+        $(n+"-anchor").value=settings.schedule?.anchor_local_time??"12:00";
+    }
+    msg(n+"-phase-mode",settings.schedule?.mode==="anchored"?
+      "JSTの壁時計で固定発火":"旧Interval方式（Preview→保存で固定時刻へ移行）");
     $(n+"-save").disabled=busy;
     $(n+"-run").disabled=busy||!settings.configured||(n==="core-promotion"&&settings.source_bound===false);
     if(n==="daily"&&x.publication_enabled===false)
@@ -159,16 +169,55 @@
       policy=null;$("core-promotion-bootstrap").disabled=true;
     }
   }
+  function scheduleRequest(n){
+    const rev=data[n]?.settings?.schedule?.revision??0;
+    const body={enabled:$(n+"-enabled").checked,
+      interval_seconds:Number($(n+"-interval").value),
+      timezone:"Asia/Tokyo",anchor_local_time:$(n+"-anchor").value,
+      expected_revision:rev};
+    if(n==="snapshot"){
+      body.source_name="nextcloud";
+      body.destination_name="gitea";
+    }
+    return body;
+  }
+  async function schedulePreview(n){
+    if(busy)return;
+    if(!data[n]){msg(n+"-message","状態を取得してからPreviewしてください。");return;}
+    const body=scheduleRequest(n),sig=JSON.stringify(body);
+    busy=true;invalidatePendingReads();
+    try{
+      const result=await post("/api/v1/"+n+"/schedule-preview",{
+        timezone:body.timezone,anchor_local_time:body.anchor_local_time,
+        interval_seconds:body.interval_seconds
+      });
+      if(!Array.isArray(result.next_slots)||result.next_slots.length!==3)
+        throw Error("operation_unavailable");
+      if(JSON.stringify(scheduleRequest(n))!==sig)
+        throw Error("stale_settings");
+      previewSpecs[n]=sig;
+      msg(n+"-preview-result","次の3回："+result.next_slots.map(dateText).join(" / "));
+      msg(n+"-message","Preview成功。現在の設定で保存できます。");
+    }catch(e){
+      delete previewSpecs[n];
+      msg(n+"-message",describe(e.message));
+    }finally{busy=false;await refresh();await configuration();}
+  }
   async function action(n,kind){
     if(busy)return;
+    if(kind==="settings"&&previewSpecs[n]!==JSON.stringify(scheduleRequest(n))){
+      msg(n+"-message","保存する前に現在の設定をPreviewしてください。");
+      return;
+    }
     busy=true;
     invalidatePendingReads();
     try{
       if(kind==="settings"){
-        const body={enabled:$(n+"-enabled").checked,interval_seconds:Number($(n+"-interval").value)};
-        if(n==="snapshot"){body.source_name="nextcloud";body.destination_name="gitea";}
+        const body=scheduleRequest(n);
         await post("/api/v1/"+n+"/settings",body);
-        msg(n+"-message","設定を保存しました。実行中のJobは取り消しません。");
+        scheduleDirty[n]=false;
+        delete previewSpecs[n];
+        msg(n+"-message","起点時刻の設定を保存しました。実行中のJobは取り消しません。");
       }else{
         const result=await post("/api/v1/"+n+"/runs",{request_id:requestId()});
         msg(n+"-message","受付 "+result.outcome+" · Run ID "+result.run_id+"。実行結果は別途照合します。");
@@ -451,6 +500,16 @@
   names.forEach(n=>{
     $(n+"-save").addEventListener("click",()=>void action(n,"settings"));
     $(n+"-run").addEventListener("click",()=>void action(n,"runs"));
+    $(n+"-preview").addEventListener("click",()=>void schedulePreview(n));
+    for(const kind of ["enabled","interval","anchor"]){
+      for(const event of ["input","change"]){
+        $(n+"-"+kind).addEventListener(event,()=>{
+          scheduleDirty[n]=true;
+          delete previewSpecs[n];
+          msg(n+"-preview-result","変更後の次回3件をPreviewしてください。");
+        });
+      }
+    }
   });
   $("refresh").addEventListener("click",()=>void Promise.all([
     refresh(),configuration(),vaultRefresh(),connectionRefresh()

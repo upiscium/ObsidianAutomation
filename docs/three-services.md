@@ -187,3 +187,35 @@ A configuration update never silently activates a schedule, invents a
 fourth workflow, or publishes a Vault note. The operator can see
 `✓ 保存済み`, `◌ 一時保存（未検証）`, `● 変更中`, or `未設定` on
 each independent field. Secret inputs remain blank after refresh.
+
+## Phase-locked Scheduler V1 (GitHub Issue #533)
+
+The existing **single embedded scheduler** calls the three independently
+persisted Job tick hooks; no additional timer, worker, LXC or privileged
+systemd action is added.
+
+The optional anchored schedule is explicitly entered in each existing
+Snapshot/Core Promotion/GitHub Daily panel: a supported JST `HH:mm` anchor,
+an integer interval in seconds and enabled/disabled. Preview computes
+the next **three** `Asia/Tokyo` wall-clock slots *without editing state*.
+Only minute-granular intervals dividing 86400 are accepted, with the existing
+minimum per Job (Snapshot/Promotion: 60s; GitHub Daily: 3600s).
+Thus `12:00 + 3600s` at JST 12:37 first fires at 13:00, not at 13:37.
+DST transitions do not apply because V1 is explicitly JST-only.
+
+The SQLite migrations only add versioned phase columns; existing settings,
+enabled states, pending intervals, run IDs and receipts remain untouched until
+an operator explicitly saves an anchored value. Save requires a fresh matching
+Preview in the WebUI and a matching `expected_revision` in the settings API.
+Once anchored, old-form HTTP updates are refused; only internal trusted Job
+pauses may carry the old schema, and these preserve the prior anchor.
+
+At every scheduled tick, the next due is projected onto the original phase,
+not calculated as `now + interval`. More than five seconds past a slot or an
+overlapping Job is a **skipped slot**, never a catch-up burst or an unconfirmed
+effect replay. Core Promotion's existing unresolved effect gate remains
+enforced. The manual Run Once path is independent.
+
+V1 does **not enable live timers**. Synthetic checks cover exact wall-clock
+JST and cross-midnight slots, invalid values, stale revisions, persistence,
+legacy SQLite upgrade, interrupted/busy Jobs and missing CSRF.

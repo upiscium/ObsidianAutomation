@@ -18,6 +18,9 @@ class StubJob:
         return {"version": 1, "job": self.name,
                 "settings": self.settings_value, "last_run": self.receipt}
 
+    def settings(self):
+        return self.settings_value
+
     def update(self, payload):
         self.settings_value["enabled"] = payload["enabled"]
         self.settings_value["interval_seconds"] = payload["interval_seconds"]
