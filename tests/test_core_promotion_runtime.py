@@ -189,3 +189,60 @@ def test_invalid_generated_baseline_must_not_seal_target(tmp_path, monkeypatch):
         runtime.bootstrap({"core_commit":"a"*40, "policy_sha256":runtime.policy_sha256})
     assert not runtime.checkpoint_path.exists()
     assert not runtime.target_binding_path.exists()
+
+
+def test_legacy_or_malformed_target_seal_does_not_adopt_checkpoint(
+    tmp_path, monkeypatch,
+):
+    runtime, _ = ready(tmp_path, monkeypatch)
+    assert runtime.configured()
+    runtime.target_binding_path.unlink()
+    assert not runtime.configured()
+    runtime.target_binding_path.write_text("{bad-json")
+    assert not runtime.configured()
+    runtime.target_binding_path.write_text('{"untrusted":true}')
+    assert not runtime.configured()
+
+
+def test_root_pin_replacement_invalidates_sealed_target(tmp_path, monkeypatch):
+    from obsidian_automation.vault_root_activation import RootPin
+
+    runtime, _ = ready(tmp_path, monkeypatch)
+    assert runtime.configured()
+    monkeypatch.setattr(module, "current_pin", lambda state: RootPin(
+        path="My Vault", chain=("external-instance-id",), instance_id="external-instance-id",
+    ))
+    assert runtime.configured() is False
+    with pytest.raises(Invalid):
+        runtime.run()
+
+
+def test_crash_after_target_seal_before_checkpoint_is_replay_safe(
+    tmp_path, monkeypatch,
+):
+    store = SyntheticSharedStore(tmp_path)
+    runtime = CorePromotionRuntime(tmp_path, store, lambda: None)
+
+    def crash_after_seal(**kwargs):
+        kwargs["before_checkpoint"]("a"*40, "b"*40, runtime.policy_sha256)
+        raise OSError("synthetic_process_crash_before_checkpoint")
+
+    monkeypatch.setattr(module, "bootstrap_production_checkpoint", crash_after_seal)
+    request = {"core_commit": "a"*40, "policy_sha256": runtime.policy_sha256}
+    with pytest.raises(OSError):
+        runtime.bootstrap(request)
+    assert runtime._target_bound()
+    assert not runtime.checkpoint_path.exists()
+
+    # A different baseline cannot reuse this interrupted authorization.
+    with pytest.raises(Invalid):
+        runtime.bootstrap({**request, "core_commit": "c"*40})
+
+    def finish(**kwargs):
+        kwargs["before_checkpoint"]("a"*40, "b"*40, runtime.policy_sha256)
+        runtime.checkpoint_path.write_text("synthetic-only")
+        return "a"*40, "b"*40, runtime.checkpoint_path
+
+    monkeypatch.setattr(module, "bootstrap_production_checkpoint", finish)
+    assert runtime.bootstrap(request)["initialized"] is True
+    assert runtime._binding()["core_commit"] == "a"*40
