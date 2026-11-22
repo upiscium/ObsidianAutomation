@@ -53,6 +53,7 @@ async function mount(jobs, configuration = {}, options = {}) {
       hidden: false
     },
     fetch, console,
+    confirm(){return true;},
     setInterval() {},
     Intl, Date, Number, String, Object, Promise
   };
@@ -177,4 +178,106 @@ test("slow pre-mutation refresh cannot overwrite the post-save result", async ()
   for (let i = 0; i < 8; i++)
     await new Promise(resolve => setImmediate(resolve));
   assert.equal(el("snapshot-status").dataset.kind, "unknown");
+});
+
+
+test("each connection value has its own checkmark and one-field Save", async () => {
+  const values=jobs(true,true,true);
+  const state={
+    nextcloud:{fields:{
+      webdav_url:"verified",vault_folder:"verified",
+      nextcloud_user:"verified",nextcloud_password:"missing"
+    }},
+    gitea:{fields:{git_url:"saved",git_user:"missing",git_token:"missing",branch:"missing"}},
+    github:{fields:{github_token:"verified"}}
+  };
+  let submitted=null;
+  const reply=value=>({ok:true,async json(){return value;}});
+  const fake=async(path,options)=>{
+    if(path==="/api/v1/session")return reply({csrf:"fixture"});
+    if(path==="/api/v1/core-promotion/configuration")
+      return reply({policy_sha256:"a".repeat(64),checkpoint_initialized:true});
+    if(path==="/api/v1/vault-root")
+      return reply({active_label:"Vault",enrolled:true,provider:"verified",can_rollback:false});
+    if(path==="/api/v1/vault-bindings")
+      return reply({state:"default",roles:{daily:"00-DailyNote",project:"10-Project",
+                   system:"98-System"},can_reset:false,can_rollback:false});
+    if(path==="/api/v1/nextcloud/connections")return reply(state.nextcloud);
+    if(path==="/api/v1/snapshot/connections")return reply(state.gitea);
+    if(path==="/api/v1/daily/connections")return reply(state.github);
+    if(path==="/api/v1/nextcloud/connections/field"){
+      submitted=JSON.parse(options.body);
+      state.nextcloud.fields[submitted.field]="verified";
+      return reply({field_result:"verified",fields:state.nextcloud.fields});
+    }
+    return reply(values[path]);
+  };
+  const el=await mount(values,{}, {fetch:fake});
+  assert.match(el("status-nextcloud-webdav_url").textContent,/✓ 保存済み/);
+  assert.equal(el("status-nextcloud-nextcloud_password").textContent,"未設定");
+  assert.match(el("status-gitea-git_url").textContent,/一時保存/);
+  assert.match(el("status-github-github_token").textContent,/✓ 保存済み/);
+
+  const field=el("field-nextcloud-nextcloud_password");
+  field.value="fixture-passphrase";
+  field.listeners.input();
+  assert.match(el("status-nextcloud-nextcloud_password").textContent,/変更中/);
+  el("save-nextcloud-nextcloud_password").listeners.click();
+  for(let i=0;i<10;i++)await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(JSON.stringify(submitted),JSON.stringify({
+    field:"nextcloud_password",value:"fixture-passphrase"
+  }));
+  assert.equal(field.value,"");
+  assert.match(el("status-nextcloud-nextcloud_password").textContent,/✓ 保存済み/);
+  assert.match(el("status-nextcloud-vault_folder").textContent,/✓ 保存済み/);
+});
+
+
+test("folder role Preview/Save changes only selected role", async () => {
+  const values=jobs(true,true,true);
+  const status={
+    state:"ok",can_reset:true,can_rollback:false,
+    roles:{daily:"00-DailyNote",project:"10-Project",system:"98-System"}
+  };
+  let previewPayload=null,savePayload=null;
+  const reply=v=>({ok:true,async json(){return v;}});
+  const fetch=async(path,options)=>{
+    if(path==="/api/v1/session")return reply({csrf:"fixture"});
+    if(path==="/api/v1/core-promotion/configuration")
+      return reply({policy_sha256:"a".repeat(64),checkpoint_initialized:true});
+    if(path==="/api/v1/vault-root")
+      return reply({active_label:"Vault",enrolled:true,provider:"verified",can_rollback:false});
+    if(path==="/api/v1/vault-bindings")return reply(status);
+    if(path==="/api/v1/vault-bindings/previews"){
+      previewPayload=JSON.parse(options.body);
+      return reply({status:"candidate_valid",handle:"fixture-handle"});
+    }
+    if(path==="/api/v1/vault-bindings/saves"){
+      savePayload=JSON.parse(options.body);
+      status.roles.daily="01-Daily";
+      return reply({status:"saved",reason:"requires_job_reenable"});
+    }
+    return reply(values[path]);
+  };
+  const el=await mount(values,{}, {fetch});
+  assert.match(el("vault-bindings-project-status").textContent,/✓ 保存済み/);
+  assert.match(fs.readFileSync(
+    "src/obsidian_automation/three_services/index.html","utf8"),
+    /vault-bindings-system-status[^>]*>✓ 固定/);
+  el("vault-bindings-daily").value="01-Daily";
+  el("vault-bindings-daily").listeners.input();
+  assert.match(el("vault-bindings-daily-status").textContent,/未保存/);
+  el("vault-bindings-daily-preview").listeners.click();
+  for(let i=0;i<10;i++)await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(JSON.stringify(previewPayload),JSON.stringify({
+    roles:{daily:"01-Daily"}
+  }));
+  assert.equal(el("vault-bindings-daily-save").disabled,false);
+  el("vault-bindings-daily-save").listeners.click();
+  for(let i=0;i<10;i++)await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(JSON.stringify(savePayload),JSON.stringify({
+    handle:"fixture-handle",confirm:true
+  }));
+  assert.equal(status.roles.project,"10-Project");
+  assert.match(el("vault-bindings-daily-status").textContent,/✓ 保存済み/);
 });

@@ -148,3 +148,39 @@ requalification; do not delete the quarantine marker as a shortcut.
 Configuration Preview is not a confirmed canonical Vault edit.
 
 This extension remains source-only until reviewed and separately deployed.
+
+## One-field settings and individual configured markers
+
+The common Settings UI contains **one save control and one explicit status for
+each Nextcloud (4), Gitea (4), GitHub (1) value**. The Daily/Project Vault
+folder mappings likewise have distinct Preview and Save actions. The System
+mapping is displayed as fixed at `98-System` until Core Promotion supports
+other destinations. Vault root/pin and Core bootstrap show their own status.
+
+New setup values can be saved one at a time. Until a complete provider
+configuration is present, values are held only in a bounded private
+`connection-field-drafts.json` (0600 regular file, no symlink reads). Draft
+status is **saved but unverified**, not a green checkmark or an active source.
+When a provider has all required inputs, the existing full-schema validation,
+read-only credential probe, target-identity quarantine, single-writer Job
+fence, atomic private credential store, and schedule-pausing gates are used.
+If another provider prerequisite becomes ready *after* a complete draft was
+saved, an explicit **Verify saved settings** action applies it without
+requiring any secret to be reentered.
+
+`GET /api/v1/{nextcloud,snapshot,daily}/connections` includes only
+per-field `verified | saved | stale | missing` codes and a
+`ready_to_verify` Boolean. It never returns credential bytes, saved URLs,
+names or stored draft values. `verified` means the configured provider
+passed the normal save-time probe; it is not a claim of continuous live health.
+A stale GitHub token after Nextcloud source rotation is not shown as verified.
+New fixed `POST .../connections/field` endpoints accept only
+`{field,value}` with the existing CSRF/Origin checks and strict field
+allowlists. Fixed `POST .../connections/verify` requires `{}` and only
+commits a complete private draft. The legacy all-fields-at-once setup routes
+remain for existing clients.
+
+A configuration update never silently activates a schedule, invents a
+fourth workflow, or publishes a Vault note. The operator can see
+`✓ 保存済み`, `◌ 一時保存（未検証）`, `● 変更中`, or `未設定` on
+each independent field. Secret inputs remain blank after refresh.

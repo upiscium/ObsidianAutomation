@@ -43,3 +43,20 @@ footer{margin-top:32px;font-size:12px;color:#97a1b2}
 .vault-grid select{width:100%;max-width:100%;box-sizing:border-box}
 .vault-grid .actions{flex-wrap:wrap}
 .vault-grid dl{overflow-wrap:anywhere}
+
+
+/* Per-field persistence: status belongs to each value, not to a whole form. */
+.setting-row{min-width:0;margin:.8rem 0}
+.setting-row>label{display:block;margin-bottom:.35rem}
+.setting-control{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
+.setting-control>input{flex:1 1 190px;min-width:120px;max-width:100%}
+.setting-control>button{flex:0 0 auto}
+.field-state{display:inline-flex;align-items:center;white-space:nowrap;font-size:.8rem;
+  min-width:4.5rem;color:var(--muted,#a6adb9)}
+.field-state[data-state="verified"]{color:#9dd9b1}
+.field-state[data-state="staged"]{color:#e7c78d}
+.field-state[data-state="editing"]{color:#e7c78d}
+.field-state[data-state="fixed"]{color:#9fb8cc}
+.field-state[data-state="failed"]{color:#ecaaa7}
+.connection-provider{min-width:0}
+@media(max-width:540px){.setting-control>input{flex-basis:100%}.setting-control>button{flex-grow:0}}

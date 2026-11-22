@@ -21,6 +21,7 @@ from .github_daily_job import Invalid as DailyInvalid
 from .github_daily_setup import DailySetupError
 from .snapshot_job import Invalid as SnapshotInvalid
 from .snapshot_setup import GITEA_FIELDS, validate, validate_nextcloud
+from .connection_fields import FieldDrafts, FieldError
 from .vault_root_activation import reset_pin_after_connection_save
 
 
@@ -258,20 +259,24 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/v1/session":
                 self._send(200, {"csrf": self.server.csrf.issue()})
                 return
-            if self.path == "/api/v1/nextcloud/connections":
+            if self.path in ("/api/v1/nextcloud/connections",
+                             "/api/v1/snapshot/connections",
+                             "/api/v1/daily/connections"):
                 store = self.server.snapshot_setup
-                self._send(200 if store else 503,
-                           store.nextcloud_status() if store else {"error": "unavailable"})
-                return
-            if self.path == "/api/v1/snapshot/connections":
-                store = self.server.snapshot_setup
-                self._send(200 if store else 503,
-                           store.status() if store else {"error": "unavailable"})
-                return
-            if self.path == "/api/v1/daily/connections":
-                setup = self.server.daily_setup
-                self._send(200 if setup else 503,
-                           setup.status() if setup else {"error": "unavailable"})
+                if store is None:
+                    raise Refused("service_unavailable", 503)
+                drafts = FieldDrafts(store)
+                if self.path.startswith("/api/v1/nextcloud/"):
+                    data = {**store.nextcloud_status(),
+                            **drafts.status("nextcloud")}
+                elif self.path.startswith("/api/v1/snapshot/"):
+                    data = {**store.status(), **drafts.status("gitea")}
+                else:
+                    setup = self.server.daily_setup
+                    if setup is None:
+                        raise Refused("service_unavailable", 503)
+                    data = {**setup.status(), **drafts.status("github", setup)}
+                self._send(200, data)
                 return
             if self.path == "/api/v1/core-promotion/configuration":
                 runtime = self.server.core_promotion_runtime
@@ -310,6 +315,12 @@ class Handler(BaseHTTPRequestHandler):
             "/api/v1/core-promotion/bootstrap",
             "/api/v1/nextcloud/connections",
             "/api/v1/snapshot/connections", "/api/v1/daily/connections",
+            "/api/v1/nextcloud/connections/field",
+            "/api/v1/snapshot/connections/field",
+            "/api/v1/daily/connections/field",
+            "/api/v1/nextcloud/connections/verify",
+            "/api/v1/snapshot/connections/verify",
+            "/api/v1/daily/connections/verify",
             "/api/v1/vault-root/candidates", "/api/v1/vault-root/previews",
             "/api/v1/vault-root/enrollment", "/api/v1/vault-root/activations",
             "/api/v1/vault-root/rollbacks",
@@ -387,26 +398,49 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(code, data)
                 return
             if self.path in ("/api/v1/nextcloud/connections",
-                             "/api/v1/snapshot/connections"):
+                             "/api/v1/snapshot/connections",
+                             "/api/v1/nextcloud/connections/field",
+                             "/api/v1/snapshot/connections/field",
+                             "/api/v1/nextcloud/connections/verify",
+                             "/api/v1/snapshot/connections/verify"):
                 self._save_nextcloud_or_snapshot(payload)
                 return
-            if self.path == "/api/v1/daily/connections":
+            if self.path in ("/api/v1/daily/connections",
+                             "/api/v1/daily/connections/field",
+                             "/api/v1/daily/connections/verify"):
                 setup, job = self.server.daily_setup, self.server.daily_job
                 if setup is None or job is None:
                     raise Refused("service_unavailable", 503)
                 with job._lock:
                     if self._has_running(job):
                         raise Refused("daily_busy")
+                    drafts = FieldDrafts(self.server.snapshot_setup)
+                    is_field = self.path.endswith(("/field","/verify"))
+                    if is_field:
+                        if self.path.endswith("/verify"):
+                            if payload != {}:
+                                raise Refused("invalid_request", 400)
+                            action, candidate = drafts.complete("github", setup)
+                        else:
+                            action, candidate = drafts.prepare("github", payload, setup)
+                        if action != "commit":
+                            self._send(200, {**setup.status(),
+                                             **drafts.status("github", setup),
+                                             "field_result": action})
+                            return
+                        payload = candidate
                     if not setup.save(payload):
                         raise Refused("github_probe_failed", 422)
                     old = job.settings()
                     job.update({"enabled": False, "interval_seconds": old["interval_seconds"]})
-                self._send(200, setup.status())
+                    drafts.committed("github")
+                self._send(200, {**setup.status(),
+                                 **drafts.status("github", setup)})
                 return
             raise Refused("method_not_allowed", 405)
         except Refused as exc:
             self._send(exc.http, {"error": exc.code})
-        except (SnapshotInvalid, DailyInvalid, DailySetupError,
+        except (SnapshotInvalid, DailyInvalid, DailySetupError, FieldError,
                 PromotionInvalid, PromotionSetupInvalid, ValueError, TypeError):
             self._send(400, {"error": "invalid_request"})
         except Exception:
@@ -458,7 +492,25 @@ class Handler(BaseHTTPRequestHandler):
         with self._connection_fence():
             before_daily = daily_setup.source_fingerprint() if daily_setup else None
             promotion_runtime = self.server.core_promotion_runtime
-            if self.path == "/api/v1/snapshot/connections":
+            drafts = FieldDrafts(store)
+            is_field = self.path.endswith(("/field","/verify"))
+            group = ("gitea" if self.path.startswith("/api/v1/snapshot/")
+                     else "nextcloud")
+            if is_field:
+                if self.path.endswith("/verify"):
+                    if payload != {}:
+                        raise Refused("invalid_request", 400)
+                    action, candidate = drafts.complete(group)
+                else:
+                    action, candidate = drafts.prepare(group, payload)
+                if action != "commit":
+                    status = (store.status() if group == "gitea"
+                              else store.nextcloud_status())
+                    self._send(200, {**status, **drafts.status(group),
+                                     "field_result": action})
+                    return
+                payload = candidate
+            if group == "gitea":
                 if type(payload) is dict and set(payload) == GITEA_FIELDS:
                     previous = store.load_nextcloud()
                     if previous is None:
@@ -515,7 +567,9 @@ class Handler(BaseHTTPRequestHandler):
                     promotion.update({
                         "enabled": False, "interval_seconds": old["interval_seconds"]
                     })
-        self._send(200, response)
+            drafts.committed(group)
+        self._send(200, {**response, **drafts.status(group),
+                         "field_result": "verified"})
 
     do_HEAD = lambda self: self._send(405, {"error": "method_not_allowed"})
     do_PUT = lambda self: self._send(405, {"error": "method_not_allowed"})

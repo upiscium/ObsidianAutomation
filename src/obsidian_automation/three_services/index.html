@@ -38,7 +38,7 @@
         <label>実行間隔（秒）<input type="number" id="core-promotion-interval" min="60" max="86400" value="3600" disabled></label>
         <div class="actions"><button id="core-promotion-save" disabled>設定を保存</button><button id="core-promotion-run" class="outline" disabled>Run Once</button></div>
       </div>
-      <details id="core-promotion-bootstrap-section"><summary>初回Checkpoint設定</summary>
+      <details id="core-promotion-bootstrap-section"><summary>初回Checkpoint設定 <span id="core-promotion-checkpoint-status" class="field-state" data-state="loading">確認中</span></summary>
         <p class="muted">公開用Projectionと一致する、レビュー済みObsidianCoreコミットの完全なSHAを指定します。Vault内容が一致することを確認してから実行してください。処理はCheckpointを作成し、Vaultには書き込みません。</p>
         <label>Policy SHA-256<input id="core-promotion-policy" readonly></label>
         <label>基準となるCore commit SHA（40文字）<input id="core-promotion-baseline" type="text" pattern="[0-9a-f]{40}" maxlength="40" autocomplete="off"></label>
@@ -64,7 +64,7 @@
     <div class="vault-grid">
       <section aria-labelledby="vault-root-title">
         <h3 id="vault-root-title">Vault Root</h3>
-        <dl><dt>現在のRoot</dt><dd id="vault-root-active">—</dd><dt>アカウント検証</dt><dd id="vault-root-enrolled">—</dd><dt>Provider</dt><dd id="vault-root-provider">—</dd></dl>
+        <dl><dt>現在のRoot</dt><dd><span id="vault-root-active">—</span> <span id="vault-root-status" class="field-state" data-state="loading">確認中</span></dd><dt>アカウント検証</dt><dd><span id="vault-root-enrolled">—</span> <span id="vault-enrollment-status" class="field-state" data-state="loading">確認中</span></dd><dt>Provider</dt><dd id="vault-root-provider">—</dd></dl>
         <div class="actions"><button type="button" id="vault-root-enroll" class="outline">アカウントを検証</button><button type="button" id="vault-root-list" class="outline">候補フォルダを表示</button></div>
         <label>候補（選択前にPreview）
           <select id="vault-root-candidate" aria-label="Vaultルート候補"><option value="">候補を取得してください</option></select>
@@ -80,12 +80,32 @@
       <section aria-labelledby="vault-bindings-title">
         <h3 id="vault-bindings-title">Folder Mapping</h3>
         <dl><dt>設定状態</dt><dd id="vault-bindings-state">—</dd></dl>
-        <label>Daily<input id="vault-bindings-daily" autocomplete="off" placeholder="00-DailyNote"></label>
-        <label>Project<input id="vault-bindings-project" autocomplete="off" placeholder="10-Project"></label>
-        <label>System（Core Promotionの互換性のため固定）<input id="vault-bindings-system" readonly autocomplete="off" value="98-System"></label>
+        <div class="setting-row">
+          <label for="vault-bindings-daily">Daily</label>
+          <div class="setting-control">
+            <input id="vault-bindings-daily" autocomplete="off" placeholder="00-DailyNote">
+            <button type="button" id="vault-bindings-daily-preview" class="outline">Preview</button>
+            <button type="button" id="vault-bindings-daily-save" disabled>個別保存</button>
+            <span id="vault-bindings-daily-status" class="field-state" role="status" data-state="loading">確認中</span>
+          </div>
+        </div>
+        <div class="setting-row">
+          <label for="vault-bindings-project">Project</label>
+          <div class="setting-control">
+            <input id="vault-bindings-project" autocomplete="off" placeholder="10-Project">
+            <button type="button" id="vault-bindings-project-preview" class="outline">Preview</button>
+            <button type="button" id="vault-bindings-project-save" disabled>個別保存</button>
+            <span id="vault-bindings-project-status" class="field-state" role="status" data-state="loading">確認中</span>
+          </div>
+        </div>
+        <div class="setting-row">
+          <label for="vault-bindings-system">System（Core Promotion互換のため固定）</label>
+          <div class="setting-control">
+            <input id="vault-bindings-system" readonly autocomplete="off" value="98-System">
+            <span id="vault-bindings-system-status" class="field-state" data-state="fixed">✓ 固定</span>
+          </div>
+        </div>
         <div class="actions">
-          <button type="button" id="vault-bindings-preview" class="outline">Preview</button>
-          <button type="button" id="vault-bindings-save" disabled>Mappingを保存</button>
           <button type="button" id="vault-bindings-reset" class="outline">標準配置に戻す</button>
           <button type="button" id="vault-bindings-rollback" class="outline">直前のMappingに戻す</button>
         </div>
@@ -95,29 +115,95 @@
   </details>
   <details class="connections" id="connections">
     <summary>接続設定</summary>
-    <p class="muted">接続先と認証情報はサーバー側で保管します。パスワードやTokenを画面へ再表示しません。</p>
+    <p class="muted">各項目を個別に保存できます。初回設定中の入力はプライベート領域に一時保存され、必要な値が揃った段階で接続を検証します。秘密情報と既存値は表示しません。</p>
     <div class="connection-grid">
-      <form id="nextcloud-form">
+      <section class="connection-provider" aria-label="Nextcloud · 共通">
         <h3>Nextcloud · 共通</h3>
-        <label>WebDAV URL<input type="url" name="webdav_url" required placeholder="https://cloud.example/remote.php/dav/files/user/"></label>
-        <label>Vault folder<input name="vault_folder" required placeholder="Vault"></label>
-        <label>User<input name="nextcloud_user" required></label>
-        <label>App password<input name="nextcloud_password" type="password" required autocomplete="off"></label>
-        <button type="submit">接続を保存</button><p class="feedback" id="nextcloud-message"></p>
-      </form>
-      <form id="gitea-form">
+        <div class="setting-row" data-group="nextcloud" data-field="webdav_url">
+          <label for="field-nextcloud-webdav_url">WebDAV URL</label>
+          <div class="setting-control">
+            <input type="url" id="field-nextcloud-webdav_url" placeholder="https://cloud.example/remote.php/dav/files/user/" autocomplete="off">
+            <button type="button" id="save-nextcloud-webdav_url" class="outline">個別保存</button>
+            <span id="status-nextcloud-webdav_url" class="field-state" data-state="loading" role="status" aria-live="polite">確認中</span>
+          </div>
+        </div>
+        <div class="setting-row" data-group="nextcloud" data-field="vault_folder">
+          <label for="field-nextcloud-vault_folder">Vault folder</label>
+          <div class="setting-control">
+            <input type="text" id="field-nextcloud-vault_folder" placeholder="Vault" autocomplete="off">
+            <button type="button" id="save-nextcloud-vault_folder" class="outline">個別保存</button>
+            <span id="status-nextcloud-vault_folder" class="field-state" data-state="loading" role="status" aria-live="polite">確認中</span>
+          </div>
+        </div>
+        <div class="setting-row" data-group="nextcloud" data-field="nextcloud_user">
+          <label for="field-nextcloud-nextcloud_user">User</label>
+          <div class="setting-control">
+            <input type="text" id="field-nextcloud-nextcloud_user" autocomplete="off">
+            <button type="button" id="save-nextcloud-nextcloud_user" class="outline">個別保存</button>
+            <span id="status-nextcloud-nextcloud_user" class="field-state" data-state="loading" role="status" aria-live="polite">確認中</span>
+          </div>
+        </div>
+        <div class="setting-row" data-group="nextcloud" data-field="nextcloud_password">
+          <label for="field-nextcloud-nextcloud_password">App password</label>
+          <div class="setting-control">
+            <input type="password" id="field-nextcloud-nextcloud_password" autocomplete="new-password">
+            <button type="button" id="save-nextcloud-nextcloud_password" class="outline">個別保存</button>
+            <span id="status-nextcloud-nextcloud_password" class="field-state" data-state="loading" role="status" aria-live="polite">確認中</span>
+          </div>
+        </div>
+        <button type="button" id="verify-nextcloud" class="outline" disabled>保存済み項目の接続を検証</button>
+        <p class="feedback" id="nextcloud-message" role="status"></p>
+      </section>
+      <section class="connection-provider" aria-label="Gitea · Snapshot">
         <h3>Gitea · Snapshot</h3>
-        <label>Git HTTPS URL<input name="git_url" type="url" required placeholder="https://gitea.example/owner/ObsidianVault.git"></label>
-        <label>User<input name="git_user" required></label>
-        <label>Token<input name="git_token" type="password" required autocomplete="off"></label>
-        <label>Branch<input name="branch" value="main" required></label>
-        <button type="submit">接続を保存</button><p class="feedback" id="gitea-message"></p>
-      </form>
-      <form id="github-form">
+        <div class="setting-row" data-group="gitea" data-field="git_url">
+          <label for="field-gitea-git_url">Git HTTPS URL</label>
+          <div class="setting-control">
+            <input type="url" id="field-gitea-git_url" placeholder="https://gitea.example/owner/ObsidianVault.git" autocomplete="off">
+            <button type="button" id="save-gitea-git_url" class="outline">個別保存</button>
+            <span id="status-gitea-git_url" class="field-state" data-state="loading" role="status" aria-live="polite">確認中</span>
+          </div>
+        </div>
+        <div class="setting-row" data-group="gitea" data-field="git_user">
+          <label for="field-gitea-git_user">User</label>
+          <div class="setting-control">
+            <input type="text" id="field-gitea-git_user" autocomplete="off">
+            <button type="button" id="save-gitea-git_user" class="outline">個別保存</button>
+            <span id="status-gitea-git_user" class="field-state" data-state="loading" role="status" aria-live="polite">確認中</span>
+          </div>
+        </div>
+        <div class="setting-row" data-group="gitea" data-field="git_token">
+          <label for="field-gitea-git_token">Token</label>
+          <div class="setting-control">
+            <input type="password" id="field-gitea-git_token" autocomplete="new-password">
+            <button type="button" id="save-gitea-git_token" class="outline">個別保存</button>
+            <span id="status-gitea-git_token" class="field-state" data-state="loading" role="status" aria-live="polite">確認中</span>
+          </div>
+        </div>
+        <div class="setting-row" data-group="gitea" data-field="branch">
+          <label for="field-gitea-branch">Branch</label>
+          <div class="setting-control">
+            <input type="text" id="field-gitea-branch" placeholder="main" autocomplete="off">
+            <button type="button" id="save-gitea-branch" class="outline">個別保存</button>
+            <span id="status-gitea-branch" class="field-state" data-state="loading" role="status" aria-live="polite">確認中</span>
+          </div>
+        </div>
+        <button type="button" id="verify-gitea" class="outline" disabled>保存済み項目の接続を検証</button>
+        <p class="feedback" id="gitea-message" role="status"></p>
+      </section>
+      <section class="connection-provider" aria-label="GitHub · Daily">
         <h3>GitHub · Daily</h3>
-        <label>Access token<input name="github_token" type="password" autocomplete="off" required></label>
-        <button type="submit">接続を保存</button><p class="feedback" id="github-message"></p>
-      </form>
+        <div class="setting-row" data-group="github" data-field="github_token">
+          <label for="field-github-github_token">Access token</label>
+          <div class="setting-control">
+            <input type="password" id="field-github-github_token" autocomplete="new-password">
+            <button type="button" id="save-github-github_token" class="outline">個別保存</button>
+            <span id="status-github-github_token" class="field-state" data-state="loading" role="status" aria-live="polite">確認中</span>
+          </div>
+        </div>
+        <button type="button" id="verify-github" class="outline" disabled>保存済み項目の接続を検証</button>
+        <p class="feedback" id="github-message" role="status"></p>
+      </section>
     </div>
   </details>
   <footer>最終結果が不明な処理は自動再試行しません。停止しても進行中の処理が取り消されるわけではありません。</footer>
