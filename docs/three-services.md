@@ -171,11 +171,19 @@ If another provider prerequisite becomes ready *after* a complete draft was
 saved, an explicit **Verify saved settings** action applies it without
 requiring any secret to be reentered.
 
-`GET /api/v1/{nextcloud,snapshot,daily}/connections` includes only
-per-field `verified | saved | stale | missing` codes and a
-`ready_to_verify` Boolean. It never returns credential bytes, saved URLs,
-names or stored draft values. `verified` means the configured provider
-passed the normal save-time probe; it is not a claim of continuous live health.
+`GET /api/v1/{nextcloud,snapshot,daily}/connections` includes
+per-field `verified | saved | stale | missing` codes, a
+`ready_to_verify` Boolean and a `values` dictionary restricted to
+**nonsecret** fields. The saved (or staged) WebDAV URL, Vault folder,
+Nextcloud username, Gitea Git URL, username and branch are displayed in
+their corresponding inputs. Tokens and passwords are never returned, not
+even encrypted or partially revealed. A field whose secret is configured
+(or staged) gets only a **constant eight-circle placeholder** in the
+password input, while the input's actual `value` remains empty; an empty
+password field cannot overwrite the saved secret with its visual mask.
+A field not configured gets no fake mask. Refresh never overwrites an
+unsaved edited input. `verified` means the configured provider passed
+the normal save-time probe; it is not a claim of continuous live health.
 A stale GitHub token after Nextcloud source rotation is not shown as verified.
 New fixed `POST .../connections/field` endpoints accept only
 `{field,value}` with the existing CSRF/Origin checks and strict field

@@ -81,9 +81,12 @@ def test_independent_initial_fields_staged_private_then_verified(tmp_path):
         for endpoint in ("/api/v1/nextcloud/connections","/api/v1/snapshot/connections"):
             code,body=request(port,"GET",endpoint)
             assert code==200
-            for secret in (NEXTCLOUD["nextcloud_password"],
-                           NEXTCLOUD["webdav_url"], NEXTCLOUD["nextcloud_user"]):
-                assert secret.encode() not in body
+            assert NEXTCLOUD["nextcloud_password"].encode() not in body
+        assert states(port,"nextcloud")["values"] == {
+            field: value for field,value in NEXTCLOUD.items()
+            if field!="nextcloud_password"
+        }
+        assert "nextcloud_password" not in states(port,"nextcloud")["values"]
         assert job.settings()["enabled"] is False
     finally:
         server.shutdown();thread.join(timeout=3);job.close()
@@ -105,8 +108,11 @@ def test_gitea_can_be_completed_one_field_at_time_without_resupplying_nextcloud(
         code,result=field(port,"gitea","branch","main")
         assert code==200 and result["field_result"]=="unchanged"
         assert store.path.read_bytes()==before
-        for secret in (GITEA["git_token"],GITEA["git_url"]):
-            assert secret.encode() not in json.dumps(states(port,"gitea")).encode()
+        assert GITEA["git_token"].encode() not in json.dumps(states(port,"gitea")).encode()
+        assert states(port,"gitea")["values"] == {
+            field: value for field,value in GITEA.items()
+            if field!="git_token"
+        }
         assert job.settings()["enabled"] is False
     finally:
         server.shutdown();thread.join(timeout=3);job.close()
@@ -302,4 +308,75 @@ def test_post_commit_draft_cleanup_failure_is_not_false_invalid_request(
     finally:
         server.shutdown()
         thread.join(timeout=3)
+        job.close()
+
+
+def test_nonsecret_values_returned_for_configured_and_draft_fields_only(tmp_path):
+    """Browser-visible values must be allowlisted; never expose raw secrets."""
+    store, job = setup(tmp_path)
+    server, thread = run_server(store, job)
+    try:
+        port = server.server_port
+        assert states(port, "nextcloud")["values"] == {}
+        assert states(port, "gitea")["values"] == {}
+
+        # Partial source: a harmless URL and account appear before probe.
+        assert field(port, "nextcloud", "webdav_url", NEXTCLOUD["webdav_url"])[0] == 200
+        assert field(port, "nextcloud", "nextcloud_user", NEXTCLOUD["nextcloud_user"])[0] == 200
+        assert field(port, "nextcloud", "nextcloud_password", NEXTCLOUD["nextcloud_password"])[0] == 200
+        source = states(port, "nextcloud")
+        assert source["values"] == {
+            "webdav_url": NEXTCLOUD["webdav_url"],
+            "nextcloud_user": NEXTCLOUD["nextcloud_user"],
+        }
+        assert source["fields"]["nextcloud_password"] == "saved"
+
+        # Saving a full Gitea group (before Nextcloud) shows nonsecret fields.
+        for key, value in GITEA.items():
+            code, response = field(port, "gitea", key, value)
+            assert code == 200 and response["field_result"] == "staged"
+        git = states(port, "gitea")
+        assert git["values"] == {
+            key: value for key, value in GITEA.items() if key != "git_token"
+        }
+        assert "git_token" not in git["values"]
+
+        # Complete and verify Nextcloud and then Gitea without re-entering
+        # credentials; the real values remain available after restart.
+        assert field(port, "nextcloud", "vault_folder", NEXTCLOUD["vault_folder"])[0] == 200
+        code, body = save(port, "/api/v1/snapshot/connections/verify", {})
+        assert code == 200
+        final_source = states(port, "nextcloud")
+        final_git = states(port, "gitea")
+        assert all(v == "verified" for v in final_source["fields"].values())
+        assert all(v == "verified" for v in final_git["fields"].values())
+        assert final_source["values"] == {
+            k:v for k,v in NEXTCLOUD.items() if k != "nextcloud_password"
+        }
+        assert final_git["values"] == {
+            k:v for k,v in GITEA.items() if k != "git_token"
+        }
+        for response in (final_source, final_git):
+            encoded = json.dumps(response, ensure_ascii=False).encode()
+            assert NEXTCLOUD["nextcloud_password"].encode() not in encoded
+            assert GITEA["git_token"].encode() not in encoded
+            assert "nextcloud_password" not in response["values"]
+            assert "git_token" not in response["values"]
+    finally:
+        server.shutdown()
+        thread.join(timeout=3)
+        job.close()
+
+
+def test_status_exposes_no_staged_github_credential_value(tmp_path):
+    from obsidian_automation.connection_fields import FieldDrafts
+    store, job = setup(tmp_path)
+    try:
+        drafts = FieldDrafts(store)
+        drafts.prepare("github", {"field":"github_token","value":"ghp_"+"z"*36})
+        output = drafts.status("github")
+        assert output["values"] == {}
+        assert output["fields"]["github_token"] == "saved"
+        assert "ghp_" not in json.dumps(output)
+    finally:
         job.close()
