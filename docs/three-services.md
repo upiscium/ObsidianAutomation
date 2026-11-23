@@ -34,6 +34,18 @@ projection dependency; there is no independent publisher management panel.
 Retained internal utilities are not automatically active jobs. Their presence
 must not be mistaken for authority to run abandoned workflows.
 
+
+## Restored as manual tools (#610)
+
+Features removed in the three-service cutdown are being restored one at a
+time (tracking issue #610). **ChatGPT Export tools** (inspect, normalize,
+private intake, source context, evidence candidates) are back as standalone,
+standard-library, manually invoked modules (`python -m
+obsidian_automation.chatgpt_export_inspect`, `..._intake`, ...). They have no
+WebUI route, no schedule, no console script and never touch the Vault, WebDAV
+or the network; see the `docs/chatgpt-export-*.md` contracts. The active
+profile is otherwise unchanged.
+
 ## App control contract
 
 | API | Behavior |
