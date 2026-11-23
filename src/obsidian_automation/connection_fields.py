@@ -52,7 +52,9 @@ def _validate_field(group: str, field: object, value: object):
             or not parsed.path.endswith(".git")):
             raise FieldError("invalid_field")
     if field == "vault_folder":
-        if (re.fullmatch(r"[A-Za-z0-9_./ -]{1,100}", value) is None
+        # "/" = the generic WebDAV URL itself is the Vault root; its
+        # vendor restriction is enforced when the whole connection commits.
+        if value != "/" and (re.fullmatch(r"[A-Za-z0-9_./ -]{1,100}", value) is None
             or any(p in ("", ".", "..") for p in value.split("/"))):
             raise FieldError("invalid_field")
     if field in ("nextcloud_user","git_user") and ":" in value:

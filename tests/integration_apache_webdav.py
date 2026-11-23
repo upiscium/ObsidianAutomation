@@ -123,8 +123,8 @@ def apache_server(root, httpd, openssl):
             proc.wait(timeout=5)
 
 
-def test_apache_full_run(vault,base,user,password,tmp):
-    case=tmp/"complete"
+def test_apache_full_run(vault,base,user,password,tmp,name="complete"):
+    case=tmp/name
     case.mkdir()
     repo,config,plan,checkpoint,receipts=_fixture(case)
     for name,data in _base_remote(plan,repo).items():
@@ -200,6 +200,29 @@ def test_real_mkcol_conflicts(vault,base,user,password):
     print("REAL Apache MKCOL 409 / 201 / 405 and strict recheck: PASS")
 
 
+def rclone_root_snapshot(root,user,password,base):
+    """Real rclone ``sync nextcloud:/`` through the production config writer."""
+    rclone=os.environ.get("OA601_RCLONE")
+    if not rclone:
+        print("rclone root-Vault sync: SKIPPED (OA601_RCLONE not set)")
+        return
+    from obsidian_automation.snapshot_setup import _rclone_config
+    out=subprocess.run([rclone,"obscure","-"],input=password+"\n",check=True,
+                       capture_output=True,text=True).stdout.strip()
+    cfg=root/"rclone.conf"
+    cfg.write_text(_rclone_config({"webdav_url":base,"nextcloud_user":user},out))
+    cfg.chmod(0o600)
+    mirror=root/"rclone-mirror"
+    subprocess.run([rclone,"sync","nextcloud:/",str(mirror),"--config",str(cfg),
+                    "--ca-cert",str(root/"cert.pem"),"--ignore-times",
+                    "--delete-after","--retries","1"],check=True,
+                   capture_output=True,timeout=120)
+    assert (mirror/"98-System/01-script/task.js").read_bytes()==b"version=2\n"
+    assert (mirror/"98-System/new/path/feature.css").read_bytes()==b".feature{}\n"
+    assert not (mirror/"98-System/obsolete.md").exists()
+    print("E2E real rclone sync nextcloud:/ against root-Vault Apache: PASS")
+
+
 def main():
     httpd=require_executable("OA601_HTTPD")
     openssl=require_executable("OA601_OPENSSL")
@@ -208,6 +231,14 @@ def main():
         with apache_server(root,httpd,openssl) as (vault,base,user,password):
             test_real_mkcol_conflicts(vault,base,user,password)
             test_apache_full_run(vault,base,user,password,root)
+            # #607: the DAV root itself is the Vault (vault_folder="/"), as on
+            # the production Apache where DocumentRoot is the Vault.
+            from obsidian_automation.webdav_connection import vault_collection_url
+            root_base=vault_collection_url(f"https://localhost:{PORT}/","/")
+            assert root_base==f"https://localhost:{PORT}/"
+            test_apache_full_run(root/"www",root_base,user,password,root,"root-vault")
+            print("E2E APACHE ROOT-AS-VAULT (vault_folder=/): PASS")
+            rclone_root_snapshot(root,user,password,root_base)
     print("Synthetic fixture, TLS certificate and server process cleaned")
 
 

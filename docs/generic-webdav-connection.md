@@ -88,3 +88,17 @@ Operational notes: any provider connection or Vault folder save rotates the
 generic Root epoch (so a password change needs re-enrollment); WebUI-supplied
 HTTPS hosts are not restricted to public addresses (administrator-only
 surface).
+
+## WebDAV root as the Vault (#607)
+
+`vault_folder = "/"` means the generic WebDAV URL itself is the Vault root
+(for example `https://vault.example.invalid/` served from a DocumentRoot that
+is the Vault). It is accepted only for generic URLs: any Nextcloud-style path
+(`remote.php`, `/dav/files/`, `/index.php`, any case/percent spelling or
+sub-path) is refused, because there the account root must never become a
+Vault. An empty value stays invalid. Snapshot syncs `nextcloud:/` (a named
+folder is unchanged), Core Promotion and Daily use the URL as the Vault base
+with no extra prefix. Verified against real Apache (nested CREATE/UPDATE/
+DELETE and a real `rclone sync nextcloud:/`) and the Nextcloud regression E2E.
+Scope note: with `"/"` everything under the URL is mirrored to the private Git
+repository, so the server must expose only the Vault there.

@@ -17,7 +17,10 @@ from urllib.parse import urlsplit
 from dataclasses import dataclass
 
 from .snapshot_adapter import Connections, _command, git_environment
-from .webdav_connection import validate_webdav_url, rclone_vendor, probe_webdav_collection
+from .webdav_connection import (
+    ROOT_VAULT, valid_vault_folder, validate_webdav_url, rclone_vendor,
+    probe_webdav_collection,
+)
 
 NEXTCLOUD_FIELDS = {"webdav_url", "vault_folder", "nextcloud_user", "nextcloud_password"}
 GITEA_FIELDS = {"git_url", "git_user", "git_token", "branch"}
@@ -38,9 +41,8 @@ class NextcloudSource:
 
     def validate(self) -> None:
         value = self.rclone_remote
-        if (not value.startswith("nextcloud:") or not value[10:]
-                or not re.fullmatch(r"[A-Za-z0-9_./ -]{1,100}", value[10:])
-                or any(part in ("", ".", "..") for part in value[10:].split("/"))
+        if (not value.startswith("nextcloud:")
+                or not (value[10:] == ROOT_VAULT or valid_vault_folder(value[10:]))
                 or not self.rclone_config.is_file()):
             raise ValueError("invalid_nextcloud_source")
 
@@ -55,8 +57,7 @@ def validate_nextcloud(value: object) -> dict:
         validate_webdav_url(value["webdav_url"])
     except ValueError:
         raise ValueError("invalid_nextcloud_connection") from None
-    if not re.fullmatch(r"[A-Za-z0-9_./ -]{1,100}", value["vault_folder"]) or any(
-            part in ("", ".", "..") for part in value["vault_folder"].split("/")):
+    if not valid_vault_folder(value["vault_folder"], value["webdav_url"]):
         raise ValueError("invalid_nextcloud_connection")
     if "\n" in value["nextcloud_user"] or ":" in value["nextcloud_user"]:
         raise ValueError("invalid_nextcloud_connection")
@@ -77,8 +78,7 @@ def validate(value: object) -> dict:
     if (git.scheme != "https" or not git.hostname or not git.path.endswith(".git")
             or git.username or git.password or git.query or git.fragment):
         raise ValueError("invalid_connection")
-    if not re.fullmatch(r"[A-Za-z0-9_./ -]{1,100}", value["vault_folder"]) or any(
-        part in ("", ".", "..") for part in value["vault_folder"].split("/")):
+    if not valid_vault_folder(value["vault_folder"], value["webdav_url"]):
         raise ValueError("invalid_connection")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,100}", value["branch"]) or ".." in value["branch"] or value["branch"].endswith(("/", ".lock")):
         raise ValueError("invalid_connection")

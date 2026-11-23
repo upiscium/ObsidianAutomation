@@ -20,6 +20,7 @@ from .github_daily_progress import (
 from .github_daily_standard_source import read_standard_digest
 from .snapshot_setup import SetupStore, validate_nextcloud
 from .vault_layout import physical_path
+from .webdav_connection import vault_collection_url
 from .webdav_create import WebDAVCreateError, build_target_url
 
 _SHA = re.compile(r"[a-f0-9]{64}\Z")
@@ -93,7 +94,8 @@ def publish_verified_daily(
         source = validate_nextcloud(source)
         # The WebDAV base must point to the selected Vault directory, not
         # the user's Nextcloud account root.
-        base = build_target_url(source["webdav_url"], source["vault_folder"]) + "/"
+        base = vault_collection_url(source["webdav_url"], source["vault_folder"])
+        build_target_url(base, "x")  # strict HTTPS/host/no-credential checks
     except (ValueError, WebDAVCreateError) as exc:
         raise DailyProgressError("invalid shared Nextcloud Vault root") from exc
     original_source = tuple(source[k] for k in (
