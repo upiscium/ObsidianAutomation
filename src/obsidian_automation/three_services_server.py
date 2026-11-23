@@ -22,6 +22,7 @@ from .github_daily_setup import DailySetupError
 from .snapshot_job import Invalid as SnapshotInvalid
 from .snapshot_setup import GITEA_FIELDS, validate, validate_nextcloud
 from .connection_fields import FieldDrafts, FieldError
+from .chat_import_service import ImportRefused
 from .phase_schedule import StaleScheduleError, preview as phase_preview
 from .vault_root_activation import reset_pin_after_connection_save
 
@@ -30,10 +31,16 @@ _REQUEST_BYTES = 8192
 _HEADER_BYTES = 8192
 _HEADER_SECONDS = 2.0
 _JSON = "application/json; charset=utf-8"
+# Chat-history ZIP upload (opt-in --chat-import-ui). Separate from the tiny
+# JSON body path: bounded idle time per read and a total deadline.
+_UPLOAD_IDLE_SECONDS = 30.0
+_UPLOAD_TOTAL_SECONDS = 3600.0
 _ASSETS = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/static/three-services.js": ("app.js", "text/javascript; charset=utf-8"),
     "/static/three-services.css": ("app.css", "text/css; charset=utf-8"),
+    # Renders its panel only when --chat-import-ui enabled the API.
+    "/static/chat-import.js": ("chat-import.js", "text/javascript; charset=utf-8"),
 }
 
 
@@ -284,6 +291,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200 if runtime else 503,
                            runtime.status() if runtime else {"error": "unavailable"})
                 return
+            if self.path == "/api/v1/chat-import":
+                service = self.server.chat_import
+                self._send(200 if service else 503,
+                           service.status() if service else {"error": "unavailable"})
+                return
             if self.path in ("/api/v1/vault-root", "/api/v1/vault-bindings"):
                 service = (self.server.vault_root_selection
                            if self.path == "/api/v1/vault-root"
@@ -330,6 +342,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/v1/vault-root/rollbacks",
             "/api/v1/vault-bindings/previews", "/api/v1/vault-bindings/saves",
             "/api/v1/vault-bindings/resets", "/api/v1/vault-bindings/rollbacks",
+            "/api/v1/chat-import/upload", "/api/v1/chat-import/inventory",
         }
         if self.path not in allowed:
             self._send(405, {"error": "method_not_allowed"})
@@ -342,7 +355,20 @@ class Handler(BaseHTTPRequestHandler):
             self._send(403, {"error": "csrf_rejected"})
             return
         try:
+            if self.path == "/api/v1/chat-import/upload":
+                self._chat_import_upload()
+                return
             payload = self._body()
+            if self.path == "/api/v1/chat-import/inventory":
+                service = self.server.chat_import
+                if service is None:
+                    raise Refused("service_unavailable", 503)
+                if (type(payload) is not dict
+                        or set(payload) != {"provider", "commit"}):
+                    raise Refused("invalid_request", 400)
+                self._send(200, service.inventory(payload["provider"],
+                                                  payload["commit"]))
+                return
             for name in ("snapshot", "core-promotion", "daily"):
                 base = f"/api/v1/{name}"
                 if self.path in (base + "/settings", base + "/runs",
@@ -467,6 +493,8 @@ class Handler(BaseHTTPRequestHandler):
                                  **drafts.status("github", setup)})
                 return
             raise Refused("method_not_allowed", 405)
+        except ImportRefused as exc:
+            self._send(exc.http, {"error": exc.code})
         except Refused as exc:
             self._send(exc.http, {"error": exc.code})
         except StaleScheduleError:
@@ -478,6 +506,33 @@ class Handler(BaseHTTPRequestHandler):
             # Never echo exception strings: these can contain private
             # WebDAV paths, tokens or provider response snippets.
             self._send(503, {"error": "operation_unavailable"})
+
+    def _chat_import_upload(self):
+        service = self.server.chat_import
+        if service is None:
+            raise Refused("service_unavailable", 503)
+        length = self.headers.get_all("Content-Length", [])
+        types = self.headers.get_all("Content-Type", [])
+        if (len(length) != 1 or len(types) != 1
+                or types[0] != "application/zip"
+                or not length[0].isascii() or not length[0].isdecimal()
+                or len(length[0]) > 12
+                or self.headers.get_all("Transfer-Encoding")
+                or self.headers.get_all("Content-Encoding")):
+            raise Refused("invalid_request", 400)
+        deadline = time.monotonic() + _UPLOAD_TOTAL_SECONDS
+
+        def read(count):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise Refused("upload_timeout", 408)
+            self.connection.settimeout(min(remaining, _UPLOAD_IDLE_SECONDS))
+            try:
+                return self.rfile.read1(count)
+            except OSError:
+                raise Refused("upload_unavailable", 400) from None
+
+        self._send(200, service.upload(read, int(length[0])))
 
     @staticmethod
     def _has_running(job):
@@ -631,4 +686,5 @@ def make_server(*, port=8370, bind_address="127.0.0.1",
     server.core_promotion_runtime = None
     server.vault_root_selection = None
     server.vault_bindings_editor = None
+    server.chat_import = None
     return server
