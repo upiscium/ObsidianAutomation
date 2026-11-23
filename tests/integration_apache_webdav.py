@@ -213,13 +213,18 @@ def rclone_root_snapshot(root,user,password,base):
     cfg.write_text(_rclone_config({"webdav_url":base,"nextcloud_user":user},out))
     cfg.chmod(0o600)
     mirror=root/"rclone-mirror"
+    from obsidian_automation.vault_snapshot import TRANSFER_RESIDUE_RCLONE_FILTER
+    residue="ca05901997a09923835bd9e24dc9d2f1.ocTransferId1007821865.part"
+    (root/"www"/residue).write_bytes(b"partial")
     subprocess.run([rclone,"sync","nextcloud:/",str(mirror),"--config",str(cfg),
+                    "--exclude",TRANSFER_RESIDUE_RCLONE_FILTER,
                     "--ca-cert",str(root/"cert.pem"),"--ignore-times",
                     "--delete-after","--retries","1"],check=True,
                    capture_output=True,timeout=120)
     assert (mirror/"98-System/01-script/task.js").read_bytes()==b"version=2\n"
     assert (mirror/"98-System/new/path/feature.css").read_bytes()==b".feature{}\n"
     assert not (mirror/"98-System/obsolete.md").exists()
+    assert not (mirror/residue).exists()
     print("E2E real rclone sync nextcloud:/ against root-Vault Apache: PASS")
 
 

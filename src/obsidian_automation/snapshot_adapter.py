@@ -15,7 +15,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .vault_snapshot import _is_repository_owned, build_manifest, load_config, snapshot_vault
+from .vault_snapshot import (
+    TRANSFER_RESIDUE_RCLONE_FILTER, _is_repository_owned, build_manifest, load_config,
+    snapshot_vault,
+)
 
 
 # Retry only a read-only Nextcloud pull into the disposable local mirror.
@@ -217,7 +220,8 @@ class SnapshotAdapter:
                     _write_rclone_receipt(directory, attempts)
                     return "failed", "sync", None
                 args = rclone + [action, c.rclone_remote, str(mirror),
-                                 "--retries", "1", "--low-level-retries", "2"]
+                                 "--retries", "1", "--low-level-retries", "2",
+                                 "--exclude", TRANSFER_RESIDUE_RCLONE_FILTER]
                 if action == "sync":
                     # Force transfers even when rclone's metadata comparison
                     # considers same-sized files unchanged. This target is a
