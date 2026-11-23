@@ -15,7 +15,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .vault_snapshot import _is_repository_owned, build_manifest, load_config, snapshot_vault
+from .vault_snapshot import (
+    TRANSFER_RESIDUE_RCLONE_FILTER, _is_repository_owned, build_manifest, load_config,
+    snapshot_vault,
+)
 
 
 # Retry only a read-only Nextcloud pull into the disposable local mirror.
@@ -50,11 +53,15 @@ class Connections:
     git_credentials: Path | None = None
 
     def validate(self) -> None:
-        # Remote folder is an explicit, non-root shared Vault folder.
+        # Remote folder is an explicit shared Vault folder. The single "/"
+        # (#607) is the explicit marker that a generic WebDAV URL is itself
+        # the Vault root; the vendor restriction is enforced where the
+        # connection is validated (snapshot_setup.valid_vault_folder).
         if not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_-]{0,63}:[a-zA-Z0-9_./ -]+", self.rclone_remote):
             raise ValueError("invalid source")
         suffix = self.rclone_remote.split(":", 1)[1]
-        if not suffix or suffix.startswith(("/", ".")) or any(p in ("", "..", ".") for p in suffix.split("/")):
+        if suffix != "/" and (
+                not suffix or suffix.startswith(("/", ".")) or any(p in ("", "..", ".") for p in suffix.split("/"))):
             raise ValueError("invalid Vault folder")
         if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._/-]{0,100}", self.branch) or ".." in self.branch or self.branch.endswith(("/", ".lock")):
             raise ValueError("invalid branch")
@@ -213,7 +220,8 @@ class SnapshotAdapter:
                     _write_rclone_receipt(directory, attempts)
                     return "failed", "sync", None
                 args = rclone + [action, c.rclone_remote, str(mirror),
-                                 "--retries", "1", "--low-level-retries", "2"]
+                                 "--retries", "1", "--low-level-retries", "2",
+                                 "--exclude", TRANSFER_RESIDUE_RCLONE_FILTER]
                 if action == "sync":
                     # Force transfers even when rclone's metadata comparison
                     # considers same-sized files unchanged. This target is a

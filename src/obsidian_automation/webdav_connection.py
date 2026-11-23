@@ -74,10 +74,52 @@ def rclone_vendor(url: str) -> str:
     return "nextcloud" if path.startswith("/remote.php/dav/files/") else "other"
 
 
+ROOT_VAULT = "/"  # explicit marker: the WebDAV URL itself is the Vault root
+
+_FOLDER = re.compile(r"[A-Za-z0-9_./ -]{1,100}")
+
+
+def vault_folder_parts(vault_folder: str) -> list[str]:
+    """Path components below ``webdav_url``; empty for the explicit root."""
+    return [] if vault_folder == ROOT_VAULT else vault_folder.split("/")
+
+
+def _nextcloud_like(webdav_url: str) -> bool:
+    """Conservative: any Nextcloud-style endpoint, wherever it is mounted.
+
+    ``rclone_vendor`` only recognises the canonical prefix, so a Nextcloud
+    under a sub-path, the legacy ``/remote.php/webdav/`` endpoint, a different
+    letter case or a percent-encoded spelling would otherwise count as
+    generic and let an account root become a Vault.
+    """
+    path = unquote(urlsplit(webdav_url).path).lower()
+    return "remote.php" in path or "/dav/files/" in path or "/index.php" in path
+
+
+def valid_vault_folder(vault_folder: object, webdav_url: str | None = None) -> bool:
+    """Schema check for ``vault_folder``.
+
+    ``"/"`` (root Vault) is accepted only for a generic WebDAV URL, never a
+    Nextcloud files endpoint: there the OC-ID pin protects one named folder
+    and the account root must not become a Vault. An empty string stays
+    invalid so "unset" can never be mistaken for the root.
+    """
+    if type(vault_folder) is not str:
+        return False
+    if vault_folder == ROOT_VAULT:
+        try:
+            return (webdav_url is not None and rclone_vendor(webdav_url) == "other"
+                    and not _nextcloud_like(webdav_url))
+        except ValueError:
+            return False
+    return (_FOLDER.fullmatch(vault_folder) is not None
+            and not any(part in ("", ".", "..") for part in vault_folder.split("/")))
+
+
 def vault_collection_url(base_url: str, vault_folder: str) -> str:
     validate_webdav_url(base_url)
     # vault_folder is separately schema-validated by snapshot_setup.
-    return base_url + "/".join(quote(p, safe="") for p in vault_folder.split("/")) + "/"
+    return base_url + "".join(quote(p, safe="") + "/" for p in vault_folder_parts(vault_folder))
 
 
 def _collection_multistatus(raw: bytes, target_url: str) -> bool:

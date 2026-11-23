@@ -23,6 +23,13 @@ class SnapshotError(RuntimeError):
 
 _ALWAYS_REPOSITORY_OWNED = (".git", ".git/**", "**/.git", "**/.git/**")
 
+# Nextcloud client transfer residue (``<name>.ocTransferId<digits>.part``) is a
+# partially written upload, never Vault content. It is excluded regardless of
+# the operator policy file (which already exists in production), both from the
+# manifest and, via TRANSFER_RESIDUE_RCLONE_FILTER, from rclone sync/check.
+TRANSFER_RESIDUE_PATTERNS = ("**.ocTransferId*.part",)
+TRANSFER_RESIDUE_RCLONE_FILTER = "*.ocTransferId*.part"
+
 
 @dataclass(frozen=True)
 class SnapshotConfig:
@@ -132,7 +139,7 @@ def _is_repository_owned(relative: str, config: SnapshotConfig) -> bool:
 
 
 def _is_excluded(relative: str, config: SnapshotConfig) -> bool:
-    return _matches_any(relative, config.exclude)
+    return _matches_any(relative, (*TRANSFER_RESIDUE_PATTERNS, *config.exclude))
 
 
 def _sha256(path: Path) -> str:

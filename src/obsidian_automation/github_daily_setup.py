@@ -347,7 +347,10 @@ def pull_project_notes(connections, target: Path, *, folder: str | None = None) 
     connections.validate()
     if not target.is_dir() or target.is_symlink():
         return False
-    source = connections.rclone_remote + "/" + (role_folder("project") if folder is None else folder)
+    remote = connections.rclone_remote
+    # A root Vault is "<remote>:/"; do not create "//" before the role folder.
+    source = remote + ("" if remote.endswith("/") else "/") + (
+        role_folder("project") if folder is None else folder)
     argv = ["rclone", "--config", str(connections.rclone_config), "copy",
             source, str(target), "--include", "*.md",
             "--retries", "1", "--low-level-retries", "1"]

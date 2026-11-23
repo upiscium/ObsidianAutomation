@@ -13,7 +13,6 @@ import re
 import tempfile
 from importlib.resources import files
 from pathlib import Path
-from urllib.parse import quote
 
 from .core_promotion import CORE_REPOSITORY, PROMOTION_POLICY_VERSION
 from .core_promotion_transport import load_checkpoint
@@ -22,7 +21,7 @@ from .promotion_bootstrap import bootstrap_production_checkpoint
 from .public_export import load_config
 from .vault_bindings import physical_folder, run_verified
 from .vault_root_activation import current_pin, read_private_json
-from .webdav_connection import rclone_vendor
+from .webdav_connection import rclone_vendor, vault_collection_url
 
 
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
@@ -332,8 +331,7 @@ class CorePromotionRuntime:
                     or self._target_identity() != target
                     or not self._target_bound()):
                     raise Invalid("core_promotion_connection_changed")
-                folder = "/".join(quote(part, safe="") for part in source["vault_folder"].split("/"))
-                base_url = source["webdav_url"].rstrip("/") + "/" + folder + "/"
+                base_url = vault_collection_url(source["webdav_url"], source["vault_folder"])
                 result = run_promotion_cycle(
                     state_root=self.root, config_path=self.policy_path,
                     base_url=base_url, username=source["nextcloud_user"],
