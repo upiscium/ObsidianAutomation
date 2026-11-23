@@ -38,13 +38,38 @@ must not be mistaken for authority to run abandoned workflows.
 ## Restored as manual tools (#610)
 
 Features removed in the three-service cutdown are being restored one at a
-time (tracking issue #610). **ChatGPT Export tools** (inspect, normalize,
-private intake, source context, evidence candidates) are back as standalone,
-standard-library, manually invoked modules (`python -m
-obsidian_automation.chatgpt_export_inspect`, `..._intake`, ...). They have no
-WebUI route, no schedule, no console script and never touch the Vault, WebDAV
-or the network; see the `docs/chatgpt-export-*.md` contracts. The active
-profile is otherwise unchanged.
+time (tracking issue #610).
+
+**Chat-history import (ChatGPT and Claude).** The export tools (inspect,
+normalize, private intake, source context, evidence candidates) are back as
+standalone, standard-library modules (`python -m
+obsidian_automation.chatgpt_export_inspect`, `..._intake --provider
+{chatgpt,claude}`). They never touch the Vault, WebDAV or the network; see the
+`docs/chatgpt-export-*.md` contracts.
+
+* **Claude** (claude.ai "Export data" ZIP, `conversations.json` with
+  `chat_messages`) is supported through inspect, normalize and intake
+  (parser contract `claude-linear-v0`). Only plain `text` blocks (or a flat
+  `text` field) are retained; `thinking`, `tool_use` and `tool_result` blocks
+  are omitted. The schema comes from third-party documentation, not from
+  Anthropic: **run the inspector on a real export first and review the
+  value-free report before trusting an inventory.** Source-context and
+  evidence-candidate layers remain ChatGPT-only until the AI/Knowledge
+  feature (B1) is restored.
+* **A scope is bound to one provider** (`private-chatgpt`, `private-claude`);
+  reading a ZIP with the wrong provider is rejected and recorded, never
+  half-imported.
+* **Import panel (opt-in).** Start the app with `--chat-import-ui` to add a
+  collapsible "チャット履歴の取り込み" section: upload one export ZIP (limit
+  2 GiB, one at a time), automatic provider detection, inventory preview and
+  commit. Routes: `GET /api/v1/chat-import`, `POST
+  /api/v1/chat-import/upload` (`application/zip`, exact Origin + one-use CSRF,
+  30 s idle / 1 h total deadline) and `POST /api/v1/chat-import/inventory`.
+  Data lives in a `0700` `chat-import/` directory under the service state,
+  outside the Vault. Every response is count-only (no titles, ids or text).
+  It writes nothing to the Vault, queues no Generation job and has no
+  schedule. Without the flag the routes return 503 and the page never names
+  either provider.
 
 ## App control contract
 

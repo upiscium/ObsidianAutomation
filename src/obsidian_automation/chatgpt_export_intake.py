@@ -24,7 +24,8 @@ from typing import Iterator, Sequence
 
 from .chatgpt_export_inspect import InspectionError, Limits, inspect_export
 from .chatgpt_export_normalize import (
-    NORMALIZER_VERSION, NormalizeError, SelectedBatch, normalize_export,
+    NORMALIZER_VERSION, PARSER_VERSIONS, NormalizeError, SelectedBatch,
+    normalize_export,
 )
 
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
@@ -544,7 +545,7 @@ def _inventory(conn: sqlite3.Connection, batch: SelectedBatch, salt: bytes) -> t
 
 def inventory_ready(
     root: Path, *, scope: str, members: Sequence[str] = (),
-    commit: bool = False, max_archives: int = 1,
+    commit: bool = False, max_archives: int = 1, provider: str = "chatgpt",
 ) -> tuple[InventoryReceipt, ...]:
     """Process ready archives in publication sequence; never generate notes.
 
@@ -553,6 +554,9 @@ def inventory_ready(
     source revisions; it still queues **zero** LLM jobs and changes no Vault.
     """
     _valid_scope(scope)
+    if provider not in PARSER_VERSIONS:
+        raise IntakeError("unsupported_provider")
+    parser_version = PARSER_VERSIONS[provider]
     if type(max_archives) is not int or not 1 <= max_archives <= 16:
         raise IntakeError("invalid_inventory_limit")
     if not commit and max_archives != 1:
@@ -575,7 +579,7 @@ def inventory_ready(
                 "UNION SELECT DISTINCT selector_sha,parser_version FROM rejections WHERE scope=?",
                 (scope, scope),
             ).fetchall()
-            if any(s != selector or v != NORMALIZER_VERSION for s, v in contracts):
+            if any(s != selector or v != parser_version for s, v in contracts):
                 raise IntakeError("scope_contract_changed")
             archive_rows = conn.execute(
                 "SELECT archive_sha,archive_bytes FROM archives WHERE status='ready' ORDER BY seq ASC"
@@ -592,7 +596,7 @@ def inventory_ready(
                 row = conn.execute(
                     "SELECT r.run_id FROM runs r WHERE r.scope=? AND r.archive_sha=? "
                     "AND r.parser_version=? AND r.selector_sha=?",
-                    (scope,archive_sha,NORMALIZER_VERSION,selector),
+                    (scope,archive_sha,parser_version,selector),
                 ).fetchone()
                 if row is not None:
                     # Already journalled, never revisit/overwrite the current
@@ -601,7 +605,7 @@ def inventory_ready(
                 rejected = conn.execute(
                     "SELECT 1 FROM rejections WHERE scope=? AND archive_sha=? "
                     "AND parser_version=? AND selector_sha=?",
-                    (scope,archive_sha,NORMALIZER_VERSION,selector),
+                    (scope,archive_sha,parser_version,selector),
                 ).fetchone()
                 if rejected is not None:
                     continue
@@ -614,7 +618,7 @@ def inventory_ready(
                 _recover_orphaned_staging_link(root, path)
                 _verify_ready(path, archive_sha, size)
                 try:
-                    batch = normalize_export(path, scope=scope, members=members)
+                    batch = normalize_export(path, scope=scope, members=members, provider=provider)
                 except NormalizeError as exc:
                     # A valid ZIP can contain a conversation schema that the
                     # strict normalizer cannot handle. Record the fixed code,
@@ -624,7 +628,7 @@ def inventory_ready(
                             conn.execute(
                                 "INSERT OR IGNORE INTO rejections(scope,archive_sha,parser_version,"
                                 "selector_sha,error_code) VALUES(?,?,?,?,?)",
-                                (scope,archive_sha,NORMALIZER_VERSION,selector,str(exc)),
+                                (scope,archive_sha,parser_version,selector,str(exc)),
                             )
                     receipts.append(InventoryReceipt(status="normalization_rejected"))
                     continue
@@ -643,7 +647,7 @@ def inventory_ready(
                         "added,changed,unchanged,revision_only,absent_not_deleted,quarantined_slots,"
                         "unverified_child_links,unsupported_parts,retained_messages)"
                         " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (run_id,scope,archive_sha,NORMALIZER_VERSION,selector,
+                        (run_id,scope,archive_sha,parser_version,selector,
                          receipt.status,receipt.added,receipt.changed,receipt.unchanged,
                          receipt.revision_only,receipt.absent_not_deleted,
                          receipt.quarantined_slots,receipt.unverified_child_links,
@@ -675,6 +679,38 @@ def inventory_ready(
             conn.close()
 
 
+def inventory_summary(root: Path) -> dict:
+    """Count-only view of the private journal (no ids, titles, hashes or text)."""
+    root = _root(root)
+    with _locked(root):
+        conn = _connect(root)
+        try:
+            ready = conn.execute(
+                "SELECT COUNT(*) FROM archives WHERE status='ready'").fetchone()[0]
+            scopes: dict[str, dict] = {}
+            for scope, count in conn.execute(
+                    "SELECT scope,COUNT(*) FROM latest GROUP BY scope"):
+                scopes[scope] = {"known_conversations": count}
+            for scope, runs, last in conn.execute(
+                    "SELECT scope,COUNT(*),MAX(rowid) FROM runs GROUP BY scope"):
+                row = conn.execute(
+                    "SELECT status,added,changed,unchanged,absent_not_deleted,"
+                    "quarantined_slots,retained_messages FROM runs WHERE rowid=?",
+                    (last,)).fetchone()
+                scopes.setdefault(scope, {"known_conversations": 0}).update({
+                    "committed_runs": runs,
+                    "last_run": dict(zip(
+                        ("status", "added", "changed", "unchanged",
+                         "absent_not_deleted", "quarantined_slots",
+                         "retained_messages"), row)),
+                })
+            return {"ready_archives": ready, "scopes": scopes}
+        except sqlite3.Error:
+            raise IntakeError("journal_read_failed") from None
+        finally:
+            conn.close()
+
+
 class _Parser(argparse.ArgumentParser):
     def error(self, _message: str) -> None:
         raise IntakeError("invalid_arguments")
@@ -689,6 +725,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--member", action="append", default=[])
     parser.add_argument("--commit", action="store_true")
     parser.add_argument("--max-archives", type=int, default=1)
+    parser.add_argument("--provider", choices=tuple(PARSER_VERSIONS), default="chatgpt")
     try:
         args = parser.parse_args(argv)
         if args.action == "publish":
@@ -700,7 +737,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.source is not None or args.scope is None:
                 raise IntakeError("invalid_arguments")
             receipts = inventory_ready(args.root,scope=args.scope,members=args.member,
-                                       commit=args.commit,max_archives=args.max_archives)
+                                       commit=args.commit,max_archives=args.max_archives,
+                                       provider=args.provider)
             report = {
                 "status":"preview" if not args.commit else "committed_inventory_only",
                 "runs":[{

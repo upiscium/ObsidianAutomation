@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime
 import hashlib
 import json
 import os
@@ -23,6 +24,10 @@ from .chatgpt_export_inspect import (
 )
 
 NORMALIZER_VERSION = "chatgpt-selected-branch-v0"
+CLAUDE_NORMALIZER_VERSION = "claude-linear-v0"
+# One parser contract per source provider. A scope is bound to exactly one.
+PARSER_VERSIONS = {"chatgpt": NORMALIZER_VERSION, "claude": CLAUDE_NORMALIZER_VERSION}
+_CLAUDE_ROLES = {"human": "user", "assistant": "assistant"}
 _ALLOWED_ROLES = frozenset({"user", "assistant", "system", "developer", "tool"})
 _VISIBLE_CONTENT = frozenset({"text", "multimodal_text"})
 _SHA = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")
@@ -72,6 +77,7 @@ class SelectedBatch:
     graph_reciprocity_unverified: bool
     # This MUST NOT be reinterpreted as a real-Export or production acceptance.
     real_schema_accepted: bool = False
+    provider: str = "chatgpt"
 
 
 @dataclass(frozen=True)
@@ -212,9 +218,112 @@ def _select_message(node_id: str, node: dict) -> tuple[SelectedMessage | None, s
     ), ""
 
 
-def _normalize_one(conversation: object, limits: Limits) -> SelectedConversation:
+def _claude_timestamp(value: object) -> float | None:
+    """Claude exports RFC 3339 strings; keep the number form used downstream."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or len(value) > 64:
+        raise NormalizeError("unsupported_timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise NormalizeError("unsupported_timestamp") from None
+    if parsed.tzinfo is None:
+        raise NormalizeError("unsupported_timestamp")
+    return parsed.timestamp()
+
+
+def _claude_visible_text(message: dict) -> tuple[str | None, str]:
+    """Return (text, omission_reason). Only plain text blocks are visible.
+
+    ``thinking``, ``tool_use``, ``tool_result`` and unknown blocks are never
+    treated as the user-visible answer. Older/other exports carry a flat
+    ``text`` field instead of ``content`` blocks; ``content`` wins if present.
+    """
+    content = message.get("content")
+    if content is not None:
+        if not isinstance(content, list):
+            return None, "unsupported_content"
+        pieces: list[str] = []
+        for block in content:
+            if not isinstance(block, dict):
+                return None, "unsupported_content"
+            if block.get("type") == "text":
+                text = block.get("text")
+                if not isinstance(text, str):
+                    return None, "nontext_parts"
+                pieces.append(text)
+        text = "\n".join(pieces)
+    else:
+        flat = message.get("text")
+        if not isinstance(flat, str):
+            return None, "unsupported_content"
+        text = flat
+    if not text:
+        return None, "empty_text"
+    if len(text.encode("utf-8")) > _MAX_MESSAGE_BYTES:
+        return None, "oversize_text"
+    return text, ""
+
+
+def _normalize_claude_one(conversation: dict, limits: Limits) -> SelectedConversation:
+    conv_id = _identifier(conversation.get("uuid"), "invalid_conversation_id")
+    messages = conversation.get("chat_messages")
+    if not isinstance(messages, list) or len(messages) > limits.nodes:
+        raise NormalizeError("invalid_conversation_messages")
+    omissions: Counter[str] = Counter()
+    retained: list[SelectedMessage] = []
+    semantic: list[dict] = []
+    seen: set[str] = set()
+    previous: str | None = None
+    for message in messages:
+        if not isinstance(message, dict):
+            raise NormalizeError("invalid_selected_message")
+        message_id = _identifier(message.get("uuid"), "invalid_message_id")
+        if message_id in seen:
+            raise NormalizeError("duplicate_selected_message_id")
+        seen.add(message_id)
+        parent, previous = previous, message_id
+        sender = message.get("sender")
+        if not isinstance(sender, str):
+            raise NormalizeError("unknown_author_role")
+        role = _CLAUDE_ROLES.get(sender)
+        if role is None:
+            omissions["nonconversation_role"] += 1
+            continue
+        text, omitted = _claude_visible_text(message)
+        if omitted:
+            omissions[omitted] += 1
+            continue
+        item = SelectedMessage(
+            node_id=message_id, parent_node_id=parent, message_id=message_id,
+            role=role, created_at=_claude_timestamp(message.get("created_at")),
+            content_type="text", text=text,
+            text_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        )
+        retained.append(item)
+        semantic.append({"role": role, "content_type": "text",
+                         "content_hash": item.text_sha256})
+    return SelectedConversation(
+        conversation_id=conv_id,
+        messages=tuple(retained),
+        selected_path_nodes=len(messages),
+        off_branch_nodes=0,
+        unverified_child_links=0,
+        omitted_reasons=tuple(sorted(omissions.items())),
+        content_sha256=_hash({"version": CLAUDE_NORMALIZER_VERSION,
+                              "conversation": conv_id, "path": semantic}),
+        source_revision_sha256=_hash({"version": CLAUDE_NORMALIZER_VERSION,
+                                      "source": conversation}),
+    )
+
+
+def _normalize_one(conversation: object, limits: Limits,
+                   provider: str = "chatgpt") -> SelectedConversation:
     if not isinstance(conversation, dict):
         raise NormalizeError("invalid_conversation")
+    if provider == "claude":
+        return _normalize_claude_one(conversation, limits)
     conv_id = _identifier(conversation.get("id", conversation.get("conversation_id")), "invalid_conversation_id")
     if "conversation_id" in conversation and conversation["conversation_id"] != conv_id:
         raise NormalizeError("conversation_id_mismatch")
@@ -263,6 +372,7 @@ def _normalize_one(conversation: object, limits: Limits) -> SelectedConversation
 def normalize_export(
     path: Path, *, scope: str, members: Sequence[str] = (),
     input_format: str = "zip", limits: Limits = Limits(),
+    provider: str = "chatgpt",
 ) -> SelectedBatch:
     """Read private Export, preserving ONLY selected branch user/final text.
 
@@ -271,6 +381,8 @@ def normalize_export(
     """
     if not isinstance(scope, str) or not _SHA.fullmatch(scope):
         raise NormalizeError("invalid_source_scope")
+    if provider not in PARSER_VERSIONS:
+        raise NormalizeError("unsupported_provider")
     if input_format not in ("zip", "json") or (input_format == "json" and members):
         raise NormalizeError("invalid_input_options")
     if (not isinstance(members, (tuple, list)) or
@@ -298,12 +410,12 @@ def normalize_export(
                 quarantine["empty_conversation_slot"] += 1
                 continue
             if isinstance(item, dict):
-                mapping = item.get("mapping")
-                if isinstance(mapping, dict):
-                    node_count += len(mapping)
+                nodes = item.get("chat_messages" if provider == "claude" else "mapping")
+                if isinstance(nodes, (dict, list)):
+                    node_count += len(nodes)
                     if node_count > limits.nodes:
                         raise NormalizeError("node_limit")
-            obj = _normalize_one(item, limits)
+            obj = _normalize_one(item, limits, provider)
             if obj.conversation_id in seen_conversations:
                 raise NormalizeError("duplicate_conversation_id")
             seen_conversations.add(obj.conversation_id)
@@ -365,10 +477,10 @@ def normalize_export(
     raw_digest = archive_hash.hexdigest()
     run_digest = _hash({
         "raw_archive_sha256": raw_digest, "scope": scope,
-        "parser": NORMALIZER_VERSION, "selected_members": chosen_names,
+        "parser": PARSER_VERSIONS[provider], "selected_members": chosen_names,
     })
     return SelectedBatch(
-        scope=scope, parser_version=NORMALIZER_VERSION,
+        scope=scope, parser_version=PARSER_VERSIONS[provider], provider=provider,
         archive_sha256=raw_digest, import_run_sha256=run_digest,
         conversations=tuple(normalized), selected_json_members=len(chosen_names),
         unselected_json_members=unselected,

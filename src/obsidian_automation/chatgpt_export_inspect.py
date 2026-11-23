@@ -45,6 +45,14 @@ FIELDS = {
     "author": ("role", "name", "metadata"),
     "content": ("content_type", "parts"),
 }
+# claude.ai "Export data" shape (third-party-documented; verify with a real
+# export through this inspector before trusting a new normalizer assumption).
+CLAUDE_FIELDS = {
+    "conversation": ("uuid", "name", "summary", "created_at", "updated_at", "account", "chat_messages"),
+    "message": ("uuid", "text", "content", "sender", "created_at", "updated_at", "attachments", "files"),
+}
+CLAUDE_SENDERS = ("human", "assistant")
+CLAUDE_BLOCK_TYPES = ("text", "thinking", "tool_use", "tool_result")
 ROLES = ("user", "assistant", "system", "developer", "tool")
 CONTENT_TYPES = ("text", "multimodal_text", "image", "audio", "audio_transcription", "tether_browsing_display_text",
                  "thoughts", "reasoning_recap")
@@ -190,11 +198,54 @@ class _Profile:
         self.chains = Counter()
         self.parts = Counter()
         self.review = False
+        self.providers: Counter = Counter()
+        self.claude_types = {scope: {key: Counter() for key in keys}
+                             for scope, keys in CLAUDE_FIELDS.items()}
+        self.claude_unknown = Counter()
+        self.claude_senders = Counter()
+        self.claude_blocks = Counter()
 
     def fields(self, scope: str, obj: dict) -> None:
         for key, counts in self.types[scope].items():
             counts[_type(obj[key]) if key in obj else "missing"] += 1
         self.unknown[scope] += sum(key not in FIELDS[scope] for key in obj)
+
+    def claude_fields(self, scope: str, obj: dict) -> None:
+        for key, counts in self.claude_types[scope].items():
+            counts[_type(obj[key]) if key in obj else "missing"] += 1
+        self.claude_unknown[scope] += sum(key not in CLAUDE_FIELDS[scope] for key in obj)
+
+    def consume_claude(self, conv: dict) -> None:
+        self.providers["claude"] += 1
+        self.claude_fields("conversation", conv)
+        messages = conv.get("chat_messages")
+        if not isinstance(messages, list):
+            self.counts["claude_invalid_chat_messages"] += 1
+            self.review = True
+            return
+        self.counts["claude_messages"] += len(messages)
+        self.counts["nodes"] += len(messages)
+        if self.counts["nodes"] > self.limits.nodes:
+            raise InspectionError("node_limit")
+        for message in messages:
+            if not isinstance(message, dict):
+                self.counts["nonobject_messages"] += 1
+                self.review = True
+                continue
+            self.claude_fields("message", message)
+            sender = message.get("sender")
+            self.claude_senders[sender if isinstance(sender, str) and sender in CLAUDE_SENDERS else "other"] += 1
+            content = message.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    kind = block.get("type") if isinstance(block, dict) else None
+                    self.claude_blocks[kind if isinstance(kind, str) and kind in CLAUDE_BLOCK_TYPES else "other"] += 1
+            elif content is not None:
+                self.claude_blocks["content_not_array"] += 1
+                self.review = True
+            if "text" not in message and not isinstance(content, list):
+                self.counts["claude_messages_without_text"] += 1
+                self.review = True
 
     def consume(self, root: object) -> None:
         if not isinstance(root, list):
@@ -216,6 +267,13 @@ class _Profile:
                 self.counts["empty_conversation_slots"] += 1
                 self.review = True
                 continue
+            if "chat_messages" in conv and "mapping" not in conv:
+                self.consume_claude(conv)
+                continue
+            if "mapping" in conv:
+                self.providers["chatgpt"] += 1
+            else:
+                self.providers["unrecognized"] += 1
             self.fields("conversation", conv)
             mapping = conv.get("mapping")
             if not isinstance(mapping, dict):
@@ -268,7 +326,12 @@ class _Profile:
 
     def result(self) -> dict:
         self.review |= any(self.roles.get(k, 0) or self.content_types.get(k, 0) for k in ("other", "missing_or_invalid"))
-        return {
+        self.review |= bool(self.claude_senders.get("other") or self.claude_blocks.get("other"))
+        present = [name for name in ("chatgpt", "claude") if self.providers.get(name)]
+        provider = present[0] if len(present) == 1 else ("mixed" if present else "unknown")
+        if provider == "mixed":
+            self.review = True
+        result = {
             "record_version": 1, "inspection_only": True,
             "status": "schema_review_required" if self.review or not self.counts["conversations"] else "inspected",
             "counts": dict(self.counts), "known_field_types": self.types,
@@ -276,7 +339,16 @@ class _Profile:
             "roles": dict(self.roles), "content_types": dict(self.content_types),
             "parts_types": dict(self.parts), "selected_parent_chains": dict(self.chains),
             "full_graph_validated": False, "import_compatibility_established": False,
+            "provider": provider,
         }
+        if self.providers.get("claude"):
+            result["claude"] = {
+                "known_field_types": self.claude_types,
+                "unknown_field_occurrences": dict(self.claude_unknown),
+                "senders": dict(self.claude_senders),
+                "content_block_types": dict(self.claude_blocks),
+            }
+        return result
 
 
 def inspect_export(path: Path, *, members: Sequence[str] = (), input_format: str = "zip", limits: Limits = Limits()) -> dict:

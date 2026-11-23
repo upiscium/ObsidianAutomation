@@ -19,6 +19,7 @@ from .vault_root_activation import (
     JobRootGuard, RootPinRefused, https_transport_factory,
 )
 from .vault_bindings import RoleGuard, physical_folder, record_generation, run_verified
+from .chat_import_service import ChatImportService
 from .vault_root_webui import build_vault_bindings_ui, build_vault_root_ui
 
 
@@ -131,6 +132,11 @@ def main() -> int:
         help="Explicitly opt into B4 canonical Daily Note delivery after verified Preview; "
              "normal/default service starts remain Preview-only",
     )
+    parser.add_argument(
+        "--chat-import-ui", action="store_true",
+        help="Opt into the manual ChatGPT/Claude export ZIP import panel (private "
+             "inventory only: no Vault write, no schedule); off by default",
+    )
     args = parser.parse_args()
     if not args.state.is_absolute():
         parser.error("state must be absolute")
@@ -197,6 +203,8 @@ def main() -> int:
         # three Job locks and the Core Promotion effect gate.
         server.vault_root_selection = build_vault_root_ui(store, server)
         server.vault_bindings_editor = build_vault_bindings_ui(store, server)
+        if args.chat_import_ui:
+            server.chat_import = ChatImportService(state)
         hooks = tuple(item.tick for item in (daily_job, promotion_job)
                       if item is not None)
         job.start_scheduler(tick_hooks=hooks)
