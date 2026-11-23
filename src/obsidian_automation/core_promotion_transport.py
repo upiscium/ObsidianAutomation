@@ -215,6 +215,7 @@ def ensure_parent_collections(
     password: str,
     timeout: float,
     transport: HTTPTransport | None,
+    create_missing: bool = True,
 ) -> tuple[str, ...]:
     """Qualify existing directories and create only missing approved parents.
 
@@ -223,6 +224,10 @@ def ensure_parent_collections(
     different root would escape the operator's authority. A partial MKCOL is
     deliberately not rolled back or auto-retried; a subsequent approved run
     must re-observe every component and the target before proceeding.
+
+    With ``create_missing=False`` this is a read-only qualification used by
+    whole-plan preflight: a missing parent is accepted (it will be created
+    later), but a missing root or a non-collection ancestor fails closed.
     """
     try:
         components = _safe_components(path)
@@ -234,7 +239,9 @@ def ensure_parent_collections(
     # A literal percent in the Git tree can be recursively URL-decoded by
     # nonconforming proxies/providers. Refuse that ambiguity in a new parent
     # transaction rather than risking a different path than the reviewed plan.
-    if any("%" in name for name in components):
+    # The final component is the file itself (sent as %25 by build_target_url,
+    # exactly as before), so only the parent directories are checked.
+    if any("%" in name for name in components[:-1]):
         raise PromotionTransportError("ambiguous encoded parent path")
     request = transport or _real_http_request
     created: list[str] = []
@@ -282,6 +289,9 @@ def ensure_parent_collections(
         status = collection(url)
         if status == 207:
             continue
+        if not create_missing:
+            # Everything below a missing parent is necessarily missing too.
+            break
         response = bounded_request(
             method="MKCOL", target_url=url,
             username=username, password=password,
@@ -406,6 +416,16 @@ def preflight_remote(
             "promotion preflight found divergent remote paths; no mutation attempted: "
             + ", ".join(conflicts)
         )
+    # Read-only parent qualification for every CREATE so that a missing root
+    # or a file squatting on an ancestor is found before ANY mutation, rather
+    # than after earlier changes in the plan were already applied.
+    for entry in entries:
+        if entry.change.action == "create" and entry.disposition == "apply":
+            ensure_parent_collections(
+                base_url=base_url, path=entry.change.path, username=username,
+                password=password, timeout=timeout, transport=transport,
+                create_missing=False,
+            )
     return tuple(entries)
 
 

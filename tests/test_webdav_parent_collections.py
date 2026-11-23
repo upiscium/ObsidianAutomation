@@ -199,3 +199,24 @@ def test_double_encoded_git_parent_names_are_rejected_before_any_io():
             raise AssertionError("provider I/O was incorrectly allowed")
     with pytest.raises(PromotionTransportError, match="ambiguous encoded parent path"):
         check(Never(), "98-System/%2e%2e/notes.md")
+
+
+def test_percent_in_final_filename_is_allowed_and_sent_as_25():
+    dav = fixture_dav()
+    assert check(dav, "Notes/100% done.md") == ("Notes",)
+
+
+def test_percent_in_parent_still_rejected_but_filename_percent_ok():
+    with pytest.raises(PromotionTransportError, match="ambiguous encoded parent path"):
+        check(fixture_dav(), "Notes/50%/a.md")
+
+
+def test_preflight_is_read_only_and_rejects_bad_ancestor_before_any_mutation(tmp_path):
+    from obsidian_automation.core_promotion_transport import preflight_remote
+    repo, config, plan, checkpoint, receipts = _fixture(tmp_path)
+    dav = FakeDAV(_base_remote(plan, repo))
+    dav.directories.remove("")  # configured root missing
+    with pytest.raises(PromotionTransportConflict, match="configured WebDAV root"):
+        preflight_remote(plan, base_url="https://dav.example.invalid/vault",
+                         username="promoter", password="secret", transport=dav)
+    assert dav.mutations == []
