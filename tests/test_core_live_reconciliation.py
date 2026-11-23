@@ -27,6 +27,11 @@ def git(root, *args):
 class DAV:
     def __init__(self, files):
         self.files = dict(files)
+        self.directories = {""}
+        for name in files:
+            parts=name.split("/")[:-1]
+            for depth in range(1,len(parts)+1):
+                self.directories.add("/".join(parts[:depth])+"/")
         self.etags = {path: '"v1"' for path in self.files}
         self.requests = []
         self.before_put = None
@@ -41,6 +46,27 @@ class DAV:
             if path not in self.files:
                 return HTTPResponse(404, b"", None)
             return HTTPResponse(200, self.files[path], self.etags[path])
+        if method == "PROPFIND":
+            assert headers.get("Depth")=="0"
+            assert path not in self.files
+            if path not in self.directories:
+                return HTTPResponse(404, b"", None)
+            body=(
+                '<d:multistatus xmlns:d="DAV:"><d:response>'
+                '<d:href>/dav/Vault/'+path+'</d:href>'
+                '<d:propstat><d:prop><d:resourcetype>'
+                '<d:collection/></d:resourcetype></d:prop>'
+                '<d:status>HTTP/1.1 200 OK</d:status></d:propstat>'
+                '</d:response></d:multistatus>'
+            ).encode()
+            return HTTPResponse(207,body,None)
+        if method=="MKCOL":
+            if path in self.directories: return HTTPResponse(405,b"",None)
+            parts=path.rstrip("/").split("/")
+            parent="/".join(parts[:-1])+"/" if len(parts)>1 else ""
+            if parent not in self.directories: return HTTPResponse(409,b"",None)
+            self.directories.add(path)
+            return HTTPResponse(201,b"",None)
         assert method == "PUT", "Reconciliation must never DELETE or MOVE"
         if self.before_put:
             self.before_put(path)
@@ -390,3 +416,41 @@ def test_production_cli_drift_is_nonzero_not_false_success(monkeypatch, tmp_path
     value = json.loads(capsys.readouterr().out)
     assert value["result"] == "live_drift"
     assert value["audit_scope"] == "core_tracked_managed_paths"
+
+
+def test_manual_repair_nested_create_uses_verified_mkcol_then_conditional_put(setup):
+    """Manual drift repair uses the same generic DAV parent qualification."""
+    _common, _head, dav, _tmp = setup
+    dav.files.pop(REL)
+    dav.etags.pop(REL)
+    dav.directories = {""}  # Missing all parent collections within Vault
+    plan = audit(setup)
+    receipt, _path = repair(setup, plan)
+    assert receipt["status"] == "completed"
+    assert receipt["checkpoint_advanced"] is False
+    assert dav.files[REL] == DESIRED
+    methods = [m for m, _p, _h in dav.requests if m in ("MKCOL", "PUT")]
+    assert methods == ["MKCOL", "MKCOL", "PUT"]
+    assert dav.puts[0][2]["If-None-Match"] == "*"
+    assert audit(setup)["observations"] == []
+
+
+def test_manual_repair_parent_conflict_is_receipted_without_put(setup):
+    """409 at a parent is a failed attempt, never auto-retried or applied."""
+    class Refuse(DAV):
+        def __call__(self, **kwargs):
+            if kwargs["method"] == "MKCOL":
+                return HTTPResponse(409, b"", None)
+            return super().__call__(**kwargs)
+
+    common, head, dav, tmp = setup
+    common["transport"] = broken = Refuse({})
+    broken.directories = {""}
+    plan = audit(setup)
+    with pytest.raises(live.ReconciliationError, match="repair_parent_unavailable"):
+        repair(setup, plan)
+    assert not broken.puts
+    assert REL not in broken.files
+    stored = list((tmp / "receipts").glob("*.live-drift-receipt.json"))
+    assert stored, "attempting or failed receipt must survive a blocked parent"
+    assert any(b"failed_or_partial" in path.read_bytes() for path in stored)

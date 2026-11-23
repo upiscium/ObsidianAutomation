@@ -22,7 +22,10 @@ from typing import Any, Sequence
 from urllib.parse import urlsplit, urlunsplit
 
 from .core_promotion import CORE_REPOSITORY, _managed_by_projection, _resolve_commit, _tree_blob
-from .core_promotion_transport import HTTPResponse, HTTPTransport, PromotionTransportError, _real_http_request
+from .core_promotion_transport import (
+    HTTPResponse, HTTPTransport, PromotionTransportError,
+    _real_http_request, ensure_parent_collections,
+)
 from .managed_promotion_transport import APPEARANCE_PATH, _appearance_projection, _decode_appearance, _merge_appearance
 from .public_export import load_config
 from .webdav_create import build_target_url
@@ -368,6 +371,18 @@ def repair_live(*, plan_data: bytes, expected_sha256: str, core_repository: Path
                 continue
             receipt["outcomes"].append({"path": path, "result": "attempting"})
             store_artifact(receipt_directory, receipt, "live-drift-receipt")
+            if headers.get("If-None-Match") == "*":
+                # Generic Apache DAV cannot create a file under missing
+                # collections. Parent creation is an effect and therefore
+                # happens only after the full approved repair preflight and
+                # after the immutable attempting receipt is stored.
+                try:
+                    ensure_parent_collections(
+                        base_url=base_url, path=path, username=username,
+                        password=password, timeout=timeout, transport=transport,
+                    )
+                except PromotionTransportError:
+                    raise ReconciliationError("repair_parent_unavailable") from None
             result = _request(method="PUT", path=path, headers=headers, body=desired, **connection)
             if result.status in {409, 412}:
                 receipt["outcomes"][-1]["result"] = "cas_conflict"

@@ -80,14 +80,36 @@ def test_probe_read_only_and_no_secret_in_git_argv(monkeypatch):
 
     class Response:
         status = 207
+        headers = {"Content-Type": "application/xml; charset=utf-8"}
+
+        def read(self, size):
+            assert size == 65537
+            return (
+                b'<d:multistatus xmlns:d="DAV:">'
+                b'<d:response><d:href>/remote.php/dav/files/user/Vault/</d:href>'
+                b'<d:propstat><d:prop><d:resourcetype><d:collection/>'
+                b'</d:resourcetype></d:prop>'
+                b'<d:status>HTTP/1.1 200 OK</d:status></d:propstat>'
+                b'</d:response></d:multistatus>'
+            )
+
         def __enter__(self): return self
         def __exit__(self, *_): pass
 
-    def fake_open(request, timeout):
-        assert request.get_method() == "PROPFIND" and timeout == 8
-        assert request.get_header("Depth") == "0"
-        assert request.full_url.endswith("/Vault/")
-        return Response()
+    class Opener:
+        def open(self, request, timeout):
+            assert request.get_method() == "PROPFIND" and timeout == 8
+            assert request.get_header("Depth") == "0"
+            assert request.full_url.endswith("/Vault/")
+            assert b"resourcetype" in request.data
+            assert "NC-PRIVATE" not in str(request.headers)
+            return Response()
+
+    def fake_build_opener(proxy,handler):
+        assert proxy.proxies == {}
+        assert handler.redirect_request(None, None, 302, "move", {},
+                                        "https://other.invalid/") is None
+        return Opener()
 
     def fake_command(args, **kwargs):
         calls.append(args)
@@ -96,12 +118,16 @@ def test_probe_read_only_and_no_secret_in_git_argv(monkeypatch):
         assert "GIT-PRIVATE" not in str(args) + str(kwargs["env"])
         return True, ""
 
-    monkeypatch.setattr(setup.urllib.request, "urlopen", fake_open)
+    monkeypatch.setattr(setup.urllib.request, "build_opener", fake_build_opener)
     monkeypatch.setattr(setup, "private_repo", lambda _: True)
     monkeypatch.setattr(setup, "_command", fake_command)
     assert probe_connections(value)
     assert calls == [["git", "ls-remote", value["git_url"]]]
-    monkeypatch.setattr(setup.urllib.request, "urlopen", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("NC-PRIVATE")))
+    class Fails:
+        def open(self, *args, **kwargs):
+            raise OSError("fixture-unreachable")
+    monkeypatch.setattr(setup.urllib.request, "build_opener",
+                        lambda *_handlers: Fails())
     assert not probe_connections(value)
 
 

@@ -133,12 +133,12 @@
   <details class="connections" id="connections">
     <summary>接続設定</summary>
     <div class="connection-grid">
-      <section class="connection-provider" aria-label="Nextcloud · 共通">
-        <h3>Nextcloud · 共通</h3>
+      <section class="connection-provider" aria-label="WebDAV · 共通">
+        <h3>WebDAV · 共通</h3>
         <div class="setting-row" data-group="nextcloud" data-field="webdav_url">
           <label for="field-nextcloud-webdav_url">WebDAV URL</label>
           <div class="setting-control">
-            <input type="url" id="field-nextcloud-webdav_url" placeholder="https://cloud.example/remote.php/dav/files/user/" autocomplete="off">
+            <input type="url" id="field-nextcloud-webdav_url" placeholder="https://dav.example.net/webdav/" autocomplete="off">
             <button type="button" id="save-nextcloud-webdav_url" class="outline">個別保存</button>
             <span id="status-nextcloud-webdav_url" class="field-state" data-state="loading" role="status" aria-live="polite">確認中</span>
           </div>
@@ -160,7 +160,7 @@
           </div>
         </div>
         <div class="setting-row" data-group="nextcloud" data-field="nextcloud_password">
-          <label for="field-nextcloud-nextcloud_password">App password</label>
+          <label for="field-nextcloud-nextcloud_password">Password / App password</label>
           <div class="setting-control">
             <input type="password" id="field-nextcloud-nextcloud_password" autocomplete="new-password">
             <button type="button" id="save-nextcloud-nextcloud_password" class="outline">個別保存</button>

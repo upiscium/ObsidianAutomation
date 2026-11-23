@@ -29,7 +29,9 @@ from .webdav_create import (
     _connection,
     _read_password,
     build_target_url,
+    _safe_components,
 )
+from .webdav_connection import _collection_multistatus, PROPFIND_BODY, MAX_XML_BYTES
 
 
 CHECKPOINT_VERSION = 1
@@ -205,6 +207,113 @@ def _real_http_request(
     return HTTPResponse(status=status, body=raw, etag=etag)
 
 
+def ensure_parent_collections(
+    *,
+    base_url: str,
+    path: str,
+    username: str,
+    password: str,
+    timeout: float,
+    transport: HTTPTransport | None,
+    create_missing: bool = True,
+) -> tuple[str, ...]:
+    """Qualify existing directories and create only missing approved parents.
+
+    Only call after the complete promotion plan has passed conflict preflight.
+    The configured Vault *root* must already exist: creating or selecting a
+    different root would escape the operator's authority. A partial MKCOL is
+    deliberately not rolled back or auto-retried; a subsequent approved run
+    must re-observe every component and the target before proceeding.
+
+    With ``create_missing=False`` this is a read-only qualification used by
+    whole-plan preflight: a missing parent is accepted (it will be created
+    later), but a missing root or a non-collection ancestor fails closed.
+    """
+    try:
+        components = _safe_components(path)
+        build_target_url(base_url, path)  # strict host/relative-path checks
+    except WebDAVCreateError as exc:
+        raise PromotionTransportError("invalid parent path") from exc
+    if len(components) > 32:
+        raise PromotionTransportError("parent path exceeds maximum depth")
+    # A literal percent in the Git tree can be recursively URL-decoded by
+    # nonconforming proxies/providers. Refuse that ambiguity in a new parent
+    # transaction rather than risking a different path than the reviewed plan.
+    # The final component is the file itself (sent as %25 by build_target_url,
+    # exactly as before), so only the parent directories are checked.
+    if any("%" in name for name in components[:-1]):
+        raise PromotionTransportError("ambiguous encoded parent path")
+    request = transport or _real_http_request
+    created: list[str] = []
+
+    def bounded_request(**kwargs) -> HTTPResponse:
+        try:
+            response = request(**kwargs)
+        except Exception:
+            # Never echo an exception from a custom provider or adapter.
+            # Some include URLs, bodies or credential-bearing diagnostics.
+            raise PromotionTransportNetworkError(
+                "WebDAV parent request returned no trustworthy result"
+            ) from None
+        if type(response) is not HTTPResponse or type(response.status) is not int:
+            raise PromotionTransportNetworkError(
+                "WebDAV parent request returned invalid metadata"
+            )
+        return response
+
+    def collection(url: str) -> int:
+        response = bounded_request(
+            method="PROPFIND", target_url=url,
+            username=username, password=password,
+            headers={"Depth": "0", "Content-Type": "application/xml; charset=utf-8"},
+            body=PROPFIND_BODY, timeout=timeout,
+            response_limit=MAX_XML_BYTES,
+        )
+        if response.status == 404:
+            return 404
+        if (response.status != 207 or type(response.body) is not bytes
+                or not _collection_multistatus(response.body, url)):
+            raise PromotionTransportConflict(
+                "WebDAV ancestor is not a verified DAV collection"
+            )
+        return 207
+
+    # This root is configured and independently selected. It must never be
+    # silently created by promotion under an unexpected generic DAV mount.
+    root_url = base_url.rstrip("/") + "/"
+    if collection(root_url) != 207:
+        raise PromotionTransportConflict("configured WebDAV root is missing")
+    for depth in range(1, len(components)):
+        relative = "/".join(components[:depth])
+        url = build_target_url(base_url, relative) + "/"
+        status = collection(url)
+        if status == 207:
+            continue
+        if not create_missing:
+            # Everything below a missing parent is necessarily missing too.
+            break
+        response = bounded_request(
+            method="MKCOL", target_url=url,
+            username=username, password=password,
+            headers={}, body=None, timeout=timeout,
+            response_limit=MAX_MUTATION_RESPONSE_BYTES,
+        )
+        # A racing peer can create the collection before MKCOL returns 405.
+        # Both 201 and 405 require a separate exact collection observation.
+        # 409 and network loss remain failures even if a later run can recover.
+        if response.status not in (201, 405):
+            raise PromotionTransportConflict(
+                "WebDAV parent MKCOL refused or conflicted"
+            )
+        if collection(url) != 207:
+            raise PromotionTransportNetworkError(
+                "WebDAV parent creation could not be verified"
+            )
+        if response.status == 201:
+            created.append(relative)
+    return tuple(created)
+
+
 def _observe_remote(
     *,
     base_url: str,
@@ -307,6 +416,16 @@ def preflight_remote(
             "promotion preflight found divergent remote paths; no mutation attempted: "
             + ", ".join(conflicts)
         )
+    # Read-only parent qualification for every CREATE so that a missing root
+    # or a file squatting on an ancestor is found before ANY mutation, rather
+    # than after earlier changes in the plan were already applied.
+    for entry in entries:
+        if entry.change.action == "create" and entry.disposition == "apply":
+            ensure_parent_collections(
+                base_url=base_url, path=entry.change.path, username=username,
+                password=password, timeout=timeout, transport=transport,
+                create_missing=False,
+            )
     return tuple(entries)
 
 
@@ -355,8 +474,15 @@ def _perform_mutation(
     body: bytes | None = None
     method: str
     if change.action == "create":
+        # Preflight already checked every planned content change. Verify the
+        # configured root and each parent before submitting the conditional
+        # PUT. Nextcloud's auto-MKCOL header alone is not portable to Apache.
         method = "PUT"
         body = _desired_bytes(core_repository, plan, change)
+        ensure_parent_collections(
+            base_url=base_url, path=change.path, username=username,
+            password=password, timeout=timeout, transport=transport,
+        )
         headers.update(
             {
                 "If-None-Match": "*",

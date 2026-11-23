@@ -500,3 +500,32 @@ test("UI copy matches operator request without extra footer or schedule success 
   assert.equal(el("snapshot-phase-mode").hidden,true);
   assert.match(el("daily-phase-mode").textContent,/旧Interval方式/);
 });
+
+
+
+test("generic HTTPS root registration does not advertise Nextcloud picker or inode identity", async () => {
+  const vals=jobs(true,true,true);
+  const reply=v=>({ok:true,async json(){return v;}});
+  const fetch=async path=>{
+    if(path==="/api/v1/vault-root")return reply({
+      active_label:"Vault",enrolled:true,provider:"generic_https_path",
+      activation:"not_available",can_rollback:false
+    });
+    if(path==="/api/v1/vault-bindings")return reply({
+      state:"default",roles:{daily:"00-DailyNote",
+        project:"10-Project",system:"98-System"},can_reset:false,
+      can_rollback:false,system_fixed_under_promotion:true
+    });
+    if(path==="/api/v1/core-promotion/configuration")return reply({
+      policy_sha256:"a".repeat(64),checkpoint_initialized:true
+    });
+    return reply(vals[path]);
+  };
+  const el=await mount(vals,{}, {fetch});
+  assert.match(el("vault-root-provider").textContent,/ID保証なし/);
+  assert.match(el("vault-root-enroll").textContent,/HTTPSパスを検証/);
+  for(const name of ["list","enter","preview","activate","rollback"])
+    assert.equal(el("vault-root-"+name).disabled,true,name);
+  assert.equal(el("vault-root-candidate").disabled,true);
+  assert.equal(el("vault-enrollment-status").dataset.state,"verified");
+});
