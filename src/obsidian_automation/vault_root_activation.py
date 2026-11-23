@@ -423,8 +423,11 @@ def reset_pin_after_connection_save(store: SetupStore,
             and data.get("outcome") in ("activated", "rolled_back")
             and data.get("source_sha256") == _source_digest(saved)):
         return True  # credential-only change: same server, user and root
+    # Record the source the unpinned root was saved under, exactly like
+    # _commit. Without it a later generic-WebDAV enrollment (which requires
+    # the digest to match) is refused on every host that ever had a pin.
     return _write_binding(store.state, RootPin(saved["vault_folder"], None, None),
-                          None, "connection_saved", clock)
+                          None, "connection_saved", clock, _source_digest(saved))
 
 
 class RootPinRefused(RuntimeError):
