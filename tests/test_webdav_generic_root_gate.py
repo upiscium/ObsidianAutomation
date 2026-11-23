@@ -235,3 +235,29 @@ def test_present_corrupt_pin_marker_never_downgrades_to_unpinned_generic(tmp_pat
     marker.chmod(0o600)
     assert enroll_generic(store,probe=lambda _:True)=="prior_root_pin_requires_reset"
     assert not is_enrolled(store)
+
+
+def test_switch_from_pinned_nextcloud_to_generic_root_can_enroll_via_real_save_path(tmp_path):
+    """Production flow: an old OC-ID pin + marker exist, the operator saves a
+    generic connection (reset_pin_after_connection_save), then enrolls."""
+    from obsidian_automation.vault_root_activation import (
+        _write_binding, _source_digest, RootPin, reset_pin_after_connection_save,
+    )
+    store=SetupStore(tmp_path, obscure=lambda _:"fixture-obscured")
+    nextcloud={**SOURCE,
+               "webdav_url":"https://nas.example.invalid/remote.php/dav/files/u/",
+               "vault_folder":"ObsidianVault"}
+    assert store.save_nextcloud(nextcloud, probed=True)
+    assert _write_binding(
+        store.state,RootPin("ObsidianVault",("0000001ocabc",),"ocabc"),None,
+        "activated",clock=lambda:1.0,source=_source_digest(nextcloud))
+    marker=tmp_path/"vault_root_pinning.enabled"
+    marker.write_bytes(b"1\n"); marker.chmod(0o600)
+    generic={**SOURCE,"webdav_url":"https://vault.example.invalid/","vault_folder":"/",
+             "nextcloud_user":"vault-oa"}
+    assert store.save_nextcloud(generic, probed=True)
+    assert reset_pin_after_connection_save(store, clock=lambda:2.0)
+    assert not is_enrolled(store)
+    assert enroll_generic(store,probe=lambda _:True)=="enrolled"
+    assert is_enrolled(store)
+    assert JobRootGuard(store,generic_probe=lambda _:True).status()=="ok"
