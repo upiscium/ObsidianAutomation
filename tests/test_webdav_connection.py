@@ -226,3 +226,23 @@ def test_probe_fails_closed_on_malformed_or_truncated_http(monkeypatch,exc):
     monkeypatch.setattr(module.urllib.request,"build_opener",
                         lambda *_: Opener())
     assert probe_webdav_collection(source()) is False
+
+
+@pytest.mark.parametrize("target_path,href",[
+    ("/dav/Weekly%20%282025%29/","/dav/Weekly%20(2025)/"),
+    ("/dav/it%27s%20%40%20100%2C%20ok%21/","/dav/it%27s%20@%20100%2c%20ok%21/"),
+    ("/dav/a%2Bb%26c%3Dd/","/dav/a%2bb%26c%3dd/"),
+    ("/dav/%E6%97%A5%E6%9C%AC%E8%AA%9E/","/dav/%e6%97%a5%e6%9c%ac%e8%aa%9e/"),
+])
+def test_href_server_side_reencoding_of_same_resource_matches(target_path,href):
+    assert _collection_multistatus(
+        xml(href=href),"https://dav.example.invalid"+target_path)
+
+
+@pytest.mark.parametrize("href",[
+    "/dav/Weekly%20(2025)%2f/","/dav/%ff/","/dav/%00/","/dav/../",
+    "/dav/Weekly%20(2026)/",
+])
+def test_href_reencoding_tolerance_does_not_admit_other_resources(href):
+    target="https://dav.example.invalid/dav/Weekly%20%282025%29/"
+    assert not _collection_multistatus(xml(href=href),target)

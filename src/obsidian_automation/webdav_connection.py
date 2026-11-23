@@ -121,17 +121,30 @@ def _collection_multistatus(raw: bytes, target_url: str) -> bool:
             if (href.scheme != want.scheme
                     or href.netloc.lower() != want.netloc.lower()):
                 return False
-        # Compare literal URI path segments, not fully decoded strings.
-        # Otherwise %2F / %5C can alias a different DAV resource or turn
-        # a server-provided single segment into a path hierarchy.
+        # Compare canonical per-segment URI paths, never one fully decoded
+        # string. Servers legitimately re-encode a resource differently (e.g.
+        # Nextcloud returns "(" and "@" raw, "%27" for "'", lowercase hex),
+        # so each segment is decoded and re-encoded canonically. Encoded
+        # separators (%2F / %5C), control characters and invalid UTF-8 are
+        # refused so a segment can never become a different hierarchy.
         def normalized_path(path: str) -> str | None:
             if (not path.startswith("/")
                     or re.search(r"%(?![0-9a-fA-F]{2})", path)
                     or re.search(r"%(?:2[fF]|5[cC])", path)
                     or "\\" in path):
                 return None
-            return re.sub(r"%[0-9a-fA-F]{2}",
-                          lambda m: m.group(0).upper(), path)
+            segments = []
+            for segment in path.split("/"):
+                try:
+                    decoded = unquote(segment, errors="strict")
+                except UnicodeDecodeError:
+                    return None
+                if (decoded in (".", "..")
+                        or any(ord(ch) < 0x20 or ord(ch) == 0x7F
+                               for ch in decoded)):
+                    return None
+                segments.append(quote(decoded, safe=""))
+            return "/".join(segments)
 
         expected = normalized_path(want.path)
         if (expected is None or href.query or href.fragment

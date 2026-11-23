@@ -69,3 +69,22 @@ Nextcloud-format synthetic regression tests pass; actual isolated Nextcloud
 protocol E2E and independent security review are still pending. The
 production provider, Vault, credentials and Scheduler remain unchanged.
 #601 stays OPEN and #306 stays BLOCKED until final acceptance.
+
+## Real Nextcloud synthetic E2E (2026-11-23)
+
+tests/integration_nextcloud_webdav.py runs against a disposable Nextcloud
+35.0.2 container (rootless Docker, localhost only, sqlite, synthetic admin).
+Passed: strict PROPFIND href match, full promotion (update, nested CREATE
+without existing parents, delete, receipt, checkpoint), If-Match/If-None-Match
+protection, awkward names (parentheses, apostrophe, "@", "%" in the file
+name, non-ASCII), and read-only refusal of a file used as an ancestor.
+
+Finding: servers re-encode the same resource differently (Nextcloud returns
+"(" and "@" raw, %27 and %21 encoded, lowercase hex). The href check now
+compares per-segment canonical encodings; %2F, %5C, control characters,
+invalid UTF-8 and dot segments are still refused.
+
+Operational notes: any provider connection or Vault folder save rotates the
+generic Root epoch (so a password change needs re-enrollment); WebUI-supplied
+HTTPS hosts are not restricted to public addresses (administrator-only
+surface).
