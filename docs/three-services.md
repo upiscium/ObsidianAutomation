@@ -82,6 +82,22 @@ obsidian_automation.chatgpt_export_inspect`, `..._intake --provider
   schedule. Without the flag the routes return 503 and the page never names
   either provider.
 
+**Knowledge proposals (B1-lite, phase 1: manual CLI, no Vault).**
+`python -m obsidian_automation.knowledge_proposal list|propose` turns one
+imported conversation (ChatGPT or Claude export ZIP, one conversation per
+run) into a single proposal note using the existing OpenAI-compatible
+generator against the configured endpoint (the local TSUMGI API). The note is
+written to a local directory only (`--out`), created exclusively (an existing
+file is never overwritten), never to the Vault. It carries
+`type: knowledge-proposal`, `status: proposed`, the metadata embed
+`knowledge-proposal-meta` and a machine-readable provenance comment; generated
+content that would execute in Obsidian (Meta Bind, Dataview/Templater blocks,
+`BUTTON[` / `INPUT[` inline controls, `obsidian://` and `javascript:` links,
+script tags) is refused before anything is written. Approval is the existing
+"Knowledgeに昇格" button in ObsidianCore (upiscium/ObsidianCore#247), which moves
+the note to `11-Knowledge/`. A conversation larger than 128 KiB is refused
+(`source_too_large`). Design: `docs/knowledge-lite-design.md`.
+
 ## App control contract
 
 | API | Behavior |
