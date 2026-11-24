@@ -238,36 +238,87 @@ def _claude_timestamp(value: object) -> float | None:
 
 
 def _claude_visible_text(message: dict) -> tuple[str | None, str]:
-    """Return (text, omission_reason). Only plain text blocks are visible.
+    """Return (text, omission_reason).
 
-    ``thinking``, ``tool_use``, ``tool_result`` and unknown blocks are never
-    treated as the user-visible answer. Older/other exports carry a flat
-    ``text`` field instead of ``content`` blocks; ``content`` wins if present.
+    In the real claude.ai export the top-level ``text`` is the user-visible
+    final reply (identical to the joined ``text`` blocks for a human turn; for
+    an assistant turn that used tools, ``content`` additionally holds interim
+    narration between tool calls). ``text`` therefore wins when it is a
+    non-empty string; plain ``text`` blocks are the fallback. ``thinking``,
+    ``tool_use``, ``tool_result``, ``injected_prompt_block``, ``image`` and
+    ``document`` blocks are never treated as visible text.
     """
-    content = message.get("content")
-    if content is not None:
-        if not isinstance(content, list):
-            return None, "unsupported_content"
-        pieces: list[str] = []
-        for block in content:
-            if not isinstance(block, dict):
-                return None, "unsupported_content"
-            if block.get("type") == "text":
-                text = block.get("text")
-                if not isinstance(text, str):
-                    return None, "nontext_parts"
-                pieces.append(text)
-        text = "\n".join(pieces)
-    else:
-        flat = message.get("text")
-        if not isinstance(flat, str):
-            return None, "unsupported_content"
+    flat = message.get("text")
+    if isinstance(flat, str) and flat:
         text = flat
+    else:
+        content = message.get("content")
+        if content is None:
+            if flat is None:
+                return None, "unsupported_content"
+            text = ""
+        elif not isinstance(content, list):
+            return None, "unsupported_content"
+        else:
+            pieces: list[str] = []
+            for block in content:
+                if not isinstance(block, dict):
+                    return None, "unsupported_content"
+                if block.get("type") == "text":
+                    value = block.get("text")
+                    if not isinstance(value, str):
+                        return None, "nontext_parts"
+                    pieces.append(value)
+            text = "\n".join(pieces)
     if not text:
         return None, "empty_text"
     if len(text.encode("utf-8")) > _MAX_MESSAGE_BYTES:
         return None, "oversize_text"
     return text, ""
+
+
+def _claude_selected_branch(messages: list) -> tuple[list[dict], int, int]:
+    """Messages on the current branch, off-branch count, unverified links.
+
+    Each message of the real export carries ``parent_message_uuid`` and the
+    list holds edited/regenerated alternatives too. The list is in creation
+    order, so the last message is the leaf of the current branch; follow the
+    parents back to the root (whose parent is outside the conversation).
+    Exports without parent links are treated as one linear branch and the
+    missing verification is reported through the unverified-link count.
+    """
+    by_id: dict[str, dict] = {}
+    for message in messages:
+        if not isinstance(message, dict):
+            raise NormalizeError("invalid_selected_message")
+        message_id = _identifier(message.get("uuid"), "invalid_message_id")
+        if message_id in by_id:
+            raise NormalizeError("duplicate_selected_message_id")
+        by_id[message_id] = message
+    if not messages:
+        return [], 0, 0
+    linked = ["parent_message_uuid" in m for m in messages]
+    if not any(linked):
+        return list(messages), 0, len(messages)
+    if not all(linked):
+        raise NormalizeError("inconsistent_parent_links")
+    chain: list[dict] = []
+    seen: set[str] = set()
+    current = messages[-1]
+    while True:
+        current_id = current["uuid"]
+        if current_id in seen:
+            raise NormalizeError("selected_branch_cycle")
+        seen.add(current_id)
+        chain.append(current)
+        parent = current["parent_message_uuid"]
+        if not isinstance(parent, str):
+            raise NormalizeError("invalid_branch_parent")
+        current = by_id.get(parent)
+        if current is None:
+            break
+    chain.reverse()
+    return chain, len(messages) - len(chain), 0
 
 
 def _normalize_claude_one(conversation: dict, limits: Limits) -> SelectedConversation:
@@ -278,15 +329,10 @@ def _normalize_claude_one(conversation: dict, limits: Limits) -> SelectedConvers
     omissions: Counter[str] = Counter()
     retained: list[SelectedMessage] = []
     semantic: list[dict] = []
-    seen: set[str] = set()
+    chain, off_branch, unverified = _claude_selected_branch(messages)
     previous: str | None = None
-    for message in messages:
-        if not isinstance(message, dict):
-            raise NormalizeError("invalid_selected_message")
-        message_id = _identifier(message.get("uuid"), "invalid_message_id")
-        if message_id in seen:
-            raise NormalizeError("duplicate_selected_message_id")
-        seen.add(message_id)
+    for message in chain:
+        message_id = message["uuid"]
         parent, previous = previous, message_id
         sender = message.get("sender")
         if not isinstance(sender, str):
@@ -311,9 +357,9 @@ def _normalize_claude_one(conversation: dict, limits: Limits) -> SelectedConvers
     return SelectedConversation(
         conversation_id=conv_id,
         messages=tuple(retained),
-        selected_path_nodes=len(messages),
-        off_branch_nodes=0,
-        unverified_child_links=0,
+        selected_path_nodes=len(chain),
+        off_branch_nodes=off_branch,
+        unverified_child_links=unverified,
         omitted_reasons=tuple(sorted(omissions.items())),
         content_sha256=_hash({"version": CLAUDE_NORMALIZER_VERSION,
                               "conversation": conv_id, "path": semantic}),
