@@ -31,7 +31,11 @@ _CLAUDE_ROLES = {"human": "user", "assistant": "assistant"}
 _ALLOWED_ROLES = frozenset({"user", "assistant", "system", "developer", "tool"})
 _VISIBLE_CONTENT = frozenset({"text", "multimodal_text"})
 _SHA = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")
-_MAX_TEXT_BYTES = 24 * 1024 * 1024
+# Total retained text per batch. It is bounded by the JSON input limits
+# (Limits.total_json_bytes = 256 MiB), so this is a memory guard, not a content
+# policy. A real 2026-11 ChatGPT Export retains 25.2 MiB across 410
+# conversations and was wrongly rejected by the former 24 MiB value.
+_MAX_TEXT_BYTES = 256 * 1024 * 1024
 _MAX_MESSAGE_BYTES = 128 * 1024
 
 

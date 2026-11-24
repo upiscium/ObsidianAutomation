@@ -377,3 +377,25 @@ def test_user_assigned_internal_reasoning_type_is_not_silently_omitted(tmp_path,
     assert ("unsupported_content", 1) in normalized.omitted_reasons
     assert ("internal_reasoning", 1) not in normalized.omitted_reasons
     assert SECRET not in repr(normalized)
+
+
+def test_selected_text_limit_accepts_real_export_scale_and_still_bounds_memory(tmp_path, monkeypatch):
+    """A real 2026-11 export retained ~25 MiB; the old 24 MiB cap rejected it."""
+    import json, zipfile
+    from obsidian_automation import chatgpt_export_normalize as module
+
+    def conv(i):
+        text = os.urandom(60 * 1024).hex()  # 120 KB: under the per-message cap, incompressible
+        return {"id": f"c{i}", "current_node": "n", "mapping": {"n": {
+            "id": "n", "parent": None, "children": [], "message": {
+                "id": f"m{i}", "author": {"role": "user"}, "create_time": 1.0,
+                "content": {"content_type": "text", "parts": [text]}}}}}
+    path = tmp_path / "e.zip"
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("conversations.json", json.dumps([conv(i) for i in range(230)]))
+    assert module._MAX_TEXT_BYTES >= 128 * 1024 * 1024
+    batch = module.normalize_export(path, scope="private-chatgpt")  # ~27 MiB retained (> the old 24 MiB cap)
+    assert sum(len(c.messages) for c in batch.conversations) == 230
+    monkeypatch.setattr(module, "_MAX_TEXT_BYTES", 1024 * 1024)
+    with pytest.raises(module.NormalizeError, match="selected_text_limit"):
+        module.normalize_export(path, scope="private-chatgpt")
