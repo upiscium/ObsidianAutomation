@@ -1,6 +1,6 @@
 # Knowledge (B1) restoration — the simple design ("B1-lite")
 
-Status: **proposal, not implemented** (tracking issue #610). Owner direction:
+Status: **phase 1 implemented** in #616 (manual CLI, no Vault); later phases are proposals (tracking issue #610). Owner direction:
 restore the AI/Knowledge feature, but keep it simple; a restored multi-identity
 authority model costs too much to maintain.
 
@@ -96,10 +96,41 @@ approval.
   the human approval step are the quality gate: a weak proposal costs a
   review, never a Vault change.
 
-## Decisions still needed from the owner
+- **Approval is a button in the proposal note**, not a manual move and not a
+  new mechanism. ObsidianCore already has the "Knowledgeに昇格" (promote to
+  Knowledge) action: it moves a note to `11-Knowledge/`, swaps the managed
+  metadata embed for `knowledge-meta`, sets the Knowledge front matter and
+  refuses to overwrite. Core PR upiscium/ObsidianCore#247 adds
+  `type: knowledge-proposal` to its promotable types with a
+  `knowledge-proposal-meta` embed that carries the same button. Approving is
+  therefore one click on the proposal itself, and the Automation side needs no
+  approval code, artifact or executor.
+- **Proposal folder `04-AI/Proposals/`** (flat), replacing the ten-stage layout.
+- **First source: imported ChatGPT / Claude conversations**; Vault notes later.
 
-1. Approval by moving the file in Obsidian (recommended) versus a front-matter
-   flag plus a publish step.
-2. Proposal folder `04-AI/Proposals/` (flat, replaces the ten-stage layout).
-3. First source: imported conversations (ChatGPT / Claude) first, Vault notes
-   later.
+## Proposal note contract (shared with ObsidianCore)
+
+```text
+---
+type: knowledge-proposal
+status: proposed
+category: <knowledge policy value>
+maturity: draft
+source_type: <knowledge policy value>
+---
+
+```meta-bind-embed
+[[knowledge-proposal-meta]]
+```
+
+<generated note body>
+
+<!-- oa-proposal: {"v":1,"scope":...,"source_sha256":...,"context_sha256":...,"generation_sha256":...,"model":...} -->
+```
+
+Only the five Knowledge-policy front matter keys are used (no extra keys), so a
+promoted note stays valid under `knowledge-note-v0`. Provenance lives in the
+trailing HTML comment. Generated text is refused if it contains anything that
+would execute in Obsidian (Meta Bind / Dataview / Templater blocks, inline
+`BUTTON[` / `INPUT[` / `VIEW[` / `JS[` controls, `obsidian://` or
+`javascript:` links, script-like tags); plain code fences are allowed.
