@@ -98,6 +98,14 @@ script tags) is refused before anything is written. Approval is the existing
 the note to `11-Knowledge/`. A conversation larger than 128 KiB is refused
 (`source_too_large`). Design: `docs/knowledge-lite-design.md`.
 
+**AI/Knowledge (B1), step 1: library only.** `context_selection`,
+`knowledge_validator`, `retrieval_coverage` and `retrieval_eval` are back
+(contract: `docs/retrieval-eval-v0.md`). They are in-process helpers with no
+service, route, schedule, network or Vault access. The orchestration layer
+(pre-review jobs, workers, human projection, production update), the review
+intake and `knowledge_review` are still removed and come back in later steps
+(tracking issue #610).
+
 ## App control contract
 
 | API | Behavior |
