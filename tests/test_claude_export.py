@@ -125,3 +125,87 @@ def test_intake_inventory_per_provider_scope(tmp_path):
         inventory_ready(root, scope="private-claude", provider="chatgpt")
     with pytest.raises(IntakeError, match="unsupported_provider"):
         inventory_ready(root, scope="x", provider="nope")
+
+
+ROOT_PARENT = "00000000-0000-4000-8000-000000000000"
+
+
+def linked(uuid, parent, sender, text, content=None, **extra):
+    message = {"uuid": uuid, "parent_message_uuid": parent, "sender": sender,
+               "text": text, "created_at": "2026-01-02T03:04:05.000Z",
+               "content": content if content is not None else
+               [{"type": "text", "text": text}]}
+    message.update(extra)
+    return message
+
+
+def test_top_level_text_is_the_final_reply_not_interim_narration(tmp_path):
+    messages = [
+        linked("m1", ROOT_PARENT, "human", "question"),
+        linked("m2", "m1", "assistant", "final answer", content=[
+            {"type": "thinking", "thinking": "hidden"},
+            {"type": "text", "text": "let me look that up"},
+            {"type": "tool_use", "id": "t", "name": "x", "input": {}},
+            {"type": "tool_result", "name": "x", "content": "private result"},
+            {"type": "injected_prompt_block", "prompt": "system"},
+            {"type": "image", "file_uuid": "f"}, {"type": "document", "title": "d"},
+            {"type": "text", "text": "final answer"}]),
+    ]
+    batch = normalize_export(make_zip(tmp_path, [conv(messages=messages)]),
+                             scope="private-claude", provider="claude")
+    (c,) = batch.conversations
+    assert [m.text for m in c.messages] == ["question", "final answer"]
+
+
+def test_current_branch_follows_parents_from_the_last_message(tmp_path):
+    messages = [
+        linked("m1", ROOT_PARENT, "human", "first"),
+        linked("m2", "m1", "assistant", "old answer"),      # superseded branch
+        linked("m3", "m1", "assistant", "regenerated answer"),
+        linked("m4", "m3", "human", "follow up"),
+        linked("m5", "m4", "assistant", "last answer"),
+    ]
+    batch = normalize_export(make_zip(tmp_path, [conv(messages=messages)]),
+                             scope="private-claude", provider="claude")
+    (c,) = batch.conversations
+    assert [m.text for m in c.messages] == ["first", "regenerated answer",
+                                            "follow up", "last answer"]
+    assert c.selected_path_nodes == 4 and c.off_branch_nodes == 1
+    assert c.unverified_child_links == 0
+    assert c.messages[1].parent_node_id == "m1" and c.messages[0].parent_node_id is None
+
+
+def test_missing_parent_links_are_linear_but_flagged_unverified(tmp_path):
+    batch = normalize_export(make_zip(tmp_path, [conv()]), scope="private-claude",
+                             provider="claude")
+    (c,) = batch.conversations
+    assert c.unverified_child_links == 2 and c.off_branch_nodes == 0
+    assert batch.graph_reciprocity_unverified
+
+
+@pytest.mark.parametrize("messages,code", [
+    ([linked("a", ROOT_PARENT, "human", "x"),
+      {"uuid": "b", "sender": "human", "text": "y"}], "inconsistent_parent_links"),
+    ([linked("a", "b", "human", "x"), linked("b", "a", "assistant", "y")],
+     "selected_branch_cycle"),
+    ([linked("a", ROOT_PARENT, "human", "x"), linked("b", 5, "assistant", "y")],
+     "invalid_branch_parent"),
+])
+def test_claude_branch_integrity_fails_closed(tmp_path, messages, code):
+    with pytest.raises(NormalizeError, match=code):
+        normalize_export(make_zip(tmp_path, [conv(messages=messages)]),
+                         scope="private-claude", provider="claude")
+
+
+def test_inspect_reports_branches_and_knows_the_real_block_types(tmp_path):
+    messages = [
+        linked("m1", ROOT_PARENT, "human", "q"),
+        linked("m2", "m1", "assistant", "a1"), linked("m3", "m1", "assistant", "a2",
+            content=[{"type": "injected_prompt_block"}, {"type": "image"},
+                     {"type": "document"}, {"type": "text", "text": "a2"}]),
+    ]
+    report = inspect_export(make_zip(tmp_path, [conv(messages=messages)]))
+    assert report["provider"] == "claude" and report["status"] == "inspected"
+    assert report["counts"]["claude_branch_points"] == 1
+    assert report["counts"]["claude_conversations_with_branches"] == 1
+    assert report["claude"]["unknown_field_occurrences"]["message"] == 0

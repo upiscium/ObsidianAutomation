@@ -49,10 +49,12 @@ FIELDS = {
 # export through this inspector before trusting a new normalizer assumption).
 CLAUDE_FIELDS = {
     "conversation": ("uuid", "name", "summary", "created_at", "updated_at", "account", "chat_messages"),
-    "message": ("uuid", "text", "content", "sender", "created_at", "updated_at", "attachments", "files"),
+    "message": ("uuid", "text", "content", "sender", "created_at", "updated_at", "attachments", "files",
+                "parent_message_uuid"),
 }
 CLAUDE_SENDERS = ("human", "assistant")
-CLAUDE_BLOCK_TYPES = ("text", "thinking", "tool_use", "tool_result")
+CLAUDE_BLOCK_TYPES = ("text", "thinking", "tool_use", "tool_result", "document", "image",
+                      "injected_prompt_block")
 ROLES = ("user", "assistant", "system", "developer", "tool")
 CONTENT_TYPES = ("text", "multimodal_text", "image", "audio", "audio_transcription", "tether_browsing_display_text",
                  "thoughts", "reasoning_recap")
@@ -227,6 +229,16 @@ class _Profile:
         self.counts["nodes"] += len(messages)
         if self.counts["nodes"] > self.limits.nodes:
             raise InspectionError("node_limit")
+        parents = [m.get("parent_message_uuid") for m in messages if isinstance(m, dict)]
+        if parents and all(isinstance(p, str) for p in parents):
+            children = Counter(parents)
+            points = sum(1 for n in children.values() if n > 1)
+            if points:
+                self.counts["claude_branch_points"] += points
+                self.counts["claude_conversations_with_branches"] += 1
+        elif any(isinstance(m, dict) and "parent_message_uuid" in m for m in messages):
+            self.counts["claude_inconsistent_parent_links"] += 1
+            self.review = True
         for message in messages:
             if not isinstance(message, dict):
                 self.counts["nonobject_messages"] += 1

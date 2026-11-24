@@ -47,15 +47,26 @@ obsidian_automation.chatgpt_export_inspect`, `..._intake --provider
 {chatgpt,claude}`). They never touch the Vault, WebDAV or the network; see the
 `docs/chatgpt-export-*.md` contracts.
 
-* **Claude** (claude.ai "Export data" ZIP, `conversations.json` with
-  `chat_messages`) is supported through inspect, normalize and intake
-  (parser contract `claude-linear-v0`). Only plain `text` blocks (or a flat
-  `text` field) are retained; `thinking`, `tool_use` and `tool_result` blocks
-  are omitted. The schema comes from third-party documentation, not from
-  Anthropic: **run the inspector on a real export first and review the
-  value-free report before trusting an inventory.** Source-context and
-  evidence-candidate layers remain ChatGPT-only until the AI/Knowledge
-  feature (B1) is restored.
+* **Claude** (claude.ai "Export data") arrives as a manifest plus one ZIP per
+  category: `conversations-NNN.zip`, `projects-*`, `memories-*`, `frames-*`,
+  `claude_code_cloud-*` and `light_metadata-*` (account data; never imported).
+  Only `conversations-NNN.zip` (a single `conversations.json`) is a transcript
+  source; import each `conversations` part separately. The download links in
+  the manifest need the signed-in claude.ai session and expire after 24
+  hours, so download the files in a browser. Support covers inspect,
+  normalize and intake (parser contract `claude-linear-v0`) and was verified
+  against a real 2026-11 export (21 conversations):
+  * the current branch is the chain of `parent_message_uuid` links from the
+    last message (the list also holds edited/regenerated alternatives, which
+    are counted as off-branch, not imported);
+  * the top-level `text` is the final reply and wins over `content` blocks
+    (which also hold interim narration between tool calls); `thinking`,
+    `tool_use`, `tool_result`, `injected_prompt_block`, `image` and `document`
+    blocks are never retained; messages with no visible text are counted as
+    omitted;
+  * without parent links the list is treated as one linear branch and reported
+    as unverified. Source-context and evidence-candidate layers remain
+    ChatGPT-only until the AI/Knowledge feature (B1) is restored.
 * **A scope is bound to one provider** (`private-chatgpt`, `private-claude`);
   reading a ZIP with the wrong provider is rejected and recorded, never
   half-imported.
