@@ -321,12 +321,26 @@ def chat_content(
     timeout: float,
     api_key: str | None = None,
     transport: JSONTransport | None = None,
+    structured_output: bool = True,
 ) -> tuple[OpenAICompatibleModelIdentity, bytes]:
+    """One chat completion whose content must be a JSON object.
+
+    ``structured_output=False`` is for servers that reject ``response_format``
+    (TSUMGI answers 400 ``unsupported_field``): the schema is given in the system
+    prompt instead and the caller's strict local parsing is the only enforcement.
+    """
     identity = identity_for_requested_model(model)
     response_format = structured_response_format(
         schema_name=schema_name,
         output_schema=output_schema,
     )
+    if not structured_output:
+        system_prompt = (
+            system_prompt + "\n\nThe output JSON Schema is below. Return exactly one JSON "
+            "object that validates against it, with no Markdown fence or commentary.\n"
+            + json.dumps(response_format["json_schema"]["schema"], ensure_ascii=False,
+                         sort_keys=True, separators=(",", ":"))
+        )
     request = transport or request_json
     response = request(
         base_url,
@@ -339,7 +353,7 @@ def chat_content(
                 {"role": "user", "content": user_prompt},
             ],
             "stream": False,
-            "response_format": response_format,
+            **({"response_format": response_format} if structured_output else {}),
             **dict(options),
         },
         timeout=timeout,

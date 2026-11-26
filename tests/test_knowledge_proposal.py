@@ -142,3 +142,57 @@ def test_cli_list_shows_counts_only_and_rejects_bad_arguments(tmp_path, capsys):
     assert kp.main(["propose", "--zip", str(archive), "--provider", "claude",
                     "--index", "9"]) == 1
     assert "invalid_arguments" in capsys.readouterr().out
+
+
+def test_structured_output_is_the_default_and_sends_response_format(tmp_path):
+    transport = llm()
+    run(tmp_path, transport)
+    payload = transport.calls[0]
+    assert payload["response_format"]["type"] == "json_schema"
+    assert "The output JSON Schema is below" not in payload["messages"][0]["content"]
+
+
+def test_a_server_that_rejects_response_format_gets_the_schema_in_the_prompt(tmp_path):
+    """TSUMGI answers 400 unsupported_field to response_format: send none, prompt the schema."""
+    transport = llm()
+    proposal = propose(tmp_path / "ai", SOURCE, base_url=BASE, model=MODEL,
+                       transport=transport, structured_output=False)
+    payload = transport.calls[0]
+    assert "response_format" not in payload
+    system = payload["messages"][0]["content"]
+    assert "The output JSON Schema is below" in system
+    assert '"additionalProperties":false' in system and '"body"' in system
+    assert payload["stream"] is False and payload["model"] == MODEL
+    # the strict local parsing is still the gate, and the result is a normal proposal
+    assert proposal.target_path == "04-AI/Proposals/How X works.md"
+
+
+def test_the_generation_record_names_the_prompt_schema_adapter_when_no_response_format(tmp_path):
+    from obsidian_automation.openai_generator import (
+        ADAPTER_VERSION, ADAPTER_VERSION_PROMPT_SCHEMA, provider_model_config,
+    )
+    assert provider_model_config({})["adapter_version"] == ADAPTER_VERSION
+    assert provider_model_config({}, structured_output=False)["adapter_version"] == \
+        ADAPTER_VERSION_PROMPT_SCHEMA != ADAPTER_VERSION
+
+
+def test_a_reply_that_breaks_the_schema_is_still_refused_without_response_format(tmp_path):
+    transport = llm(category="not-a-category")
+    with pytest.raises(ProposalError, match="generation_failed"):
+        propose(tmp_path / "ai", SOURCE, base_url=BASE, model=MODEL,
+                transport=transport, structured_output=False)
+
+
+def test_a_lower_source_limit_refuses_a_conversation_before_any_request(tmp_path):
+    transport = llm()
+    big = SourceText("private-claude", "x" * 2000)
+    with pytest.raises(ProposalError, match="source_too_large"):
+        propose(tmp_path / "ai", big, base_url=BASE, model=MODEL, transport=transport,
+                max_source_bytes=1024)
+    assert transport.calls == []
+    # the hard ceiling cannot be raised by the argument
+    from obsidian_automation.knowledge_proposal import MAX_SOURCE_BYTES
+    huge = SourceText("private-claude", "x" * (MAX_SOURCE_BYTES + 1))
+    with pytest.raises(ProposalError, match="source_too_large"):
+        propose(tmp_path / "ai", huge, base_url=BASE, model=MODEL, transport=transport,
+                max_source_bytes=MAX_SOURCE_BYTES * 4)

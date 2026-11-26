@@ -357,3 +357,43 @@ def test_the_app_refuses_an_incomplete_or_unsafe_knowledge_configuration(
         snapshot_app.main()
     assert exit_info.value.code == 2
     assert not (tmp_path / "knowledge").exists()  # nothing was set up
+
+
+def test_a_small_context_model_gets_a_lower_source_limit_and_empty_chats_are_labelled(tmp_path, store):
+    env = Env(tmp_path, store, max_source_bytes=1024)
+    try:
+        long_chat = claude("big", "2026-01-01", question="x" * 1500)
+        empty_chat = dict(claude("none", "2026-01-02"), chat_messages=[])
+        env.import_zip([long_chat, empty_chat, claude("small", "2026-01-03")])
+        listing = env.service.conversations()
+        assert sorted(c["state"] for c in listing["conversations"]) == ["empty", "new", "too_large"]
+        big = next(c for c in listing["conversations"] if c["state"] == "too_large")
+        with_empty = next(c for c in listing["conversations"] if c["state"] == "empty")
+        for refused in (big, with_empty):
+            env.service.start_manual({"archive": refused["archive"], "index": refused["index"]})
+            env.wait()
+            run = env.service.status()["recent_runs"][0]
+            assert (run["status"], run["error_code"]) == ("failed", "conversation_not_usable")
+        assert env.llm.calls == []  # nothing too large or empty ever reaches the model
+        # the schedule picks only the conversation that fits
+        env.service.update_settings({"enabled": True})
+        env.now[0] += 3601
+        env.service.tick()
+        env.wait()
+        assert len(env.llm.calls) == 1 and "small" in json.dumps(env.llm.calls[0])
+    finally:
+        env.service.close()
+
+
+def test_source_limit_validation_in_config_and_app(tmp_path, monkeypatch):
+    for bad in (100, 1023, 128 * 1024 + 1, True, "2048"):
+        with pytest.raises(ValueError):
+            KnowledgeConfig(llm_url=LLM_URL, model=MODEL, max_source_bytes=bad)
+    from obsidian_automation import snapshot_app
+    monkeypatch.setattr("sys.argv", [
+        "obsidian-snapshot-app", "--state", str(tmp_path), "--knowledge-ui",
+        "--knowledge-llm-url", LLM_URL, "--knowledge-model", MODEL,
+        "--knowledge-max-source-bytes", "10"])
+    with pytest.raises(SystemExit) as exit_info:
+        snapshot_app.main()
+    assert exit_info.value.code == 2

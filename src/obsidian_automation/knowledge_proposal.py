@@ -141,7 +141,8 @@ def propose(
     implementation_revision: str = IMPLEMENTATION_REVISION,
     options: Mapping[str, object] | None = None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS, api_key: str | None = None,
-    transport: JSONTransport | None = None,
+    transport: JSONTransport | None = None, structured_output: bool = True,
+    max_source_bytes: int = MAX_SOURCE_BYTES,
 ) -> Proposal:
     """Generate one proposal. Writes only below ``ai_root`` (private artifacts)."""
     if (not isinstance(source.scope, str)
@@ -150,7 +151,7 @@ def propose(
     if not isinstance(source.text, str) or not source.text.strip():
         raise ProposalError("empty_source")
     encoded = source.text.encode("utf-8")
-    if len(encoded) > MAX_SOURCE_BYTES:
+    if len(encoded) > min(max_source_bytes, MAX_SOURCE_BYTES):
         raise ProposalError("source_too_large")
     source_sha256 = hashlib.sha256(encoded).hexdigest()
     try:
@@ -171,6 +172,7 @@ def propose(
             ai_root, context_sha256=context_sha256, base_url=base_url, model=model,
             implementation_revision=implementation_revision, options=options,
             timeout=timeout, api_key=api_key, transport=transport,
+            structured_output=structured_output,
         )
         stored = json.loads(result.proposal_path.read_bytes())
         note_text = stored["content"]
@@ -247,7 +249,9 @@ def _publish(args: argparse.Namespace, source: SourceText, api_key: str | None) 
             report = generate_and_publish(
                 source, shared=store, guard=guard, journal=journal,
                 ai_root=args.ai_root, base_url=args.base_url, model=args.model,
-                timeout=args.timeout, api_key=api_key)
+                timeout=args.timeout, api_key=api_key,
+                structured_output=not args.no_structured_output,
+                max_source_bytes=args.max_source_bytes)
         except PublishError as exc:
             unknown = str(exc) == "outcome_unconfirmed"
             print(json.dumps({"status": "error", "error_code": str(exc),
@@ -274,9 +278,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--base-url")
     parser.add_argument("--model")
     parser.add_argument("--api-key-file", type=Path)
+    parser.add_argument("--max-source-bytes", type=int, default=MAX_SOURCE_BYTES,
+                        help="Refuse sources larger than this (a small-context model needs a lower "
+                             "limit than the default %d)" % MAX_SOURCE_BYTES)
+    parser.add_argument("--no-structured-output", action="store_true",
+                        help="Do not send response_format (servers such as TSUMGI reject it); "
+                             "the schema goes into the prompt")
     parser.add_argument("--timeout", type=float, default=300.0)
     try:
         args = parser.parse_args(argv)
+        if not 1024 <= args.max_source_bytes <= MAX_SOURCE_BYTES:
+            raise ProposalError("invalid_arguments")
         if args.action == "propose":
             if args.publish:
                 if args.out is not None or args.state is None or not args.state.is_absolute():
@@ -289,7 +301,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.action == "list":
             for index, item in enumerate(conversations):
                 size = len(conversation_text(item).encode("utf-8"))
-                fits = "ok" if size <= MAX_SOURCE_BYTES else "too_large"
+                fits = "ok" if size <= args.max_source_bytes else "too_large"
                 print(json.dumps({"index": index, "messages": len(item.messages),
                                   "bytes": size, "first_day": _first_timestamp(item),
                                   "fits": fits}, sort_keys=True))
@@ -309,7 +321,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _publish(args, source, api_key)
         proposal = propose(
             args.ai_root, source, base_url=args.base_url, model=args.model,
-            timeout=args.timeout, api_key=api_key)
+            timeout=args.timeout, api_key=api_key,
+            structured_output=not args.no_structured_output,
+            max_source_bytes=args.max_source_bytes)
         written = write_proposal(args.out, proposal)
         print(json.dumps({"status": "proposed", "bytes": len(proposal.content),
                           "file": written.name, "vault_write": False}, sort_keys=True))

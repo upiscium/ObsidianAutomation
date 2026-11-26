@@ -21,6 +21,7 @@ from .vault_root_activation import (
 from .vault_bindings import RoleGuard, physical_folder, record_generation, run_verified
 from .chat_import_service import ChatImportService
 from .knowledge_service import KnowledgeConfig, KnowledgeService
+from .knowledge_proposal import MAX_SOURCE_BYTES
 from .vault_root_webui import build_vault_bindings_ui, build_vault_root_ui
 
 
@@ -147,6 +148,12 @@ def main() -> int:
     parser.add_argument("--knowledge-model", help="Model name sent to the local LLM")
     parser.add_argument("--knowledge-api-key-file", type=Path,
                         help="File holding the LLM API key (optional)")
+    parser.add_argument("--knowledge-max-source-bytes", type=int, default=MAX_SOURCE_BYTES,
+                        help="Largest conversation sent to the LLM; lower it for a small-context "
+                             "model (default %d, minimum 1024)" % MAX_SOURCE_BYTES)
+    parser.add_argument("--knowledge-no-structured-output", action="store_true",
+                        help="Do not send response_format to the LLM (TSUMGI rejects it); the "
+                             "schema goes into the prompt and the reply is parsed strictly")
     parser.add_argument("--knowledge-interval-seconds", type=int, default=3600,
                         help="Scheduled run interval, at least 3600 (default 3600)")
     parser.add_argument("--knowledge-max-per-day", type=int, default=3,
@@ -173,7 +180,9 @@ def main() -> int:
                 api_key_file=args.knowledge_api_key_file,
                 interval_seconds=args.knowledge_interval_seconds,
                 max_per_day=args.knowledge_max_per_day,
-                max_pending=args.knowledge_max_pending)
+                max_pending=args.knowledge_max_pending,
+                structured_output=not args.knowledge_no_structured_output,
+                max_source_bytes=args.knowledge_max_source_bytes)
         except ValueError as exc:
             parser.error(str(exc))
     state = args.state

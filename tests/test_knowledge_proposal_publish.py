@@ -331,7 +331,8 @@ def test_cli_publish_failure_is_reported_and_not_journaled(tmp_path, monkeypatch
 def argparse_namespace(tmp_path):
     import argparse
     return argparse.Namespace(state=tmp_path / "state", ai_root=tmp_path / "ai",
-                              base_url="https://llm.invalid/v1", model="m", timeout=5.0)
+                              base_url="https://llm.invalid/v1", model="m", timeout=5.0,
+                              no_structured_output=False, max_source_bytes=131072)
 
 
 def test_pending_proposals_are_counted_from_the_vault_and_fail_closed(store):
