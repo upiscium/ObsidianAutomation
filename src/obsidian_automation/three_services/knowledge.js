@@ -8,7 +8,7 @@
   const PROVIDER = {chatgpt: "ChatGPT", claude: "Claude"};
   const STATE = {
     new: "未処理", proposed: "提案済み", failed: "失敗（手動で再試行）",
-    unconfirmed: "結果不明（手動で再試行）", too_large: "大きすぎる"
+    unconfirmed: "結果不明（手動で再試行）", too_large: "長すぎる（モデルの入力上限）", empty: "空"
   };
   const RUN = {
     queued: "待機中", running: "実行中", proposed: "提案を作成", failed: "失敗",
@@ -26,7 +26,7 @@
     archive_not_found: "取り込み済みのZIPが見つかりません",
     csrf_rejected: "操作セッションが期限切れです。もう一度実行してください",
     origin_rejected: "アクセス元を検証できませんでした",
-    conversation_not_usable: "この会話は使えません（空か、大きすぎます）",
+    conversation_not_usable: "この会話は使えません（空か、モデルの入力上限を超えています）",
     conversation_changed: "会話の内容が変わりました。一覧を読み込み直してください",
     not_a_valid_export: "取り込み済みのZIPを読み取れません",
     operation_unavailable: "結果不明です。再送せず、状態を確認してください"

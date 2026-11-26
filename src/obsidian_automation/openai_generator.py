@@ -33,6 +33,7 @@ from .openai_compatible import (
 
 
 ADAPTER_VERSION = "openai-chat-completions-json-schema-v1"
+ADAPTER_VERSION_PROMPT_SCHEMA = "openai-chat-completions-json-prompt-v1"
 
 
 @dataclass(frozen=True)
@@ -48,10 +49,12 @@ class OpenAICompatibleGenerationResult:
     prompt_template_sha256: str
 
 
-def provider_model_config(options: Mapping[str, object]) -> dict[str, object]:
+def provider_model_config(
+    options: Mapping[str, object], *, structured_output: bool = True,
+) -> dict[str, object]:
     return validate_model_config(
         {
-            "adapter_version": ADAPTER_VERSION,
+            "adapter_version": ADAPTER_VERSION if structured_output else ADAPTER_VERSION_PROMPT_SCHEMA,
             "identity_binding": IDENTITY_BINDING,
             "options": dict(options),
         }
@@ -69,6 +72,7 @@ def generate_knowledge_note_with_openai_compatible(
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     api_key: str | None = None,
     transport: JSONTransport | None = None,
+    structured_output: bool = True,
 ) -> OpenAICompatibleGenerationResult:
     context_digest = _require_sha256(context_sha256, label="context_sha256")
     revision = validated_implementation_revision(implementation_revision)
@@ -88,6 +92,7 @@ def generate_knowledge_note_with_openai_compatible(
         timeout=timeout_value,
         api_key=api_key,
         transport=transport,
+        structured_output=structured_output,
     )
     if len(data) > MAX_GENERATOR_OUTPUT_BYTES:
         raise OpenAICompatibleProviderError(
@@ -103,7 +108,7 @@ def generate_knowledge_note_with_openai_compatible(
         context_sha256=context_digest,
         output=output,
     )
-    model_config = provider_model_config(inference_options)
+    model_config = provider_model_config(inference_options, structured_output=structured_output)
     model_revision = identifier_revision(identity.identifier)
     record = build_generation_record(
         ai_root,

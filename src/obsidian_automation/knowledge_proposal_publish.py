@@ -244,6 +244,8 @@ def generate_and_publish(
     api_key: str | None = None,
     transport: HTTPTransport | None = None,
     json_transport=None,
+    structured_output: bool = True,
+    max_source_bytes: int | None = None,
 ) -> dict[str, object]:
     """One source text -> one proposal in the Vault. The CLI and the service share this.
 
@@ -260,7 +262,9 @@ def generate_and_publish(
         return {"status": "already_proposed",
                 "file": PurePosixPath(previous["target_path"]).name, "vault_write": False}
     proposal = _kp.propose(ai_root, source, base_url=base_url, model=model, timeout=timeout,
-                           api_key=api_key, transport=json_transport)
+                           api_key=api_key, transport=json_transport,
+                           structured_output=structured_output,
+                           **({} if max_source_bytes is None else {"max_source_bytes": max_source_bytes}))
     receipt = publish_proposal(proposal, shared=shared, guard=guard, transport=transport)
     journal.record(key, receipt)
     return {"status": "proposed", "outcome": receipt["outcome"], "bytes": receipt["bytes"],

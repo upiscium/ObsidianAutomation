@@ -68,6 +68,8 @@ class KnowledgeConfig:
     interval_seconds: int = MIN_INTERVAL_SECONDS
     max_per_day: int = 3
     max_pending: int = 10
+    structured_output: bool = True   # False for servers that reject response_format
+    max_source_bytes: int = MAX_SOURCE_BYTES   # lower for a small-context model
 
     def __post_init__(self) -> None:
         if (type(self.llm_url) is not str or not self.llm_url
@@ -79,6 +81,9 @@ class KnowledgeConfig:
             raise ValueError("max_per_day must be 1..100")
         if type(self.max_pending) is not int or not 1 <= self.max_pending <= 1000:
             raise ValueError("max_pending must be 1..1000")
+        if (type(self.max_source_bytes) is not int
+                or not 1024 <= self.max_source_bytes <= MAX_SOURCE_BYTES):
+            raise ValueError("max_source_bytes must be 1024..%d" % MAX_SOURCE_BYTES)
 
 
 def _first_day(conversation) -> str:
@@ -212,7 +217,8 @@ class KnowledgeService:
             items.append({
                 "index": index, "provider": provider, "messages": len(conversation.messages),
                 "bytes": len(encoded), "first_day": _first_day(conversation),
-                "fits": len(encoded) <= MAX_SOURCE_BYTES and bool(text.strip()),
+                "empty": not text.strip(),
+                "fits": len(encoded) <= self.config.max_source_bytes,
                 "source_sha": hashlib.sha256(encoded).hexdigest(),
             })
         self._cache[archive_sha] = (provider, items)
@@ -257,6 +263,8 @@ class KnowledgeService:
                 seen.add(item["source_sha"])
                 if recipe_key(item["source_sha"], self.config.model) in journal_keys:
                     state = "proposed"
+                elif item["empty"]:
+                    state = "empty"
                 elif not item["fits"]:
                     state = "too_large"
                 else:
@@ -373,7 +381,7 @@ class KnowledgeService:
                     return
                 archive_sha, index, source_sha = picked
             provider, items = self._summaries(archive_sha)
-            if index >= len(items) or not items[index]["fits"]:
+            if index >= len(items) or not items[index]["fits"] or items[index]["empty"]:
                 raise KnowledgeRefused("conversation_not_usable", 422)
             source_sha = items[index]["source_sha"]
             batch = normalize_export(self._archive_path(archive_sha), scope="private-" + provider,
@@ -387,7 +395,9 @@ class KnowledgeService:
                     SourceText("private-" + provider, text), shared=self.shared, guard=self.guard,
                     journal=journal, ai_root=self.root / "ai", base_url=self.config.llm_url,
                     model=self.config.model, timeout=self.config.timeout, api_key=self._api_key(),
-                    transport=self.transport, json_transport=self.json_transport)
+                    transport=self.transport, json_transport=self.json_transport,
+                    structured_output=self.config.structured_output,
+                    max_source_bytes=self.config.max_source_bytes)
             finally:
                 journal.close()
             self._finish(run_id, "proposed", outcome=report.get("outcome", report["status"]),
