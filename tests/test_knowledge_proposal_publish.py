@@ -58,11 +58,19 @@ class FakeVault:
             if rel.rstrip("/") not in {d.rstrip("/") for d in self.dirs} and rel != "":
                 return HTTPResponse(404, b"", None)
             href = urlsplit(target_url).path
+            children = ""
+            if (headers or {}).get("Depth") == "1":
+                prefix = rel if rel.endswith("/") or rel == "" else rel + "/"
+                for name in sorted(self.files):
+                    if name.startswith(prefix) and "/" not in name[len(prefix):]:
+                        children += (f"<d:response><d:href>{ROOT}{name}</d:href><d:propstat><d:prop>"
+                                     "<d:resourcetype/></d:prop><d:status>HTTP/1.1 200 OK</d:status>"
+                                     "</d:propstat></d:response>")
             xml = ('<d:multistatus xmlns:d="DAV:"><d:response>'
                    f'<d:href>{href}</d:href><d:propstat><d:prop>'
                    '<d:resourcetype><d:collection/></d:resourcetype></d:prop>'
                    '<d:status>HTTP/1.1 200 OK</d:status></d:propstat>'
-                   '</d:response></d:multistatus>').encode()
+                   f'</d:response>{children}</d:multistatus>').encode()
             return HTTPResponse(207, xml, None)
         if method == "MKCOL":
             parent = "/".join(rel.rstrip("/").split("/")[:-1])
@@ -324,3 +332,26 @@ def argparse_namespace(tmp_path):
     import argparse
     return argparse.Namespace(state=tmp_path / "state", ai_root=tmp_path / "ai",
                               base_url="https://llm.invalid/v1", model="m", timeout=5.0)
+
+
+def test_pending_proposals_are_counted_from_the_vault_and_fail_closed(store):
+    dav = FakeVault()
+    assert pub.count_pending_proposals(shared=store, transport=dav) == 0  # no folder yet
+    dav.dirs |= {"04-AI/", "04-AI/Proposals/"}
+    dav.files["04-AI/Proposals/a.md"] = b"1"
+    dav.files["04-AI/Proposals/b.md"] = b"2"
+    dav.files["04-AI/Proposals/c.txt"] = b"3"
+    dav.files["04-AI/elsewhere.md"] = b"4"
+    assert pub.count_pending_proposals(shared=store, transport=dav) == 2
+
+    def refuse():
+        raise RootPinRefused("vault_root_pin_refused")
+
+    with pytest.raises(PublishError, match="vault_root_refused"):
+        pub.count_pending_proposals(shared=store, transport=dav, guard=refuse)
+
+    def broken(**kwargs):
+        return HTTPResponse(500, b"", None)
+
+    with pytest.raises(PublishError, match="pending_count_unavailable"):
+        pub.count_pending_proposals(shared=store, transport=broken)

@@ -20,6 +20,7 @@ from .vault_root_activation import (
 )
 from .vault_bindings import RoleGuard, physical_folder, record_generation, run_verified
 from .chat_import_service import ChatImportService
+from .knowledge_service import KnowledgeConfig, KnowledgeService
 from .vault_root_webui import build_vault_bindings_ui, build_vault_root_ui
 
 
@@ -138,6 +139,21 @@ def main() -> int:
              "inventory only: no Vault write, no schedule); off by default",
     )
     parser.add_argument(
+        "--knowledge-ui", action="store_true",
+        help="Opt into the knowledge-proposal panel (local LLM -> 04-AI/Proposals/, create-only) "
+             "with an opt-in schedule; needs --knowledge-llm-url and --knowledge-model; off by default",
+    )
+    parser.add_argument("--knowledge-llm-url", help="OpenAI-compatible base URL of the local LLM")
+    parser.add_argument("--knowledge-model", help="Model name sent to the local LLM")
+    parser.add_argument("--knowledge-api-key-file", type=Path,
+                        help="File holding the LLM API key (optional)")
+    parser.add_argument("--knowledge-interval-seconds", type=int, default=3600,
+                        help="Scheduled run interval, at least 3600 (default 3600)")
+    parser.add_argument("--knowledge-max-per-day", type=int, default=3,
+                        help="Scheduled proposals per Japan-time day (default 3)")
+    parser.add_argument("--knowledge-max-pending", type=int, default=10,
+                        help="Stop scheduled generation at this many unreviewed proposals (default 10)")
+    parser.add_argument(
         "--keep-runs", type=int, default=None, metavar="N",
         help="Opt into deleting old Snapshot run directories after each run, keeping "
              "the newest N (>= 2); off by default",
@@ -147,6 +163,19 @@ def main() -> int:
         parser.error("state must be absolute")
     if args.keep_runs is not None and args.keep_runs < 2:
         parser.error("keep-runs must be at least 2")
+    knowledge_config = None
+    if args.knowledge_ui:
+        if not args.knowledge_llm_url or not args.knowledge_model:
+            parser.error("--knowledge-ui needs --knowledge-llm-url and --knowledge-model")
+        try:
+            knowledge_config = KnowledgeConfig(
+                llm_url=args.knowledge_llm_url, model=args.knowledge_model,
+                api_key_file=args.knowledge_api_key_file,
+                interval_seconds=args.knowledge_interval_seconds,
+                max_per_day=args.knowledge_max_per_day,
+                max_pending=args.knowledge_max_pending)
+        except ValueError as exc:
+            parser.error(str(exc))
     state = args.state
     store = SetupStore(state)
     c = store.connections()
@@ -213,10 +242,21 @@ def main() -> int:
         server.vault_bindings_editor = build_vault_bindings_ui(store, server)
         if args.chat_import_ui:
             server.chat_import = ChatImportService(state)
+        extra = ()
+        knowledge = None
+        if knowledge_config is not None:
+            knowledge = KnowledgeService(
+                state, shared=store, guard=root_guard, config=knowledge_config)
+            server.knowledge = knowledge
+            extra = (knowledge.tick,)
         hooks = tuple(item.tick for item in (daily_job, promotion_job)
-                      if item is not None)
+                      if item is not None) + extra
         job.start_scheduler(tick_hooks=hooks)
-        server.serve_forever(poll_interval=0.25)
+        try:
+            server.serve_forever(poll_interval=0.25)
+        finally:
+            if knowledge is not None:
+                knowledge.close()
     return 0
 
 

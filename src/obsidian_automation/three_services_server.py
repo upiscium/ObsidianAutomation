@@ -23,6 +23,7 @@ from .snapshot_job import Invalid as SnapshotInvalid
 from .snapshot_setup import GITEA_FIELDS, validate, validate_nextcloud
 from .connection_fields import FieldDrafts, FieldError
 from .chat_import_service import ImportRefused
+from .knowledge_service import KnowledgeRefused
 from .phase_schedule import StaleScheduleError, preview as phase_preview
 from .vault_root_activation import reset_pin_after_connection_save
 
@@ -41,6 +42,8 @@ _ASSETS = {
     "/static/three-services.css": ("app.css", "text/css; charset=utf-8"),
     # Renders its panel only when --chat-import-ui enabled the API.
     "/static/chat-import.js": ("chat-import.js", "text/javascript; charset=utf-8"),
+    # Renders its panel only when --knowledge-ui enabled the API.
+    "/static/knowledge.js": ("knowledge.js", "text/javascript; charset=utf-8"),
 }
 
 
@@ -296,6 +299,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200 if service else 503,
                            service.status() if service else {"error": "unavailable"})
                 return
+            if self.path == "/api/v1/knowledge":
+                service = self.server.knowledge
+                self._send(200 if service else 503,
+                           service.status() if service else {"error": "unavailable"})
+                return
             if self.path in ("/api/v1/vault-root", "/api/v1/vault-bindings"):
                 service = (self.server.vault_root_selection
                            if self.path == "/api/v1/vault-root"
@@ -343,6 +351,8 @@ class Handler(BaseHTTPRequestHandler):
             "/api/v1/vault-bindings/previews", "/api/v1/vault-bindings/saves",
             "/api/v1/vault-bindings/resets", "/api/v1/vault-bindings/rollbacks",
             "/api/v1/chat-import/upload", "/api/v1/chat-import/inventory",
+            "/api/v1/knowledge/conversations", "/api/v1/knowledge/runs",
+            "/api/v1/knowledge/settings",
         }
         if self.path not in allowed:
             self._send(405, {"error": "method_not_allowed"})
@@ -368,6 +378,19 @@ class Handler(BaseHTTPRequestHandler):
                     raise Refused("invalid_request", 400)
                 self._send(200, service.inventory(payload["provider"],
                                                   payload["commit"]))
+                return
+            if self.path.startswith("/api/v1/knowledge/"):
+                service = self.server.knowledge
+                if service is None:
+                    raise Refused("service_unavailable", 503)
+                if self.path == "/api/v1/knowledge/conversations":
+                    if payload != {}:
+                        raise Refused("invalid_request", 400)
+                    self._send(200, service.conversations())
+                elif self.path == "/api/v1/knowledge/runs":
+                    self._send(202, service.start_manual(payload))
+                else:
+                    self._send(200, service.update_settings(payload))
                 return
             for name in ("snapshot", "core-promotion", "daily"):
                 base = f"/api/v1/{name}"
@@ -493,7 +516,7 @@ class Handler(BaseHTTPRequestHandler):
                                  **drafts.status("github", setup)})
                 return
             raise Refused("method_not_allowed", 405)
-        except ImportRefused as exc:
+        except (ImportRefused, KnowledgeRefused) as exc:
             self._send(exc.http, {"error": exc.code})
         except Refused as exc:
             self._send(exc.http, {"error": exc.code})
@@ -687,4 +710,5 @@ def make_server(*, port=8370, bind_address="127.0.0.1",
     server.vault_root_selection = None
     server.vault_bindings_editor = None
     server.chat_import = None
+    server.knowledge = None
     return server

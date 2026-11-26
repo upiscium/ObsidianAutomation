@@ -218,6 +218,8 @@ def test_proposal_publish(www,user,password):
     receipt=publish_proposal(proposal,shared=Shared())
     assert receipt["outcome"]=="created",receipt
     assert (www/path).read_bytes()==note
+    from obsidian_automation.knowledge_proposal_publish import count_pending_proposals
+    assert count_pending_proposals(shared=Shared())==1  # real Apache Depth: 1 listing
     again=publish_proposal(proposal,shared=Shared())
     assert again["outcome"]=="already_present" and again["vault_write"] is False
     (www/path).write_bytes(b"edited by the owner")
@@ -228,6 +230,8 @@ def test_proposal_publish(www,user,password):
     else:
         raise AssertionError("an existing file must never be overwritten")
     assert (www/path).read_bytes()==b"edited by the owner"
+    (www/path).unlink()
+    assert count_pending_proposals(shared=Shared())==0
     print("REAL Apache proposal publish: created / already_present / never overwritten: PASS")
 
 

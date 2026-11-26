@@ -167,3 +167,39 @@ Run it as the service user (it reads the shared saved connection). Without
   retried. Exit codes: 0 on `proposed` / `already_proposed`, 1 on any error.
 - **Not wired to any schedule or panel** (phase 3). The first write to the
   production Vault needs its own approval.
+
+## Phase 3: panel and opt-in schedule (`--knowledge-ui`)
+
+Start the app with `--knowledge-ui --knowledge-llm-url <OpenAI-compatible base URL>
+--knowledge-model <name>` (optionally `--knowledge-api-key-file`). Without the flag
+the routes return 503 and the panel never appears. The LLM endpoint and key are
+start-up arguments, not panel fields.
+
+- **Panel "知識提案（ローカルLLM）".** Lists the conversations already imported
+  through the chat-import panel (provider, message count, size, first day, state;
+  never titles or text) and runs **one proposal at a time** (the local LLM handles
+  one request at a time). Routes: `GET /api/v1/knowledge`, `POST
+  /api/v1/knowledge/conversations` (load the list), `POST /api/v1/knowledge/runs`
+  (`{archive, index}`, manual), `POST /api/v1/knowledge/settings`
+  (`{enabled}`, the schedule switch); exact Origin and one-use CSRF as elsewhere.
+- **Same engine as the CLI.** A run is `generate_and_publish` (create-only into
+  `04-AI/Proposals/`, exact-byte readback, pinned-root guard) and shares the CLI's
+  journal, so a conversation proposed by either is never generated twice. The
+  states are `new`, `proposed`, `failed`, `unconfirmed` and `too_large`.
+- **Opt-in schedule, brakes first** (all start-up arguments):
+  `--knowledge-interval-seconds` (default and minimum 3600),
+  `--knowledge-max-per-day` (default 3, per Japan-time day) and
+  `--knowledge-max-pending` (default 10). It is off until switched on in the panel
+  (with a confirmation that names the limits), never catches up after an outage, and
+  each slot makes at most one proposal: the **oldest new conversation** (by first
+  message day). A slot is skipped, with a recorded reason, when a run is active, the
+  daily cap is reached, the number of `*.md` files waiting in `04-AI/Proposals/`
+  (read from the Vault before each scheduled run) is at or above the limit, or that
+  count cannot be read (fail closed). A conversation whose run failed or is
+  unconfirmed is skipped until a person retries it by hand.
+- **Manual runs ignore the daily cap and the pending limit** (a person chose the
+  conversation); they still need the root guard and the create-only rules.
+- A run left `queued`/`running` by a restart becomes `unconfirmed` and is never
+  replayed. Run records hold fixed codes only (no exception text, paths or note text).
+- The first write to the production Vault needs its own approval; the schedule stays
+  off until the owner switches it on.
