@@ -4,12 +4,14 @@ from __future__ import annotations
 import fcntl
 import re
 import sqlite3
+import sys
 import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Callable
 
+from .snapshot_retention import prune_runs
 from .phase_schedule import (
     StaleScheduleError, due_after_tick, due_for_update, missed,
     parse_update, schedule_status, upgrade_settings,
@@ -36,8 +38,11 @@ class SnapshotJob:
 
     def __init__(self, state: Path, runner: Callable[[str], tuple[str, str, str | None]],
                  *, configured: bool = True, clock: Callable[[], float] = time.time,
-                 connection_generation: str | None = None):
+                 connection_generation: str | None = None,
+                 retention_keep: int | None = None):
         self.state = state
+        # None (default) keeps every run directory; see snapshot_retention.
+        self.retention_keep = retention_keep
         state.mkdir(mode=0o700, parents=True, exist_ok=True)
         self._lock_file = (state / "snapshot.lock").open("a+b")
         try:
@@ -188,6 +193,20 @@ class SnapshotJob:
                                 (status, stage, remote_ref, self.clock(), run_id))
                 if status == "saved":
                     self.db.execute("UPDATE connection_write SET verified=1 WHERE id=1")
+        self._prune_old_runs()
+
+    def _prune_old_runs(self) -> None:
+        """Optional retention after a run finished. Never affects the run result."""
+        if self.retention_keep is None:
+            return
+        try:
+            with self._lock:
+                result = prune_runs(self.state, self.db, self.retention_keep)
+            if result.deleted or result.failed:
+                print(f"snapshot_retention deleted={result.deleted} failed={result.failed}",
+                      file=sys.stderr, flush=True)
+        except Exception as exc:  # retention must never fail a Snapshot run
+            print(f"snapshot_retention error={type(exc).__name__}", file=sys.stderr, flush=True)
 
     def tick(self) -> bool:
         with self._lock:

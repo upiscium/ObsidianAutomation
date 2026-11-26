@@ -301,3 +301,24 @@ enforced. The manual Run Once path is independent.
 V1 does **not enable live timers**. Synthetic checks cover exact wall-clock
 JST and cross-midnight slots, invalid values, stale revisions, persistence,
 legacy SQLite upgrade, interrupted/busy Jobs and missing CSRF.
+
+## Snapshot run retention (opt-in)
+
+Each Snapshot attempt keeps a mirror, a bare fetch and a worktree under
+`state/runs/<run_id>` (about 215 MB for the current Vault; hourly runs add about
+5 GB a day), and nothing removed them. Retention is **off by default**.
+
+* **Service:** start with `--keep-runs N` (N >= 2) to delete whole run
+  directories older than the newest N runs, once after each finished run. The
+  result is printed to the journal (`snapshot_retention deleted=… failed=…`) and
+  never changes a run's outcome.
+* **Never deleted:** queued / running / unconfirmed runs and the most recent
+  successful run, however old. Only directories named by a 32-hex run id that
+  also have a `runs` row are candidates; other entries are never touched. A
+  candidate must be a plain directory owned by the service user directly inside
+  `state/runs` (symlinks are refused). The `runs` table rows are kept.
+* **Dry run first:** `python -m obsidian_automation.snapshot_retention --state
+  <state> --keep N [--list]` prints what would be deleted and changes nothing;
+  add `--apply` to delete. Run it as the service user. Enabling `--keep-runs` on
+  a host with many old runs deletes all of them on the next run, so check the
+  dry run first.
