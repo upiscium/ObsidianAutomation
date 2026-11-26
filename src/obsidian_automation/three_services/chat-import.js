@@ -125,7 +125,7 @@
   }
   function receiptText(result) {
     const runs = result.runs || [];
-    if (!runs.length) return "対象のZIPがありません（取り込み済み）";
+    if (!runs.length) return "この形式の未処理のZIPはありません（取り込み済みか、別の形式のZIPだけです）";
     return runs.map((run) => run.status === "normalization_rejected"
       ? "このZIPは形式を解釈できませんでした（拒否として記録）"
       : "追加 " + run.added + " / 変更 " + run.changed + " / 変更なし " + run.unchanged +

@@ -543,6 +543,25 @@ def _inventory(conn: sqlite3.Connection, batch: SelectedBatch, salt: bytes) -> t
     return entries, statuses, receipt
 
 
+_PROVIDER_CACHE: dict[str, str | None] = {}
+
+
+def _archive_provider(path: Path, archive_sha: str) -> str | None:
+    """Provider of a ready archive ('chatgpt' / 'claude'), or None when unknown.
+
+    Ready archives are immutable, so the answer is cached for the process. An
+    unreadable archive is "unknown" and is left to the normal path, which records
+    a fixed rejection code as before.
+    """
+    if archive_sha not in _PROVIDER_CACHE:
+        try:
+            found = inspect_export(path).get("provider")
+        except (InspectionError, OSError, ValueError):
+            found = None
+        _PROVIDER_CACHE[archive_sha] = found if found in PARSER_VERSIONS else None
+    return _PROVIDER_CACHE[archive_sha]
+
+
 def inventory_ready(
     root: Path, *, scope: str, members: Sequence[str] = (),
     commit: bool = False, max_archives: int = 1, provider: str = "chatgpt",
@@ -608,6 +627,13 @@ def inventory_ready(
                     (scope,archive_sha,parser_version,selector),
                 ).fetchone()
                 if rejected is not None:
+                    continue
+                # A ready archive of another provider is not this scope's input: skip it
+                # silently. Trying it with this provider's parser would only produce a
+                # misleading rejection (and, with commit, a recorded one), and in a
+                # preview it would hide the archive that really belongs to the scope.
+                owner = _archive_provider(root / "ready" / (archive_sha + ".zip"), archive_sha)
+                if owner is not None and owner != provider:
                     continue
                 seq = conn.execute(
                     "SELECT seq FROM archives WHERE archive_sha=?", (archive_sha,),

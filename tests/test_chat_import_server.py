@@ -140,10 +140,11 @@ def test_chatgpt_upload_detected_and_scopes_are_provider_bound(srv):
     code, preview = srv.post_json("/api/v1/chat-import/inventory",
                                   {"provider": "chatgpt", "commit": True})
     assert code == 200 and preview["runs"][0]["added"] == 1
-    # The same ZIP read as Claude is rejected and recorded, never half-imported.
+    # A ChatGPT ZIP is not Claude input: it is skipped, never half-imported and never
+    # recorded as a Claude rejection.
     code, wrong = srv.post_json("/api/v1/chat-import/inventory",
                                 {"provider": "claude", "commit": False})
-    assert code == 200 and wrong["runs"][0]["status"] == "normalization_rejected"
+    assert code == 200 and wrong["runs"] == []
 
 
 def test_garbage_and_oversize_and_bad_inventory_requests_are_refused(srv, tmp_path):
@@ -178,3 +179,30 @@ def test_truncated_upload_is_refused_and_cleaned(srv, tmp_path):
     conn.close()
     incoming = tmp_path / "chat-import" / "incoming"
     assert not list(incoming.iterdir())
+
+
+def test_inventory_only_considers_ready_archives_of_the_requested_provider(srv, tmp_path):
+    """A ChatGPT ZIP published first must not be tried (and rejected) as a Claude export."""
+    assert srv.post_zip(zip_bytes([chatgpt()]))[0] == 200
+    assert srv.post_zip(zip_bytes([claude()]))[0] == 200
+    code, preview = srv.post_json("/api/v1/chat-import/inventory",
+                                  {"provider": "claude", "commit": False})
+    assert code == 200
+    assert [run["status"] for run in preview["runs"]] != ["normalization_rejected"]
+    assert preview["runs"][0]["added"] == 1  # the Claude archive itself was inventoried
+    code, committed = srv.post_json("/api/v1/chat-import/inventory",
+                                    {"provider": "claude", "commit": True})
+    assert code == 200 and len(committed["runs"]) == 1 and committed["runs"][0]["added"] == 1
+    code, other = srv.post_json("/api/v1/chat-import/inventory",
+                                {"provider": "chatgpt", "commit": True})
+    assert code == 200 and len(other["runs"]) == 1 and other["runs"][0]["added"] == 1
+    # nothing was recorded as a rejection for either scope
+    import sqlite3
+    db = sqlite3.connect(tmp_path / "chat-import" / "state" / "journal.sqlite3")
+    try:
+        assert db.execute("SELECT COUNT(*) FROM rejections").fetchone()[0] == 0
+    finally:
+        db.close()
+    status = json.loads(request(srv.port, "GET", "/api/v1/chat-import")[1])
+    assert status["scopes"]["private-claude"]["known_conversations"] == 1
+    assert status["scopes"]["private-chatgpt"]["known_conversations"] == 1
