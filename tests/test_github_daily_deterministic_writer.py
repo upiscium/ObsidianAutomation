@@ -332,3 +332,54 @@ def test_private_lan_bind_and_writer_opt_in_can_coexist(tmp_path, monkeypatch):
     assert snapshot_app.main() == 0
     assert len(created) == 1
     assert created[0]["port"] == 0
+
+
+def _run_publish_failed_job(tmp_path, preview, publisher):
+    with DailyJob(tmp_path, lambda: preview, configured=lambda: True,
+                  publisher=publisher) as job:
+        _, row = job.submit(uuid.uuid4().hex)
+        job._worker.join(4)
+        return job.run(row["run_id"])
+
+
+def test_missing_daily_note_before_the_put_is_a_proven_no_effect_failure(
+    previous_jst_preview, tmp_path,
+):
+    """The job tells "no Daily Note yet, nothing sent" apart from "unconfirmed"."""
+    store, setup, preview = previous_jst_preview
+    methods = []
+
+    def missing(**kwargs):
+        methods.append(kwargs["method"])
+        return HTTPResponse(status=404, body=b"", etag=None)
+
+    publisher = lambda proof: publish_verified_daily(
+        proof, cas_root=setup.state / "cas", shared=store, transport=missing,
+    )
+    saved = _run_publish_failed_job(tmp_path / "missing", preview, publisher)
+    assert saved["status"] == "publish_failed"
+    assert (saved["failure_stage"], saved["failure_code"]) == ("publication", "target_missing")
+    assert saved["publication_outcome"] is None
+    assert saved["digest_sha256"] == preview["digest_sha256"]  # the Preview is kept
+    assert methods == ["GET"]  # never created, never written
+
+
+def test_daily_note_vanishing_after_the_put_stays_unconfirmed(previous_jst_preview, tmp_path):
+    """A 404 on the read-back after a PUT may follow a real write: not "no effect"."""
+    store, setup, preview = previous_jst_preview
+
+    class VanishesAfterPut(SyntheticDailyDAV):
+        def __call__(self, **kwargs):
+            if kwargs["method"] == "GET" and self.puts:
+                self.calls.append((kwargs["method"], kwargs["target_url"], kwargs["headers"], None))
+                return HTTPResponse(status=404, body=b"", etag=None)
+            return super().__call__(**kwargs)
+
+    dav = VanishesAfterPut()
+    publisher = lambda proof: publish_verified_daily(
+        proof, cas_root=setup.state / "cas", shared=store, transport=dav,
+    )
+    saved = _run_publish_failed_job(tmp_path / "vanished", preview, publisher)
+    assert len(dav.puts) == 1
+    assert saved["status"] == "publish_failed"
+    assert (saved["failure_stage"], saved["failure_code"]) == ("publication", "outcome_unconfirmed")

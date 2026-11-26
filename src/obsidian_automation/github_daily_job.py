@@ -14,6 +14,8 @@ import uuid
 from pathlib import Path
 from typing import Callable
 
+from .github_daily_progress import DailyProgressTargetMissingBeforeWrite
+
 from .phase_schedule import (
     StaleScheduleError, due_after_tick, due_for_update, missed,
     parse_update, schedule_status, upgrade_settings,
@@ -46,6 +48,8 @@ _FAILURE_PAIRS = frozenset({
     ("publication", "outcome_unconfirmed"),
     # #584: the pin check right before the PUT refused; nothing was sent.
     ("publication", "vault_root_refused"),
+    # The Daily Note did not exist at the read before the PUT; nothing was sent.
+    ("publication", "target_missing"),
     ("publication", "invalid_publication_receipt"),
 })
 
@@ -351,6 +355,13 @@ class DailyJob:
                 if self.publisher is not None:
                     try:
                         output = self.publisher(data)
+                    except DailyProgressTargetMissingBeforeWrite:
+                        # Proven no-effect: the Daily Note was absent at the read
+                        # that precedes the PUT, so no write was attempted.
+                        result = "publish_failed"
+                        failure_stage, failure_code = (
+                            "publication", "target_missing",
+                        )
                     except DailyStageFailure as exc:
                         # Only the trusted pre-PUT refusal is "no effect";
                         # any other marker stays unconfirmed.
