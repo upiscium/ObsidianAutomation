@@ -137,9 +137,16 @@ def main() -> int:
         help="Opt into the manual ChatGPT/Claude export ZIP import panel (private "
              "inventory only: no Vault write, no schedule); off by default",
     )
+    parser.add_argument(
+        "--keep-runs", type=int, default=None, metavar="N",
+        help="Opt into deleting old Snapshot run directories after each run, keeping "
+             "the newest N (>= 2); off by default",
+    )
     args = parser.parse_args()
     if not args.state.is_absolute():
         parser.error("state must be absolute")
+    if args.keep_runs is not None and args.keep_runs < 2:
+        parser.error("keep-runs must be at least 2")
     state = args.state
     store = SetupStore(state)
     c = store.connections()
@@ -192,6 +199,7 @@ def main() -> int:
     ) as server, _job_context(
         state, runner, configured=c is not None,
         connection_generation=store.generation(),
+        retention_keep=args.keep_runs,
     ) as job, daily_context as daily_job, promotion_context as promotion_job:
         server.snapshot_job = job
         server.daily_job = daily_job
@@ -213,8 +221,11 @@ def main() -> int:
 
 
 class _job_context:
-    def __init__(self, state, runner, configured=True, connection_generation=None):
-        self.job = SnapshotJob(state, runner, configured=configured, connection_generation=connection_generation)
+    def __init__(self, state, runner, configured=True, connection_generation=None,
+                 retention_keep=None):
+        self.job = SnapshotJob(state, runner, configured=configured,
+                               connection_generation=connection_generation,
+                               retention_keep=retention_keep)
 
     def __enter__(self):
         return self.job
