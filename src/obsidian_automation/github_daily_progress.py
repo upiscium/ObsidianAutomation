@@ -130,6 +130,15 @@ class DailyProgressTargetMissing(DailyProgressError):
         super().__init__(message, reason_code="target_missing")
 
 
+class DailyProgressTargetMissingBeforeWrite(DailyProgressTargetMissing):
+    """The Daily Note was already absent at the read that precedes the PUT.
+
+    Nothing was sent, so this is a proven no-effect refusal. A 404 on the
+    read-back *after* a PUT stays a plain ``DailyProgressTargetMissing``: the
+    write may have happened, so its outcome is unconfirmed.
+    """
+
+
 @dataclass(frozen=True)
 class GroundedSummaryView:
     sha256: str
@@ -1053,15 +1062,19 @@ def _apply_project_progress_section(
             "timeout must be in (0, 600] seconds"
         )
 
-    before = _observe_daily(
-        projection=projection,
-        base_url=base_url,
-        username=username,
-        password=password,
-        timeout=timeout,
-        transport=transport,
-        remote_path=remote_path,
-    )
+    try:
+        before = _observe_daily(
+            projection=projection,
+            base_url=base_url,
+            username=username,
+            password=password,
+            timeout=timeout,
+            transport=transport,
+            remote_path=remote_path,
+        )
+    except DailyProgressTargetMissing as exc:
+        # No PUT has been attempted yet: report it as a proven no-effect refusal.
+        raise DailyProgressTargetMissingBeforeWrite(str(exc)) from exc
     disposition, desired = prepare_daily_update(
         projection,
         before.content,
