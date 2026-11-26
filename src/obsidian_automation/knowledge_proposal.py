@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -230,6 +231,44 @@ class _Parser(argparse.ArgumentParser):
         raise ProposalError("invalid_arguments")
 
 
+def _publish(args: argparse.Namespace, source: SourceText, api_key: str | None) -> int:
+    """Generate one proposal and create it in the Vault (opt-in, create-only)."""
+    from .knowledge_proposal_publish import (
+        ProposalJournal, PublishError, publish_proposal, recipe_key,
+    )
+    from .snapshot_setup import SetupStore
+    from .vault_root_activation import JobRootGuard, https_transport_factory
+
+    store = SetupStore(args.state)
+    guard = JobRootGuard(store, transport_factory=https_transport_factory)
+    journal = ProposalJournal(args.state / "knowledge-proposals")
+    try:
+        key = recipe_key(hashlib.sha256(source.text.encode("utf-8")).hexdigest(), args.model)
+        previous = journal.lookup(key)
+        if previous is not None:
+            print(json.dumps({"status": "already_proposed", "file": PurePosixPath(
+                previous["target_path"]).name, "vault_write": False}, sort_keys=True))
+            return 0
+        proposal = propose(
+            args.ai_root, source, base_url=args.base_url, model=args.model,
+            timeout=args.timeout, api_key=api_key)
+        try:
+            receipt = publish_proposal(proposal, shared=store, guard=guard)
+        except PublishError as exc:
+            unknown = str(exc) == "outcome_unconfirmed"
+            print(json.dumps({"status": "error", "error_code": str(exc),
+                              "vault_write": "unknown" if unknown else False}, sort_keys=True))
+            return 1
+        journal.record(key, receipt)
+        print(json.dumps({"status": "proposed", "outcome": receipt["outcome"],
+                          "bytes": receipt["bytes"],
+                          "file": PurePosixPath(receipt["target_path"]).name,
+                          "vault_write": receipt["vault_write"]}, sort_keys=True))
+        return 0
+    finally:
+        journal.close()
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _Parser(description=__doc__)
     parser.add_argument("action", choices=("list", "propose"))
@@ -238,12 +277,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--index", type=int)
     parser.add_argument("--ai-root", type=Path)
     parser.add_argument("--out", type=Path)
+    parser.add_argument("--publish", action="store_true",
+                        help="Create the proposal in the Vault (04-AI/Proposals/, create-only); needs --state")
+    parser.add_argument("--state", type=Path,
+                        help="Absolute service state directory (with --publish; run as the service user)")
     parser.add_argument("--base-url")
     parser.add_argument("--model")
     parser.add_argument("--api-key-file", type=Path)
     parser.add_argument("--timeout", type=float, default=300.0)
     try:
         args = parser.parse_args(argv)
+        if args.action == "propose":
+            if args.publish:
+                if args.out is not None or args.state is None or not args.state.is_absolute():
+                    raise ProposalError("invalid_arguments")
+            elif args.state is not None:
+                raise ProposalError("invalid_arguments")
+        elif args.publish or args.state is not None:
+            raise ProposalError("invalid_arguments")
         conversations = _conversations(args.zip, args.provider)
         if args.action == "list":
             for index, item in enumerate(conversations):
@@ -253,17 +304,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                                   "bytes": size, "first_day": _first_timestamp(item),
                                   "fits": fits}, sort_keys=True))
             return 0
-        needed = (args.index, args.ai_root, args.out, args.base_url, args.model)
+        if args.publish:
+            needed = (args.index, args.ai_root, args.base_url, args.model)
+        else:
+            needed = (args.index, args.ai_root, args.out, args.base_url, args.model)
         if any(value is None for value in needed) or not 0 <= args.index < len(conversations):
             raise ProposalError("invalid_arguments")
         api_key = None
         if args.api_key_file is not None:
             api_key = args.api_key_file.read_text(encoding="utf-8").strip() or None
+        source = SourceText("private-" + args.provider,
+                            conversation_text(conversations[args.index]))
+        if args.publish:
+            return _publish(args, source, api_key)
         proposal = propose(
-            args.ai_root, SourceText("private-" + args.provider,
-                                     conversation_text(conversations[args.index])),
-            base_url=args.base_url, model=args.model, timeout=args.timeout,
-            api_key=api_key)
+            args.ai_root, source, base_url=args.base_url, model=args.model,
+            timeout=args.timeout, api_key=api_key)
         written = write_proposal(args.out, proposal)
         print(json.dumps({"status": "proposed", "bytes": len(proposal.content),
                           "file": written.name, "vault_write": False}, sort_keys=True))
@@ -272,7 +328,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps({"status": "error", "error_code": str(exc),
                           "vault_write": False}, sort_keys=True))
         return 1
-    except OSError:
+    except (OSError, sqlite3.Error):
         print(json.dumps({"status": "error", "error_code": "io_error",
                           "vault_write": False}, sort_keys=True))
         return 1
