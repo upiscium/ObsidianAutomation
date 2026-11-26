@@ -25,6 +25,7 @@ import sqlite3
 import time
 from pathlib import Path, PurePosixPath
 from typing import Callable
+from urllib.parse import unquote
 
 from .core_promotion_transport import (
     HTTPResponse, HTTPTransport, MAX_MUTATION_RESPONSE_BYTES,
@@ -226,3 +227,99 @@ class ProposalJournal:
 
     def close(self) -> None:
         self.db.close()
+
+
+# ------------------------------------------------- generate + publish (shared)
+
+def generate_and_publish(
+    source,
+    *,
+    shared: SetupStore,
+    guard: Callable[[], object] | None,
+    journal: ProposalJournal,
+    ai_root: Path,
+    base_url: str,
+    model: str,
+    timeout: float,
+    api_key: str | None = None,
+    transport: HTTPTransport | None = None,
+    json_transport=None,
+) -> dict[str, object]:
+    """One source text -> one proposal in the Vault. The CLI and the service share this.
+
+    Returns ``already_proposed`` (no generation, no write) when the same source was
+    already proposed the same way; otherwise generates, creates and records it.
+    ``ProposalError`` / ``PublishError`` carry fixed codes; a failed attempt is not
+    recorded, so it can be retried.
+    """
+    from . import knowledge_proposal as _kp  # late: that module imports this one lazily
+
+    key = recipe_key(hashlib.sha256(source.text.encode("utf-8")).hexdigest(), model)
+    previous = journal.lookup(key)
+    if previous is not None:
+        return {"status": "already_proposed",
+                "file": PurePosixPath(previous["target_path"]).name, "vault_write": False}
+    proposal = _kp.propose(ai_root, source, base_url=base_url, model=model, timeout=timeout,
+                           api_key=api_key, transport=json_transport)
+    receipt = publish_proposal(proposal, shared=shared, guard=guard, transport=transport)
+    journal.record(key, receipt)
+    return {"status": "proposed", "outcome": receipt["outcome"], "bytes": receipt["bytes"],
+            "file": PurePosixPath(receipt["target_path"]).name,
+            "vault_write": receipt["vault_write"]}
+
+
+def count_pending_proposals(
+    *,
+    shared: SetupStore,
+    guard: Callable[[], object] | None = None,
+    transport: HTTPTransport | None = None,
+    timeout: float = 30.0,
+) -> int:
+    """How many ``*.md`` proposals still wait in ``04-AI/Proposals/`` (read-only).
+
+    An absent folder is zero. Any other trouble raises ``PublishError`` so a caller
+    that uses the count as a brake fails closed.
+    """
+    from xml.etree import ElementTree
+
+    source = shared.load_nextcloud()
+    if type(source) is not dict:
+        raise PublishError("source_not_configured")
+    try:
+        source = validate_nextcloud(source)
+        base = vault_collection_url(source["webdav_url"], source["vault_folder"])
+        url = build_target_url(base, PROPOSAL_ROOT) + "/"
+    except (ValueError, WebDAVCreateError):
+        raise PublishError("invalid_vault_root") from None
+    if guard is not None:
+        try:
+            guard()
+        except RootPinRefused:
+            raise PublishError("vault_root_refused") from None
+    try:
+        response = _bounded(
+            transport or _real_http_request, method="PROPFIND", target_url=url,
+            username=source["nextcloud_user"], password=source["nextcloud_password"],
+            headers={"Depth": "1", "Content-Type": "application/xml; charset=utf-8"},
+            body=_LIST_BODY, timeout=timeout, response_limit=MAX_REMOTE_RESPONSE_BYTES,
+        )
+    except PromotionTransportNetworkError:
+        raise PublishError("pending_count_unavailable") from None
+    if response.status == 404:
+        return 0
+    if response.status != 207 or type(response.body) is not bytes:
+        raise PublishError("pending_count_unavailable")
+    try:
+        root = ElementTree.fromstring(response.body)
+    except ElementTree.ParseError:
+        raise PublishError("pending_count_unavailable") from None
+    count = 0
+    for href in root.iter("{DAV:}href"):
+        path = unquote((href.text or "").strip())
+        if path.endswith(".md") and not path.endswith("/"):
+            count += 1
+    return count
+
+
+_LIST_BODY = (b'<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:">'
+              b"<d:prop><d:resourcetype/></d:prop></d:propfind>")

@@ -234,7 +234,7 @@ class _Parser(argparse.ArgumentParser):
 def _publish(args: argparse.Namespace, source: SourceText, api_key: str | None) -> int:
     """Generate one proposal and create it in the Vault (opt-in, create-only)."""
     from .knowledge_proposal_publish import (
-        ProposalJournal, PublishError, publish_proposal, recipe_key,
+        ProposalJournal, PublishError, generate_and_publish,
     )
     from .snapshot_setup import SetupStore
     from .vault_root_activation import JobRootGuard, https_transport_factory
@@ -243,27 +243,17 @@ def _publish(args: argparse.Namespace, source: SourceText, api_key: str | None) 
     guard = JobRootGuard(store, transport_factory=https_transport_factory)
     journal = ProposalJournal(args.state / "knowledge-proposals")
     try:
-        key = recipe_key(hashlib.sha256(source.text.encode("utf-8")).hexdigest(), args.model)
-        previous = journal.lookup(key)
-        if previous is not None:
-            print(json.dumps({"status": "already_proposed", "file": PurePosixPath(
-                previous["target_path"]).name, "vault_write": False}, sort_keys=True))
-            return 0
-        proposal = propose(
-            args.ai_root, source, base_url=args.base_url, model=args.model,
-            timeout=args.timeout, api_key=api_key)
         try:
-            receipt = publish_proposal(proposal, shared=store, guard=guard)
+            report = generate_and_publish(
+                source, shared=store, guard=guard, journal=journal,
+                ai_root=args.ai_root, base_url=args.base_url, model=args.model,
+                timeout=args.timeout, api_key=api_key)
         except PublishError as exc:
             unknown = str(exc) == "outcome_unconfirmed"
             print(json.dumps({"status": "error", "error_code": str(exc),
                               "vault_write": "unknown" if unknown else False}, sort_keys=True))
             return 1
-        journal.record(key, receipt)
-        print(json.dumps({"status": "proposed", "outcome": receipt["outcome"],
-                          "bytes": receipt["bytes"],
-                          "file": PurePosixPath(receipt["target_path"]).name,
-                          "vault_write": receipt["vault_write"]}, sort_keys=True))
+        print(json.dumps(report, sort_keys=True))
         return 0
     finally:
         journal.close()

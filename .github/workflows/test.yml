@@ -29,6 +29,6 @@ jobs:
         run: |
           node --check src/obsidian_automation/three_services/app.js
           node --check src/obsidian_automation/three_services/chat-import.js
-          node --test tests/three_services_ui.test.cjs tests/chat_import_ui.test.cjs
+          node --test tests/three_services_ui.test.cjs tests/chat_import_ui.test.cjs tests/knowledge_ui.test.cjs
       - name: Run offline synthetic and HTTP tests
         run: python -m pytest -q
