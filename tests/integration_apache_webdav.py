@@ -200,6 +200,37 @@ def test_real_mkcol_conflicts(vault,base,user,password):
     print("REAL Apache MKCOL 409 / 201 / 405 and strict recheck: PASS")
 
 
+def test_proposal_publish(www,user,password):
+    """B1-lite phase 2 on real Apache: create-only, readback, no overwrite."""
+    from obsidian_automation.knowledge_proposal import Proposal, PROPOSAL_EMBED
+    from obsidian_automation.knowledge_proposal_publish import PublishError, publish_proposal
+    note=("---\ntype: knowledge-proposal\nstatus: proposed\ncategory: x\nmaturity: draft\n"
+          "source_type: y\n---\n\n"+PROPOSAL_EMBED+"\n日本語の本文。\n").encode()
+    path="04-AI/Proposals/2026-11-26-real-apache.md"
+    proposal=Proposal(target_path=path,content=note,context_sha256="a"*64,proposal_sha256="b"*64,
+                      generation_sha256="c"*64,model_identifier="m",source_sha256="d"*64)
+
+    class Shared:
+        def load_nextcloud(self):
+            return {"webdav_url":f"https://localhost:{PORT}/","vault_folder":"/",
+                    "nextcloud_user":user,"nextcloud_password":password}
+
+    receipt=publish_proposal(proposal,shared=Shared())
+    assert receipt["outcome"]=="created",receipt
+    assert (www/path).read_bytes()==note
+    again=publish_proposal(proposal,shared=Shared())
+    assert again["outcome"]=="already_present" and again["vault_write"] is False
+    (www/path).write_bytes(b"edited by the owner")
+    try:
+        publish_proposal(proposal,shared=Shared())
+    except PublishError as exc:
+        assert str(exc)=="proposal_exists"
+    else:
+        raise AssertionError("an existing file must never be overwritten")
+    assert (www/path).read_bytes()==b"edited by the owner"
+    print("REAL Apache proposal publish: created / already_present / never overwritten: PASS")
+
+
 def rclone_root_snapshot(root,user,password,base):
     """Real rclone ``sync nextcloud:/`` through the production config writer."""
     rclone=os.environ.get("OA601_RCLONE")
@@ -242,6 +273,7 @@ def main():
             root_base=vault_collection_url(f"https://localhost:{PORT}/","/")
             assert root_base==f"https://localhost:{PORT}/"
             test_apache_full_run(root/"www",root_base,user,password,root,"root-vault")
+            test_proposal_publish(root/"www",user,password)
             print("E2E APACHE ROOT-AS-VAULT (vault_folder=/): PASS")
             rclone_root_snapshot(root,user,password,root_base)
     print("Synthetic fixture, TLS certificate and server process cleaned")

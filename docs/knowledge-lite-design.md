@@ -1,6 +1,6 @@
 # Knowledge (B1) restoration — the simple design ("B1-lite")
 
-Status: **phase 1 implemented** in #616 (manual CLI, no Vault); later phases are proposals (tracking issue #610). Owner direction:
+Status: **phases 1 and 2 implemented** (#616: manual CLI without Vault access; phase 2: opt-in `--publish`, below); later phases are proposals (tracking issue #610). Owner direction:
 restore the AI/Knowledge feature, but keep it simple; a restored multi-identity
 authority model costs too much to maintain.
 
@@ -134,3 +134,36 @@ trailing HTML comment. Generated text is refused if it contains anything that
 would execute in Obsidian (Meta Bind / Dataview / Templater blocks, inline
 `BUTTON[` / `INPUT[` / `VIEW[` / `JS[` controls, `obsidian://` or
 `javascript:` links, script-like tags); plain code fences are allowed.
+
+## Phase 2: write a proposal to the Vault (opt-in CLI)
+
+```sh
+python -m obsidian_automation.knowledge_proposal propose --publish \
+  --state /var/lib/obsidian-snapshot --zip export.zip --provider claude --index 3 \
+  --ai-root <private artifact dir> --base-url https://tsumgi.arc.upiscium.dev/v1 --model <model>
+```
+
+Run it as the service user (it reads the shared saved connection). Without
+`--publish` the CLI behaves exactly as in phase 1 (`--out`, no Vault access);
+`--publish` and `--out` cannot be combined.
+
+- **Create-only.** One `PUT` with `If-None-Match: *` to
+  `04-AI/Proposals/<name>.md`; parents are created and verified as DAV
+  collections. An existing file with different bytes is never touched
+  (`proposal_exists`); identical bytes report `already_present` with no write.
+- **Fixed folder, enforced in code,** and only `*.md` directly in it. The note
+  must be a `knowledge-proposal`, carry the managed embed exactly once, and
+  contain no other executable Obsidian content.
+- **Same authority as Daily:** the shared connection plus the pinned-root guard
+  (`vault_root_refused` stops before any request). No new account.
+- **Readback:** success (`created`, or `recovered` after a lost response) is
+  reported only after a `GET` returns the exact bytes. A lost response with
+  nothing written is `outcome_unconfirmed` (`vault_write: "unknown"`), never
+  success. The ETag is not required (Apache answers a fresh write with a weak
+  one unless `FileETag Digest` is set); nothing is updated afterwards.
+- **Idempotent:** a private journal (`<state>/knowledge-proposals/journal.sqlite3`)
+  keyed by source digest + model + pipeline revision + prompt stops the same input
+  being generated and written twice; a failed attempt is not recorded and can be
+  retried. Exit codes: 0 on `proposed` / `already_proposed`, 1 on any error.
+- **Not wired to any schedule or panel** (phase 3). The first write to the
+  production Vault needs its own approval.
