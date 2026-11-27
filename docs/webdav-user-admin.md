@@ -14,7 +14,8 @@ revoked by deleting just its user.
 | Add | Creates a user (name `^[a-z][a-z0-9._-]{2,31}$`) with a generated password (shown **once**) or a typed one (12-128 characters, no `:`), and an optional description (80 characters). |
 | Reset password | New generated or typed password. Update the devices that use the account afterwards. |
 | Edit description | Metadata only (kept in `users.json`); the users file is untouched. |
-| Delete | Needs a confirmation. Protected accounts (`vault-oa`, `nc-vault-ui` by default) and the last remaining user cannot be deleted. |
+| Lock / unlock | A toggle (🔒 in the list). A locked user cannot be deleted until it is unlocked. Metadata only (`users.json`). The `--protect` names (default `vault-oa`, `nc-vault-ui`) start out locked; once toggled, the stored state wins. |
+| Delete | Needs a confirmation. Refused for a locked user; the last remaining user can never be deleted. |
 
 The user name cannot be changed (a rename is a new user with a new password).
 
@@ -48,7 +49,7 @@ python -m obsidian_automation.webdav_user_admin \
 ```
 
 `--bind` must be loopback or RFC 1918. `--protect NAME` (repeatable) replaces the default
-protected list. No console script is added.
+list of users that start out locked. No console script is added.
 
 ## Install on the VM (needs the owner's approval; nothing here is automatic)
 
