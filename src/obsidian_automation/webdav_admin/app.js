@@ -7,7 +7,7 @@
     invalid_description: "説明は 80 文字までで、制御文字は使えません",
     user_exists: "同じ名前のユーザーがすでにあります",
     user_not_found: "ユーザーが見つかりません",
-    user_protected: "このユーザーは、保護されているため、削除できません",
+    user_locked: "このユーザーはロックされています。ロックを解除してから削除してください",
     last_user: "最後の 1 人は、削除できません",
     confirmation_mismatch: "確認のユーザー名が一致しません",
     write_failed: "書き込みに失敗しました。元に戻しました",
@@ -102,7 +102,16 @@
     return holder;
   }
 
+  async function toggleLock(user) {
+    try {
+      await api("POST", "/api/v1/users/" + user.name + "/lock", {locked: !user.locked});
+      setMessage(user.locked ? "ロックを解除しました。" : "ロックしました。");
+    } catch (e) { setMessage(describe(e.message)); }
+    await load();
+  }
+
   async function remove(user) {
+    if (user.locked) { setMessage(describe("user_locked")); return; }
     if (!confirm("ユーザー " + user.name + " を削除します。このユーザーで接続している端末は、すぐに接続できなくなります。よろしいですか。")) return;
     try {
       await api("POST", "/api/v1/users/" + user.name + "/delete", {confirm: user.name});
@@ -118,14 +127,26 @@
     for (const user of data.users) {
       const actions = el("td");
       const cell = el("td", {}, [text("span", user.name)]);
-      if (user.protected) cell.appendChild(text("span", " 保護", {className: "badge"}));
-      const reset = text("button", "パスワード再発行", {className: "reset"});
-      const edit = text("button", "説明を編集", {className: "edit"});
-      const del = text("button", "削除", {className: "danger delete"});
-      reset.addEventListener("click", () => actions.appendChild(resetForm(user)));
-      edit.addEventListener("click", () => actions.appendChild(descriptionForm(user)));
-      del.addEventListener("click", () => remove(user));
-      for (const button of [reset, edit, del]) actions.appendChild(button);
+      if (user.locked) cell.appendChild(text("span", " 🔒", {className: "lock", title: "ロック中（削除できません）"}));
+      const kebab = text("button", "⋮", {className: "kebab", title: "操作", ariaLabel: "操作"});
+      actions.appendChild(kebab);
+      let menu = null;
+      const closeMenu = () => { if (menu) { menu.hidden = true; menu.textContent = ""; } };
+      const item = (label, className, run) => {
+        const button = text("button", label, {className: "menu-item " + className});
+        button.addEventListener("click", () => { closeMenu(); run(); });
+        return button;
+      };
+      kebab.addEventListener("click", () => {
+        if (menu && !menu.hidden) { closeMenu(); return; }
+        if (!menu) { menu = el("div", {className: "menu"}); actions.appendChild(menu); }
+        menu.hidden = false;
+        for (const button of [
+          item("パスワード再発行", "reset", () => actions.appendChild(resetForm(user))),
+          item("説明を編集", "edit", () => actions.appendChild(descriptionForm(user))),
+          item(user.locked ? "ロックを解除" : "ロックする", "lock-toggle", () => toggleLock(user)),
+          item("削除", "danger delete", () => remove(user))]) menu.appendChild(button);
+      });
       table.appendChild(el("tr", {}, [cell, text("td", user.description || "-"),
         text("td", user.updated || "-"), actions]));
     }

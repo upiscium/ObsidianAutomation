@@ -15,7 +15,8 @@ Safety rules (tested):
 * a backup of the file is taken before every change, the result is read back
   (user present or absent, password verified) and the backup is restored on a
   mismatch;
-* protected accounts cannot be deleted, nor can the last remaining user;
+* a locked account cannot be deleted until it is unlocked, and the last remaining user
+  cannot be deleted at all (the --protect names start out locked);
 * a generated password is returned once and is never stored, logged or listed;
   the audit log holds only time, action, user name, client address and result.
 """
@@ -39,7 +40,7 @@ from importlib.resources import files
 from pathlib import Path
 
 NAME = re.compile(r"[a-z][a-z0-9._-]{2,31}\Z")
-_USER_ROUTE = re.compile(r"/api/v1/users/([a-z][a-z0-9._-]{2,31})/(password|description|delete)\Z")
+_USER_ROUTE = re.compile(r"/api/v1/users/([a-z][a-z0-9._-]{2,31})/(password|description|lock|delete)\Z")
 MIN_PASSWORD, MAX_PASSWORD = 12, 128
 MAX_DESCRIPTION = 80
 BACKUPS_KEPT = 30
@@ -193,7 +194,7 @@ class UserStore:
         for name in sorted(names):
             entry = meta.get(name, {})
             out.append({"name": name, "description": entry.get("description", ""),
-                        "protected": name in self.protected,
+                        "locked": bool(entry.get("locked", name in self.protected)),
                         "created": entry.get("created"), "updated": entry.get("updated")})
         return out
 
@@ -244,15 +245,27 @@ class UserStore:
             self._save_meta(meta)
         return {"name": name}
 
+    def set_lock(self, name: str, locked: object) -> dict:
+        """Metadata only (like the description): the users file is untouched."""
+        if type(locked) is not bool:
+            raise UserAdminError("invalid_request")
+        with self._lock:
+            if name not in self.names():
+                raise UserAdminError("user_not_found", 404)
+            meta = self._meta()
+            meta.setdefault(name, {"description": "", "created": None})["locked"] = locked
+            self._save_meta(meta)
+        return {"name": name, "locked": locked}
+
     def delete(self, name: str, confirm: object) -> dict:
         if confirm != name:
             raise UserAdminError("confirmation_mismatch")
-        if name in self.protected:
-            raise UserAdminError("user_protected", 409)
         with self._lock:
             names = self.names()
             if name not in names:
                 raise UserAdminError("user_not_found", 404)
+            if self._meta().get(name, {}).get("locked", name in self.protected):
+                raise UserAdminError("user_locked", 409)
             if len(names) <= 1:
                 raise UserAdminError("last_user", 409)
             backup = self._backup()
@@ -453,7 +466,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"csrf": self.server.csrf.issue()})
             elif self.path == "/api/v1/users":
                 store = self.server.store
-                self._send(200, {"users": store.list_users(), "protected": sorted(store.protected)})
+                self._send(200, {"users": store.list_users()})
             else:
                 self._error(404, "not_found")
         except UserAdminError as exc:
@@ -493,6 +506,11 @@ class Handler(BaseHTTPRequestHandler):
                         raise UserAdminError("invalid_request")
                     result = store.set_description(user, payload["description"])
                     action = "edit_description"
+                elif action == "lock":
+                    if set(payload) != {"locked"}:
+                        raise UserAdminError("invalid_request")
+                    result = store.set_lock(user, payload["locked"])
+                    action = "lock" if result["locked"] else "unlock"
                 else:
                     if set(payload) != {"confirm"}:
                         raise UserAdminError("invalid_request")
@@ -540,7 +558,7 @@ def main(argv=None) -> int:
     parser.add_argument("--allow-ip", action="append", default=[],
                         help="Client address allowed to connect (repeatable); default 127.0.0.1")
     parser.add_argument("--protect", action="append", default=None,
-                        help="User that cannot be deleted (repeatable); default: " + ", ".join(DEFAULT_PROTECTED))
+                        help="User that starts out locked, i.e. cannot be deleted until unlocked (repeatable); default: " + ", ".join(DEFAULT_PROTECTED))
     parser.add_argument("--hash-tool", default="htpasswd")
     args = parser.parse_args(argv)
     for path in (args.htpasswd, args.admin_htpasswd, args.state):

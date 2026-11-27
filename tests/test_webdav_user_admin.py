@@ -183,14 +183,14 @@ def test_description_edit_touches_only_the_metadata(kit):
     assert {u["name"]: u for u in store.list_users()}["vault-desktop"]["description"] == "デスクトップ用"
 
 
-def test_delete_needs_the_confirmation_and_refuses_protected_and_last_users(kit):
+def test_delete_needs_the_confirmation_and_refuses_locked_and_last_users(kit):
     store, users, binary = kit
     with pytest.raises(UserAdminError) as exc:
         store.delete("vault-desktop", "something-else")
     assert exc.value.code == "confirmation_mismatch"
     with pytest.raises(UserAdminError) as exc:
         store.delete("vault-oa", "vault-oa")
-    assert exc.value.code == "user_protected" and exc.value.http == 409
+    assert exc.value.code == "user_locked" and exc.value.http == 409
     store.delete("vault-desktop", "vault-desktop")
     assert [u["name"] for u in store.list_users()] == ["vault-oa"]
     assert not verify(binary, users, "vault-desktop", pw("initial-vault-desktop"))
@@ -363,7 +363,9 @@ def test_create_edit_reset_and_delete_over_http(api, capsys):
     listing = jbody(api.call("GET", "/api/v1/users"))
     entry = next(u for u in listing["users"] if u["name"] == "vault-phone")
     assert entry["description"] == "電話" and created["password"] not in json.dumps(listing)
-    assert listing["protected"] == ["nc-vault-ui", "vault-oa"]
+    assert "protected" not in listing
+    assert {u["name"]: u["locked"] for u in listing["users"]}["vault-oa"] is True
+    assert entry["locked"] is False
     assert api.call("POST", "/api/v1/users/vault-phone/description",
                     payload={"description": "スマホ"})[0] == 200
     again = jbody(api.call("POST", "/api/v1/users/vault-phone/password", payload={}))
@@ -374,12 +376,15 @@ def test_create_edit_reset_and_delete_over_http(api, capsys):
     assert api.call("POST", "/api/v1/users/vault-phone/delete", payload={"confirm": "wrong"})[0] == 400
     assert api.call("POST", "/api/v1/users/vault-phone/delete", payload={"confirm": "vault-phone"})[0] == 200
     assert api.call("POST", "/api/v1/users/vault-oa/delete", payload={"confirm": "vault-oa"})[0] == 409
+    assert api.call("POST", "/api/v1/users/vault-oa/lock", payload={"locked": "yes"})[0] == 400
+    assert jbody(api.call("POST", "/api/v1/users/vault-oa/lock", payload={"locked": False}))["locked"] is False
+    assert api.call("POST", "/api/v1/users/vault-oa/lock", payload={"locked": True})[0] == 200
     # no secret ever reaches the server log or the audit log
     logs = capsys.readouterr().err + (api.store.state / "audit.log").read_text()
     for secret in (created["password"], again["password"], pw("own-1"), ADMIN_PASSWORD):
         assert secret not in logs
     audit = [json.loads(line) for line in (api.store.state / "audit.log").read_text().splitlines()]
-    assert {"create", "edit_description", "reset_password", "delete"} <= {a["action"] for a in audit}
+    assert {"create", "edit_description", "reset_password", "delete", "lock", "unlock"} <= {a["action"] for a in audit}
     assert all(set(a) <= {"ts", "action", "user", "ok", "ip", "code"} for a in audit)
 
 
@@ -471,3 +476,24 @@ def test_the_audit_names_the_real_client_and_a_control_character_password_never_
     conn.close()
     audit = [json.loads(l) for l in (api.store.state / "audit.log").read_text().splitlines()]
     assert any(a["action"] == "create" and a["user"] == "vault-fwd" and a["ip"] == "192.168.0.42" for a in audit)
+
+
+def test_lock_is_a_toggle_that_blocks_delete_until_unlocked_and_leaves_the_users_file_alone(kit):
+    store, users, _ = kit
+    before = users.read_text()
+    assert {u["name"]: u["locked"] for u in store.list_users()} == {"vault-desktop": False, "vault-oa": True}
+    store.set_lock("vault-desktop", True)
+    assert users.read_text() == before
+    with pytest.raises(UserAdminError) as exc:
+        store.delete("vault-desktop", "vault-desktop")
+    assert exc.value.code == "user_locked"
+    store.set_lock("vault-desktop", False)
+    store.set_lock("vault-oa", False)  # a default-protected account can be unlocked too
+    store.delete("vault-oa", "vault-oa")
+    assert [u["name"] for u in store.list_users()] == ["vault-desktop"]
+    for bad in ("yes", 1, None):
+        with pytest.raises(UserAdminError):
+            store.set_lock("vault-desktop", bad)
+    with pytest.raises(UserAdminError) as exc:
+        store.set_lock("ghost-user", True)
+    assert exc.value.code == "user_not_found"
