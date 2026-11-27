@@ -1,0 +1,34 @@
+# WebDAV user admin (Issue #631). Install on the WebDAV VM; see docs/webdav-user-admin.md.
+[Unit]
+Description=WebDAV user admin (Apache htpasswd)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=davadmin
+Group=davadmin
+StateDirectory=webdav-user-admin
+StateDirectoryMode=0700
+ExecStart=/opt/webdav-user-admin/venv/bin/python -m obsidian_automation.webdav_user_admin \
+  --htpasswd /opt/obsidian-webdav/secrets/htpasswd \
+  --admin-htpasswd /etc/webdav-user-admin/admin.htpasswd \
+  --state /var/lib/webdav-user-admin \
+  --bind 10.12.2.9 --port 18092 \
+  --allowed-host vault-admin.arc.upiscium.dev \
+  --allow-ip 10.12.1.1 --allow-ip 127.0.0.1
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+# Only the users file may be written outside the state directory.
+ReadWritePaths=/opt/obsidian-webdav/secrets/htpasswd
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,16 @@
+body { font-family: system-ui, sans-serif; margin: 0; background: #f6f7f9; color: #1c1f23; }
+main { max-width: 56rem; margin: 0 auto; padding: 1.5rem 1rem 3rem; }
+h1 { font-size: 1.4rem; } h2 { font-size: 1.1rem; margin-top: 2rem; }
+section { background: #fff; border: 1px solid #d9dde3; border-radius: 8px; padding: 1rem; margin-top: 1rem; }
+.muted { color: #5b6470; font-size: .9rem; }
+.feedback { min-height: 1.4rem; font-weight: 600; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid #e6e9ee; vertical-align: top; }
+th { font-size: .85rem; color: #5b6470; }
+label { display: block; margin: .6rem 0; font-size: .9rem; }
+input { display: block; width: 100%; box-sizing: border-box; padding: .45rem; margin-top: .25rem; font: inherit; }
+button { font: inherit; padding: .4rem .8rem; margin: .15rem .2rem .15rem 0; cursor: pointer; }
+button.danger { color: #a40000; }
+.badge { font-size: .75rem; background: #e6eefc; color: #1a3d7c; border-radius: 4px; padding: .05rem .4rem; }
+.secret-value { font-family: ui-monospace, monospace; font-size: 1.05rem; background: #fff7d6; padding: .5rem; word-break: break-all; }
+.row-form { margin-top: .4rem; }
