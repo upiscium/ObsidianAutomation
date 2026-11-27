@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import uuid
 import json
 import threading
 
@@ -397,3 +398,24 @@ def test_source_limit_validation_in_config_and_app(tmp_path, monkeypatch):
     with pytest.raises(SystemExit) as exit_info:
         snapshot_app.main()
     assert exit_info.value.code == 2
+
+
+def test_failures_raise_the_health_alert_but_skipped_slots_do_not(env):
+    def add(status, created):
+        with env.service.db:
+            env.service.db.execute(
+                "INSERT INTO runs (run_id,trigger,status,created,completed) VALUES (?,?,?,?,?)",
+                (uuid.uuid4().hex, "scheduled", status, created, created))
+
+    assert env.service.health()["alert"] is False
+    add("proposed", 1.0)
+    add("failed", 2.0)
+    add("skipped", 3.0)  # neutral: neither breaks nor extends the streak
+    add("unconfirmed", 4.0)
+    assert env.service.health()["consecutive_failures"] == 2
+    add("failed", 5.0)
+    result = env.service.health()
+    assert (result["service"], result["consecutive_failures"], result["alert"]) == ("knowledge", 3, True)
+    assert result["last_success"] == 1.0 and result["failing_since"] == 2.0
+    add("proposed", 6.0)
+    assert env.service.health()["alert"] is False

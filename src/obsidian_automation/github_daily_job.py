@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Callable
 
 from .github_daily_progress import DailyProgressTargetMissingBeforeWrite
+from .job_health import job_health
 
 from .phase_schedule import (
     StaleScheduleError, due_after_tick, due_for_update, missed,
@@ -245,6 +246,11 @@ class DailyJob:
                     "publication_enabled": self.publisher is not None,
                     "settings":self.settings(),
                     "last_run":self.run(row[0]) if row else None}
+
+    def health(self) -> dict:
+        """Consecutive-failure streak for the panel banner (counts and times only)."""
+        return job_health(self.db, self._lock, service="daily", success=("published", "preview_ready"),
+                          failure=("failed", "publish_failed", "unconfirmed"), threshold=2)
 
     def submit(self, request_id: str, trigger: str = "manual") -> tuple[str, dict | None]:
         if (type(request_id) is not str or _ID.fullmatch(request_id) is None

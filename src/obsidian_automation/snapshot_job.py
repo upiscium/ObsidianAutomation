@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Callable
 
 from .snapshot_retention import prune_runs
+from .job_health import job_health
 from .phase_schedule import (
     StaleScheduleError, due_after_tick, due_for_update, missed,
     parse_update, schedule_status, upgrade_settings,
@@ -155,6 +156,11 @@ class SnapshotJob:
             row = self.db.execute("SELECT run_id FROM runs ORDER BY created DESC,rowid DESC LIMIT 1").fetchone()
             return dict(version=1, job="vault_snapshot", settings=self.settings(),
                         last_run=self.run(row[0]) if row else None)
+
+    def health(self) -> dict:
+        """Consecutive-failure streak for the panel banner (counts and times only)."""
+        return job_health(self.db, self._lock, service="snapshot", success=("saved", "no_changes"),
+                          failure=("failed", "unconfirmed"), threshold=3)
 
     def submit(self, request_id: str, trigger: str = "manual") -> tuple[str, dict | None]:
         if not isinstance(request_id, str) or not _ID.fullmatch(request_id) or trigger not in ("manual", "scheduled"):

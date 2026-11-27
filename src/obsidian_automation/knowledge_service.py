@@ -35,6 +35,7 @@ from typing import Callable
 
 from .chatgpt_export_inspect import InspectionError, inspect_export
 from .chatgpt_export_normalize import NormalizeError, PARSER_VERSIONS, normalize_export
+from .job_health import job_health
 from .knowledge_proposal import (
     MAX_SOURCE_BYTES, ProposalError, SourceText, conversation_text,
 )
@@ -156,6 +157,11 @@ class KnowledgeService:
                              "proposed_today": made, "last_skip": self._last_skip},
                 "busy": self._busy(), "recent_runs": self._recent(), "vault_write": True,
             }
+
+    def health(self) -> dict:
+        """Consecutive-failure streak for the panel banner; a skipped slot is neutral."""
+        return job_health(self.db, self._lock, service="knowledge", success=("proposed",),
+                          failure=("failed", "unconfirmed"), neutral=("skipped",), threshold=3)
 
     def _busy(self) -> bool:
         return self.db.execute(
