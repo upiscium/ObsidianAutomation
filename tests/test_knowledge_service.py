@@ -419,3 +419,23 @@ def test_failures_raise_the_health_alert_but_skipped_slots_do_not(env):
     assert result["last_success"] == 1.0 and result["failing_since"] == 2.0
     add("proposed", 6.0)
     assert env.service.health()["alert"] is False
+
+
+def test_changing_the_model_does_not_make_proposed_conversations_new_again(env):
+    """The journal key includes the model; the schedule must still not write a duplicate."""
+    env.import_zip([claude("qqfirst", "2026-01-01"), claude("qqsecond", "2026-01-02")])
+    first_item = first(env.service.conversations())
+    env.service.start_manual({"archive": first_item["archive"], "index": first_item["index"]})
+    env.wait()
+    assert env.service.conversations()["counts"] == {"new": 1, "proposed": 1}
+    env.service.close()
+    env.config = KnowledgeConfig(llm_url=LLM_URL, model="another-model")
+    env.build()  # same state, a different model
+    assert env.service.conversations()["counts"] == {"new": 1, "proposed": 1}
+    env.service.update_settings({"enabled": True})
+    env.now[0] += 3601
+    env.service.tick()
+    env.wait()
+    assert len(env.llm.calls) == 2  # the manual run, then one scheduled run for the new conversation only
+    assert "qqfirst" in json.dumps(env.llm.calls[0])
+    assert "qqsecond" in json.dumps(env.llm.calls[1]) and "qqfirst" not in json.dumps(env.llm.calls[1])

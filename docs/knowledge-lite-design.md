@@ -83,7 +83,8 @@ approval.
 ## Decided
 
 - **LLM: the local TSUMGI API** (OpenAI-compatible, `https://tsumgi.arc.upiscium.dev/v1`,
-  models `qwen3.6-35b-a3b` plus the `-fast` / `-short` variants). The existing
+  models as listed by `GET /v1/models`; on 2026-11-27: `qwen3.8-27b` (input 122,880 / output 8,192
+  tokens), `qwen3.8-flash-next-coder` and `qwen3.6-35b-a3b-short` (input only 12,288)). The existing
   `openai_compatible`, `openai_generator` and `openai_evaluator` already speak
   this protocol, accept a remote HTTPS endpoint, never inherit proxy settings
   (the context may hold private notes) and bound the response, so no new client
@@ -203,3 +204,10 @@ start-up arguments, not panel fields.
   replayed. Run records hold fixed codes only (no exception text, paths or note text).
 - The first write to the production Vault needs its own approval; the schedule stays
   off until the owner switches it on.
+
+- **Model choice (measured 2026-11-27, local files only).** `qwen3.8-27b` wrote natural Japanese
+  proposals for a 10.7 KB, a 57 KB and a 129 KB conversation in 44 s, 66 s and 106 s;
+  `qwen3.6-35b-a3b-short` was also Japanese but cannot take more than about 16 KiB;
+  the coder models answered in English. TSUMGI rejects `response_format`, so run with
+  `--knowledge-no-structured-output`. A conversation the panel has proposed (any model) is
+  not proposed again by the schedule, so changing the model does not create duplicates.

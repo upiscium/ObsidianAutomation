@@ -237,6 +237,18 @@ class KnowledgeService:
         finally:
             journal.close()
 
+    def _proposed_sources(self) -> set[str]:
+        """Conversations the panel already proposed, with whatever model made them.
+
+        The journal key includes the model, so switching model would otherwise make every
+        proposed conversation "new" again and the schedule would write a duplicate.
+        """
+        with self._lock:
+            rows = self.db.execute(
+                "SELECT DISTINCT source_sha FROM runs WHERE status='proposed' AND source_sha IS NOT NULL"
+            ).fetchall()
+        return {row[0] for row in rows}
+
     def _blocked(self) -> dict[str, str]:
         """Source digests whose latest run failed or is unconfirmed (skipped until retried)."""
         blocked: dict[str, str] = {}
@@ -256,6 +268,7 @@ class KnowledgeService:
         # and the scheduler tick never wait for it.
         blocked = self._blocked()
         journal_keys = self._journal_keys()
+        proposed_sources = self._proposed_sources()
         seen: set[str] = set()
         out: list[dict] = []
         for archive_sha in self._ready_archives()[:LIST_ARCHIVES]:
@@ -267,7 +280,8 @@ class KnowledgeService:
                 if item["source_sha"] in seen:
                     continue
                 seen.add(item["source_sha"])
-                if recipe_key(item["source_sha"], self.config.model) in journal_keys:
+                if (recipe_key(item["source_sha"], self.config.model) in journal_keys
+                        or item["source_sha"] in proposed_sources):
                     state = "proposed"
                 elif item["empty"]:
                     state = "empty"
