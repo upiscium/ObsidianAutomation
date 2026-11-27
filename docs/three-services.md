@@ -322,3 +322,18 @@ Each Snapshot attempt keeps a mirror, a bare fetch and a worktree under
   add `--apply` to delete. Run it as the service user. Enabling `--keep-runs` on
   a host with many old runs deletes all of them on the next run, so check the
   dry run first.
+
+## Snapshot: renames, moves and a few deletions
+
+Snapshot compares the new Git tree with the previous backup. A path that existed in
+the previous backup and is gone from the Vault is a "managed deletion". It used to
+fail the run every time (and the backup never advanced again, since the baseline
+stays the same). That made a normal edit fatal: approving a knowledge proposal moves
+the note out of `04-AI/Proposals/`, so every approval froze the backup.
+
+Now a run accepts the removed paths when there are **at most 20 and at most 2 % of
+the paths the previous backup tracked** (a rename or move counts as one removal plus
+one addition). The deleted content stays in the previous commit, because the backup is
+a Git history. More than that is refused as before: it is what a truncated WebDAV
+listing looks like, and no bypass exists for it. The accepted count (never a path) is
+printed to the journal as `snapshot_deletions accepted=N tracked=M`.

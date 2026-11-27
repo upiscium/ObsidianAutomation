@@ -597,3 +597,55 @@ def test_head_tree_paths_rejects_truncated_nonempty_stdout(
 
     monkeypatch.setattr(module.subprocess, "run", malformed_ls_tree)
     assert module._head_tree_paths(work, module.git_environment(True)) is None
+
+
+@pytest.mark.parametrize("deleted,tracked,allowed", [
+    (0, 100, True), (1, 50, True), (1, 49, False), (2, 100, True), (3, 100, False),
+    (20, 1000, True), (21, 5000, False), (20, 999, False), (35, 1742, False),
+    (34, 1742, False),  # capped at 20 even though 2% of 1742 is 34
+    (1, 2, False), (1, 0, False),
+])
+def test_managed_deletions_allowance_boundaries(deleted, tracked, allowed):
+    from obsidian_automation.snapshot_adapter import managed_deletions_allowed
+    assert managed_deletions_allowed(deleted, tracked) is allowed
+
+
+def _large_baseline(tmp_path, monkeypatch, files=60):
+    adapter, source, remote, _ = fixture(tmp_path, monkeypatch)
+    seed = tmp_path / "seed"
+    for number in range(files):
+        text = f"note {number}\n"
+        (seed / f"n{number:03}.md").write_text(text)
+        (source / f"n{number:03}.md").write_text(text)
+    git("add", ".", cwd=seed)
+    git("commit", "-m", "many notes", cwd=seed)
+    baseline = git("rev-parse", "HEAD", cwd=seed)
+    git("push", remote.as_uri(), "HEAD:refs/heads/main", cwd=seed)
+    return adapter, source, remote, baseline
+
+
+def test_a_single_note_deleted_or_moved_in_a_large_vault_no_longer_blocks_the_backup(
+    tmp_path, monkeypatch, capfd,
+):
+    """A promoted note is a move; one removed path must not freeze the backup."""
+    adapter, source, remote, baseline = _large_baseline(tmp_path, monkeypatch)
+    (source / "n007.md").unlink()
+    (source / "moved.md").write_text("note 7 moved\n")
+    status, stage, sha = adapter("a" * 32)
+    assert (status, stage) == ("saved", "verify")
+    assert git("--git-dir", remote, "rev-parse", "refs/heads/main", cwd=tmp_path) == sha != baseline
+    # the new tree has no n007.md, the previous commit still has its content
+    new_tree = git("--git-dir", remote, "ls-tree", "-r", "--name-only", sha, cwd=tmp_path).split()
+    assert "n007.md" not in new_tree and "moved.md" in new_tree
+    assert git("--git-dir", remote, "show", f"{baseline}:n007.md", cwd=tmp_path) == "note 7"
+    err = capfd.readouterr().err
+    assert "snapshot_deletions accepted=1 tracked=61" in err
+    assert "n007" not in err  # counts only, never a private name
+
+
+def test_a_bulk_deletion_is_still_refused_and_never_pushed(tmp_path, monkeypatch):
+    adapter, source, remote, baseline = _large_baseline(tmp_path, monkeypatch)
+    for number in range(5):  # 5 of 61 tracked files is over 2%
+        (source / f"n{number:03}.md").unlink()
+    assert adapter("b" * 32) == ("failed", "snapshot", None)
+    assert git("--git-dir", remote, "rev-parse", "refs/heads/main", cwd=tmp_path) == baseline

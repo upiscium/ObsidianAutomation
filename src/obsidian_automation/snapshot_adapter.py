@@ -9,6 +9,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import dataclass
@@ -153,6 +154,21 @@ def _write_rclone_receipt(directory: Path, attempts: list[dict[str, int | str | 
                 os.unlink(temp)
             except OSError:
                 pass
+
+
+# A rename, move or deletion in the Vault removes a path the previous backup
+# tracked. Refusing every such run froze the backup for good (a promoted note is
+# always a move). A few deletions are now accepted; the backup is a Git history,
+# so the deleted content stays in the previous commit. A bulk deletion, which is
+# what a truncated listing looks like, is still refused.
+MAX_MANAGED_DELETIONS = 20
+MAX_MANAGED_DELETION_PERCENT = 2
+
+
+def managed_deletions_allowed(deleted: int, previous_tracked: int) -> bool:
+    """True when `deleted` removed paths are few enough to be a normal edit."""
+    return (deleted <= MAX_MANAGED_DELETIONS
+            and deleted * 100 <= MAX_MANAGED_DELETION_PERCENT * previous_tracked)
 
 
 def _head_tree_paths(work: Path, env: dict[str, str],
@@ -318,7 +334,11 @@ class SnapshotAdapter:
             except Exception:
                 return "failed", "snapshot", None
             if managed_deletions:
-                return "failed", "snapshot", None
+                if not managed_deletions_allowed(len(managed_deletions), len(previous_paths)):
+                    return "failed", "snapshot", None
+                # Counts only: paths are private Vault names.
+                print(f"snapshot_deletions accepted={len(managed_deletions)} "
+                      f"tracked={len(previous_paths)}", file=sys.stderr, flush=True)
         expected = result.commit_sha if result.changed else baseline
         if result.changed and (not expected or not re.fullmatch(r"[a-f0-9]{40}", expected)):
             return "failed", "snapshot", None
