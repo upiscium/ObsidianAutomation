@@ -35,10 +35,11 @@ const users = [
 
 async function mount({post, confirmAnswer = true, list = users} = {}) {
   const ids = {};
-  for (const id of ["message", "users", "secret", "create", "create-name", "create-description", "create-password"]) {
+  for (const id of ["message", "users", "secret", "create", "create-name", "create-description", "create-password", "create-role", "create-role-label"]) {
     ids[id] = Object.assign(node(id === "create" ? "form" : "div"), {id});
   }
   ids.secret.hidden = true;
+  ids["create-role"].value = "rw";
   const calls = {fetch: [], confirm: [], clipboard: []};
   const fetch = async (url, options = {}) => {
     calls.fetch.push({url: String(url), options});
@@ -179,4 +180,39 @@ test("operations sit behind a three-dot button; locking toggles and a locked use
   menuItem(ids.users, "ロックする", 0).listeners.click();
   await tick();
   assert.deepEqual(JSON.parse(posts(calls)[1].options.body), {locked: true});
+});
+
+const withRoles = [
+  {name: "vault-desktop", description: "", locked: false, role: "rw", created: null, updated: null},
+  {name: "reader-one", description: "", locked: false, role: "ro", created: null, updated: null}
+];
+
+test("roles: shown in the list, picked on create, changed from the menu with a confirmation", async () => {
+  const {ids, calls} = await mount({list: withRoles});
+  assert.equal(ids["create-role-label"].hidden, false);
+  assert.match(allText(ids.users), /Read & Write/);
+  assert.match(allText(ids.users), /Read Only/);
+  ids["create-name"].value = "writer-one";
+  ids["create-role"].value = "wo";
+  await ids.create.listeners.submit({preventDefault() {}});
+  await tick();
+  assert.deepEqual(JSON.parse(posts(calls)[0].options.body), {name: "writer-one", description: "", role: "wo"});
+  menuItem(ids.users, "権限を変更", 1).listeners.click();
+  const select = findAll(ids.users, (n) => n.tag === "select")[0];
+  assert.equal(select.value, "ro");
+  select.value = "off";
+  button(ids.users, "変更する").listeners.click();
+  await tick();
+  assert.match(calls.confirm[0], /Disable.*すべて拒否/);
+  const sent = posts(calls)[1];
+  assert.equal(sent.url, "/api/v1/users/reader-one/role");
+  assert.deepEqual(JSON.parse(sent.options.body), {role: "off"});
+});
+
+test("without a group file the role column and menu item stay out of the page", async () => {
+  const {ids} = await mount();
+  assert.equal(ids["create-role-label"].hidden, true);
+  assert.equal(findAll(ids.users, (n) => n.tag === "select").length, 0);
+  kebabs(ids.users)[0].listeners.click();
+  assert.equal(button(ids.users, "権限を変更"), undefined);
 });

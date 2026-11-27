@@ -27,6 +27,14 @@
       <label>説明（任意、80 文字まで）
         <input id="create-description" autocomplete="off" maxlength="80">
       </label>
+      <label id="create-role-label" hidden>権限
+        <select id="create-role">
+          <option value="rw">Read &amp; Write</option>
+          <option value="ro">Read Only</option>
+          <option value="wo">Write Only</option>
+          <option value="off">Disable</option>
+        </select>
+      </label>
       <label>パスワード（空欄なら自動生成。指定する場合は 12 文字以上）
         <input id="create-password" type="password" autocomplete="new-password">
       </label>

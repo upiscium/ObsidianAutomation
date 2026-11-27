@@ -7,6 +7,8 @@
     invalid_description: "説明は 80 文字までで、制御文字は使えません",
     user_exists: "同じ名前のユーザーがすでにあります",
     user_not_found: "ユーザーが見つかりません",
+    invalid_role: "権限の指定が不正です",
+    groups_unreadable: "権限の設定を読めません",
     user_locked: "このユーザーはロックされています。ロックを解除してから削除してください",
     last_user: "最後の 1 人は、削除できません",
     confirmation_mismatch: "確認のユーザー名が一致しません",
@@ -17,6 +19,13 @@
     authentication_required: "認証が必要です。ページを再読み込みしてください",
     invalid_request: "リクエストが不正です",
     operation_unavailable: "結果不明です。一覧で状態を確認してください"
+  };
+  const ROLE = {rw: "Read & Write", ro: "Read Only", wo: "Write Only", off: "Disable"};
+  const ROLE_HINT = {
+    rw: "読み書きできます。",
+    ro: "読み取りだけできます。書き込みと削除は拒否されます。",
+    wo: "書き込みだけできます。ファイルの取得と一覧は拒否されるため、同期には使えません。",
+    off: "すべて拒否されます。パスワードは残ります。"
   };
   const describe = (code) => ERRORS[code] || ("操作できませんでした (" + String(code || "unknown") + ")");
   const el = (tag, props, children) => {
@@ -86,6 +95,29 @@
     return holder;
   }
 
+  function roleForm(user) {
+    const select = el("select", {className: "role-select"});
+    for (const key of Object.keys(ROLE)) {
+      select.appendChild(text("option", ROLE[key], {value: key, selected: key === user.role}));
+    }
+    select.value = user.role;
+    const save = text("button", "変更する", {className: "role-save"});
+    const cancel = text("button", "やめる");
+    const holder = el("div", {className: "row-form"}, [select, save, cancel]);
+    save.addEventListener("click", async () => {
+      const role = select.value;
+      if (role !== user.role && !confirm("ユーザー " + user.name + " の権限を " + ROLE[role] + " にします。" +
+          ROLE_HINT[role] + "このユーザーで接続している端末に、すぐ反映されます。よろしいですか。")) return;
+      try {
+        await api("POST", "/api/v1/users/" + user.name + "/role", {role});
+        setMessage("権限を変更しました。");
+      } catch (e) { setMessage(describe(e.message)); }
+      await load();
+    });
+    cancel.addEventListener("click", load);
+    return holder;
+  }
+
   function descriptionForm(user) {
     const input = el("input", {value: user.description || "", maxlength: 80});
     const save = text("button", "保存する", {className: "description-save"});
@@ -121,9 +153,12 @@
   }
 
   function render(data) {
+    const showRole = data.users.some((user) => user.role);
+    const label = document.getElementById("create-role-label");
+    if (label) label.hidden = !showRole;
     usersBox.textContent = "";
     const table = el("table");
-    table.appendChild(el("tr", {}, ["ユーザー名", "説明", "更新", "操作"].map((label) => text("th", label))));
+    table.appendChild(el("tr", {}, ["ユーザー名", "権限", "説明", "更新", "操作"].map((label) => text("th", label))));
     for (const user of data.users) {
       const actions = el("td");
       const cell = el("td", {}, [text("span", user.name)]);
@@ -143,11 +178,13 @@
         menu.hidden = false;
         for (const button of [
           item("パスワード再発行", "reset", () => actions.appendChild(resetForm(user))),
+          ...(user.role ? [item("権限を変更", "role", () => actions.appendChild(roleForm(user)))] : []),
           item("説明を編集", "edit", () => actions.appendChild(descriptionForm(user))),
           item(user.locked ? "ロックを解除" : "ロックする", "lock-toggle", () => toggleLock(user)),
           item("削除", "danger delete", () => remove(user))]) menu.appendChild(button);
       });
-      table.appendChild(el("tr", {}, [cell, text("td", user.description || "-"),
+      table.appendChild(el("tr", {}, [cell, text("td", user.role ? ROLE[user.role] : "-"),
+        text("td", user.description || "-"),
         text("td", user.updated || "-"), actions]));
     }
     usersBox.appendChild(table);
@@ -165,6 +202,9 @@
     const password = document.getElementById("create-password");
     const body = {name: name.value.trim(), description: description.value};
     if (password.value) body.password = password.value;
+    const role = document.getElementById("create-role");
+    const roleLabel = document.getElementById("create-role-label");
+    if (role && roleLabel && !roleLabel.hidden) body.role = role.value;
     try {
       const result = await api("POST", "/api/v1/users", body);
       if (result.password) showSecret(result.name, result.password);

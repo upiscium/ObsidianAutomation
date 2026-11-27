@@ -497,3 +497,85 @@ def test_lock_is_a_toggle_that_blocks_delete_until_unlocked_and_leaves_the_users
     with pytest.raises(UserAdminError) as exc:
         store.set_lock("ghost-user", True)
     assert exc.value.code == "user_not_found"
+
+
+@pytest.fixture
+def role_store(tmp_path, fake_bin):
+    users = tmp_path / "users"
+    users.write_text("")
+    (tmp_path / "authz").mkdir()
+    store = UserStore(users, tmp_path / "state", hash_tool=fake_bin, clock=Clock(),
+                      groups=tmp_path / "authz" / "groups")
+    for name in ("vault-oa", "reader-one"):
+        store.create(name, None, "")
+    return store
+
+
+def test_roles_are_written_to_the_group_file_and_off_means_in_no_group(role_store):
+    store = role_store
+    groups = store.groups
+    by_name = lambda: {u["name"]: u["role"] for u in store.list_users()}  # noqa: E731
+    assert by_name() == {"reader-one": "rw", "vault-oa": "rw"}  # the default is Read & Write
+    store.set_role("reader-one", "ro")
+    store.create("blind-box", None, "", "wo")
+    store.set_role("vault-oa", "off")
+    assert groups.read_text() == "rw: \nro: reader-one\nwo: blind-box\n"
+    assert by_name() == {"blind-box": "wo", "reader-one": "ro", "vault-oa": "off"}
+    assert oct(stat.S_IMODE(groups.stat().st_mode)) == "0o644"
+    assert not list(groups.parent.glob("*.tmp"))
+    store.set_role("vault-oa", "rw")  # enabling again keeps the password: nothing else changed
+    assert by_name()["vault-oa"] == "rw"
+    for bad in ("admin", "RW", None, 1):
+        with pytest.raises(UserAdminError) as exc:
+            store.set_role("reader-one", bad)
+        assert exc.value.code == "invalid_role"
+    with pytest.raises(UserAdminError) as exc:
+        store.set_role("ghost-user", "ro")
+    assert exc.value.code == "user_not_found"
+    with pytest.raises(UserAdminError):
+        store.create("bad-role", None, "", "root")
+    assert "bad-role" not in by_name()
+
+
+def test_a_deleted_user_leaves_no_role_behind_and_a_failed_write_is_restored(role_store, monkeypatch):
+    store = role_store
+    store.set_role("reader-one", "ro")
+    store.delete("reader-one", "reader-one")
+    assert "reader-one" not in store.groups.read_text()
+    store.create("reader-one", None, "")  # a new user of the same name starts at the default
+    assert {u["name"]: u["role"] for u in store.list_users()}["reader-one"] == "rw"
+    before = store.groups.read_text()
+    real = store._write_atomic
+    calls = []
+
+    def corrupt(path, data):
+        calls.append(1)
+        real(path, b"rw: \n" if len(calls) == 1 else data)  # first write is wrong; the restore is exact
+
+    monkeypatch.setattr(store, "_write_atomic", corrupt)
+    with pytest.raises(UserAdminError) as exc:
+        store.set_role("vault-oa", "ro")
+    assert exc.value.code == "write_failed"
+    assert store.groups.read_text() == before
+    assert list((store.state / "backups").glob("groups-*.bak"))
+
+
+def test_without_a_group_file_roles_do_not_exist(kit):
+    store, _, _ = kit
+    assert all(u["role"] is None for u in store.list_users())
+    with pytest.raises(UserAdminError) as exc:
+        store.set_role("vault-desktop", "ro")
+    assert exc.value.http == 404
+
+
+def test_role_over_http_with_the_audit_trail(api, tmp_path):
+    (tmp_path / "authz").mkdir()
+    api.store.groups = tmp_path / "authz" / "groups"
+    assert api.call("POST", "/api/v1/users", payload={"name": "vault-phone", "role": "ro"})[0] == 200
+    entry = next(u for u in jbody(api.call("GET", "/api/v1/users"))["users"] if u["name"] == "vault-phone")
+    assert entry["role"] == "ro"
+    assert api.call("POST", "/api/v1/users/vault-phone/role", payload={"role": "off"})[0] == 200
+    assert api.call("POST", "/api/v1/users/vault-phone/role", payload={"role": "root"})[0] == 400
+    assert api.call("POST", "/api/v1/users/vault-phone/role", payload={"role": "rw", "x": 1})[0] == 400
+    audit = [json.loads(line) for line in (api.store.state / "audit.log").read_text().splitlines()]
+    assert "role_off" in {a["action"] for a in audit}
