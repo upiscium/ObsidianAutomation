@@ -15,6 +15,7 @@ import uuid
 from pathlib import Path
 from typing import Callable, Mapping
 
+from .job_health import job_health
 from .phase_schedule import (
     StaleScheduleError, due_after_tick, due_for_update, missed,
     parse_update, schedule_status, upgrade_settings,
@@ -201,6 +202,11 @@ class CorePromotionJob:
             ).fetchone()
             return {"version": 1, "job": "core_promotion", "settings": self.settings(),
                     "last_run": self.run(last[0]) if last else None}
+
+    def health(self) -> dict:
+        """Consecutive-failure streak for the panel banner (counts and times only)."""
+        return job_health(self.db, self._lock, service="core_promotion", success=("promoted", "up_to_date"),
+                          failure=("failed", "conflict", "live_drift", "indeterminate"), threshold=3)
 
     def submit(self, request_id: str, trigger: str = "manual"):
         if (type(request_id) is not str or not _ID.fullmatch(request_id)

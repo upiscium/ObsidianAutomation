@@ -24,6 +24,7 @@ from .snapshot_setup import GITEA_FIELDS, validate, validate_nextcloud
 from .connection_fields import FieldDrafts, FieldError
 from .chat_import_service import ImportRefused
 from .knowledge_service import KnowledgeRefused
+from .job_health import aggregate
 from .phase_schedule import StaleScheduleError, preview as phase_preview
 from .vault_root_activation import reset_pin_after_connection_save
 
@@ -44,6 +45,8 @@ _ASSETS = {
     "/static/chat-import.js": ("chat-import.js", "text/javascript; charset=utf-8"),
     # Renders its panel only when --knowledge-ui enabled the API.
     "/static/knowledge.js": ("knowledge.js", "text/javascript; charset=utf-8"),
+    # Failure banner: renders only when a service has failed repeatedly.
+    "/static/health.js": ("health.js", "text/javascript; charset=utf-8"),
 }
 
 
@@ -298,6 +301,15 @@ class Handler(BaseHTTPRequestHandler):
                 service = self.server.chat_import
                 self._send(200 if service else 503,
                            service.status() if service else {"error": "unavailable"})
+                return
+            if self.path == "/api/v1/health":
+                server = self.server
+                self._send(200, aggregate((
+                    ("snapshot", getattr(server.snapshot_job, "health", None)),
+                    ("daily", getattr(server.daily_job, "health", None)),
+                    ("core_promotion", getattr(server.core_promotion_job, "health", None)),
+                    ("knowledge", getattr(server.knowledge, "health", None)),
+                )))
                 return
             if self.path == "/api/v1/knowledge":
                 service = self.server.knowledge

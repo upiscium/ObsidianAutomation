@@ -64,3 +64,9 @@ footer{margin-top:32px;font-size:12px;color:#97a1b2}
 /* Anchored-schedule fields belong to the existing three Job panels. */
 .schedule-preview{display:flex;flex-direction:column;gap:.4rem}
 .schedule-preview .muted{margin:0;overflow-wrap:anywhere}
+
+/* Failure banner: shown only while a service keeps failing (health.js). */
+.health-alert{margin:0 0 1rem;padding:.7rem .9rem;border-left:4px solid #e0605a;
+  background:rgba(224,96,90,.12);border-radius:4px}
+.health-alert p{margin:.2rem 0;overflow-wrap:anywhere}
+.health-alert .health-title{font-weight:600}
