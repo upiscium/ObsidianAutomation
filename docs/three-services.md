@@ -337,3 +337,15 @@ one addition). The deleted content stays in the previous commit, because the bac
 a Git history. More than that is refused as before: it is what a truncated WebDAV
 listing looks like, and no bypass exists for it. The accepted count (never a path) is
 printed to the journal as `snapshot_deletions accepted=N tracked=M`.
+
+## Failure banner
+
+A backup that stops silently is worse than one that fails loudly (the Snapshot once
+stayed frozen for 17 hours unnoticed). `GET /api/v1/health` reports, for every enabled
+service, how many of its latest finished runs failed in a row, and the page shows a red
+banner at the top while a service has reached its threshold: Snapshot 3, Core Promotion
+3, knowledge proposals 3 (a skipped slot is neutral) and GitHub Daily 2 (it runs once a
+day). A success clears it. The banner lists the service, the streak, when the failures
+began and the last success; it carries no paths, error text or note names. It is
+advisory only: it changes no state and sends no notification (a push channel is a
+separate decision).

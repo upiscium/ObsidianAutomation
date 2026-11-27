@@ -30,7 +30,7 @@ jobs:
           node --check src/obsidian_automation/three_services/app.js
           node --check src/obsidian_automation/three_services/chat-import.js
           node --check src/obsidian_automation/webdav_admin/app.js
-          node --test tests/three_services_ui.test.cjs tests/chat_import_ui.test.cjs tests/knowledge_ui.test.cjs tests/webdav_admin_ui.test.cjs
+          node --test tests/three_services_ui.test.cjs tests/chat_import_ui.test.cjs tests/knowledge_ui.test.cjs tests/health_ui.test.cjs tests/webdav_admin_ui.test.cjs
       - name: Install the real htpasswd (the user-admin tests also run against it)
         run: command -v htpasswd || (sudo apt-get update -qq && sudo apt-get install -y -qq apache2-utils)
       - name: Run offline synthetic and HTTP tests
