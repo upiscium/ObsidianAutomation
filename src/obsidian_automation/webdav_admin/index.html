@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WebDAV ユーザー管理</title>
+<link rel="stylesheet" href="/static/webdav-admin.css">
+<script defer src="/static/webdav-admin.js"></script>
+</head>
+<body>
+<main>
+  <h1>WebDAV ユーザー管理</h1>
+  <p class="muted">ここで作るユーザーは、Vault 全体を読み書きできます。端末ごとに別のユーザーを作ってください。</p>
+  <p id="message" class="feedback" role="status"></p>
+  <section id="secret" hidden></section>
+  <section>
+    <h2>ユーザー</h2>
+    <div id="users"></div>
+  </section>
+  <section>
+    <h2>追加</h2>
+    <form id="create">
+      <label>ユーザー名（英小文字で始まり、英数字と . _ - が使える。3〜32 文字）
+        <input id="create-name" autocomplete="off" required>
+      </label>
+      <label>説明（任意、80 文字まで）
+        <input id="create-description" autocomplete="off" maxlength="80">
+      </label>
+      <label>パスワード（空欄なら自動生成。指定する場合は 12 文字以上）
+        <input id="create-password" type="password" autocomplete="new-password">
+      </label>
+      <button id="create-submit" type="submit">追加する</button>
+    </form>
+  </section>
+</main>
+</body>
+</html>
