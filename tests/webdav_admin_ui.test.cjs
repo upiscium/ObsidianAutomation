@@ -29,8 +29,8 @@ function allText(root) { return [root.textContent, ...root.children.map(allText)
 const tick = async () => { for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r)); };
 
 const users = [
-  {name: "vault-desktop", description: "デスクトップ用", protected: false, created: "2026-11-24T00:00:00Z", updated: "2026-11-24T00:00:00Z"},
-  {name: "vault-oa", description: "", protected: true, created: null, updated: null}
+  {name: "vault-desktop", description: "デスクトップ用", locked: false, created: "2026-11-24T00:00:00Z", updated: "2026-11-24T00:00:00Z"},
+  {name: "vault-oa", description: "", locked: true, created: null, updated: null}
 ];
 
 async function mount({post, confirmAnswer = true, list = users} = {}) {
@@ -44,7 +44,7 @@ async function mount({post, confirmAnswer = true, list = users} = {}) {
     calls.fetch.push({url: String(url), options});
     if (url === "/api/v1/session") return {ok: true, async json() { return {csrf: "tok"}; }};
     if (url === "/api/v1/users" && !options.method || options.method === "GET") {
-      return {ok: true, async json() { return {users: list, protected: ["nc-vault-ui", "vault-oa"]}; }};
+      return {ok: true, async json() { return {users: list}; }};
     }
     return post ? post(url, options) : {ok: true, async json() { return {name: "x", password: null}; }};
   };
@@ -60,14 +60,20 @@ async function mount({post, confirmAnswer = true, list = users} = {}) {
 }
 const posts = (calls) => calls.fetch.filter((c) => c.options.method === "POST" && c.url !== "/api/v1/session");
 const button = (root, label) => findAll(root, (n) => n.tag === "button" && n.textContent === label)[0];
+// operations sit in a three-dot menu: open it for a row (0 = first user), then pick the item
+const kebabs = (root) => findAll(root, (n) => n.tag === "button" && n.textContent === "⋮");
+function menuItem(root, label, row = 0) {
+  kebabs(root)[row].listeners.click();
+  return button(root, label);
+}
 
-test("the list shows users with a protected badge and never a hash or password", async () => {
+test("the list shows users with a lock icon on locked users and never a hash or password", async () => {
   const {ids} = await mount();
   const text = allText(ids.users);
   assert.match(text, /vault-desktop/);
   assert.match(text, /デスクトップ用/);
   assert.match(text, /vault-oa/);
-  assert.equal(findAll(ids.users, (n) => n.textContent === " 保護").length, 1);
+  assert.equal(findAll(ids.users, (n) => n.textContent === " 🔒").length, 1);
   assert.doesNotMatch(text, /\$2y|\$fake|password/i);
 });
 
@@ -107,13 +113,13 @@ test("a typed password is sent but never shown back", async () => {
 
 test("deleting asks for confirmation naming the effect; cancelling sends nothing", async () => {
   const declined = await mount({confirmAnswer: false});
-  button(declined.ids.users, "削除").listeners.click();
+  menuItem(declined.ids.users, "削除").listeners.click();
   await tick();
   assert.equal(posts(declined.calls).length, 0);
   assert.match(declined.calls.confirm[0], /すぐに接続できなくなります/);
 
   const accepted = await mount();
-  button(accepted.ids.users, "削除").listeners.click();
+  menuItem(accepted.ids.users, "削除").listeners.click();
   await tick();
   const sent = posts(accepted.calls)[0];
   assert.equal(sent.url, "/api/v1/users/vault-desktop/delete");
@@ -123,7 +129,7 @@ test("deleting asks for confirmation naming the effect; cancelling sends nothing
 test("resetting a password auto-generates by default and shows it once", async () => {
   const post = async () => ({ok: true, async json() { return {name: "vault-desktop", password: FRESH}; }});
   const {ids, calls} = await mount({post});
-  button(ids.users, "パスワード再発行").listeners.click();
+  menuItem(ids.users, "パスワード再発行").listeners.click();
   button(ids.users, "再発行する").listeners.click();
   await tick();
   const sent = posts(calls)[0];
@@ -134,7 +140,7 @@ test("resetting a password auto-generates by default and shows it once", async (
 
 test("editing the description posts only the description", async () => {
   const {ids, calls} = await mount();
-  button(ids.users, "説明を編集").listeners.click();
+  menuItem(ids.users, "説明を編集").listeners.click();
   const input = findAll(ids.users, (n) => n.tag === "input")[0];
   input.value = "新しい説明";
   button(ids.users, "保存する").listeners.click();
@@ -152,4 +158,25 @@ test("server error codes are shown in Japanese", async () => {
   await tick();
   assert.equal(ids.message.textContent, "同じ名前のユーザーがすでにあります");
   assert.equal(ids.secret.hidden, true);
+});
+
+test("operations sit behind a three-dot button; locking toggles and a locked user cannot be deleted", async () => {
+  const {ids, calls} = await mount();
+  assert.equal(findAll(ids.users, (n) => n.tag === "button" && n.textContent === "削除").length, 0);
+  assert.equal(kebabs(ids.users).length, 2);
+  // a locked user: delete is refused in the page, before any request or confirmation
+  menuItem(ids.users, "削除", 1).listeners.click();
+  await tick();
+  assert.equal(posts(calls).length, 0);
+  assert.equal(calls.confirm.length, 0);
+  assert.match(ids.message.textContent, /ロックを解除してから/);
+  // the lock button is a toggle: its label follows the state, and it posts the opposite state
+  menuItem(ids.users, "ロックを解除", 1).listeners.click();
+  await tick();
+  const unlock = posts(calls)[0];
+  assert.equal(unlock.url, "/api/v1/users/vault-oa/lock");
+  assert.deepEqual(JSON.parse(unlock.options.body), {locked: false});
+  menuItem(ids.users, "ロックする", 0).listeners.click();
+  await tick();
+  assert.deepEqual(JSON.parse(posts(calls)[1].options.body), {locked: true});
 });
