@@ -55,17 +55,22 @@ protected list. No console script is added.
 1. User and directories: `useradd --system --no-create-home --shell /usr/sbin/nologin davadmin`;
    `install -d -m 0750 -o root -g davadmin /etc/webdav-user-admin`.
 2. The users file: `chown davadmin:www-data /opt/obsidian-webdav/secrets/htpasswd` (mode stays
-   `0640`, so the Apache container still reads it through the group) and
-   `chmod 0711 /opt/obsidian-webdav/secrets` (so `davadmin` can reach that one file; the other
-   files in the directory stay unreadable to it).
-3. Code: `python3 -m venv /opt/webdav-user-admin/venv` and
-   `pip install --no-deps --no-index <obsidian_automation wheel>`.
+   `0640`, so the Apache container still reads it through the group). So that `davadmin` can
+   reach that one file by name, give it **traverse-only** access to the two directories:
+   `chgrp davadmin /opt/obsidian-webdav /opt/obsidian-webdav/secrets` and
+   `chmod 0710` on both (group `--x`: no listing; the other files, e.g. `compose.yaml`, the
+   password files, stay unreadable to it). `setfacl` was not installed on the VM; do not widen
+   the modes to `0711`.
+3. Code: the VM has no `python3-venv`, so extract the wheel (it is plain Python) instead:
+   `python3 -c "import zipfile; zipfile.ZipFile('<wheel>').extractall('/opt/webdav-user-admin/lib')"`
+   and run with `PYTHONPATH=/opt/webdav-user-admin/lib /usr/bin/python3 -m …`.
 4. Administrator password: generate one, store it on the operator machine (0600), and write the
    hash: `printf %s "$PW" | htpasswd -i -B -c /etc/webdav-user-admin/admin.htpasswd admin` with
    mode `0640 root:davadmin`.
 5. Service: `configs/webdav-user-admin.service.example` to
    `/etc/systemd/system/webdav-user-admin.service`, then `systemd-analyze verify`,
-   `daemon-reload`, `enable --now`.
+   `daemon-reload`, `enable --now`. The deployed unit also has `--allow-ip 10.12.2.9` (the VM
+   itself, so a local check can reach the service); the example file shows the default list.
 6. NPM (internal instance): a proxy host `vault-admin.arc.upiscium.dev` to
    `http://10.12.2.9:18092`, HTTPS forced, **no NPM access list and no NPM Basic auth** (the
    page does its own Basic login), plus the internal DNS record.
@@ -75,3 +80,7 @@ protected list. No console script is added.
 Rollback: `systemctl disable --now webdav-user-admin`, restore the users file ownership
 (`chown root:www-data`, mode `0640`) and the directory mode (`0700`), remove the NPM host.
 The backups under `/var/lib/webdav-user-admin/backups/` can be copied back in place.
+
+Deployed 2026-11-27: `/opt/webdav-user-admin/lib`, unit `webdav-user-admin.service`, state
+`/var/lib/webdav-user-admin`, admin hash `/etc/webdav-user-admin/admin.htpasswd`, and the
+pre-deploy copy `/opt/obsidian-webdav/secrets/htpasswd.bak-pre-useradmin-20261127`.
