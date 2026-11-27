@@ -24,7 +24,7 @@ dev = ["pytest>=8"]
 where = ["src"]
 
 [tool.setuptools.package-data]
-obsidian_automation = ["three_services/*.html", "three_services/*.js", "three_services/*.css", "three_services/*.toml"]
+obsidian_automation = ["three_services/*.html", "three_services/*.js", "three_services/*.css", "three_services/*.toml", "webdav_admin/*.html", "webdav_admin/*.js", "webdav_admin/*.css"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
