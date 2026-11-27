@@ -57,3 +57,6 @@ button.kebab{font-size:1.3rem;line-height:1;padding:.2rem .7rem;clip-path:none;l
 .menu[hidden]{display:none}
 .menu button{text-align:left;margin:0;clip-path:none;border-color:transparent;background:transparent}
 .menu button:hover{background:rgba(255,106,19,.14);border-color:var(--nerv)}
+select{display:block;width:100%;box-sizing:border-box;padding:.5rem;margin-top:.25rem;font:inherit;
+  background:#070916;color:var(--text);border:1px solid #4a3a60;border-left:3px solid var(--eva);border-radius:0}
+.row-form select{display:inline-block;width:auto;min-width:11rem}

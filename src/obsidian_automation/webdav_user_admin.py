@@ -40,9 +40,14 @@ from importlib.resources import files
 from pathlib import Path
 
 NAME = re.compile(r"[a-z][a-z0-9._-]{2,31}\Z")
-_USER_ROUTE = re.compile(r"/api/v1/users/([a-z][a-z0-9._-]{2,31})/(password|description|lock|delete)\Z")
+_USER_ROUTE = re.compile(r"/api/v1/users/([a-z][a-z0-9._-]{2,31})/(password|description|lock|role|delete)\Z")
 MIN_PASSWORD, MAX_PASSWORD = 12, 128
 MAX_DESCRIPTION = 80
+# Access levels. Apache reads them from a group file (one line per group); a user in
+# no group is disabled. The password stays, so enabling again changes no device.
+ROLES = ("rw", "ro", "wo", "off")
+DEFAULT_ROLE = "rw"
+_GROUPED = ("rw", "ro", "wo")
 BACKUPS_KEPT = 30
 DEFAULT_PROTECTED = ("vault-oa", "nc-vault-ui")
 MAX_BODY = 4096
@@ -86,8 +91,9 @@ class UserStore:
     """The htpasswd file plus a small private metadata file (descriptions, times)."""
 
     def __init__(self, htpasswd: Path, state: Path, *, protected=DEFAULT_PROTECTED,
-                 hash_tool: str = "htpasswd", clock=time.time, cost: int = 10):
-        self.htpasswd, self.state = htpasswd, state
+                 hash_tool: str = "htpasswd", clock=time.time, cost: int = 10,
+                 groups: Path | None = None):
+        self.htpasswd, self.state, self.groups = htpasswd, state, groups
         self.protected = frozenset(protected)
         self.bin, self.clock, self.cost = hash_tool, clock, cost
         state.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -151,6 +157,94 @@ class UserStore:
             out.flush()
             os.fsync(out.fileno())
 
+    # ------------------------------------------------------------ access levels
+
+    def _roles(self) -> dict[str, str]:
+        """name -> rw / ro / wo for users in a group; anyone else is disabled."""
+        try:
+            text = self.groups.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return {}
+        except OSError:
+            raise UserAdminError("groups_unreadable", 503) from None
+        found: dict[str, str] = {}
+        for line in text.splitlines():
+            group, sep, members = line.partition(":")
+            if sep and group.strip() in _GROUPED:
+                for member in members.split():
+                    found[member] = group.strip()
+        return found
+
+    def _write_atomic(self, path: Path, data: bytes) -> None:
+        # The directory is bind-mounted into Apache, so a rename is seen at once and a
+        # reader never meets a half-written file.
+        temp = path.with_name(path.name + ".tmp")
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        with os.fdopen(fd, "wb") as out:
+            out.write(data)
+            out.flush()
+            os.fsync(out.fileno())
+        os.chmod(temp, 0o644)
+        os.replace(temp, path)
+
+    def _store_roles(self, roles: dict[str, str]) -> None:
+        """Write the group file with a backup and a read-back; restore on a mismatch."""
+        previous = None
+        try:
+            previous = self.groups.read_bytes()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            raise UserAdminError("groups_unreadable", 503) from None
+        if previous is not None:
+            self._seq += 1
+            stamp = datetime.fromtimestamp(self.clock(), timezone.utc).strftime("%Y%m%d-%H%M%S")
+            try:
+                fd = os.open(self.state / "backups" / f"groups-{stamp}-{self._seq:04}.bak",
+                             os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "wb") as out:
+                    out.write(previous)
+            except OSError:
+                raise UserAdminError("backup_failed", 503) from None
+            for stale in sorted((self.state / "backups").glob("groups-*.bak"))[:-BACKUPS_KEPT]:
+                try:
+                    stale.unlink()
+                except OSError:
+                    pass
+        lines = [group + ": " + " ".join(sorted(n for n, r in roles.items() if r == group))
+                 for group in _GROUPED]
+        try:
+            self._write_atomic(self.groups, ("\n".join(lines) + "\n").encode("utf-8"))
+            ok = self._roles() == {n: r for n, r in roles.items() if r in _GROUPED}
+        except (OSError, UserAdminError):
+            ok = False
+        if not ok:
+            try:
+                if previous is not None:
+                    self._write_atomic(self.groups, previous)
+            except OSError:
+                pass
+            raise UserAdminError("write_failed", 500)
+
+    def _set_role(self, name: str, role: str) -> None:
+        roles = self._roles()
+        if role == "off":
+            roles.pop(name, None)
+        else:
+            roles[name] = role
+        self._store_roles(roles)
+
+    def set_role(self, name: str, role: object) -> dict:
+        if self.groups is None:
+            raise UserAdminError("not_found", 404)
+        if role not in ROLES:
+            raise UserAdminError("invalid_role")
+        with self._lock:
+            if name not in self.names():
+                raise UserAdminError("user_not_found", 404)
+            self._set_role(name, role)
+        return {"name": name, "role": role}
+
     def _meta(self) -> dict:
         path = self.state / "users.json"
         try:
@@ -190,17 +284,23 @@ class UserStore:
     def list_users(self) -> list[dict]:
         with self._lock:
             names, meta = self.names(), self._meta()
+            roles = self._roles() if self.groups is not None else None
         out = []
         for name in sorted(names):
             entry = meta.get(name, {})
             out.append({"name": name, "description": entry.get("description", ""),
+                        "role": None if roles is None else roles.get(name, "off"),
                         "locked": bool(entry.get("locked", name in self.protected)),
                         "created": entry.get("created"), "updated": entry.get("updated")})
         return out
 
-    def create(self, name: object, password: object, description: object) -> dict:
+    def create(self, name: object, password: object, description: object,
+               role: object = None) -> dict:
         if type(name) is not str or not NAME.match(name):
             raise UserAdminError("invalid_name")
+        role = DEFAULT_ROLE if role is None else role
+        if role not in ROLES:
+            raise UserAdminError("invalid_role")
         text = _valid_description("" if description is None else description)
         generated = password is None
         secret = secrets.token_urlsafe(18) if generated else _valid_password(password)
@@ -212,6 +312,8 @@ class UserStore:
             now = _utc(self.clock)
             meta[name] = {"description": text, "created": now, "updated": now}
             self._save_meta(meta)
+            if self.groups is not None:
+                self._set_role(name, role)  # always explicit, so a stale entry never leaks in
         return {"name": name, "password": secret if generated else None}
 
     def set_password(self, name: str, password: object) -> dict:
@@ -275,6 +377,8 @@ class UserStore:
             meta = self._meta()
             meta.pop(name, None)
             self._save_meta(meta)
+            if self.groups is not None:
+                self._set_role(name, "off")
         return {"name": name}
 
 
@@ -489,11 +593,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             payload = self._body()
             if target is None:
-                if set(payload) - {"name", "password", "description"} or "name" not in payload:
+                if set(payload) - {"name", "password", "description", "role"} or "name" not in payload:
                     raise UserAdminError("invalid_request")
                 user = payload["name"] if type(payload["name"]) is str else None
                 result = store.create(payload["name"], payload.get("password"),
-                                      payload.get("description"))
+                                      payload.get("description"), payload.get("role"))
             else:
                 user, action = target.group(1), target.group(2)
                 if action == "password":
@@ -506,6 +610,11 @@ class Handler(BaseHTTPRequestHandler):
                         raise UserAdminError("invalid_request")
                     result = store.set_description(user, payload["description"])
                     action = "edit_description"
+                elif action == "role":
+                    if set(payload) != {"role"}:
+                        raise UserAdminError("invalid_request")
+                    result = store.set_role(user, payload["role"])
+                    action = "role_" + result["role"]
                 elif action == "lock":
                     if set(payload) != {"locked"}:
                         raise UserAdminError("invalid_request")
@@ -559,14 +668,17 @@ def main(argv=None) -> int:
                         help="Client address allowed to connect (repeatable); default 127.0.0.1")
     parser.add_argument("--protect", action="append", default=None,
                         help="User that starts out locked, i.e. cannot be deleted until unlocked (repeatable); default: " + ", ".join(DEFAULT_PROTECTED))
+    parser.add_argument("--groups", type=Path, default=None,
+                        help="Apache group file (rw/ro/wo lines) the page manages; "
+                             "enables the access levels; must be in a directory shared with Apache")
     parser.add_argument("--hash-tool", default="htpasswd")
     args = parser.parse_args(argv)
-    for path in (args.htpasswd, args.admin_htpasswd, args.state):
+    for path in (args.htpasswd, args.admin_htpasswd, args.state, *([args.groups] if args.groups else [])):
         if not path.is_absolute():
             parser.error("paths must be absolute")
     store = UserStore(args.htpasswd, args.state,
                       protected=args.protect if args.protect is not None else DEFAULT_PROTECTED,
-                      hash_tool=args.hash_tool)
+                      hash_tool=args.hash_tool, groups=args.groups)
     auth = AdminAuth(args.admin_htpasswd, args.admin_user, hash_tool=args.hash_tool)
     try:
         server = make_server(store=store, auth=auth, bind=args.bind, port=args.port,

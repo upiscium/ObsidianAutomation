@@ -3,8 +3,8 @@
 Issue #631. A small page on the WebDAV VM to **create, delete and edit** the Basic-auth
 users of the Apache that serves the Vault. It does nothing else.
 
-Every valid user can read and write the **whole Vault** (Apache uses `Require valid-user`;
-there are no per-user rights). Use one account per device or purpose, so a lost device is
+Every valid user reaches the **whole Vault**; the only per-user setting is the access level below
+(without `--groups` there is none and every valid user can read and write). Use one account per device or purpose, so a lost device is
 revoked by deleting just its user.
 
 ## What it does
@@ -14,6 +14,7 @@ revoked by deleting just its user.
 | Add | Creates a user (name `^[a-z][a-z0-9._-]{2,31}$`) with a generated password (shown **once**) or a typed one (12-128 characters, no `:`), and an optional description (80 characters). |
 | Reset password | New generated or typed password. Update the devices that use the account afterwards. |
 | Edit description | Metadata only (kept in `users.json`); the users file is untouched. |
+| Access level | Read & Write / Read Only / Write Only / Disable, chosen on creation (default Read & Write) and changed from the menu (a confirmation names the effect). Stored as Apache group lines in the `--groups` file; **Disable = in no group** (the password stays, so enabling again changes no device). |
 | Lock / unlock | A toggle (🔒 in the list). A locked user cannot be deleted until it is unlocked. Metadata only (`users.json`). The `--protect` names (default `vault-oa`, `nc-vault-ui`) start out locked; once toggled, the stored state wins. |
 | Delete | Needs a confirmation. Refused for a locked user; the last remaining user can never be deleted. |
 
@@ -85,3 +86,30 @@ The backups under `/var/lib/webdav-user-admin/backups/` can be copied back in pl
 Deployed 2026-11-27: `/opt/webdav-user-admin/lib`, unit `webdav-user-admin.service`, state
 `/var/lib/webdav-user-admin`, admin hash `/etc/webdav-user-admin/admin.htpasswd`, and the
 pre-deploy copy `/opt/obsidian-webdav/secrets/htpasswd.bak-pre-useradmin-20261127`.
+
+## Access levels (`--groups`)
+
+| Level | Allowed methods | Typical use |
+| --- | --- | --- |
+| Read & Write | everything | a synced device |
+| Read Only | `GET HEAD OPTIONS PROPFIND` | a viewer |
+| Write Only | `PUT MKCOL DELETE MOVE COPY PROPPATCH LOCK UNLOCK OPTIONS` | a blind drop box. It cannot read or list, so Obsidian/Nextcloud sync does not work with it |
+| Disable | none (`401`) | a paused device |
+
+Apache side: `configs/apache-webdav-roles.conf.example` (needs `mod_authz_groupfile`). The group
+file lives in its **own directory**, mounted into the container (for example
+`/opt/obsidian-webdav/authz` → `/run/authz`, read-only), because the page replaces the file by
+an atomic rename; the directory is owned by `davadmin`, the file is `0644`. Before every change
+the file is copied to `<state>/backups/groups-*.bak` and read back; a mismatch restores it.
+
+Switching on (needs the owner's approval; the Apache container is recreated, a few seconds
+without WebDAV):
+
+1. Create the directory and write every existing user into `rw:` first (so nothing changes),
+   then start the page with `--groups <file>`.
+2. Replace the `Require valid-user` block of the Apache config with the example, add the
+   directory mount to `compose.yaml`, check the config with `apachectl -t` in the same image,
+   and recreate the container.
+3. Check one user per level (`GET`, `PUT`, `DELETE`) and a disabled user (`401`).
+
+Rollback: restore the previous Apache config and `compose.yaml`, recreate the container.

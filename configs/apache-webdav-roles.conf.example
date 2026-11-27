@@ -1,0 +1,33 @@
+# Access levels for the Vault WebDAV (Apache 2.4). Replaces the single
+# `Require valid-user` inside <Directory "/vault">. The group file is written by the
+# user-admin page (--groups); a user in no group is disabled (the password stays).
+LoadModule authz_groupfile_module /usr/lib/apache2/modules/mod_authz_groupfile.so
+
+<Directory "/vault">
+    AuthType Basic
+    AuthName "Private Vault WebDAV"
+    AuthBasicProvider file
+    AuthUserFile "/run/secrets/htpasswd"
+    AuthGroupFile "/run/authz/groups"
+    <RequireAll>
+        Require ip 10.12.1.1 127.0.0.1 172.18.0.1
+        <RequireAny>
+            # Read & Write
+            Require group rw
+            # Read Only
+            <RequireAll>
+                Require group ro
+                Require method GET HEAD OPTIONS PROPFIND
+            </RequireAll>
+            # Write Only: send and delete, never read or list
+            <RequireAll>
+                Require group wo
+                Require method PUT MKCOL DELETE MOVE COPY PROPPATCH LOCK UNLOCK OPTIONS
+            </RequireAll>
+        </RequireAny>
+    </RequireAll>
+    AllowOverride None
+    Options None
+    Dav On
+    FileETag Digest
+</Directory>
