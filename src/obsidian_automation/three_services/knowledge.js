@@ -69,12 +69,24 @@
   const message = text("p", "", {id: "knowledge-message", className: "feedback"});
   const statusBox = text("dl", "", {id: "knowledge-status"});
   const scheduleButton = text("button", "", {id: "knowledge-schedule", className: "outline"});
+  const field = (id, label, props) => {
+    const input = el("input", Object.assign({id}, props));
+    return {input, node: el("label", {}, [text("span", label), input])};
+  };
+  const fInterval = field("knowledge-interval", "間隔（分、60以上）", {type: "number", min: 60, step: 1});
+  const fPerDay = field("knowledge-per-day", "1日の上限（件）", {type: "number", min: 1, max: 100, step: 1});
+  const fPending = field("knowledge-pending", "最大の承認待ち件数", {type: "number", min: 1, max: 1000, step: 1});
+  const fAnchor = field("knowledge-anchor", "基準時刻（日本時間。空欄＝オンにした時点から）", {type: "time"});
+  const saveButton = text("button", "設定を保存", {id: "knowledge-save", className: "outline"});
+  const settingsForm = el("div", {id: "knowledge-settings", className: "knowledge-settings"},
+    [fInterval.node, fPerDay.node, fPending.node, fAnchor.node, saveButton]);
   const loadButton = text("button", "会話の一覧を読み込む", {id: "knowledge-load"});
   const listBox = el("div", {id: "knowledge-list"});
   const runsBox = el("div", {id: "knowledge-runs"});
 
   const panel = el("details", {className: "connections", id: "knowledge"}, [
     text("summary", "知識提案（ローカルLLM）"), note, message, statusBox,
+    text("h3", "定期実行の設定"), settingsForm,
     el("div", {className: "actions"}, [scheduleButton]),
     el("div", {className: "actions"}, [loadButton]), listBox,
     text("h3", "直近の実行"), runsBox
@@ -88,6 +100,12 @@
   const setMessage = (value) => { message.textContent = value; };
   const when = (seconds) => (typeof seconds === "number")
     ? new Date(seconds * 1000).toLocaleString("ja-JP") : "-";
+  const pad = (n) => String(n).padStart(2, "0");
+  const clock = (minute) => pad(Math.floor(minute / 60)) + ":" + pad(minute % 60);
+  const parseClock = (value) => {
+    const m = /^(\d{2}):(\d{2})$/.exec(value || "");
+    return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+  };
   function row(label, value) { return [text("dt", label), text("dd", String(value))]; }
 
   function renderStatus(status) {
@@ -99,10 +117,17 @@
     rows.push(...row("間隔 / 1日の上限 / 未承認の上限",
       Math.round(schedule.interval_seconds / 60) + " 分 / " + schedule.max_per_day +
       " 件 / " + schedule.max_pending + " 件"));
+    rows.push(...row("基準時刻（日本時間）", schedule.anchor_minute == null ? "なし（オンにした時点から）" : clock(schedule.anchor_minute)));
     rows.push(...row("今日の提案", schedule.proposed_today + " 件"));
     if (schedule.last_skip) rows.push(...row("直近の見送り", SKIP[schedule.last_skip] || schedule.last_skip));
     statusBox.textContent = "";
     for (const node of rows) statusBox.appendChild(node);
+    if (!settingsForm.dirty) {
+      fInterval.input.value = String(Math.round(schedule.interval_seconds / 60));
+      fPerDay.input.value = String(schedule.max_per_day);
+      fPending.input.value = String(schedule.max_pending);
+      fAnchor.input.value = schedule.anchor_minute == null ? "" : clock(schedule.anchor_minute);
+    }
     scheduleButton.textContent = schedule.enabled ? "定期実行をオフにする" : "定期実行をオンにする";
     scheduleButton.disabled = busy;
     loadButton.disabled = busy;
@@ -171,6 +196,27 @@
     try {
       renderList(await post("/api/v1/knowledge/conversations", {}));
       setMessage("");
+    } catch (e) { setMessage(describe(e.message)); }
+    await refresh();
+  });
+  for (const f of [fInterval, fPerDay, fPending, fAnchor]) {
+    f.input.addEventListener("input", () => { settingsForm.dirty = true; });
+  }
+  saveButton.addEventListener("click", async () => {
+    const body = {
+      interval_seconds: Math.round(Number(fInterval.input.value) * 60),
+      max_per_day: Number(fPerDay.input.value),
+      max_pending: Number(fPending.input.value),
+      anchor_minute: parseClock(fAnchor.input.value)
+    };
+    if (!Number.isInteger(body.max_per_day) || !Number.isInteger(body.max_pending) ||
+        !Number.isInteger(body.interval_seconds) || body.interval_seconds < 3600) {
+      setMessage("値を確認してください（間隔は60分以上、上限は整数）"); return;
+    }
+    try {
+      await post("/api/v1/knowledge/settings", body);
+      settingsForm.dirty = false;
+      setMessage("設定を保存しました。");
     } catch (e) { setMessage(describe(e.message)); }
     await refresh();
   });

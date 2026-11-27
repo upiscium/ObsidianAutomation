@@ -70,3 +70,88 @@ footer{margin-top:32px;font-size:12px;color:#97a1b2}
   background:rgba(224,96,90,.12);border-radius:4px}
 .health-alert p{margin:.2rem 0;overflow-wrap:anywhere}
 .health-alert .health-title{font-weight:600}
+
+
+/* ---- Theme: starry night and red spider lily, in an Evangelion (NERV) manner. Dark only. ----
+   The imagery is drawn here (CSS gradients and one inline SVG); no external assets. */
+:root{
+  --bg:#05060d;--panel:#0b0d1a;--panel-2:#10132a;--line:#3a2a4a;
+  --nerv:#ff6a13;--lily:#d1122e;--eva:#8b5cf6;--text:#ece8f2;--dim:#a79fb8;
+  --serif:"Hiragino Mincho ProN","Yu Mincho","Noto Serif JP","Source Han Serif JP","MS PMincho",serif;
+  --mono:ui-monospace,"SF Mono","Cascadia Mono",Menlo,monospace;
+  background:var(--bg);color:var(--text);
+}
+body{
+  background:
+    radial-gradient(1.2px 1.2px at 7% 12%,#fff 50%,transparent 51%),
+    radial-gradient(1px 1px at 19% 63%,#cfd8ff 50%,transparent 51%),
+    radial-gradient(1.4px 1.4px at 31% 28%,#fff 50%,transparent 51%),
+    radial-gradient(1px 1px at 44% 82%,#ffe9d0 50%,transparent 51%),
+    radial-gradient(1.2px 1.2px at 56% 9%,#cfd8ff 50%,transparent 51%),
+    radial-gradient(1px 1px at 68% 47%,#fff 50%,transparent 51%),
+    radial-gradient(1.5px 1.5px at 79% 21%,#fff 50%,transparent 51%),
+    radial-gradient(1px 1px at 88% 71%,#ffd0c0 50%,transparent 51%),
+    radial-gradient(1.2px 1.2px at 94% 38%,#cfd8ff 50%,transparent 51%),
+    radial-gradient(1px 1px at 62% 92%,#fff 50%,transparent 51%),
+    radial-gradient(ellipse at 85% 0%,rgba(139,92,246,.22),transparent 55%),
+    radial-gradient(ellipse at 0% 100%,rgba(209,18,46,.16),transparent 55%),
+    linear-gradient(#05060d,#0a0716 60%,#12060e);
+  background-size:230px 230px,310px 310px,270px 270px,350px 350px,290px 290px,
+    330px 330px,250px 250px,370px 370px,300px 300px,260px 260px,auto,auto,auto;
+  background-attachment:fixed;min-height:100vh;position:relative;
+}
+body::after{ /* spider lily in the lower-right corner */
+  content:"";position:fixed;right:-70px;bottom:-70px;width:420px;height:420px;
+  background:url("/static/lily.svg") center/contain no-repeat;opacity:.34;pointer-events:none;z-index:0}
+.shell{position:relative;z-index:1}
+h1,h2,h3{font-family:var(--serif);font-weight:800;letter-spacing:.04em}
+h1{color:var(--nerv);text-shadow:0 0 14px rgba(255,106,19,.35)}
+h2{border-left:4px solid var(--lily);padding-left:10px}
+.eyebrow,dt,.status,.field-state,.badge,th{font-family:var(--mono);letter-spacing:.14em}
+.eyebrow{color:var(--nerv)}
+.header{border-bottom:2px solid var(--nerv);padding-bottom:14px;position:relative}
+.header::after{content:"";position:absolute;left:0;bottom:-7px;width:100%;height:3px;
+  background:repeating-linear-gradient(135deg,var(--nerv) 0 8px,transparent 8px 16px);opacity:.55}
+.muted,dt{color:var(--dim)}
+.service,.connections,.notice{
+  background:linear-gradient(160deg,rgba(16,19,42,.92),rgba(11,13,26,.94));
+  border:1px solid var(--line);border-radius:0;position:relative;
+  clip-path:polygon(14px 0,100% 0,100% calc(100% - 14px),calc(100% - 14px) 100%,0 100%,0 14px);
+  box-shadow:inset 0 0 0 1px rgba(255,106,19,.08)}
+.service::before,.connections::before{content:"";position:absolute;left:0;top:0;width:34px;height:3px;
+  background:var(--nerv)}
+.service::after,.connections::after{content:"";position:absolute;right:0;bottom:0;width:34px;height:3px;
+  background:var(--lily)}
+dl{border-color:var(--line)}
+.status{border-radius:0;background:#241a33;color:var(--text);border:1px solid #4a3a60;
+  clip-path:polygon(6px 0,100% 0,calc(100% - 6px) 100%,0 100%);padding:3px 12px}
+.status[data-kind=ok]{background:#0e2a22;color:#7dffc4;border-color:#1f6b52}
+.status[data-kind=error]{background:#3a0d18;color:#ff8da1;border-color:var(--lily)}
+.status[data-kind=running]{background:#251a45;color:#c9b6ff;border-color:var(--eva)}
+.status[data-kind=idle]{background:#33200c;color:#ffc27a;border-color:#8a5a1c}
+input:not([type=checkbox]),select{background:#070916;color:var(--text);border:1px solid #4a3a60;
+  border-radius:0;border-left:3px solid var(--eva)}
+input[type=checkbox]{accent-color:var(--nerv)}
+input:focus,button:focus-visible,summary:focus-visible,select:focus{outline:2px solid var(--nerv);outline-offset:2px}
+button{background:linear-gradient(180deg,#ff7a22,#d4500a);border:1px solid var(--nerv);color:#14060a;
+  border-radius:0;font-weight:800;letter-spacing:.06em;
+  clip-path:polygon(8px 0,100% 0,calc(100% - 8px) 100%,0 100%);padding:9px 20px}
+button:hover:not(:disabled){filter:brightness(1.15)}
+button.outline,button.danger{background:rgba(255,106,19,.06);color:var(--nerv);border-color:var(--nerv)}
+button.danger{color:#ff8da1;border-color:var(--lily)}
+summary{font-family:var(--serif);font-weight:800;color:var(--nerv)}
+table{border-collapse:collapse;width:100%}
+th{color:var(--nerv);font-size:11px;text-align:left;border-bottom:1px solid var(--nerv);padding:6px}
+td{border-bottom:1px solid #241a33;padding:6px;font-size:13px}
+.field-state[data-state="verified"]{color:#7dffc4}
+.field-state[data-state="failed"]{color:#ff8da1}
+.health-alert{border-left-color:var(--lily);background:repeating-linear-gradient(135deg,
+  rgba(209,18,46,.16) 0 10px,rgba(209,18,46,.07) 10px 20px);border-radius:0}
+footer{color:var(--dim)}
+/* knowledge panel: schedule limits */
+.knowledge-settings{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;
+  align-items:end;margin-bottom:14px}
+@media(prefers-reduced-motion:no-preference){
+  h1{animation:nervglow 5s ease-in-out infinite alternate}
+  @keyframes nervglow{from{text-shadow:0 0 8px rgba(255,106,19,.25)}to{text-shadow:0 0 20px rgba(255,106,19,.55)}}}
+@media(max-width:690px){body::after{width:260px;height:260px;right:-60px;bottom:-60px}}

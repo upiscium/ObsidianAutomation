@@ -44,6 +44,7 @@ _ASSETS = {
     # Renders its panel only when --chat-import-ui enabled the API.
     "/static/chat-import.js": ("chat-import.js", "text/javascript; charset=utf-8"),
     # Renders its panel only when --knowledge-ui enabled the API.
+    "/static/lily.svg": ("lily.svg", "image/svg+xml"),
     "/static/knowledge.js": ("knowledge.js", "text/javascript; charset=utf-8"),
     # Failure banner: renders only when a service has failed repeatedly.
     "/static/health.js": ("health.js", "text/javascript; charset=utf-8"),
@@ -174,7 +175,7 @@ class Handler(BaseHTTPRequestHandler):
             ("Content-Length", str(len(body))),
             ("Cache-Control", "no-store"),
             ("Content-Security-Policy",
-             "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
+             "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; "
              "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"),
             ("X-Content-Type-Options", "nosniff"),
             ("X-Frame-Options", "DENY"),
