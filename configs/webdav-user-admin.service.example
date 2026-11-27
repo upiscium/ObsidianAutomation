@@ -9,7 +9,8 @@ User=davadmin
 Group=davadmin
 StateDirectory=webdav-user-admin
 StateDirectoryMode=0700
-ExecStart=/opt/webdav-user-admin/venv/bin/python -m obsidian_automation.webdav_user_admin \
+Environment=PYTHONPATH=/opt/webdav-user-admin/lib
+ExecStart=/usr/bin/python3 -m obsidian_automation.webdav_user_admin \
   --htpasswd /opt/obsidian-webdav/secrets/htpasswd \
   --admin-htpasswd /etc/webdav-user-admin/admin.htpasswd \
   --state /var/lib/webdav-user-admin \
