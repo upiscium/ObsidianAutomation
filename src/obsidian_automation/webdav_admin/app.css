@@ -1,22 +1,52 @@
-:root { color-scheme: dark; }
-body { font-family: system-ui, sans-serif; margin: 0; background: #12151a; color: #e6e9ee; }
-main { max-width: 56rem; margin: 0 auto; padding: 1.5rem 1rem 3rem; }
-h1 { font-size: 1.4rem; } h2 { font-size: 1.1rem; margin-top: 2rem; }
-section { background: #1b1f26; border: 1px solid #2f3742; border-radius: 8px; padding: 1rem; margin-top: 1rem; }
-.muted { color: #a3adba; font-size: .9rem; }
-.feedback { min-height: 1.4rem; font-weight: 600; color: #9cc7ff; }
-table { width: 100%; border-collapse: collapse; }
-th, td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid #2b323c; vertical-align: top; }
-th { font-size: .85rem; color: #a3adba; }
-label { display: block; margin: .6rem 0; font-size: .9rem; }
-input { display: block; width: 100%; box-sizing: border-box; padding: .45rem; margin-top: .25rem; font: inherit;
-        background: #12151a; color: #e6e9ee; border: 1px solid #3a4452; border-radius: 4px; }
-input:focus-visible, button:focus-visible { outline: 2px solid #6aa9ff; outline-offset: 1px; }
-button { font: inherit; padding: .4rem .8rem; margin: .15rem .2rem .15rem 0; cursor: pointer;
-         background: #262d37; color: #e6e9ee; border: 1px solid #3a4452; border-radius: 4px; }
-button:hover { background: #313a46; }
-button.danger { color: #ff9a92; border-color: #5a3a3a; }
-.badge { font-size: .75rem; background: #22385c; color: #bcd6ff; border-radius: 4px; padding: .05rem .4rem; }
-.secret-value { font-family: ui-monospace, monospace; font-size: 1.05rem; background: #3a3217; color: #ffe9a3;
-                padding: .5rem; word-break: break-all; border-radius: 4px; }
-.row-form { margin-top: .4rem; }
+:root{color-scheme:dark;--bg:#05060d;--panel:#0b0d1a;--line:#3a2a4a;--nerv:#ff6a13;--lily:#d1122e;--eva:#8b5cf6;
+  --text:#ece8f2;--dim:#a79fb8;
+  --serif:"Hiragino Mincho ProN","Yu Mincho","Noto Serif JP","Source Han Serif JP","MS PMincho",serif;
+  --mono:ui-monospace,"SF Mono","Cascadia Mono",Menlo,monospace}
+body{font-family:system-ui,"Hiragino Sans","Noto Sans JP",sans-serif;color:var(--text);margin:0;
+  background:
+    radial-gradient(1.2px 1.2px at 7% 12%,#fff 50%,transparent 51%),
+    radial-gradient(1px 1px at 19% 63%,#cfd8ff 50%,transparent 51%),
+    radial-gradient(1.4px 1.4px at 31% 28%,#fff 50%,transparent 51%),
+    radial-gradient(1px 1px at 44% 82%,#ffe9d0 50%,transparent 51%),
+    radial-gradient(1.2px 1.2px at 56% 9%,#cfd8ff 50%,transparent 51%),
+    radial-gradient(1px 1px at 68% 47%,#fff 50%,transparent 51%),
+    radial-gradient(1.5px 1.5px at 79% 21%,#fff 50%,transparent 51%),
+    radial-gradient(1px 1px at 88% 71%,#ffd0c0 50%,transparent 51%),
+    radial-gradient(1.2px 1.2px at 94% 38%,#cfd8ff 50%,transparent 51%),
+    radial-gradient(1px 1px at 62% 92%,#fff 50%,transparent 51%),
+    radial-gradient(ellipse at 85% 0%,rgba(139,92,246,.22),transparent 55%),
+    radial-gradient(ellipse at 0% 100%,rgba(209,18,46,.16),transparent 55%),
+    linear-gradient(#05060d,#0a0716 60%,#12060e);
+  background-size:230px 230px,310px 310px,270px 270px,350px 350px,290px 290px,
+    330px 330px,250px 250px,370px 370px,300px 300px,260px 260px,auto,auto,auto;
+  background-attachment:fixed;min-height:100vh;
+}
+main{max-width:56rem;margin:0 auto;padding:1.5rem 1rem 3rem}
+h1,h2{font-family:var(--serif);font-weight:800;letter-spacing:.04em}
+h1{font-size:1.5rem;color:var(--nerv);text-shadow:0 0 14px rgba(255,106,19,.35);
+  border-bottom:2px solid var(--nerv);padding-bottom:.6rem;margin-bottom:1rem}
+h2{font-size:1.1rem;margin-top:0;border-left:4px solid var(--lily);padding-left:.6rem}
+section{background:linear-gradient(160deg,rgba(16,19,42,.92),rgba(11,13,26,.94));border:1px solid var(--line);
+  padding:1rem 1.2rem;margin-top:1.2rem;position:relative;
+  clip-path:polygon(14px 0,100% 0,100% calc(100% - 14px),calc(100% - 14px) 100%,0 100%,0 14px)}
+section::before{content:"";position:absolute;left:0;top:0;width:34px;height:3px;background:var(--nerv)}
+section::after{content:"";position:absolute;right:0;bottom:0;width:34px;height:3px;background:var(--lily)}
+.muted{color:var(--dim);font-size:.9rem}
+.feedback{min-height:1.4rem;font-weight:700;color:var(--nerv)}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:.45rem .5rem;border-bottom:1px solid #241a33;vertical-align:top}
+th{font-family:var(--mono);font-size:.72rem;letter-spacing:.14em;color:var(--nerv);border-bottom:1px solid var(--nerv)}
+label{display:block;margin:.6rem 0;font-size:.9rem}
+input{display:block;width:100%;box-sizing:border-box;padding:.5rem;margin-top:.25rem;font:inherit;
+  background:#070916;color:var(--text);border:1px solid #4a3a60;border-left:3px solid var(--eva);border-radius:0}
+input:focus-visible,button:focus-visible{outline:2px solid var(--nerv);outline-offset:2px}
+button{font:inherit;font-weight:800;letter-spacing:.06em;padding:.45rem 1rem;margin:.15rem .3rem .15rem 0;cursor:pointer;
+  background:rgba(255,106,19,.06);color:var(--nerv);border:1px solid var(--nerv);border-radius:0;
+  clip-path:polygon(8px 0,100% 0,calc(100% - 8px) 100%,0 100%)}
+button:hover{filter:brightness(1.2);background:rgba(255,106,19,.14)}
+button.danger{color:#ff8da1;border-color:var(--lily);background:rgba(209,18,46,.08)}
+.badge{font-family:var(--mono);font-size:.72rem;letter-spacing:.1em;background:#251a45;color:#c9b6ff;
+  border:1px solid var(--eva);padding:.05rem .45rem}
+.secret-value{font-family:var(--mono);font-size:1.05rem;background:#33200c;color:#ffc27a;
+  border:1px solid #8a5a1c;padding:.5rem;word-break:break-all}
+.row-form{margin-top:.4rem}
