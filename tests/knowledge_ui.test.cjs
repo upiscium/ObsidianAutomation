@@ -189,3 +189,29 @@ test("server errors are shown in Japanese", async () => {
   await tick();
   assert.equal(find(panel, "knowledge-message").textContent, "別の提案を実行中です");
 });
+
+test("the limits form shows current values and saves them in one settings post", async () => {
+  const sent = [];
+  const post = async (url, options) => {
+    sent.push([url, JSON.parse(options.body)]);
+    return {ok: true, async json() { return {}; }};
+  };
+  const {panel} = await mount({status: enabled({schedule: {anchor_minute: 570, max_per_day: 5}}), post});
+  assert.equal(find(panel, "knowledge-interval").value, "60");
+  assert.equal(find(panel, "knowledge-per-day").value, "5");
+  assert.equal(find(panel, "knowledge-pending").value, "10");
+  assert.equal(find(panel, "knowledge-anchor").value, "09:30");
+  assert.match(allText(find(panel, "knowledge-status")), /基準時刻（日本時間）\|09:30/);
+  find(panel, "knowledge-interval").value = "120";
+  find(panel, "knowledge-per-day").value = "8";
+  find(panel, "knowledge-pending").value = "25";
+  find(panel, "knowledge-anchor").value = "";
+  find(panel, "knowledge-save").listeners.click();
+  await tick();
+  assert.deepEqual(sent, [["/api/v1/knowledge/settings",
+    {interval_seconds: 7200, max_per_day: 8, max_pending: 25, anchor_minute: null}]]);
+  find(panel, "knowledge-interval").value = "30";
+  find(panel, "knowledge-save").listeners.click();
+  await tick();
+  assert.equal(sent.length, 1);  // below one hour: refused before sending
+});

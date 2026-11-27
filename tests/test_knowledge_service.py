@@ -439,3 +439,31 @@ def test_changing_the_model_does_not_make_proposed_conversations_new_again(env):
     assert len(env.llm.calls) == 2  # the manual run, then one scheduled run for the new conversation only
     assert "qqfirst" in json.dumps(env.llm.calls[0])
     assert "qqsecond" in json.dumps(env.llm.calls[1]) and "qqfirst" not in json.dumps(env.llm.calls[1])
+
+
+def test_limits_and_base_time_are_editable_persist_and_validate(env):
+    from obsidian_automation.knowledge_service import KnowledgeRefused, KnowledgeService
+    svc = env.service
+    for bad in ({}, {"x": 1}, {"max_per_day": 0}, {"max_pending": 5000}, {"interval_seconds": 60},
+                {"anchor_minute": 1440}, {"anchor_minute": True}, {"enabled": "yes"}):
+        with pytest.raises(KnowledgeRefused):
+            svc.update_settings(bad)
+    svc.update_settings({"max_per_day": 7, "max_pending": 20, "interval_seconds": 7200})
+    sched = svc.status()["schedule"]
+    assert (sched["max_per_day"], sched["max_pending"], sched["interval_seconds"]) == (7, 20, 7200)
+    assert sched["anchor_minute"] is None and sched["enabled"] is False
+    # base time 09:30 JST with a 2 h interval: slots 09:30, 11:30, ... (next point after now)
+    svc.update_settings({"enabled": True, "anchor_minute": 9 * 60 + 30})
+    due = svc.settings()["next_due"]
+    assert due > env.now[0] and due - env.now[0] <= 7200
+    jst_minutes = ((due + 9 * 3600) % 86400) / 60
+    assert (jst_minutes - 570) % 120 == 0
+    # a limit edit alone keeps the pending slot; the values survive a restart
+    svc.update_settings({"max_per_day": 8})
+    assert svc.settings()["next_due"] == due
+    svc.close()
+    again = KnowledgeService(svc.state, shared=svc.shared, guard=svc.guard, config=svc.config,
+                             clock=svc.clock)
+    st = again.status()["schedule"]
+    assert (st["max_per_day"], st["anchor_minute"]) == (8, 570)
+    again.close()

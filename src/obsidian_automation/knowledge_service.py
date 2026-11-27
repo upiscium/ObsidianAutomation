@@ -22,13 +22,14 @@ Every response is count-only: no titles, ids of conversations, text or paths.
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import re
 import sqlite3
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
@@ -116,6 +117,19 @@ class KnowledgeService:
         self.db.execute("CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK(id=1),"
                         " enabled INTEGER NOT NULL, next_due REAL)")
         self.db.execute("INSERT OR IGNORE INTO settings VALUES (1,0,NULL)")
+        # Limits edited in the panel; a NULL column keeps the command-line value.
+        self.db.execute("CREATE TABLE IF NOT EXISTS limits (id INTEGER PRIMARY KEY CHECK(id=1),"
+                        " interval_seconds INTEGER, max_per_day INTEGER, max_pending INTEGER,"
+                        " anchor_minute INTEGER)")
+        self.db.execute("INSERT OR IGNORE INTO limits VALUES (1,NULL,NULL,NULL,NULL)")
+        row = self.db.execute("SELECT interval_seconds,max_per_day,max_pending,anchor_minute"
+                              " FROM limits WHERE id=1").fetchone()
+        self.anchor_minute: int | None = row[3]
+        try:
+            self.config = replace(self.config, **{k: v for k, v in zip(
+                ("interval_seconds", "max_per_day", "max_pending"), row[:3]) if v is not None})
+        except ValueError:
+            pass  # a stored value that no longer validates falls back to the command line
         self.db.execute("CREATE TABLE IF NOT EXISTS runs (run_id TEXT PRIMARY KEY, trigger TEXT NOT NULL,"
                         " status TEXT NOT NULL, source_sha TEXT, archive_sha TEXT, idx INTEGER,"
                         " outcome TEXT, file TEXT, error_code TEXT, created REAL NOT NULL, completed REAL)")
@@ -154,6 +168,7 @@ class KnowledgeService:
                              "interval_seconds": self.config.interval_seconds,
                              "max_per_day": self.config.max_per_day,
                              "max_pending": self.config.max_pending,
+                             "anchor_minute": self.anchor_minute,
                              "proposed_today": made, "last_skip": self._last_skip},
                 "busy": self._busy(), "recent_runs": self._recent(), "vault_write": True,
             }
@@ -167,13 +182,44 @@ class KnowledgeService:
         return self.db.execute(
             "SELECT 1 FROM runs WHERE status IN ('queued','running') LIMIT 1").fetchone() is not None
 
+    def _next_slot(self, now: float) -> float:
+        """The next scheduled time after ``now``: one interval away, or, with a base
+        time (JST minute of day), the next point of base + k * interval."""
+        interval = self.config.interval_seconds
+        if self.anchor_minute is None:
+            return now + interval
+        base = _jst_midnight(now) + self.anchor_minute * 60
+        return base + (math.floor((now - base) / interval) + 1) * interval
+
     def update_settings(self, payload: object) -> dict:
-        if type(payload) is not dict or set(payload) != {"enabled"} or type(payload["enabled"]) is not bool:
+        """Any subset of enabled / interval_seconds / max_per_day / max_pending /
+        anchor_minute (0..1439, JST, or null to clear); nothing else."""
+        allowed = {"enabled", "interval_seconds", "max_per_day", "max_pending", "anchor_minute"}
+        if (type(payload) is not dict or not payload or not set(payload) <= allowed
+                or ("enabled" in payload and type(payload["enabled"]) is not bool)):
+            raise KnowledgeRefused("invalid_request", 400)
+        anchor = payload.get("anchor_minute", self.anchor_minute)
+        if anchor is not None and (type(anchor) is not int or not 0 <= anchor < 1440):
+            raise KnowledgeRefused("invalid_request", 400)
+        try:
+            config = replace(self.config, **{k: payload[k] for k in
+                             ("interval_seconds", "max_per_day", "max_pending") if k in payload})
+        except ValueError:
             raise KnowledgeRefused("invalid_request", 400)
         with self._lock:
-            enabled = payload["enabled"]
-            due = self.clock() + self.config.interval_seconds if enabled else None
+            current = self.settings()
+            enabled = payload.get("enabled", current["enabled"])
+            self.config, self.anchor_minute = config, anchor
+            due = current["next_due"]
+            if not enabled:
+                due = None
+            elif (not current["enabled"] or due is None
+                    or {"interval_seconds", "anchor_minute"} & set(payload)):
+                due = self._next_slot(self.clock())
             with self.db:
+                self.db.execute("UPDATE limits SET interval_seconds=?,max_per_day=?,max_pending=?,"
+                                "anchor_minute=? WHERE id=1",
+                                (config.interval_seconds, config.max_per_day, config.max_pending, anchor))
                 self.db.execute("UPDATE settings SET enabled=?,next_due=? WHERE id=1",
                                 (int(enabled), due))
             self._last_skip = None
@@ -333,7 +379,7 @@ class KnowledgeService:
                 return False
             with self.db:  # never a catch-up queue: the next slot is one interval away
                 self.db.execute("UPDATE settings SET next_due=? WHERE id=1",
-                                (now + self.config.interval_seconds,))
+                                (self._next_slot(now),))
             if self._busy():
                 self._last_skip = "busy"
                 return False
