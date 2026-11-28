@@ -27,6 +27,7 @@ button:disabled{cursor:not-allowed;opacity:.44}
 .actions{display:flex;flex-wrap:wrap;gap:9px}
 .feedback{min-height:1.5em;font-size:13px;color:#c6d3e9;overflow-wrap:anywhere}
 .connections{margin-top:14px}
+.panels{display:grid;gap:14px;margin-top:14px}.panels .connections{margin-top:0}.panels [hidden]{display:none}
 summary{cursor:pointer;font-weight:650}
 .connection-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:26px;margin-top:22px}
 .connection-grid form{display:flex;flex-direction:column;gap:12px}
