@@ -43,3 +43,21 @@ unattended writer must not be able to loop or race the owner:
 2. Reading Project notes and writing the status over WebDAV (conditional PUT + readback +
    journal), GitHub reads reuse Daily's existing token, CLI `--dry-run` first.
 3. Service and panel (`--project-status-ui`), schedule, health.
+
+## As built
+
+* **Step 2 (`project_status_vault.py`, `project_status_run.py`).** `python -m
+  obsidian_automation.project_status_run --state DIR` reports counts (dry run); `--apply`
+  writes, `--max-changes N` caps one run. State lives in `DIR/project-status/`
+  (`watcher.sqlite3` GitHub baselines, `changes.sqlite3` the change journal). GitHub is read
+  with Daily's token (`DIR/github-daily/github.token`).
+* **Step 3 (`project_status_service.py`, `three_services/project-status.js`).**
+  `--project-status-ui` adds the panel and the API (`GET /api/v1/project-status`,
+  `POST .../runs {"apply": bool}`, `POST .../settings {"enabled": bool}`), with
+  `--project-status-interval-seconds` (default 21600, minimum 3600) and
+  `--project-status-max-changes` (default 10). The schedule is off until switched on in the
+  panel; a scheduled run applies. A panel run can be "check only" (writes nothing to the
+  Vault). One run at a time; a run left running by a crash is marked failed, never replayed.
+* **Health.** Three failed runs in a row show the failure banner. A run counts as failed when
+  it raised, or a write failed for any reason other than the owner having edited the note
+  meanwhile (`note_changed` is normal).

@@ -22,6 +22,7 @@ from .vault_bindings import RoleGuard, physical_folder, record_generation, run_v
 from .chat_import_service import ChatImportService
 from .knowledge_service import KnowledgeConfig, KnowledgeService
 from .knowledge_proposal import MAX_SOURCE_BYTES
+from .project_status_service import ProjectStatusConfig, ProjectStatusService
 from .vault_root_webui import build_vault_bindings_ui, build_vault_root_ui
 
 
@@ -161,6 +162,15 @@ def main() -> int:
     parser.add_argument("--knowledge-max-pending", type=int, default=10,
                         help="Stop scheduled generation at this many unreviewed proposals (default 10)")
     parser.add_argument(
+        "--project-status-ui", action="store_true",
+        help="Opt into the Project status panel (changes the status line of Project notes from GitHub "
+             "activity, with an opt-in schedule); off by default",
+    )
+    parser.add_argument("--project-status-interval-seconds", type=int, default=6 * 3600,
+                        help="Scheduled run interval, at least 3600 (default 21600)")
+    parser.add_argument("--project-status-max-changes", type=int, default=10,
+                        help="Most status changes written per run (default 10)")
+    parser.add_argument(
         "--keep-runs", type=int, default=None, metavar="N",
         help="Opt into deleting old Snapshot run directories after each run, keeping "
              "the newest N (>= 2); off by default",
@@ -183,6 +193,14 @@ def main() -> int:
                 max_pending=args.knowledge_max_pending,
                 structured_output=not args.knowledge_no_structured_output,
                 max_source_bytes=args.knowledge_max_source_bytes)
+        except ValueError as exc:
+            parser.error(str(exc))
+    project_status_config = None
+    if args.project_status_ui:
+        try:
+            project_status_config = ProjectStatusConfig(
+                interval_seconds=args.project_status_interval_seconds,
+                max_changes=args.project_status_max_changes)
         except ValueError as exc:
             parser.error(str(exc))
     state = args.state
@@ -258,6 +276,12 @@ def main() -> int:
                 state, shared=store, guard=root_guard, config=knowledge_config)
             server.knowledge = knowledge
             extra = (knowledge.tick,)
+        project_status = None
+        if project_status_config is not None:
+            project_status = ProjectStatusService(
+                state, shared=store, guard=root_guard, config=project_status_config)
+            server.project_status = project_status
+            extra = extra + (project_status.tick,)
         hooks = tuple(item.tick for item in (daily_job, promotion_job)
                       if item is not None) + extra
         job.start_scheduler(tick_hooks=hooks)
@@ -266,6 +290,8 @@ def main() -> int:
         finally:
             if knowledge is not None:
                 knowledge.close()
+            if project_status is not None:
+                project_status.close()
     return 0
 
 
