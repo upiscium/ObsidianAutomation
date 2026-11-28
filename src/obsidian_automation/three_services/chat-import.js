@@ -78,12 +78,8 @@
   const commitButton = text("button", "在庫を確定", {id: "chat-import-commit", disabled: true});
   const message = text("p", "", {id: "chat-import-message", className: "feedback"});
   const summary = text("dl", "", {id: "chat-import-summary"});
-  const note = text("p",
-    "ChatGPT / Claudeのエクスポートを、個人用の取り込み領域に保管し件数だけを記録します。" +
-    "Vault・WebDAV・外部サービスへは何も書き込まず、自動実行もしません。", {className: "muted"});
-
   const panel = el("section", {className: "connections panel", id: "chat-import"}, [
-    el("div", {className: "service-header"}, [text("h2", "チャット履歴の取り込み（ChatGPT / Claude）")]), note,
+    el("div", {className: "service-header"}, [text("h2", "Chat import")]),
     el("label", {}, [text("span", "エクスポートZIP"), fileInput]),
     el("div", {className: "actions"}, [uploadButton]),
     el("label", {}, [text("span", "形式"), provider]),

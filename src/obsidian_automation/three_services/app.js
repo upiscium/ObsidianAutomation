@@ -42,6 +42,16 @@
     schedule_revision_required:"旧形式からの設定変更は拒否されました。新しいUIからPreviewしてください"
   };
   const msg=(id,s)=>{$(id).textContent=s;};
+  // A job message is shown in the panel and, while it is open, in its settings dialog.
+  const note=(n,s)=>{msg(n+"-message",s);msg(n+"-dialog-message",s);};
+  // In-page warning in the page theme (a dialog, never window.alert).
+  function evaWarn(text){
+    const box=$("eva-warning");
+    if(!box)return;
+    msg("eva-warning-text",text);
+    if(typeof box.showModal==="function"){if(!box.open)box.showModal();}
+    else box.hidden=false;
+  }
   function fieldState(id,state,label){
     const target=$(id);
     target.dataset.state=state;
@@ -51,8 +61,18 @@
   function dateText(v) {
     if(typeof v!=="number"||!Number.isFinite(v)||v<0)return "—";
     const d=new Date(v*1000);
-    return !Number.isFinite(d.getTime())?"—":
-      new Intl.DateTimeFormat("ja-JP",{timeZone:"Asia/Tokyo",dateStyle:"short",timeStyle:"medium"}).format(d);
+    if(!Number.isFinite(d.getTime()))return "—";
+    const p=Object.fromEntries(new Intl.DateTimeFormat("en-GB",{timeZone:"Asia/Tokyo",year:"numeric",
+      month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",
+      hourCycle:"h23"}).formatToParts(d).map(x=>[x.type,x.value]));
+    return p.year+"-"+p.month+"-"+p.day+" "+p.hour+":"+p.minute+":"+p.second;
+  }
+  // Last-run word for the panel: RUNNING | SUCCESS | FAILED (anything else: the raw status).
+  function runWord(s){
+    if(s==="queued"||s==="running")return "RUNNING";
+    if(["saved","no_changes","published","up_to_date","promoted","succeeded","ok"].includes(s))return "SUCCESS";
+    if(["failed","publish_failed","conflict","live_drift","indeterminate","unconfirmed"].includes(s))return "FAILED";
+    return String(s).toUpperCase();
   }
   async function get(url){
     const r=await fetch(url,{credentials:"same-origin",cache:"no-store"});
@@ -109,8 +129,8 @@
     $(n+"-status").dataset.kind=v.kind;
     msg(n+"-status",v.label);
     msg(n+"-configured",settings.configured?"設定済み":"未設定");
-    msg(n+"-last",r?(r.status+" · "+dateText(r.completed??r.created)):"実行履歴なし");
-    msg(n+"-next",settings.enabled?dateText(settings.next_due):"自動実行Off");
+    msg(n+"-last",r?(runWord(r.status)+" / "+dateText(r.completed??r.created)):"—");
+    msg(n+"-next",settings.enabled?dateText(settings.next_due):"—");
     $(n+"-enabled").disabled=false;
     $(n+"-interval").disabled=false;
     if(!scheduleDirty[n]){
@@ -142,7 +162,7 @@
     $(n+"-save").disabled=busy;
     $(n+"-run").disabled=busy||!settings.configured||(n==="core-promotion"&&settings.source_bound===false);
     if(n==="daily"&&x.publication_enabled===false)
-      msg("daily-message","現在はPreview専用です。反映にはサーバーの --daily-publish が必要です。");
+      note("daily","現在はPreview専用です。反映にはサーバーの --daily-publish が必要です。");
   }
   async function refresh(){
     if(busy)return;
@@ -180,7 +200,7 @@
                  checkpointOk?"✓ 使用可能":d.checkpoint_initialized?
                    "要再確認・再承認":"未初期化");
       if(d.requires_reauthorization===true)
-        msg("core-promotion-message",
+        note("core-promotion",
             "接続先Vaultが変更されたため、旧Checkpointでの実行を拒否しています。新しい基準の独立照合が必要です。");
     }catch(e){
       if(generation!==configurationGeneration)return;
@@ -201,7 +221,7 @@
   }
   async function schedulePreview(n){
     if(busy)return;
-    if(!data[n]){msg(n+"-message","状態を取得してからPreviewしてください。");return;}
+    if(!data[n]){note(n,"状態を取得してからPreviewしてください。");return;}
     const body=scheduleRequest(n),sig=JSON.stringify(body);
     busy=true;invalidatePendingReads();
     try{
@@ -215,16 +235,16 @@
         throw Error("stale_settings");
       previewSpecs[n]=sig;
       msg(n+"-preview-result","次の3回："+result.next_slots.map(dateText).join(" / "));
-      msg(n+"-message","Preview成功。現在の設定で保存できます。");
+      note(n,"Preview成功。現在の設定で保存できます。");
     }catch(e){
       delete previewSpecs[n];
-      msg(n+"-message",describe(e.message));
+      note(n,describe(e.message));
     }finally{busy=false;await refresh();await configuration();}
   }
   async function action(n,kind){
     if(busy)return;
     if(kind==="settings"&&previewSpecs[n]!==JSON.stringify(scheduleRequest(n))){
-      msg(n+"-message","保存する前に現在の設定をPreviewしてください。");
+      evaWarn("保存する前に、現在の設定をPreviewしてください。\n次の3回の実行時刻を確認してから、SAVEしてください。");
       return;
     }
     busy=true;
@@ -236,12 +256,12 @@
         scheduleDirty[n]=false;
         if(scheduleTouched[n])scheduleTouched[n].clear();
         delete previewSpecs[n];
-        msg(n+"-message","");
+        note(n,"");
       }else{
         const result=await post("/api/v1/"+n+"/runs",{request_id:requestId()});
-        msg(n+"-message","受付 "+result.outcome+" · Run ID "+result.run_id+"。実行結果は別途照合します。");
+        note(n,"受付 "+result.outcome+" · Run ID "+result.run_id+"。実行結果は別途照合します。");
       }
-    }catch(e){msg(n+"-message",describe(e.message));}
+    }catch(e){note(n,describe(e.message));}
     finally{busy=false;await refresh();await configuration();}
   }
   // Independent connection updates: no client-side copy of a saved secret,
@@ -361,15 +381,15 @@
     if(busy||!policy)return;
     const sha=$("core-promotion-baseline").value.trim();
     if(!/^[0-9a-f]{40}$/.test(sha)){
-      msg("core-promotion-message","基準SHAは40文字の小文字hexで入力してください。");return;
+      note("core-promotion","基準SHAは40文字の小文字hexで入力してください。");return;
     }
     if(!confirm("指定コミットでCheckpointを初期化します。Vaultは変更しません。続行しますか？"))return;
     busy=true;
     invalidatePendingReads();
     try{
       const r=await post("/api/v1/core-promotion/bootstrap",{core_commit:sha,policy_sha256:policy});
-      msg("core-promotion-message","Checkpoint初期化済み。基準 "+r.baseline_commit+" / 最新 "+r.head_commit);
-    }catch(e){msg("core-promotion-message",describe(e.message));}
+      note("core-promotion","Checkpoint初期化済み。基準 "+r.baseline_commit+" / 最新 "+r.head_commit);
+    }catch(e){note("core-promotion",describe(e.message));}
     finally{busy=false;await refresh();await configuration();}
   }
   // Vault Settings use the existing bounded/root-pinned services. Preview
@@ -549,6 +569,18 @@
   for(const kind of ["reset","rollback"]){
     $("vault-bindings-"+kind).addEventListener("click",()=>void bindingsAction(kind));
   }
+  // Settings live in an in-page dialog opened by the gear button; ids are unchanged.
+  const openDialog=d=>{if(typeof d.showModal==="function"){if(!d.open)d.showModal();}else d.hidden=false;};
+  const closeDialog=d=>{if(typeof d.close==="function")d.close();else d.hidden=true;};
+  names.forEach(n=>{
+    $(n+"-config").addEventListener("click",()=>openDialog($(n+"-dialog")));
+  });
+  for(const id of ["eva-warning-close"]){
+    $(id).addEventListener("click",()=>closeDialog($("eva-warning")));
+  }
+  document.querySelectorAll&&document.querySelectorAll("[data-close]").forEach(b=>{
+    b.addEventListener("click",()=>{const d=b.closest("dialog");if(d)closeDialog(d);});
+  });
   names.forEach(n=>{
     $(n+"-save").addEventListener("click",()=>void action(n,"settings"));
     $(n+"-run").addEventListener("click",()=>void action(n,"runs"));
@@ -561,7 +593,7 @@
           scheduleTouched[n].add(kind);
           fieldState(n+"-"+kind+"-state","editing","● 未保存");
           delete previewSpecs[n];
-          msg(n+"-preview-result","変更後の次回3件をPreviewしてください。");
+          msg(n+"-preview-result","");
         });
       }
     }

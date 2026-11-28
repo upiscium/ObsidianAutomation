@@ -9,6 +9,7 @@ function node(tag) {
   return {
     tag, children: [], listeners: {}, hidden: false, textContent: "", disabled: false,
     appendChild(child) { this.children.push(child); return child; },
+    setAttribute() {}, showModal() { this.open = true; }, close() { this.open = false; },
     addEventListener(event, callback) { this.listeners[event] = callback; }
   };
 }
@@ -23,6 +24,7 @@ const tick = async () => { for (let i = 0; i < 8; i++) await new Promise((r) => 
 const enabled = (extra = {}) => ({
   version: 1, enabled: true, busy: false, recent_runs: [], vault_write: true, ...extra,
   schedule: {enabled: false, next_due: null, interval_seconds: 21600, max_changes: 10,
+             max_per_day: 30, cooldown_hours: 24, active_window_days: null, anchor_minute: null,
              changed_today: 1, last_skip: null, ...(extra.schedule || {})}
 });
 
@@ -54,7 +56,7 @@ test("the panel stays hidden when the server did not enable it", async () => {
   assert.equal((await mount({status: null})).panel.hidden, true);
 });
 
-test("the enabled panel shows limits and count-only run summaries", async () => {
+test("the enabled panel shows the state and count-only run summaries, without description or duplicated settings", async () => {
   const {panel} = await mount({status: enabled({
     schedule: {enabled: true, next_due: 1800000000},
     recent_runs: [{run_id: "r", trigger: "scheduled", mode: "apply", status: "ok", error_code: null,
@@ -63,44 +65,61 @@ test("the enabled panel shows limits and count-only run summaries", async () => 
                failed: {note_changed: 1}, repo_errors: 0}}]
   })});
   assert.equal(panel.hidden, false);
+  assert.equal(panel.tag, "section");
+  assert.match(allText(panel), /Project updater/);
   const text = allText(find(panel, "project-status-status"));
   assert.match(text, /定期実行\|オン/);
-  assert.match(text, /360 分 \/ 10 件/);
   assert.match(text, /今日の変更\|1 件/);
+  assert.doesNotMatch(text, /360 分|基準時刻/);  // settings live in the dialog
+  assert.doesNotMatch(allText(panel), /GitHubの直近の動きから/);  // no description text
   const runs = allText(find(panel, "project-status-runs"));
   assert.match(runs, /完了 \/ 定期 \/ 書き込みあり \/ 対象 8 件 \/ 変更 1 件 \/ 24時間以内に変更済み 2 \/ note_changed 1/);
 });
 
-test("a check-only run needs no confirmation; an applying run and the schedule do", async () => {
+test("there is no dry-run button; Run once asks for confirmation and applies", async () => {
   const sent = [];
   const post = async (url, options) => { sent.push([url, JSON.parse(options.body)]); return {ok: true, async json() { return {}; }}; };
   const {panel, calls} = await mount({status: enabled(), post});
-  find(panel, "project-status-check").listeners.click();
-  await tick();
-  assert.deepEqual(sent, [["/api/v1/project-status/runs", {apply: false}]]);
-  assert.equal(calls.confirm.length, 0);
-  find(panel, "project-status-apply").listeners.click();
+  assert.equal(find(panel, "project-status-check"), null);
+  assert.equal(find(panel, "project-status-schedule"), null);
+  const run = find(panel, "project-status-apply");
+  assert.equal(run.textContent, "Run once");
+  run.listeners.click();
   await tick();
   assert.equal(calls.confirm.length, 1);
-  assert.deepEqual(sent[1], ["/api/v1/project-status/runs", {apply: true}]);
-  find(panel, "project-status-schedule").listeners.click();
-  await tick();
-  assert.equal(calls.confirm.length, 2);
-  assert.deepEqual(sent[2], ["/api/v1/project-status/settings", {enabled: true}]);
+  assert.deepEqual(sent, [["/api/v1/project-status/runs", {apply: true}]]);
 });
 
-test("cancelling the confirmation sends nothing, and buttons are disabled while busy", async () => {
+test("cancelling the confirmation sends nothing, and Run once is disabled while busy", async () => {
   const sent = [];
-  const post = async (url, options) => { sent.push(url); return {ok: true, async json() { return {}; }}; };
+  const post = async (url) => { sent.push(url); return {ok: true, async json() { return {}; }}; };
   const {panel} = await mount({status: enabled(), confirmAnswer: false, post});
   find(panel, "project-status-apply").listeners.click();
-  find(panel, "project-status-schedule").listeners.click();
   await tick();
   assert.deepEqual(sent, []);
   const busy = await mount({status: enabled({busy: true})});
-  for (const id of ["project-status-check", "project-status-apply", "project-status-schedule"]) {
-    assert.equal(find(busy.panel, id).disabled, true);
-  }
+  assert.equal(find(busy.panel, "project-status-apply").disabled, true);
+});
+
+test("the schedule is a checkbox in the settings dialog: SAVE posts it with every other value", async () => {
+  const sent = [];
+  const post = async (url, options) => { sent.push([url, JSON.parse(options.body)]); return {ok: true, async json() { return {}; }}; };
+  const {panel, calls} = await mount({status: enabled(), post});
+  const dialog = find(panel, "project-status-dialog");
+  assert.equal(dialog.tag, "dialog");
+  find(panel, "project-status-config").listeners.click();
+  assert.equal(dialog.open, true);
+  const box = find(panel, "project-status-enabled");
+  assert.equal(box.type, "checkbox");
+  assert.equal(box.checked, false);
+  box.checked = true;
+  box.listeners.change();
+  find(panel, "project-status-save").listeners.click();
+  await tick();
+  assert.equal(calls.confirm.length, 1);  // switching it on names the brakes
+  assert.equal(sent[0][0], "/api/v1/project-status/settings");
+  assert.equal(sent[0][1].enabled, true);
+  assert.equal(sent[0][1].interval_seconds, 21600);
 });
 
 test("settings fields mirror the schedule and saving posts the edited values", async () => {
@@ -120,7 +139,7 @@ test("settings fields mirror the schedule and saving posts the edited values", a
   find(panel, "project-status-save").listeners.click();
   await tick();
   assert.deepEqual(sent[0], ["/api/v1/project-status/settings",
-    {interval_seconds: 21600, max_changes: 10, max_per_day: 12, cooldown_hours: 24,
+    {enabled: false, interval_seconds: 21600, max_changes: 10, max_per_day: 12, cooldown_hours: 24,
      anchor_minute: 570, active_window_days: 14}]);
 });
 
@@ -133,10 +152,4 @@ test("a value that is not a whole number or an interval under 60 minutes is not 
   await tick();
   assert.deepEqual(sent, []);
   assert.match(find(panel, "project-status-message").textContent, /値を確認してください/);
-});
-
-test("the panel is a section with a heading, not a collapsible, and mounts into #panels", async () => {
-  const {panel} = await mount({status: enabled()});
-  assert.equal(panel.tag, "section");
-  assert.match(allText(panel), /Projectの状態を自動更新/);
 });

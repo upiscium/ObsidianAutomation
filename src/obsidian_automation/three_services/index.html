@@ -23,60 +23,72 @@
   <section class="services" aria-label="自動化サービス">
     <article class="service" data-service="snapshot" aria-labelledby="snapshot-title">
       <div class="service-header"><h2 id="snapshot-title">Snapshot</h2><span class="status" id="snapshot-status">確認中</span></div>
-      <p class="muted">Vault → private Gitea</p>
-      <dl><dt>接続</dt><dd id="snapshot-configured">—</dd><dt>最終実行</dt><dd id="snapshot-last">—</dd><dt>次回予定</dt><dd id="snapshot-next">—</dd></dl>
-      <div class="controls">
-        <label class="toggle"><input type="checkbox" id="snapshot-enabled" disabled> 自動実行 <span id="snapshot-enabled-state" class="field-state" data-state="loading">確認中</span></label>
-        <label>実行間隔（秒）<input type="number" id="snapshot-interval" min="60" max="86400" value="3600" disabled><span id="snapshot-interval-state" class="field-state" data-state="loading">確認中</span></label>
-        <label>起点時刻(Asia/Tokyo)<input id="snapshot-anchor" type="time" step="60" value="12:00"><span id="snapshot-anchor-state" class="field-state" data-state="loading">確認中</span></label>
-        <div class="schedule-preview">
-          <button type="button" id="snapshot-preview" class="outline">次の3回をプレビュー</button>
-          <p class="muted" id="snapshot-preview-result" role="status">起点時刻を保存する前にPreviewしてください。</p>
-          <small class="muted" id="snapshot-phase-mode">—</small>
-        </div>
-        <div class="actions"><button id="snapshot-save" disabled>設定を保存</button><button id="snapshot-run" class="outline" disabled>Run Once</button></div>
-      </div>
+      <dl><dt>Status</dt><dd id="snapshot-configured">—</dd><dt>Last run</dt><dd id="snapshot-last">—</dd><dt>Next run</dt><dd id="snapshot-next">—</dd></dl>
+      <div class="actions"><button id="snapshot-run" class="outline" disabled>Run Once</button><button type="button" id="snapshot-config" class="outline gear" data-dialog="snapshot-dialog"><span class="gear-icon" aria-hidden="true"></span>設定</button></div>
       <p class="feedback" id="snapshot-message" role="status"></p>
+      <dialog class="eva-dialog" id="snapshot-dialog" aria-labelledby="snapshot-dialog-title">
+        <div class="eva-dialog-head"><span class="eva-tag">CONFIG</span><h2 id="snapshot-dialog-title">Snapshot</h2></div>
+        <div class="controls">
+          <label class="toggle"><input type="checkbox" id="snapshot-enabled" disabled> 自動実行 <span id="snapshot-enabled-state" class="field-state" data-state="loading">確認中</span></label>
+          <label>実行間隔(秒)<input type="number" id="snapshot-interval" min="60" max="86400" value="3600" disabled><span id="snapshot-interval-state" class="field-state" data-state="loading">確認中</span></label>
+          <label>起点時刻<input id="snapshot-anchor" type="time" step="60" value="12:00"><span id="snapshot-anchor-state" class="field-state" data-state="loading">確認中</span></label>
+          <div class="schedule-preview">
+            <button type="button" id="snapshot-preview" class="outline">Preview</button>
+            <p class="muted" id="snapshot-preview-result" role="status"></p>
+            <small class="muted" id="snapshot-phase-mode">—</small>
+          </div>
+        </div>
+        <p class="feedback" id="snapshot-dialog-message" role="status"></p>
+        <div class="actions"><button id="snapshot-save" disabled>SAVE</button><button type="button" class="outline" data-close>閉じる</button></div>
+      </dialog>
     </article>
     <article class="service" data-service="core-promotion" aria-labelledby="promotion-title">
       <div class="service-header"><h2 id="promotion-title">Core Promotion</h2><span class="status" id="core-promotion-status">確認中</span></div>
-      <p class="muted">GitHub ObsidianCore → Vault（条件付き書込）</p>
-      <dl><dt>接続</dt><dd id="core-promotion-configured">—</dd><dt>最終実行</dt><dd id="core-promotion-last">—</dd><dt>次回予定</dt><dd id="core-promotion-next">—</dd></dl>
-      <div class="controls">
-        <label class="toggle"><input type="checkbox" id="core-promotion-enabled" disabled> 自動実行 <span id="core-promotion-enabled-state" class="field-state" data-state="loading">確認中</span></label>
-        <label>実行間隔（秒）<input type="number" id="core-promotion-interval" min="60" max="86400" value="3600" disabled><span id="core-promotion-interval-state" class="field-state" data-state="loading">確認中</span></label>
-        <label>起点時刻(Asia/Tokyo)<input id="core-promotion-anchor" type="time" step="60" value="12:00"><span id="core-promotion-anchor-state" class="field-state" data-state="loading">確認中</span></label>
-        <div class="schedule-preview">
-          <button type="button" id="core-promotion-preview" class="outline">次の3回をプレビュー</button>
-          <p class="muted" id="core-promotion-preview-result" role="status">起点時刻を保存する前にPreviewしてください。</p>
-          <small class="muted" id="core-promotion-phase-mode">—</small>
-        </div>
-        <div class="actions"><button id="core-promotion-save" disabled>設定を保存</button><button id="core-promotion-run" class="outline" disabled>Run Once</button></div>
-      </div>
-      <details id="core-promotion-bootstrap-section"><summary>初回Checkpoint設定 <span id="core-promotion-checkpoint-status" class="field-state" data-state="loading">確認中</span></summary>
+      <dl><dt>Status</dt><dd id="core-promotion-configured">—</dd><dt>Last run</dt><dd id="core-promotion-last">—</dd><dt>Next run</dt><dd id="core-promotion-next">—</dd></dl>
+      <div class="actions"><button id="core-promotion-run" class="outline" disabled>Run Once</button><button type="button" id="core-promotion-config" class="outline gear" data-dialog="core-promotion-dialog"><span class="gear-icon" aria-hidden="true"></span>設定</button></div>
+      <p class="feedback" id="core-promotion-message" role="status"></p>
+      <details class="bootstrap" id="core-promotion-bootstrap-section"><summary>初回Checkpoint設定 <span id="core-promotion-checkpoint-status" class="field-state" data-state="loading">確認中</span></summary>
         <p class="muted">公開用Projectionと一致する、レビュー済みObsidianCoreコミットの完全なSHAを指定します。Vault内容が一致することを確認してから実行してください。処理はCheckpointを作成し、Vaultには書き込みません。</p>
         <label>Policy SHA-256<input id="core-promotion-policy" readonly></label>
         <label>基準となるCore commit SHA（40文字）<input id="core-promotion-baseline" type="text" pattern="[0-9a-f]{40}" maxlength="40" autocomplete="off"></label>
-        <button id="core-promotion-bootstrap" type="button" disabled>Checkpointを初期化</button>
+        <div class="actions"><button id="core-promotion-bootstrap" type="button" disabled>Checkpointを初期化</button></div>
       </details>
-      <p class="feedback" id="core-promotion-message" role="status"></p>
+      <dialog class="eva-dialog" id="core-promotion-dialog" aria-labelledby="core-promotion-dialog-title">
+        <div class="eva-dialog-head"><span class="eva-tag">CONFIG</span><h2 id="core-promotion-dialog-title">Core Promotion</h2></div>
+        <div class="controls">
+          <label class="toggle"><input type="checkbox" id="core-promotion-enabled" disabled> 自動実行 <span id="core-promotion-enabled-state" class="field-state" data-state="loading">確認中</span></label>
+          <label>実行間隔(秒)<input type="number" id="core-promotion-interval" min="60" max="86400" value="3600" disabled><span id="core-promotion-interval-state" class="field-state" data-state="loading">確認中</span></label>
+          <label>起点時刻<input id="core-promotion-anchor" type="time" step="60" value="12:00"><span id="core-promotion-anchor-state" class="field-state" data-state="loading">確認中</span></label>
+          <div class="schedule-preview">
+            <button type="button" id="core-promotion-preview" class="outline">Preview</button>
+            <p class="muted" id="core-promotion-preview-result" role="status"></p>
+            <small class="muted" id="core-promotion-phase-mode">—</small>
+          </div>
+        </div>
+        <p class="feedback" id="core-promotion-dialog-message" role="status"></p>
+        <div class="actions"><button id="core-promotion-save" disabled>SAVE</button><button type="button" class="outline" data-close>閉じる</button></div>
+      </dialog>
     </article>
     <article class="service" data-service="daily" aria-labelledby="daily-title">
       <div class="service-header"><h2 id="daily-title">GitHub Daily</h2><span class="status" id="daily-status">確認中</span></div>
-      <p class="muted">GitHub Issue / PR → 前日JSTのDaily Note</p>
-      <dl><dt>接続</dt><dd id="daily-configured">—</dd><dt>最終実行</dt><dd id="daily-last">—</dd><dt>次回予定</dt><dd id="daily-next">—</dd></dl>
-      <div class="controls">
-        <label class="toggle"><input type="checkbox" id="daily-enabled" disabled> 自動実行 <span id="daily-enabled-state" class="field-state" data-state="loading">確認中</span></label>
-        <label>実行間隔（秒）<input type="number" id="daily-interval" min="3600" max="86400" value="86400" disabled><span id="daily-interval-state" class="field-state" data-state="loading">確認中</span></label>
-        <label>起点時刻(Asia/Tokyo)<input id="daily-anchor" type="time" step="60" value="12:00"><span id="daily-anchor-state" class="field-state" data-state="loading">確認中</span></label>
-        <div class="schedule-preview">
-          <button type="button" id="daily-preview" class="outline">次の3回をプレビュー</button>
-          <p class="muted" id="daily-preview-result" role="status">起点時刻を保存する前にPreviewしてください。</p>
-          <small class="muted" id="daily-phase-mode">—</small>
-        </div>
-        <div class="actions"><button id="daily-save" disabled>設定を保存</button><button id="daily-run" class="outline" disabled>Run Once</button></div>
-      </div>
+      <dl><dt>Status</dt><dd id="daily-configured">—</dd><dt>Last run</dt><dd id="daily-last">—</dd><dt>Next run</dt><dd id="daily-next">—</dd></dl>
+      <div class="actions"><button id="daily-run" class="outline" disabled>Run Once</button><button type="button" id="daily-config" class="outline gear" data-dialog="daily-dialog"><span class="gear-icon" aria-hidden="true"></span>設定</button></div>
       <p class="feedback" id="daily-message" role="status"></p>
+      <dialog class="eva-dialog" id="daily-dialog" aria-labelledby="daily-dialog-title">
+        <div class="eva-dialog-head"><span class="eva-tag">CONFIG</span><h2 id="daily-dialog-title">GitHub Daily</h2></div>
+        <div class="controls">
+          <label class="toggle"><input type="checkbox" id="daily-enabled" disabled> 自動実行 <span id="daily-enabled-state" class="field-state" data-state="loading">確認中</span></label>
+          <label>実行間隔(秒)<input type="number" id="daily-interval" min="3600" max="86400" value="86400" disabled><span id="daily-interval-state" class="field-state" data-state="loading">確認中</span></label>
+          <label>起点時刻<input id="daily-anchor" type="time" step="60" value="12:00"><span id="daily-anchor-state" class="field-state" data-state="loading">確認中</span></label>
+          <div class="schedule-preview">
+            <button type="button" id="daily-preview" class="outline">Preview</button>
+            <p class="muted" id="daily-preview-result" role="status"></p>
+            <small class="muted" id="daily-phase-mode">—</small>
+          </div>
+        </div>
+        <p class="feedback" id="daily-dialog-message" role="status"></p>
+        <div class="actions"><button id="daily-save" disabled>SAVE</button><button type="button" class="outline" data-close>閉じる</button></div>
+      </dialog>
     </article>
   </section>
   <section class="panels" id="panels" aria-label="機能パネル"></section>
@@ -227,6 +239,11 @@
       </section>
     </div>
   </details>
+<dialog class="eva-dialog eva-warning" id="eva-warning" aria-labelledby="eva-warning-title">
+  <div class="eva-dialog-head"><span class="eva-tag">WARNING</span><h2 id="eva-warning-title">警告</h2></div>
+  <p id="eva-warning-text" role="alert"></p>
+  <div class="actions"><button type="button" id="eva-warning-close">了解</button></div>
+</dialog>
 </main>
 </body>
 </html>

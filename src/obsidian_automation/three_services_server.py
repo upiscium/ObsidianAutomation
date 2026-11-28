@@ -373,6 +373,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/v1/vault-bindings/resets", "/api/v1/vault-bindings/rollbacks",
             "/api/v1/chat-import/upload", "/api/v1/chat-import/inventory",
             "/api/v1/knowledge/conversations", "/api/v1/knowledge/runs",
+            "/api/v1/knowledge/models",
             "/api/v1/knowledge/settings",
             "/api/v1/project-status/runs", "/api/v1/project-status/settings",
         }
@@ -418,6 +419,10 @@ class Handler(BaseHTTPRequestHandler):
                     if payload != {}:
                         raise Refused("invalid_request", 400)
                     self._send(200, service.conversations())
+                elif self.path == "/api/v1/knowledge/models":
+                    if payload != {}:
+                        raise Refused("invalid_request", 400)
+                    self._send(200, service.models())
                 elif self.path == "/api/v1/knowledge/runs":
                     self._send(202, service.start_manual(payload))
                 else:

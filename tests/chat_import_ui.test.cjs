@@ -10,6 +10,7 @@ function node(tag) {
     tag, children: [], listeners: {}, hidden: false, textContent: "", value: "",
     disabled: false, files: null,
     appendChild(child) { this.children.push(child); return child; },
+    setAttribute() {}, showModal() { this.open = true; }, close() { this.open = false; },
     addEventListener(event, callback) { this.listeners[event] = callback; }
   };
 }
@@ -87,7 +88,9 @@ test("enabled panel shows count-only summary and never offers a Vault write", as
   assert.match(text, /保管済みZIP\|2/);
   assert.match(text, /Claude\|会話 7 件/);
   assert.match(text, /ChatGPT\|未取り込み/);
-  assert.match(allText(panel), /Vault・WebDAV・外部サービスへは何も書き込まず/);
+  assert.match(allText(panel), /Chat import/);
+  assert.doesNotMatch(allText(panel), /Vault・WebDAV・外部サービスへは何も書き込まず/);  // no description text
+  assert.equal(panel.tag, "section");
 });
 
 test("upload sends the ZIP with CSRF and zip content type, then selects the detected provider", async () => {

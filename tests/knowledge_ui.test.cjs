@@ -10,6 +10,7 @@ function node(tag) {
     tag, children: [], listeners: {}, hidden: false, textContent: "", value: "",
     disabled: false,
     appendChild(child) { this.children.push(child); return child; },
+    setAttribute() {}, showModal() { this.open = true; }, close() { this.open = false; },
     addEventListener(event, callback) { this.listeners[event] = callback; },
     querySelectorAll(selector) {
       const found = [];
@@ -79,21 +80,22 @@ test("panel stays hidden when the server did not enable it", async () => {
   assert.equal(panel.hidden, true);
 });
 
-test("enabled panel shows the schedule limits and never offers a title or text", async () => {
+test("enabled panel shows the schedule state and never offers a title or text", async () => {
   const {panel} = await mount({status: enabled({
     schedule: {enabled: true, next_due: 1800000000, proposed_today: 2, last_skip: "daily_cap"},
     recent_runs: [{run_id: "r", trigger: "scheduled", status: "proposed", outcome: "created",
       file: "2026-note.md", error_code: null, created: 1800000000, completed: 1800000100}]
   })});
   assert.equal(panel.hidden, false);
+  assert.equal(panel.tag, "section");
+  assert.match(allText(panel), /Knowledge Gen/);
   const text = allText(find(panel, "knowledge-status"));
-  assert.match(text, /モデル\|qwen-test/);
   assert.match(text, /定期実行\|オン/);
-  assert.match(text, /60 分 \/ 3 件 \/ 10 件/);
   assert.match(text, /今日の提案\|2 件/);
   assert.match(text, /直近の見送り\|1日の上限/);
+  assert.doesNotMatch(text, /60 分|基準時刻|モデル/);  // settings live in the dialog, not duplicated here
   assert.match(allText(find(panel, "knowledge-runs")), /提案を作成 \/ 定期 \/ 2026-note\.md/);
-  assert.match(allText(panel), /タイトルや本文はここには表示しません/);
+  assert.doesNotMatch(allText(panel), /タイトルや本文はここには表示しません|取り込み済みのChatGPT/);  // no description text
 });
 
 test("loading the list posts with CSRF and renders count-only rows with a button only where useful", async () => {
@@ -143,30 +145,50 @@ test("starting a run asks for confirmation; cancelling sends nothing", async () 
     [["/api/v1/knowledge/runs", {archive: "a".repeat(64), index: 0, part: 0}]]);
 });
 
-test("while a run is busy the controls are disabled and the panel polls", async () => {
+test("while a run is busy the list button is disabled and the panel polls", async () => {
   const {panel, calls} = await mount({status: enabled({busy: true})});
   assert.equal(find(panel, "knowledge-load").disabled, true);
-  assert.equal(find(panel, "knowledge-schedule").disabled, true);
   assert.equal(calls.intervals, 1);
 });
 
-test("switching the schedule on needs confirmation and names the brakes", async () => {
+test("the settings dialog opens from the gear button and holds the current values", async () => {
+  const {panel} = await mount({status: enabled({llm_url: "https://llm.example.invalid/v1", model: "qwen-test",
+    schedule: {enabled: true, anchor_minute: 570, max_per_day: 5}})});
+  const dialog = find(panel, "knowledge-dialog");
+  assert.equal(dialog.tag, "dialog");
+  find(panel, "knowledge-config").listeners.click();
+  assert.equal(dialog.open, true);
+  assert.equal(find(panel, "knowledge-enabled").checked, true);
+  assert.equal(find(panel, "knowledge-endpoint").value, "https://llm.example.invalid/v1");
+  assert.equal(find(panel, "knowledge-model").value, "qwen-test");
+  assert.equal(find(panel, "knowledge-interval").value, "60");
+  assert.equal(find(panel, "knowledge-per-day").value, "5");
+  assert.equal(find(panel, "knowledge-anchor").value, "09:30");
+  assert.equal(find(panel, "knowledge-save").textContent, "SAVE");
+});
+
+test("switching the schedule on (checkbox + SAVE) needs confirmation and names the brakes", async () => {
   const sent = [];
   const post = async (url, options) => {
     sent.push([url, JSON.parse(options.body)]);
     return {ok: true, async json() { return {enabled: true, next_due: 1}; }};
   };
-  const declined = await mount({status: enabled(), confirmAnswer: false, post});
-  find(declined.panel, "knowledge-schedule").listeners.click();
+  const declined = await mount({status: enabled({llm_url: "https://llm.example.invalid/v1", model: "qwen-test"}), confirmAnswer: false, post});
+  find(declined.panel, "knowledge-enabled").checked = true;
+  find(declined.panel, "knowledge-enabled").listeners.change();
+  find(declined.panel, "knowledge-save").listeners.click();
   await tick();
   assert.equal(sent.length, 0);
   assert.match(declined.calls.confirm[0], /1日 3 件まで、未承認が 10 件以上なら停止/);
 
-  const accepted = await mount({status: enabled(), post});
-  find(accepted.panel, "knowledge-schedule").listeners.click();
+  const accepted = await mount({status: enabled({llm_url: "https://llm.example.invalid/v1", model: "qwen-test"}), post});
+  find(accepted.panel, "knowledge-enabled").checked = true;
+  find(accepted.panel, "knowledge-enabled").listeners.change();
+  find(accepted.panel, "knowledge-save").listeners.click();
   await tick();
-  assert.deepEqual(sent, [["/api/v1/knowledge/settings", {enabled: true}]]);
-  assert.match(find(accepted.panel, "knowledge-message").textContent, /定期実行をオンにしました/);
+  assert.equal(sent[0][0], "/api/v1/knowledge/settings");
+  assert.equal(sent[0][1].enabled, true);
+  assert.match(find(accepted.panel, "knowledge-message").textContent, /設定を保存しました/);
 });
 
 test("switching the schedule off needs no confirmation", async () => {
@@ -175,10 +197,13 @@ test("switching the schedule off needs no confirmation", async () => {
     sent.push(JSON.parse(options.body));
     return {ok: true, async json() { return {enabled: false}; }};
   };
-  const {panel, calls} = await mount({status: enabled({schedule: {enabled: true}}), post});
-  find(panel, "knowledge-schedule").listeners.click();
+  const {panel, calls} = await mount({status: enabled({llm_url: "https://llm.example.invalid/v1",
+    model: "qwen-test", schedule: {enabled: true}}), post});
+  find(panel, "knowledge-enabled").checked = false;
+  find(panel, "knowledge-enabled").listeners.change();
+  find(panel, "knowledge-save").listeners.click();
   await tick();
-  assert.deepEqual(sent, [{enabled: false}]);
+  assert.equal(sent[0].enabled, false);
   assert.equal(calls.confirm.length, 0);
 });
 
@@ -190,28 +215,48 @@ test("server errors are shown in Japanese", async () => {
   assert.equal(find(panel, "knowledge-message").textContent, "別の提案を実行中です");
 });
 
-test("the limits form shows current values and saves them in one settings post", async () => {
+test("the form saves every setting, endpoint and model included, in one settings post", async () => {
   const sent = [];
   const post = async (url, options) => {
     sent.push([url, JSON.parse(options.body)]);
     return {ok: true, async json() { return {}; }};
   };
-  const {panel} = await mount({status: enabled({schedule: {anchor_minute: 570, max_per_day: 5}}), post});
-  assert.equal(find(panel, "knowledge-interval").value, "60");
-  assert.equal(find(panel, "knowledge-per-day").value, "5");
-  assert.equal(find(panel, "knowledge-pending").value, "10");
-  assert.equal(find(panel, "knowledge-anchor").value, "09:30");
-  assert.match(allText(find(panel, "knowledge-status")), /基準時刻（日本時間）\|09:30/);
+  const {panel} = await mount({status: enabled({llm_url: "https://llm.example.invalid/v1", model: "qwen-test",
+    schedule: {anchor_minute: 570, max_per_day: 5}}), post});
+  find(panel, "knowledge-endpoint").value = "https://other.example.invalid/v1";
+  find(panel, "knowledge-endpoint").listeners.input();
+  find(panel, "knowledge-model").value = "model-b";
   find(panel, "knowledge-interval").value = "120";
   find(panel, "knowledge-per-day").value = "8";
   find(panel, "knowledge-pending").value = "25";
   find(panel, "knowledge-anchor").value = "";
   find(panel, "knowledge-save").listeners.click();
   await tick();
-  assert.deepEqual(sent, [["/api/v1/knowledge/settings",
-    {interval_seconds: 7200, max_per_day: 8, max_pending: 25, anchor_minute: null}]]);
+  assert.deepEqual(sent, [["/api/v1/knowledge/settings", {enabled: false,
+    llm_url: "https://other.example.invalid/v1", model: "model-b",
+    interval_seconds: 7200, max_per_day: 8, max_pending: 25, anchor_minute: null}]]);
   find(panel, "knowledge-interval").value = "30";
   find(panel, "knowledge-save").listeners.click();
   await tick();
   assert.equal(sent.length, 1);  // below one hour: refused before sending
+  find(panel, "knowledge-interval").value = "120";
+  find(panel, "knowledge-endpoint").value = "ftp://nope";
+  find(panel, "knowledge-save").listeners.click();
+  await tick();
+  assert.equal(sent.length, 1);  // not an http(s) URL: refused before sending
+});
+
+test("the model list is fetched from the endpoint and offered for the Model field", async () => {
+  const sent = [];
+  const post = async (url, options) => {
+    sent.push(url);
+    return {ok: true, async json() { return {version: 1, models: ["m-a", "m-b"]}; }};
+  };
+  const {panel} = await mount({status: enabled({llm_url: "https://llm.example.invalid/v1", model: "m-a"}), post});
+  find(panel, "knowledge-models").listeners.click();
+  await tick();
+  assert.deepEqual(sent, ["/api/v1/knowledge/models"]);
+  const options = find(panel, "knowledge-model-list").children.map((o) => o.value);
+  assert.deepEqual(options, ["m-a", "m-b"]);
+  assert.match(find(panel, "knowledge-message").textContent, /2 件のモデル/);
 });
