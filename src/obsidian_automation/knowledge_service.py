@@ -38,7 +38,7 @@ from .chatgpt_export_inspect import InspectionError, inspect_export
 from .chatgpt_export_normalize import NormalizeError, PARSER_VERSIONS, normalize_export
 from .job_health import job_health
 from .knowledge_proposal import (
-    MAX_SOURCE_BYTES, ProposalError, SourceText, conversation_text,
+    MAX_SOURCE_BYTES, ProposalError, SourceText, conversation_text, split_conversation,
 )
 from .knowledge_proposal_publish import (
     ProposalJournal, PublishError, count_pending_proposals, generate_and_publish,
@@ -133,6 +133,10 @@ class KnowledgeService:
         self.db.execute("CREATE TABLE IF NOT EXISTS runs (run_id TEXT PRIMARY KEY, trigger TEXT NOT NULL,"
                         " status TEXT NOT NULL, source_sha TEXT, archive_sha TEXT, idx INTEGER,"
                         " outcome TEXT, file TEXT, error_code TEXT, created REAL NOT NULL, completed REAL)")
+        try:  # a long conversation is proposed part by part; 0 = the whole conversation
+            self.db.execute("ALTER TABLE runs ADD COLUMN part INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass  # already migrated
         # A run left queued/running by a crash is indeterminate: never replayed.
         self.db.execute("UPDATE runs SET status='unconfirmed',error_code='interrupted',completed=?"
                         " WHERE status IN ('queued','running')", (self.clock(),))
@@ -263,16 +267,24 @@ class KnowledgeService:
         except (InspectionError, NormalizeError):
             raise KnowledgeRefused("not_a_valid_export", 422) from None
         items = []
+        cap = self.config.max_source_bytes
         for index, conversation in enumerate(batch.conversations):
             text = conversation_text(conversation)
             encoded = text.encode("utf-8")
-            items.append({
-                "index": index, "provider": provider, "messages": len(conversation.messages),
-                "bytes": len(encoded), "first_day": _first_day(conversation),
-                "empty": not text.strip(),
-                "fits": len(encoded) <= self.config.max_source_bytes,
-                "source_sha": hashlib.sha256(encoded).hexdigest(),
-            })
+            base = {"index": index, "provider": provider, "messages": len(conversation.messages),
+                    "first_day": _first_day(conversation), "empty": not text.strip()}
+            parts = None
+            if len(encoded) > cap and not base["empty"]:
+                parts = split_conversation(conversation, cap)
+            if parts is None:  # fits whole, is empty, or needs too many parts
+                items.append({**base, "part": 0, "parts": 1, "bytes": len(encoded),
+                              "fits": len(encoded) <= cap,
+                              "source_sha": hashlib.sha256(encoded).hexdigest()})
+                continue
+            for number, part_text in enumerate(parts):
+                part_bytes = part_text.encode("utf-8")
+                items.append({**base, "part": number, "parts": len(parts), "bytes": len(part_bytes),
+                              "fits": True, "source_sha": hashlib.sha256(part_bytes).hexdigest()})
         self._cache[archive_sha] = (provider, items)
         return self._cache[archive_sha]
 
@@ -336,6 +348,7 @@ class KnowledgeService:
                 else:
                     state = blocked.get(item["source_sha"], "new")
                 out.append({"archive": archive_sha, "index": item["index"],
+                            "part": item["part"], "parts": item["parts"],
                             "provider": item["provider"], "messages": item["messages"],
                             "bytes": item["bytes"], "first_day": item["first_day"],
                             "state": state})
@@ -353,8 +366,9 @@ class KnowledgeService:
         return self.config.api_key_file.read_text(encoding="utf-8").strip() or None
 
     def start_manual(self, payload: object) -> dict:
-        if (type(payload) is not dict or set(payload) != {"archive", "index"}
-                or type(payload["index"]) is not int or payload["index"] < 0):
+        if (type(payload) is not dict or not {"archive", "index"} <= set(payload) <= {"archive", "index", "part"}
+                or type(payload["index"]) is not int or payload["index"] < 0
+                or type(payload.get("part", 0)) is not int or payload.get("part", 0) < 0):
             raise KnowledgeRefused("invalid_request", 400)
         self._archive_path(payload["archive"])
         with self._lock:
@@ -363,8 +377,10 @@ class KnowledgeService:
             run_id = uuid.uuid4().hex
             with self.db:
                 self.db.execute(
-                    "INSERT INTO runs (run_id,trigger,status,archive_sha,idx,created) VALUES (?,?,?,?,?,?)",
-                    (run_id, "manual", "queued", payload["archive"], payload["index"], self.clock()))
+                    "INSERT INTO runs (run_id,trigger,status,archive_sha,idx,part,created)"
+                    " VALUES (?,?,?,?,?,?,?)",
+                    (run_id, "manual", "queued", payload["archive"], payload["index"],
+                     payload.get("part", 0), self.clock()))
             self._worker = threading.Thread(target=self._execute, args=(run_id,), daemon=False)
             self._worker.start()
             return {"outcome": "accepted", "run_id": run_id}
@@ -399,36 +415,42 @@ class KnowledgeService:
             return True
 
     def _finish(self, run_id: str, status: str, *, outcome=None, file=None, error=None,
-                source_sha=None, archive_sha=None, idx=None) -> None:
+                source_sha=None, archive_sha=None, idx=None, part=None) -> None:
         assert status in OUTCOME_STATUSES
         with self._lock:
             with self.db:
                 self.db.execute(
                     "UPDATE runs SET status=?,outcome=?,file=?,error_code=?,completed=?,"
                     "source_sha=COALESCE(?,source_sha),archive_sha=COALESCE(?,archive_sha),"
-                    "idx=COALESCE(?,idx) WHERE run_id=?",
-                    (status, outcome, file, error, self.clock(), source_sha, archive_sha, idx, run_id))
+                    "idx=COALESCE(?,idx),part=COALESCE(?,part) WHERE run_id=?",
+                    (status, outcome, file, error, self.clock(), source_sha, archive_sha, idx, part, run_id))
             if status == "skipped":
                 self._last_skip = error
 
-    def _pick_next(self) -> tuple[str, int, str] | None:
-        """Oldest new conversation (by first message day) among the newest archives."""
+    @staticmethod
+    def _find(items: list[dict], index: int, part: int) -> dict | None:
+        return next((i for i in items if i["index"] == index and i["part"] == part), None)
+
+    def _pick_next(self) -> tuple[str, int, int, str] | None:
+        """Oldest new conversation part (by first message day, then part) among the newest archives."""
         listing = self.conversations()["conversations"]
         candidates = [c for c in listing if c["state"] == "new"]
         if not candidates:
             return None
-        candidates.sort(key=lambda c: (c["first_day"] == "-", c["first_day"], c["archive"], c["index"]))
+        candidates.sort(key=lambda c: (c["first_day"] == "-", c["first_day"], c["archive"],
+                                       c["index"], c["part"]))
         chosen = candidates[0]
         _, items = self._summaries(chosen["archive"])
-        return chosen["archive"], chosen["index"], items[chosen["index"]]["source_sha"]
+        item = self._find(items, chosen["index"], chosen["part"])
+        return chosen["archive"], chosen["index"], chosen["part"], item["source_sha"]
 
     def _execute(self, run_id: str) -> None:
         with self._lock:
             with self.db:
                 self.db.execute("UPDATE runs SET status='running' WHERE run_id=?", (run_id,))
-            row = self.db.execute("SELECT trigger,archive_sha,idx FROM runs WHERE run_id=?",
+            row = self.db.execute("SELECT trigger,archive_sha,idx,part FROM runs WHERE run_id=?",
                                   (run_id,)).fetchone()
-        trigger, archive_sha, index = row
+        trigger, archive_sha, index, part = row
         source_sha = None
         try:
             if trigger == "scheduled":
@@ -445,14 +467,22 @@ class KnowledgeService:
                 if picked is None:
                     self._finish(run_id, "skipped", error="nothing_to_do")
                     return
-                archive_sha, index, source_sha = picked
+                archive_sha, index, part, source_sha = picked
             provider, items = self._summaries(archive_sha)
-            if index >= len(items) or not items[index]["fits"] or items[index]["empty"]:
+            item = self._find(items, index, part)
+            if item is None or not item["fits"] or item["empty"]:
                 raise KnowledgeRefused("conversation_not_usable", 422)
-            source_sha = items[index]["source_sha"]
+            source_sha = item["source_sha"]
             batch = normalize_export(self._archive_path(archive_sha), scope="private-" + provider,
                                      provider=provider)
-            text = conversation_text(batch.conversations[index])
+            conversation = batch.conversations[index]
+            if item["parts"] == 1:
+                text = conversation_text(conversation)
+            else:
+                parts = split_conversation(conversation, self.config.max_source_bytes)
+                if parts is None or len(parts) != item["parts"]:
+                    raise KnowledgeRefused("conversation_changed", 409)
+                text = parts[part]
             if hashlib.sha256(text.encode("utf-8")).hexdigest() != source_sha:
                 raise KnowledgeRefused("conversation_changed", 409)
             journal = ProposalJournal(self.journal_dir)
@@ -468,18 +498,18 @@ class KnowledgeService:
                 journal.close()
             self._finish(run_id, "proposed", outcome=report.get("outcome", report["status"]),
                          file=report.get("file"), source_sha=source_sha,
-                         archive_sha=archive_sha, idx=index)
+                         archive_sha=archive_sha, idx=index, part=part)
         except PublishError as exc:
             unconfirmed = str(exc) == "outcome_unconfirmed"
             self._finish(run_id, "unconfirmed" if unconfirmed else "failed", error=str(exc),
-                         source_sha=source_sha, archive_sha=archive_sha, idx=index)
+                         source_sha=source_sha, archive_sha=archive_sha, idx=index, part=part)
         except (ProposalError, KnowledgeRefused) as exc:
             self._finish(run_id, "failed", error=str(exc), source_sha=source_sha,
-                         archive_sha=archive_sha, idx=index)
+                         archive_sha=archive_sha, idx=index, part=part)
         except Exception:
             # Never persist an exception text: it can hold paths, URLs or note text.
             self._finish(run_id, "unconfirmed", error="unexpected_exception",
-                         source_sha=source_sha, archive_sha=archive_sha, idx=index)
+                         source_sha=source_sha, archive_sha=archive_sha, idx=index, part=part)
 
     def close(self) -> None:
         worker = self._worker

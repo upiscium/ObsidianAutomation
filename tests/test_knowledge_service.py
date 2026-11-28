@@ -100,7 +100,7 @@ def test_listing_is_count_only_deduplicated_and_marks_what_was_proposed(env):
     blob = json.dumps(listing)
     assert "private" not in blob and "question" not in blob
     assert set(listing["conversations"][0]) == {
-        "archive", "index", "provider", "messages", "bytes", "first_day", "state"}
+        "archive", "index", "part", "parts", "provider", "messages", "bytes", "first_day", "state"}
     env.service.start_manual({"archive": first(listing)["archive"], "index": first(listing)["index"]})
     env.wait()
     after = env.service.conversations()
@@ -363,7 +363,7 @@ def test_the_app_refuses_an_incomplete_or_unsafe_knowledge_configuration(
 def test_a_small_context_model_gets_a_lower_source_limit_and_empty_chats_are_labelled(tmp_path, store):
     env = Env(tmp_path, store, max_source_bytes=1024)
     try:
-        long_chat = claude("big", "2026-01-01", question="x" * 1500)
+        long_chat = claude("big", "2026-01-01", question="x" * 12000)  # > 8 parts of 1 KiB
         empty_chat = dict(claude("none", "2026-01-02"), chat_messages=[])
         env.import_zip([long_chat, empty_chat, claude("small", "2026-01-03")])
         listing = env.service.conversations()
@@ -467,3 +467,55 @@ def test_limits_and_base_time_are_editable_persist_and_validate(env):
     st = again.status()["schedule"]
     assert (st["max_per_day"], st["anchor_minute"]) == (8, 570)
     again.close()
+
+
+def test_a_long_conversation_is_proposed_part_by_part_and_the_schedule_walks_the_parts(tmp_path, store):
+    env = Env(tmp_path, store, max_source_bytes=2048)
+    try:
+        # about 4 KiB of question text: three parts of at most 2 KiB each
+        env.import_zip([claude("long", "2026-01-01", question="line\n" * 800)])
+        listing = env.service.conversations()
+        rows = listing["conversations"]
+        assert [(c["part"], c["parts"], c["state"]) for c in rows] == [(0, 3, "new"), (1, 3, "new"), (2, 3, "new")]
+        assert all(c["bytes"] <= 2048 for c in rows)
+        env.service.update_settings({"enabled": True})
+        for expected in (1, 2, 3):
+            env.now[0] += 3601
+            assert env.service.tick() is True
+            env.wait()
+            assert len(env.llm.calls) == expected
+            assert env.service.status()["recent_runs"][0]["status"] == "proposed"
+        sent = [json.dumps(call, ensure_ascii=False) for call in env.llm.calls]
+        for number, text in enumerate(sent, 1):
+            assert f"長い会話の一部 {number}/3" in text
+        states = [c["state"] for c in env.service.conversations()["conversations"]]
+        assert states == ["proposed"] * 3
+        env.now[0] += 86400  # next JST day: the daily cap is not what stops it
+        env.service.tick()
+        env.wait()
+        assert env.service.status()["recent_runs"][0]["error_code"] == "nothing_to_do"
+    finally:
+        env.service.close()
+
+
+def test_a_single_part_can_be_started_by_hand_and_a_bad_part_is_refused(tmp_path, store):
+    env = Env(tmp_path, store, max_source_bytes=2048)
+    try:
+        env.import_zip([claude("long", "2026-01-01", question="line\n" * 800)])
+        row = env.service.conversations()["conversations"][1]
+        env.service.start_manual({"archive": row["archive"], "index": row["index"], "part": 1})
+        env.wait()
+        assert env.service.status()["recent_runs"][0]["status"] == "proposed"
+        assert len(env.llm.calls) == 1 and "2/3" in json.dumps(env.llm.calls[0], ensure_ascii=False)
+        states = [c["state"] for c in env.service.conversations()["conversations"]]
+        assert states == ["new", "proposed", "new"]
+        env.service.start_manual({"archive": row["archive"], "index": row["index"], "part": 9})
+        env.wait()
+        run = env.service.status()["recent_runs"][0]
+        assert (run["status"], run["error_code"]) == ("failed", "conversation_not_usable")
+        for bad in ({"archive": row["archive"], "index": 0, "part": -1},
+                    {"archive": row["archive"], "index": 0, "part": "1"}):
+            with pytest.raises(KnowledgeRefused):
+                env.service.start_manual(bad)
+    finally:
+        env.service.close()

@@ -196,3 +196,24 @@ def test_a_lower_source_limit_refuses_a_conversation_before_any_request(tmp_path
     with pytest.raises(ProposalError, match="source_too_large"):
         propose(tmp_path / "ai", huge, base_url=BASE, model=MODEL, transport=transport,
                 max_source_bytes=MAX_SOURCE_BYTES * 4)
+
+
+def test_split_conversation_is_deterministic_bounded_and_lossless():
+    from types import SimpleNamespace
+    from obsidian_automation.knowledge_proposal import MAX_PARTS, split_conversation
+
+    def convo(*texts):
+        return SimpleNamespace(messages=tuple(
+            SimpleNamespace(role="user" if i % 2 == 0 else "assistant", text=t)
+            for i, t in enumerate(texts)))
+
+    chat = convo("あ" * 300, "b\n" * 600, "c" * 50)
+    parts = split_conversation(chat, 1024)
+    assert parts == split_conversation(chat, 1024)
+    assert parts is not None and 1 < len(parts) <= MAX_PARTS
+    assert all(len(p.encode("utf-8")) <= 1024 for p in parts)
+    assert all(p.startswith(f"[長い会話の一部 {n}/{len(parts)}]") for n, p in enumerate(parts, 1))
+    joined = "".join(parts)
+    assert joined.count("あ") == 300 and joined.count("c") >= 50  # no text is dropped
+    assert split_conversation(convo("x" * 20000), 1024) is None      # too many parts
+    assert split_conversation(chat, 400) is None                     # cap too small to split safely

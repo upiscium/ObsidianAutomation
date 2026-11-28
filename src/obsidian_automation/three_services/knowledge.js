@@ -8,7 +8,7 @@
   const PROVIDER = {chatgpt: "ChatGPT", claude: "Claude"};
   const STATE = {
     new: "未処理", proposed: "提案済み", failed: "失敗（手動で再試行）",
-    unconfirmed: "結果不明（手動で再試行）", too_large: "長すぎる（モデルの入力上限）", empty: "空"
+    unconfirmed: "結果不明（手動で再試行）", too_large: "長すぎる（分割しても入りきらない）", empty: "空"
   };
   const RUN = {
     queued: "待機中", running: "実行中", proposed: "提案を作成", failed: "失敗",
@@ -169,7 +169,7 @@
       const button = text("button", "提案を作る", {className: "outline", disabled: busy || !actionable});
       button.addEventListener("click", () => start(item));
       table.appendChild(el("tr", {}, [
-        text("td", String(item.index + 1)), text("td", PROVIDER[item.provider] || item.provider),
+        text("td", String(item.index + 1) + (item.parts > 1 ? "（" + (item.part + 1) + "/" + item.parts + "）" : "")), text("td", PROVIDER[item.provider] || item.provider),
         text("td", String(item.messages)), text("td", Math.ceil(item.bytes / 1024) + " KiB"),
         text("td", item.first_day), text("td", STATE[item.state] || item.state),
         el("td", {}, actionable ? [button] : [])]));
@@ -183,7 +183,7 @@
         "既存のファイルは変更しません。よろしいですか。")) return;
     setMessage("提案を開始しています…");
     try {
-      await post("/api/v1/knowledge/runs", {archive: item.archive, index: item.index});
+      await post("/api/v1/knowledge/runs", {archive: item.archive, index: item.index, part: item.part || 0});
       setMessage("実行中です。完了まで数分かかることがあります。");
     } catch (e) { setMessage(describe(e.message)); }
     await refresh();
