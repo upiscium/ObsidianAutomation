@@ -7,7 +7,7 @@
   if (!mount) return;
   const LABEL = {
     snapshot: "Snapshot（バックアップ）", daily: "GitHub Daily",
-    core_promotion: "Core Promotion", knowledge: "知識提案"
+    core_promotion: "Core Promotion", knowledge: "知識提案", project_status: "Projectの状態更新"
   };
   const REFRESH_MS = 60000;
 
