@@ -186,7 +186,14 @@ start-up arguments, not panel fields.
 - **Same engine as the CLI.** A run is `generate_and_publish` (create-only into
   `04-AI/Proposals/`, exact-byte readback, pinned-root guard) and shares the CLI's
   journal, so a conversation proposed by either is never generated twice. The
-  states are `new`, `proposed`, `failed`, `unconfirmed` and `too_large`.
+  states are `new`, `proposed`, `failed`, `unconfirmed`, `empty` and `too_large`.
+- **Long conversations are proposed part by part.** A conversation above the model's
+  input limit (`--knowledge-max-source-bytes`) is cut at message boundaries (an
+  over-long message at line boundaries) into at most 8 parts; each part is its own
+  source with its own journal key, run and proposal note, and starts with a
+  `[長い会話の一部 i/n]` line. The schedule takes parts in order, under the same
+  daily and pending limits. A conversation needing more than 8 parts stays
+  `too_large`. Part number and count are shown in the panel; no text is.
 - **Opt-in schedule, brakes first** (all start-up arguments):
   `--knowledge-interval-seconds` (default and minimum 3600),
   `--knowledge-max-per-day` (default 3, per Japan-time day) and

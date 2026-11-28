@@ -42,7 +42,9 @@ PROVENANCE_VERSION = 1
 # fixed digest of this pipeline's name stands in for a commit id.
 IMPLEMENTATION_REVISION = hashlib.sha256(b"obsidian-automation knowledge-proposal-v0").hexdigest()
 QUERY = (
-    "Write one durable knowledge note from the conversation below. Keep only "
+    "Write one durable knowledge note from the text below (a conversation, or one "
+    "part of a long conversation). Use one consistent writing style throughout "
+    "the note and do not mix polite and plain forms. Keep only "
     "knowledge worth keeping; omit chit-chat, secrets and personal data."
 )
 
@@ -81,6 +83,75 @@ class Proposal:
 
 def conversation_text(conversation: SelectedConversation) -> str:
     return "\n\n".join(f"[{m.role}]\n{m.text}" for m in conversation.messages)
+
+
+# A conversation above the model's input limit is cut into parts at message
+# boundaries (an over-long message at line boundaries). Each part is a separate
+# source: it gets its own proposal, journal key and run.
+MAX_PARTS = 8
+_PART_HEADER_ALLOWANCE = 64   # bytes reserved for the "[part i/n]" line
+
+
+def _hard_split(text: str, budget: int) -> list[str]:
+    """Cut one long line at character boundaries so each piece is <= budget bytes."""
+    pieces, current, size = [], [], 0
+    for char in text:
+        width = len(char.encode("utf-8"))
+        if size + width > budget and current:
+            pieces.append("".join(current))
+            current, size = [], 0
+        current.append(char)
+        size += width
+    if current:
+        pieces.append("".join(current))
+    return pieces
+
+
+def _split_block(block: str, budget: int, label: str) -> list[str]:
+    if len(block.encode("utf-8")) <= budget:
+        return [block]
+    continued = f"[{label}（続き）]\n"
+    room = budget - len(continued.encode("utf-8"))
+    pieces: list[str] = []
+    current, size = [], 0
+    for line in block.split("\n"):
+        for part in ([line] if len(line.encode("utf-8")) + 1 <= room else _hard_split(line, room - 1)):
+            width = len(part.encode("utf-8")) + 1
+            if size + width > room and current:
+                pieces.append("\n".join(current))
+                current, size = [], 0
+            current.append(part)
+            size += width
+    if current:
+        pieces.append("\n".join(current))
+    return [pieces[0]] + [continued + piece for piece in pieces[1:]]
+
+
+def split_conversation(conversation: SelectedConversation, cap: int) -> list[str] | None:
+    """Parts of a conversation, each (with its header) at most ``cap`` bytes; ``None``
+    when it would need more than MAX_PARTS. Deterministic for the same input."""
+    budget = cap - _PART_HEADER_ALLOWANCE
+    if budget < 512:
+        return None
+    blocks: list[str] = []
+    for message in conversation.messages:
+        blocks.extend(_split_block(f"[{message.role}]\n{message.text}", budget, message.role))
+    parts: list[str] = []
+    current, size = [], 0
+    for block in blocks:
+        width = len(block.encode("utf-8")) + (2 if current else 0)
+        if size + width > budget and current:
+            parts.append("\n\n".join(current))
+            current, size = [], 0
+            width = len(block.encode("utf-8"))
+        current.append(block)
+        size += width
+    if current:
+        parts.append("\n\n".join(current))
+    if not parts or len(parts) > MAX_PARTS:
+        return None
+    total = len(parts)
+    return [f"[長い会話の一部 {number}/{total}]\n\n{body}" for number, body in enumerate(parts, 1)]
 
 
 def check_active_content(text: str) -> None:

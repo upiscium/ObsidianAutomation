@@ -95,7 +95,8 @@ content that would execute in Obsidian (Meta Bind, Dataview/Templater blocks,
 `BUTTON[` / `INPUT[` inline controls, `obsidian://` and `javascript:` links,
 script tags) is refused before anything is written. Approval is the existing
 "Knowledgeに昇格" button in ObsidianCore (upiscium/ObsidianCore#247), which moves
-the note to `11-Knowledge/`. A conversation larger than 128 KiB is refused
+the note to `11-Knowledge/`. A conversation larger than the model's input limit is
+proposed part by part (up to 8 parts); one larger than 128 KiB is refused
 (`source_too_large`). Design: `docs/knowledge-lite-design.md`.
 
 **AI/Knowledge (B1), step 1: library only.** `context_selection`,

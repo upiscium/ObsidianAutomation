@@ -140,7 +140,7 @@ test("starting a run asks for confirmation; cancelling sends nothing", async () 
   buttons(find(accepted.panel, "knowledge-list")).find((b) => b.textContent === "提案を作る").listeners.click();
   await tick();
   assert.deepEqual(sent.filter(([url]) => url.endsWith("/runs")),
-    [["/api/v1/knowledge/runs", {archive: "a".repeat(64), index: 0}]]);
+    [["/api/v1/knowledge/runs", {archive: "a".repeat(64), index: 0, part: 0}]]);
 });
 
 test("while a run is busy the controls are disabled and the panel polls", async () => {
