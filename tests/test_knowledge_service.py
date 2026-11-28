@@ -519,3 +519,63 @@ def test_a_single_part_can_be_started_by_hand_and_a_bad_part_is_refused(tmp_path
                 env.service.start_manual(bad)
     finally:
         env.service.close()
+
+
+def test_endpoint_and_model_are_editable_validated_and_survive_a_restart(env):
+    env.service.update_settings({"llm_url": "https://other.example.invalid/v1", "model": "model-b"})
+    status = env.service.status()
+    assert (status["llm_url"], status["model"]) == ("https://other.example.invalid/v1", "model-b")
+    env.service.close()
+    env.build()
+    status = env.service.status()
+    assert (status["llm_url"], status["model"]) == ("https://other.example.invalid/v1", "model-b")
+    for bad in ({"llm_url": "ftp://x.example/v1"}, {"llm_url": "https://u:p@x.example/v1"},
+                {"llm_url": "https://x.example/v1?key=1"}, {"llm_url": "https://x.example/v1#f"},
+                {"llm_url": "x"}, {"llm_url": 5}, {"llm_url": "https://x.example/ v1"},
+                {"model": ""}, {"model": " m"}, {"model": 'a"b'}, {"model": "x" * 121}, {"model": 3}):
+        with pytest.raises(KnowledgeRefused):
+            env.service.update_settings(bad)
+    assert env.service.status()["model"] == "model-b"  # a refused change leaves the settings alone
+
+
+def test_saving_unchanged_schedule_values_does_not_move_the_next_run(env):
+    env.service.update_settings({"enabled": True, "interval_seconds": 7200})
+    first = env.service.settings()["next_due"]
+    env.now[0] += 600
+    env.service.update_settings({"enabled": True, "interval_seconds": 7200, "max_per_day": 5})
+    assert env.service.settings()["next_due"] == first
+    env.service.update_settings({"interval_seconds": 3600})
+    assert env.service.settings()["next_due"] == env.now[0] + 3600
+
+
+def test_the_model_list_comes_from_the_configured_endpoint_and_failures_are_a_fixed_code(env):
+    seen = []
+
+    def fetch(url, key, timeout):
+        seen.append(url)
+        return ["m-b", "m-a", "m-a", "bad model\n", 'q"x']
+    env.service.models_fetch = fetch
+    assert env.service.models() == {"version": 1, "models": ["m-a", "m-b"]}
+    assert seen == [LLM_URL]
+
+    def boom(url, key, timeout):
+        raise OSError("secret-host connection refused")
+    env.service.models_fetch = boom
+    with pytest.raises(KnowledgeRefused) as refused:
+        env.service.models()
+    assert refused.value.code == "models_unavailable" and "secret" not in str(refused.value)
+
+
+def test_the_models_route_is_guarded_and_returns_ids(env):
+    env.service.models_fetch = lambda url, key, timeout: ["m-a"]
+    on = Api(env.service)
+    try:
+        assert on.post("/api/v1/knowledge/models", {}, csrf=False)[0] == 403
+        assert on.post("/api/v1/knowledge/models", {}, origin=False)[0] == 403
+        assert on.post("/api/v1/knowledge/models", {"x": 1})[0] == 400
+        code, body = on.post("/api/v1/knowledge/models", {})
+        assert code == 200 and body["models"] == ["m-a"]
+        env.service.models_fetch = lambda url, key, timeout: (_ for _ in ()).throw(OSError("x"))
+        assert on.post("/api/v1/knowledge/models", {})[0] == 502
+    finally:
+        on.close()

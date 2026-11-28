@@ -192,12 +192,13 @@ class ProjectStatusService:
         with self._lock:
             current = self.settings()
             enabled = payload.get("enabled", current["enabled"])
+            schedule_changed = (config.interval_seconds != self.config.interval_seconds
+                                or anchor != self.anchor_minute)
             self.config, self.anchor_minute = config, anchor
             due = current["next_due"]
             if not enabled:
                 due = None
-            elif (not current["enabled"] or due is None
-                    or {"interval_seconds", "anchor_minute"} & set(payload)):
+            elif (not current["enabled"] or due is None or schedule_changed):
                 due = self._next_slot(self.clock())
             with self.db:
                 self.db.execute(

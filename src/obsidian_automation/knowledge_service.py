@@ -103,7 +103,7 @@ def _jst_midnight(now: float) -> float:
 class KnowledgeService:
     def __init__(self, state: Path, *, shared, guard: Callable[[], object] | None,
                  config: KnowledgeConfig, transport=None, json_transport=None,
-                 clock: Callable[[], float] = time.time):
+                 clock: Callable[[], float] = time.time, models_fetch=None):
         self.state = state
         self.chat_root = state / "chat-import"
         self.root = state / "knowledge"
@@ -112,6 +112,7 @@ class KnowledgeService:
         self.journal_dir = state / "knowledge-proposals"
         self.shared, self.guard, self.config = shared, guard, config
         self.transport, self.json_transport, self.clock = transport, json_transport, clock
+        self.models_fetch = models_fetch or _fetch_models
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.root / "service.sqlite3", check_same_thread=False)
         self.db.execute("CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK(id=1),"
@@ -121,13 +122,19 @@ class KnowledgeService:
         self.db.execute("CREATE TABLE IF NOT EXISTS limits (id INTEGER PRIMARY KEY CHECK(id=1),"
                         " interval_seconds INTEGER, max_per_day INTEGER, max_pending INTEGER,"
                         " anchor_minute INTEGER)")
-        self.db.execute("INSERT OR IGNORE INTO limits VALUES (1,NULL,NULL,NULL,NULL)")
-        row = self.db.execute("SELECT interval_seconds,max_per_day,max_pending,anchor_minute"
-                              " FROM limits WHERE id=1").fetchone()
+        for column in ("llm_url", "model"):  # endpoint and model chosen in the panel
+            try:
+                self.db.execute(f"ALTER TABLE limits ADD COLUMN {column} TEXT")
+            except sqlite3.OperationalError:
+                pass  # already migrated
+        self.db.execute("INSERT OR IGNORE INTO limits (id) VALUES (1)")
+        row = self.db.execute("SELECT interval_seconds,max_per_day,max_pending,anchor_minute,"
+                              "llm_url,model FROM limits WHERE id=1").fetchone()
         self.anchor_minute: int | None = row[3]
         try:
             self.config = replace(self.config, **{k: v for k, v in zip(
-                ("interval_seconds", "max_per_day", "max_pending"), row[:3]) if v is not None})
+                ("interval_seconds", "max_per_day", "max_pending", "llm_url", "model"),
+                (*row[:3], row[4], row[5])) if v is not None})
         except ValueError:
             pass  # a stored value that no longer validates falls back to the command line
         self.db.execute("CREATE TABLE IF NOT EXISTS runs (run_id TEXT PRIMARY KEY, trigger TEXT NOT NULL,"
@@ -168,6 +175,7 @@ class KnowledgeService:
                 "SELECT COUNT(*) FROM runs WHERE status='proposed' AND completed>=?", (today,)).fetchone()[0]
             return {
                 "version": 1, "enabled": True, "model": self.config.model,
+                "llm_url": self.config.llm_url,
                 "schedule": {"enabled": settings["enabled"], "next_due": settings["next_due"],
                              "interval_seconds": self.config.interval_seconds,
                              "max_per_day": self.config.max_per_day,
@@ -198,7 +206,8 @@ class KnowledgeService:
     def update_settings(self, payload: object) -> dict:
         """Any subset of enabled / interval_seconds / max_per_day / max_pending /
         anchor_minute (0..1439, JST, or null to clear); nothing else."""
-        allowed = {"enabled", "interval_seconds", "max_per_day", "max_pending", "anchor_minute"}
+        allowed = {"enabled", "interval_seconds", "max_per_day", "max_pending", "anchor_minute",
+                   "llm_url", "model"}
         if (type(payload) is not dict or not payload or not set(payload) <= allowed
                 or ("enabled" in payload and type(payload["enabled"]) is not bool)):
             raise KnowledgeRefused("invalid_request", 400)
@@ -206,24 +215,31 @@ class KnowledgeService:
         if anchor is not None and (type(anchor) is not int or not 0 <= anchor < 1440):
             raise KnowledgeRefused("invalid_request", 400)
         try:
+            if "llm_url" in payload and not _valid_llm_url(payload["llm_url"]):
+                raise ValueError("llm_url")
+            if "model" in payload and not _valid_model(payload["model"]):
+                raise ValueError("model")
             config = replace(self.config, **{k: payload[k] for k in
-                             ("interval_seconds", "max_per_day", "max_pending") if k in payload})
+                             ("interval_seconds", "max_per_day", "max_pending", "llm_url", "model")
+                             if k in payload})
         except ValueError:
             raise KnowledgeRefused("invalid_request", 400)
         with self._lock:
             current = self.settings()
             enabled = payload.get("enabled", current["enabled"])
+            schedule_changed = (config.interval_seconds != self.config.interval_seconds
+                                or anchor != self.anchor_minute)
             self.config, self.anchor_minute = config, anchor
             due = current["next_due"]
             if not enabled:
                 due = None
-            elif (not current["enabled"] or due is None
-                    or {"interval_seconds", "anchor_minute"} & set(payload)):
+            elif (not current["enabled"] or due is None or schedule_changed):
                 due = self._next_slot(self.clock())
             with self.db:
                 self.db.execute("UPDATE limits SET interval_seconds=?,max_per_day=?,max_pending=?,"
-                                "anchor_minute=? WHERE id=1",
-                                (config.interval_seconds, config.max_per_day, config.max_pending, anchor))
+                                "anchor_minute=?,llm_url=?,model=? WHERE id=1",
+                                (config.interval_seconds, config.max_per_day, config.max_pending, anchor,
+                                 config.llm_url, config.model))
                 self.db.execute("UPDATE settings SET enabled=?,next_due=? WHERE id=1",
                                 (int(enabled), due))
             self._last_skip = None
@@ -511,8 +527,55 @@ class KnowledgeService:
             self._finish(run_id, "unconfirmed", error="unexpected_exception",
                          source_sha=source_sha, archive_sha=archive_sha, idx=index, part=part)
 
+    def models(self) -> dict:
+        """Model ids the configured endpoint offers (OpenAI-compatible GET <base>/models)."""
+        try:
+            ids = self.models_fetch(self.config.llm_url, self._api_key(), 15.0)
+        except Exception:
+            raise KnowledgeRefused("models_unavailable", 502) from None
+        clean = sorted({i for i in ids if _valid_model(i)})[:100]
+        return {"version": 1, "models": clean}
+
     def close(self) -> None:
         worker = self._worker
         if worker is not None and worker.is_alive():
             worker.join(timeout=5)
         self.db.close()
+
+
+def _valid_llm_url(value: object) -> bool:
+    """An http(s) base URL without credentials, query or fragment (the endpoint is chosen in the panel)."""
+    from urllib.parse import urlsplit
+    if type(value) is not str or not 8 <= len(value) <= 300 or not value.isprintable() or " " in value:
+        return False
+    try:
+        parts = urlsplit(value)
+        parts.port  # noqa: B018 (raises on a bad port)
+    except ValueError:
+        return False
+    return (parts.scheme in ("http", "https") and bool(parts.hostname)
+            and not parts.username and not parts.password and not parts.query and not parts.fragment)
+
+
+def _valid_model(value: object) -> bool:
+    return (type(value) is str and 1 <= len(value) <= 120 and value.isprintable()
+            and value == value.strip() and not any(c in value for c in "\"'\\<>"))
+
+
+def _fetch_models(base_url: str, api_key: str | None, timeout: float) -> list[str]:
+    """GET <base>/models; the reply is bounded (256 KiB) and only string ids are read."""
+    import json as _json
+    import urllib.request
+    request = urllib.request.Request(base_url.rstrip("/") + "/models", method="GET")
+    request.add_header("Accept", "application/json")
+    if api_key:
+        request.add_header("Authorization", "Bearer " + api_key)
+    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 (http/https only)
+        body = response.read(256 * 1024 + 1)
+    if len(body) > 256 * 1024:
+        raise ValueError("too large")
+    data = _json.loads(body.decode("utf-8"))
+    items = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        raise ValueError("unexpected shape")
+    return [item["id"] for item in items if isinstance(item, dict) and isinstance(item.get("id"), str)]

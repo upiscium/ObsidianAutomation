@@ -347,7 +347,7 @@ test("saving without phase-preview never changes configured job", async () => {
   el("snapshot-save").listeners.click();
   for (let i=0;i<5;i++)await new Promise(resolve=>setImmediate(resolve));
   assert.equal(mutated,false);
-  assert.match(el("snapshot-message").textContent,/Previewしてください/);
+  assert.match(el("eva-warning-text").textContent,/Previewしてください/);
 });
 
 
@@ -368,7 +368,7 @@ test("schedule values individually mark saved versus changed while Save stays at
   assert.match(el("snapshot-anchor-state").textContent,/未保存/);
   assert.equal(el("snapshot-interval-state").dataset.state,"verified");
   assert.equal(el("snapshot-enabled-state").dataset.state,"verified");
-  assert.match(el("snapshot-preview-result").textContent,/Previewしてください/);
+  assert.equal(el("snapshot-preview-result").textContent, "");  // no instruction text: a missing Preview shows the in-page warning on SAVE
 });
 
 
@@ -479,8 +479,16 @@ test("missing credentials have no mask, staged credentials have a fixed mask but
 
 test("UI copy matches operator request without extra footer or schedule success prose", async () => {
   const html=fs.readFileSync("src/obsidian_automation/three_services/index.html","utf8");
-  assert.equal(html.match(/起点時刻\(Asia\/Tokyo\)/g)?.length,3);
-  assert.equal(html.includes("起点時刻（Asia/Tokyo）"),false);
+  assert.equal(html.match(/起点時刻<input/g)?.length,3);
+  assert.equal(html.includes("Asia/Tokyo"),false);
+  assert.equal(html.match(/実行間隔\(秒\)</g)?.length,3);
+  assert.equal(html.includes("（秒）"),false);
+  for(const gone of ["Vault → private Gitea","GitHub ObsidianCore → Vault","GitHub Issue / PR → 前日JSTのDaily Note",
+    "起点時刻を保存する前にPreview","設定を保存","次の3回をプレビュー","最終実行","次回予定"])
+    assert.equal(html.includes(gone),false,gone);
+  for(const label of ["Status","Last run","Next run","Preview","SAVE","Run Once"])assert.ok(html.includes(label),label);
+  assert.equal(html.match(/<dialog class="eva-dialog" id="(snapshot|core-promotion|daily)-dialog"/g)?.length,3);
+  assert.equal(html.match(/class="outline gear"/g)?.length,3);
   assert.ok(html.includes("RootやSystemの変更後は再検証が必要です。変更した機能の自動実行はOffになります。"));
   for(const deleted of [
     "Vault内のファイルは移動・編集しません。",
