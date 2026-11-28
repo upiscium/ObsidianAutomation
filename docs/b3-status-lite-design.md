@@ -61,3 +61,8 @@ unattended writer must not be able to loop or race the owner:
 * **Health.** Three failed runs in a row show the failure banner. A run counts as failed when
   it raised, or a write failed for any reason other than the owner having edited the note
   meanwhile (`note_changed` is normal).
+* **Settings in the panel** (like the knowledge panel): interval, base time (JST), changes
+  per run, changes per Japan-time day (default 30; a capped day is a skipped slot, not a
+  failure), minimum interval between two changes of the same note (default 24 hours) and the
+  number of days that counts as active (default: the Daily watcher's 7). Values are stored in
+  the service database and survive a restart; the command-line values are the defaults.

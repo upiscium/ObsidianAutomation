@@ -2,8 +2,9 @@
    Rendered only when the server was started with --chat-import-ui. */
 (() => {
   "use strict";
-  const mount = document.querySelector("main");
-  if (!mount) return;
+  const main = document.querySelector("main");
+  if (!main) return;
+  const mount = (document.getElementById && document.getElementById("panels")) || main;
   const LABELS = {chatgpt: "ChatGPT", claude: "Claude"};
   const errors = {
     import_busy: "別の取り込み処理が進行中です",
@@ -81,8 +82,8 @@
     "ChatGPT / Claudeのエクスポートを、個人用の取り込み領域に保管し件数だけを記録します。" +
     "Vault・WebDAV・外部サービスへは何も書き込まず、自動実行もしません。", {className: "muted"});
 
-  const panel = el("details", {className: "connections", id: "chat-import"}, [
-    text("summary", "チャット履歴の取り込み（ChatGPT / Claude）"), note,
+  const panel = el("section", {className: "connections panel", id: "chat-import"}, [
+    el("div", {className: "service-header"}, [text("h2", "チャット履歴の取り込み（ChatGPT / Claude）")]), note,
     el("label", {}, [text("span", "エクスポートZIP"), fileInput]),
     el("div", {className: "actions"}, [uploadButton]),
     el("label", {}, [text("span", "形式"), provider]),

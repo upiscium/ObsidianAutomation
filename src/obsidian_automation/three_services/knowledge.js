@@ -3,8 +3,9 @@
    creates one proposal note in the Vault (04-AI/Proposals/, create-only). */
 (() => {
   "use strict";
-  const mount = document.querySelector("main");
-  if (!mount) return;
+  const main = document.querySelector("main");
+  if (!main) return;
+  const mount = (document.getElementById && document.getElementById("panels")) || main;
   const PROVIDER = {chatgpt: "ChatGPT", claude: "Claude"};
   const STATE = {
     new: "未処理", proposed: "提案済み", failed: "失敗（手動で再試行）",
@@ -84,8 +85,8 @@
   const listBox = el("div", {id: "knowledge-list"});
   const runsBox = el("div", {id: "knowledge-runs"});
 
-  const panel = el("details", {className: "connections", id: "knowledge"}, [
-    text("summary", "知識提案（ローカルLLM）"), note, message, statusBox,
+  const panel = el("section", {className: "connections panel", id: "knowledge"}, [
+    el("div", {className: "service-header"}, [text("h2", "知識提案（ローカルLLM）")]), note, message, statusBox,
     text("h3", "定期実行の設定"), settingsForm,
     el("div", {className: "actions"}, [scheduleButton]),
     el("div", {className: "actions"}, [loadButton]), listBox,

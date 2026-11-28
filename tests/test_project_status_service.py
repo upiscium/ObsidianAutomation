@@ -190,3 +190,70 @@ def test_routes_are_off_without_the_service_and_guarded_with_it(env):
         assert any(s["service"] == "project_status" for s in health["services"])
     finally:
         on.close()
+
+
+def test_settings_are_editable_validated_and_survive_a_restart(env, tmp_path, store):
+    saved = env.service.update_settings({"interval_seconds": 7200, "max_changes": 3, "max_per_day": 5,
+                                         "cooldown_hours": 12, "active_window_days": 14,
+                                         "anchor_minute": 9 * 60 + 30})
+    assert saved["enabled"] is False
+    schedule = env.service.status()["schedule"]
+    assert (schedule["interval_seconds"], schedule["max_changes"], schedule["max_per_day"],
+            schedule["cooldown_hours"], schedule["active_window_days"], schedule["anchor_minute"]) == (
+        7200, 3, 5, 12, 14, 570)
+    env.service.close()
+    again = Env(tmp_path, store)
+    try:
+        assert again.service.status()["schedule"]["max_per_day"] == 5
+        assert again.service.status()["schedule"]["anchor_minute"] == 570
+    finally:
+        again.service.close()
+    for bad in ({"interval_seconds": 60}, {"max_changes": 0}, {"max_per_day": 501}, {"cooldown_hours": 0},
+                {"active_window_days": 91}, {"anchor_minute": 1440}, {"anchor_minute": "09:30"},
+                {"x": 1}, {}):
+        with pytest.raises(ProjectStatusRefused):
+            again_service_refuse(bad, tmp_path, store)
+
+
+def again_service_refuse(payload, tmp_path, store):
+    made = Env(tmp_path, store)
+    try:
+        made.service.update_settings(payload)
+    finally:
+        made.service.close()
+
+
+def test_the_anchor_time_sets_the_next_slot_in_japan_time(env):
+    env.service.update_settings({"anchor_minute": 9 * 60, "interval_seconds": 6 * 3600})
+    env.service.update_settings({"enabled": True})
+    due = env.service.settings()["next_due"]
+    local = datetime.fromtimestamp(due, timezone.utc).astimezone(
+        timezone(__import__("datetime").timedelta(hours=9)))
+    assert (local.hour, local.minute) in {(3, 0), (9, 0), (15, 0), (21, 0)}  # 09:00 + k * 6h
+    assert due > env.now[0]
+
+
+def test_the_daily_cap_limits_an_applying_run_and_a_capped_day_is_a_skip_not_a_failure(env):
+    env.service.update_settings({"max_per_day": 1})
+    env.vault.files[f"{FOLDER}/wake2.md"] = note("planning")
+    env.service.start_manual({"apply": True})
+    env.wait()
+    assert last(env)["counts"]["applied"] == 1  # two were planned; the day allows one
+    env.service.start_manual({"apply": True})
+    env.wait()
+    run = last(env)
+    assert (run["status"], run["error_code"]) == ("skipped", "daily_cap")
+    assert env.service.status()["schedule"]["last_skip"] == "daily_cap"
+    assert env.service.health()["consecutive_failures"] == 0
+    env.service.start_manual({"apply": False})  # a check-only run is not limited by the day
+    env.wait()
+    assert last(env)["status"] == "ok"
+
+
+def test_a_longer_cooldown_and_activity_window_reach_the_run(env):
+    env.service.update_settings({"cooldown_hours": 72, "active_window_days": 1})
+    env.github.days_ago = 3  # inside the default 7 days, outside the 1-day window
+    env.service.start_manual({"apply": True})
+    env.wait()
+    counts = last(env)["counts"]
+    assert counts["transitions"] == {"running->planning": 1}  # quiet.md turns planning; wake.md stays

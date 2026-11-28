@@ -102,3 +102,41 @@ test("cancelling the confirmation sends nothing, and buttons are disabled while 
     assert.equal(find(busy.panel, id).disabled, true);
   }
 });
+
+test("settings fields mirror the schedule and saving posts the edited values", async () => {
+  const sent = [];
+  const post = async (url, options) => { sent.push([url, JSON.parse(options.body)]); return {ok: true, async json() { return {}; }}; };
+  const {panel} = await mount({status: enabled({schedule: {max_per_day: 30, cooldown_hours: 24,
+    active_window_days: null, anchor_minute: 570, max_changes: 10, interval_seconds: 21600}}), post});
+  assert.equal(find(panel, "project-status-interval").value, "360");
+  assert.equal(find(panel, "project-status-per-run").value, "10");
+  assert.equal(find(panel, "project-status-per-day").value, "30");
+  assert.equal(find(panel, "project-status-cooldown").value, "24");
+  assert.equal(find(panel, "project-status-window").value, "");
+  assert.equal(find(panel, "project-status-anchor").value, "09:30");
+  find(panel, "project-status-per-day").value = "12";
+  find(panel, "project-status-per-day").listeners.input();
+  find(panel, "project-status-window").value = "14";
+  find(panel, "project-status-save").listeners.click();
+  await tick();
+  assert.deepEqual(sent[0], ["/api/v1/project-status/settings",
+    {interval_seconds: 21600, max_changes: 10, max_per_day: 12, cooldown_hours: 24,
+     anchor_minute: 570, active_window_days: 14}]);
+});
+
+test("a value that is not a whole number or an interval under 60 minutes is not sent", async () => {
+  const sent = [];
+  const post = async (url) => { sent.push(url); return {ok: true, async json() { return {}; }}; };
+  const {panel} = await mount({status: enabled(), post});
+  find(panel, "project-status-interval").value = "30";
+  find(panel, "project-status-save").listeners.click();
+  await tick();
+  assert.deepEqual(sent, []);
+  assert.match(find(panel, "project-status-message").textContent, /値を確認してください/);
+});
+
+test("the panel is a section with a heading, not a collapsible, and mounts into #panels", async () => {
+  const {panel} = await mount({status: enabled()});
+  assert.equal(panel.tag, "section");
+  assert.match(allText(panel), /Projectの状態を自動更新/);
+});
